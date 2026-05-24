@@ -379,6 +379,58 @@ namespace EOS{
     return mats;
   }
 
+  /**
+   * Calculates GAME (gamma_4) for a Peng-Robinson EOS.
+   * Suitable for use inside AMReX GPU lambdas.
+   */
+  /*
+  AMREX_GPU_DEVICE AMREX_FORCE_INLINE
+  amrex::Real compute_PPM_GAME(amrex::Real rho, amrex::Real T)
+  {
+    // 1. Get the current primitive state from your PR-EOS
+    Real P  = get_pressure(rho, T);
+    Real cs = get_cs(rho, T);
+    Real e  = get_e(rho, T);
+
+    // Safeguard against unphysical/vacuum states or division by zero
+    if (rho <= 1e-12 || P <= 1e-12) {
+        return 1.4; // Fallback to an ideal gas value if empty/corrupted
+    }
+
+    // 2. Numerical derivative over Temperature at constant Density
+    // Small perturbation tailored to double precision limits
+    Real dT = T * 1e-6; 
+    if (dT < 1e-8) dT = 1e-8; 
+
+    Real T_plus = T + dT;
+    Real P_plus = get_pressure(rho, T_plus);
+    Real e_plus = get_e(rho, T_plus);
+
+    Real dPdT_rho = (P_plus - P) / dT;
+    Real dedT_rho = (e_plus - e) / dT;
+
+    // Safeguard against non-physical negative/zero heat capacities
+    if (std::abs(dedT_rho) < 1e-10) {
+        dedT_rho = 1e-10;
+    }
+
+    // 3. Calculate (dP/de)_rho via the chain rule
+    Real dPde_rho = dPdT_rho / dedT_rho;
+
+    // 4. Compute the formal differential GAME (gamma_4)
+    // gamma_4 = (rho * cs^2 / P) - (1 / rho) * (dP/de)_rho
+    Real game = (rho * cs * cs / P) - (1.0 / rho) * dPde_rho;
+
+    // Phase-change stability limiter: Physical constraints dictate gamma_4 > 1.0. 
+    // Near phase boundaries or critical points where cs drops or dPde fluctuates,
+    // enforce a lower-bound floor to prevent unphysical transverse PPM corrections.
+    if (game < 1.001) game = 1.001;
+    if (game > 3.0)   game = 3.0; // Upper limit check for high-density fluids
+
+    return game;
+  }
+  */  
+
   AMREX_GPU_HOST_DEVICE
   AMREX_FORCE_INLINE
   void RTY2Ei(

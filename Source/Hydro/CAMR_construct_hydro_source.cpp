@@ -132,68 +132,83 @@ CAMR::construct_hydro_source (const MultiFab& S,
 
 #ifdef USE_PR_EOS
 
+
 #ifdef _OPENMP
 #pragma omp parallel if (amrex::Gpu::notInLaunchRegion())
 #endif
     {
       amrex::MFItInfo tiling = amrex::TilingIfNotGPU() ? amrex::MFItInfo().EnableTiling(hydro_tile_size) : amrex::MFItInfo();
       for (MFIter mfi(S_new, tiling); mfi.isValid(); ++mfi)
-      {
-        const Box& bx = mfi.tilebox();
+		{
+		  const Box& bx = mfi.tilebox();
+		  const Box& qbx = amrex::grow(bx, numGrow());
 
-		const Box& qbx = amrex::grow(bx, numGrow());
+		  amrex::GpuArray<amrex::FArrayBox, AMREX_SPACEDIM> flux;
+		  for (int dir = 0; dir < AMREX_SPACEDIM; ++dir) {
+			const Box& efbx = amrex::surroundingNodes(bx, dir);
+			flux[dir].resize(efbx, NVAR, amrex::The_Async_Arena());
+			flux[dir].setVal<RunOn::Device>(0.);
+		  }
 
-		amrex::GpuArray<amrex::FArrayBox, AMREX_SPACEDIM> flux;
-		for (int dir = 0; dir < AMREX_SPACEDIM; ++dir) {
-		  const Box& efbx = amrex::surroundingNodes(bx, dir);
-		  flux[dir].resize(efbx, NVAR, amrex::The_Async_Arena());
-		  flux[dir].setVal<RunOn::Device>(0.);
-		}
+		  auto const& sarr    = S.const_array(mfi);
+		  auto const& hyd_src = src_to_fill.array(mfi);
 
-        amrex::Array4<amrex::Real const> const& U_cc = S.const_array(mfi);
-		AMREX_D_TERM(
-     	  const auto& Fxarr = flux[0].array();,
-		  const auto& Fyarr = flux[1].array();,
-		  const auto& Fzarr = flux[2].array(););
-		
-        // Parallel thread launch over the grid face interfaces (i+1/2)
-        amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
-        {
+		  // Resize Temporary Fabs
+		  FArrayBox q(qbx, QVAR, amrex::The_Async_Arena());
+		  FArrayBox qaux(qbx, NQAUX, amrex::The_Async_Arena());
+		  FArrayBox src_q(qbx, QVAR, amrex::The_Async_Arena());
+
+		  // Get Arrays to pass to the gpu.
+		  auto const& qarr    = q.array();
+		  auto const& qauxar  = qaux.array();
+		  auto const& srcqarr = src_q.array();
+
+		  BL_PROFILE_VAR("ctoprim()", ctop);
+		  const Real small_num        = CAMRConstants::small_num;
+		  const Real dual_energy_eta  = CAMR::dual_energy_eta1;
+		  int l_allow_negative_energy = CAMR::allow_negative_energy;
+		  ParallelFor(
+            qbx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
+                  hydro_ctoprim(i, j, k, sarr, qarr, qauxar, *lpmap,
+								small_num, dual_energy_eta, l_allow_negative_energy);
+            });
+		  BL_PROFILE_VAR_STOP(ctop);
+
+		  const GpuArray<const Array4<      Real>, AMREX_SPACEDIM>
+			flx_arr{{AMREX_D_DECL(flux[0].array(), flux[1].array(), flux[2].array())}};
+		  const amrex::GpuArray<const Array4<const Real>, AMREX_SPACEDIM>
+			a{{AMREX_D_DECL(area[0].array(mfi), area[1].array(mfi), area[2].array(mfi))}};
+
+		  // Create source terms for primitive variables
+		  if (!do_mol) {
+            const auto& src_in = sources_for_hydro.array(mfi);
+            ParallelFor(
+			  qbx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
+				hydro_srctoprim(i, j, k, qarr, qauxar, src_in, srcqarr, *lpmap);
+              });
+		  }
+
+
+		  // Parallel thread launch over the grid face interfaces (i+1/2)
+		  amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
+		  {
             // ---------------------------------------------------------------
             // 1. EXTRACT STENCIL VARIABLES [-2, -1, 0, 1, 2] RELATIVE TO INTERFACE
             //    Mapping: idx 0=(i-2), 1=(i-1), 2=(i), 3=(i+1), 4=(i+2)
             // ---------------------------------------------------------------
-            amrex::GpuArray<amrex::Real, 5> r;
-            amrex::GpuArray<amrex::Real, 5> u;
-            amrex::GpuArray<amrex::Real, 5> v;
-            amrex::GpuArray<amrex::Real, 5> w;
-            amrex::GpuArray<amrex::Real, 5> e;
-            amrex::GpuArray<amrex::Real, 5> T;
-            amrex::GpuArray<amrex::Real, 5> p;
-            amrex::GpuArray<amrex::Real, 5> c;
+ 		    amrex::GpuArray<amrex::Real, 5> r, u, v, w, e, T, p, c;
             
             int idx = 0;
             for (int s = -2; s <= 2; ++s) {
-                r[idx] = U_cc(i+s, j, k, URHO);
-				AMREX_D_TERM(
-				  u[idx] = U_cc(i+s, j, k, UMX) / r[idx];,
-				  v[idx] = U_cc(i+s, j, k, UMY) / r[idx];,
-				  w[idx] = U_cc(i+s, j, k, UMZ) / r[idx];);
-                
-                e[idx] = (U_cc(i+s, j, k, UEDEN) / r[idx])
-				  - 0.5 * (AMREX_D_TERM(
-							 u[idx]*u[idx],
-							 + v[idx]*v[idx],
-							 + w[idx]*w[idx]));
-                T[idx] = U_cc(i+s, j, k, UTEMP);
-
-                // Enforce Volume Asymptote Guard before root inversion
-				amrex::Real v_molar = EOS::protected_specific_volume(fluid, r[idx]);
-                // Apply structural envelope guard to clean up unstable states
-                EOS::apply_spinodal_guard(fluid, r[idx], e[idx], T[idx]);
-				amrex::Real chi, kappa;
-				RET2C(fluid, e[idx], r[idx], T[idx], c[idx], p[idx], chi, kappa);
-                idx++;
+			  r[idx] = qarr(i, j, k, QRHO);
+			  AMREX_D_TERM(u[idx] = qarr(i, j, k, QU);,
+						   v[idx] = qarr(i, j, k, QV);,
+						   w[idx] = qarr(i, j, k, QW););
+			  e[idx] = qarr(i,j,k,QREINT) / r[idx];
+			  T[idx] = qarr(i, j, k, QTEMP);
+			  p[idx] = qarr(i, j, k, QPRES);
+			  c[idx] = qauxar(i, j, k, QC);
+			  idx++;
             }
 
             // ---------------------------------------------------------------
@@ -206,10 +221,17 @@ CAMR::construct_hydro_source (const MultiFab& S,
             amrex::GpuArray<amrex::Real, 3> dq_limited_i = { 0.0, 0.0, 0.0 };
 
             for (int w = 0; w < 3; ++w) {
-                amrex::Real dw_minus = mats_i.L[w][0]*dq_minus_i[0] + mats_i.L[w][1]*dq_minus_i[1] + mats_i.L[w][2]*dq_minus_i[2];
-                amrex::Real dw_plus  = mats_i.L[w][0]*dq_plus_i[0]  + mats_i.L[w][1]*dq_plus_i[1]  + mats_i.L[w][2]*dq_plus_i[2];
-                amrex::Real dw_lim   = van_leer_limiter(dw_minus, dw_plus);
+                amrex::Real dw_minus
+				  = mats_i.L[w][0]*dq_minus_i[0]
+				  + mats_i.L[w][1]*dq_minus_i[1]
+				  + mats_i.L[w][2]*dq_minus_i[2];
+                amrex::Real dw_plus
+				  = mats_i.L[w][0]*dq_plus_i[0]
+				  + mats_i.L[w][1]*dq_plus_i[1]
+				  + mats_i.L[w][2]*dq_plus_i[2];
 
+                amrex::Real dw_lim   = van_leer_limiter(dw_minus, dw_plus);
+				
                 for (int m = 0; m < 3; ++m) {
                     dq_limited_i[m] += dw_lim * mats_i.R[m][w];
                 }
@@ -225,8 +247,15 @@ CAMR::construct_hydro_source (const MultiFab& S,
             amrex::GpuArray<amrex::Real, 3> dq_limited_ip1 = { 0.0, 0.0, 0.0 };
 
             for (int w = 0; w < 3; ++w) {
-                amrex::Real dw_minus = mats_ip1.L[w][0]*dq_minus_ip1[0] + mats_ip1.L[w][1]*dq_minus_ip1[1] + mats_ip1.L[w][2]*dq_minus_ip1[2];
-                amrex::Real dw_plus  = mats_ip1.L[w][0]*dq_plus_ip1[0]  + mats_ip1.L[w][1]*dq_plus_ip1[1]  + mats_ip1.L[w][2]*dq_plus_ip1[2];
+                amrex::Real dw_minus
+				  = mats_ip1.L[w][0]*dq_minus_ip1[0]
+				  + mats_ip1.L[w][1]*dq_minus_ip1[1]
+				  + mats_ip1.L[w][2]*dq_minus_ip1[2];
+                amrex::Real dw_plus
+				  = mats_ip1.L[w][0]*dq_plus_ip1[0]
+				  + mats_ip1.L[w][1]*dq_plus_ip1[1]
+				  + mats_ip1.L[w][2]*dq_plus_ip1[2];
+
                 amrex::Real dw_lim   = van_leer_limiter(dw_minus, dw_plus);
 
                 for (int m = 0; m < 3; ++m) {
@@ -346,11 +375,13 @@ CAMR::construct_hydro_source (const MultiFab& S,
 			// ----------------------------
 			// 8. WRITE CONSERVATIVE FLUXES
 			// ----------------------------
+			/*
 			Fxarr(i, j, k, URHO)  = base_F_L[URHO]  + base_F_R[URHO];
 			Fxarr(i, j, k, UMX)   = base_F_L[UMX]   + base_F_R[UMX] + 0.5 * (p_L + p_R);
 			Fxarr(i, j, k, UMY)   = base_F_L[UMY]   + base_F_R[UMY];
 			//Fxarr(i, j, k, UMZ)   = base_F_L[UMZ]   + base_F_R[UMZ];
 			Fxarr(i, j, k, UEDEN) = base_F_L[UEDEN] + base_F_R[UEDEN];
+			*/
 		});
 		
 		//
@@ -359,17 +390,18 @@ CAMR::construct_hydro_source (const MultiFab& S,
 		if (do_reflux) {
 		  if (level < finest_level) {
 			getFluxReg(level + 1).CrseAdd(mfi,
-			  {{AMREX_D_DECL(&(flux[0]), &(flux[1]), &(flux[2]))}},
+              {{AMREX_D_DECL(&(flux[0]), &(flux[1]), &(flux[2]))}},
 			  dxDp, fac_for_reflux*dt, amrex::RunOn::Device);
 		  }
 		  if (level > 0) {
 			getFluxReg(level).FineAdd(mfi,
-			  {{AMREX_D_DECL(&(flux[0]), &(flux[1]), &(flux[2]))}},
+              {{AMREX_D_DECL(&(flux[0]), &(flux[1]), &(flux[2]))}},
 			  dxDp, fac_for_reflux*dt, amrex::RunOn::Device);
 		  }
 		} // do_reflux
-      } // mfi
+		} // mfi
     } // openmp
+
 #else
 	
 #ifdef AMREX_USE_EB

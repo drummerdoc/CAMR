@@ -79,6 +79,7 @@ hydro_ctoprim(
         q(i, j, k, QTEMP)  = T;
         q(i, j, k, QREINT) = e * rho;
         q(i, j, k, QPRES)  = p;
+        q(i, j, k, QGAME)  = 0; // TODO
 #else		
         amrex::Real massfrac[NUM_SPECIES];
         for (int sp = 0; sp < NUM_SPECIES; ++sp) {
