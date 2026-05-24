@@ -24,6 +24,7 @@
 #include "Tagging.H"
 #include "IndexDefines.H"
 #include "prob_parm.H"
+#include "EOS.H"
 
 enum StateType { State_Type = 0,
                  Source_Type,
@@ -326,6 +327,10 @@ public:
   void normalize_species(amrex::MultiFab& S_new);
 
   static void enforce_min_density(amrex::MultiFab& S_new);
+
+#ifdef USE_PR_EOS
+  static EOS::FluidProperties fluid;
+#endif
 
 protected:
 

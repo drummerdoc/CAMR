@@ -48,10 +48,12 @@ CAMR_reset_internal_e(
 #endif
     const amrex::Real eden = S(i, j, k, UEDEN) * rhoInv;
 
+#ifndef USE_PR_EOS
     amrex::Real massfrac[NUM_SPECIES];
     for (int sp = 0; sp < NUM_SPECIES; sp++) {
         massfrac[sp] = S(i, j, k, sp + UFS) * rhoInv;
     }
+#endif
 
     amrex::Real e_out = 0.;
     amrex::Real small_e = 0.;
@@ -59,13 +61,20 @@ CAMR_reset_internal_e(
 
     if (l_allow_small_energy == 0) {
 
-        EOS::RTY2E(rho,small_T,massfrac,small_e);
-
+#ifdef USE_PR_EOS
+  	    small_e = EOS::RT2E(CAMR::fluid, rho,small_T);
+#else
+	    EOS::RTY2E(rho,small_T,massfrac,small_e);
+#endif
         // E < small_e
         if (eden < small_e) {
             if (S(i, j, k, UEINT) * rhoInv < small_e) {
               const amrex::Real T = std::max(S(i,j,k,UTEMP), small_T);
+#ifdef USE_PR_EOS
+              e_out = EOS::RT2E(CAMR::fluid, rho,T);
+#else
               EOS::RTY2E(rho,T,massfrac,e_out);
+#endif
               S(i, j, k, UEINT) = rho * e_out;
             }
             S(i, j, k, UEDEN) = S(i, j, k, UEINT) + rho * ke;
@@ -83,7 +92,12 @@ CAMR_reset_internal_e(
             // e  < small_e
             if (S(i, j, k, UEINT) * rhoInv < small_e) {
                 const amrex::Real T = std::max(S(i,j,k,UTEMP), small_T);
+#ifdef USE_PR_EOS
+                e_out = EOS::RT2E(CAMR::fluid, rho,T);
+#else
+				
                 EOS::RTY2E(rho,T,massfrac,e_out);
+#endif
                 if (l_dual_energy_update_E_from_e == 1) {
                   S(i, j, k, UEDEN) += (rho * e_out - S(i, j, k, UEINT));
                 }
@@ -95,7 +109,11 @@ CAMR_reset_internal_e(
 
         if (S(i, j, k, UEDEN) < 0.) {
             if (S(i, j, k, UEINT) < 0.) {
+#ifdef USE_PR_EOS
+			    e_out = EOS::RT2E(CAMR::fluid, rho,small_T);
+#else
                 EOS::RTY2E(rho,small_T,massfrac,e_out);
+#endif
                 S(i, j, k, UEINT) = rho * e_out;
             }
             S(i, j, k, UEDEN) = S(i, j, k, UEINT) + rho * ke;
@@ -110,7 +128,11 @@ CAMR_reset_internal_e(
                 S(i, j, k, UEDEN) = S(i,j,k,UEINT) + rho * ke;
 
             } else if (S(i,j,k,UEINT) <= 0.) {
+#ifdef USE_PR_EOS
+			    e_out = EOS::RT2E(CAMR::fluid, rho,small_T);
+#else
                 EOS::RTY2E(rho,small_T,massfrac,e_out);
+#endif
                 S(i, j, k, UEINT) = rho * e_out;
 
                 if (l_dual_energy_update_E_from_e == 1) {

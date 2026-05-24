@@ -39,7 +39,7 @@ CAMR_initdata( int i, int j, int k,
 #if (AMREX_SPACEDIM == 3)
         state(i,j,k,UMZ  ) = amrex::Real(0.0);
 #endif
-        amrex::Real et = Pt/(EOS::gamma-amrex::Real(1.0));
+        amrex::Real et = 0; //Pt/(EOS::gamma-amrex::Real(1.0));
         state(i,j,k,UEINT) = et;
         state(i,j,k,UEDEN) = et + amrex::Real(0.5)*rhot*uxt*uxt;
         state(i,j,k,UTEMP) = amrex::Real(0.0);
@@ -67,7 +67,7 @@ CAMR_initdata( int i, int j, int k,
 #if (AMREX_SPACEDIM == 3)
         state(i,j,k,UMZ  ) = amrex::Real(0.0);
 #endif
-        amrex::Real et = Pt/(EOS::gamma-amrex::Real(1.0));
+        amrex::Real et = 0;//Pt/(EOS::gamma-amrex::Real(1.0));
         state(i,j,k,UEINT) = et;
         state(i,j,k,UEDEN) = et + amrex::Real(0.5)*rhot*uyt*uyt;
         state(i,j,k,UTEMP) = amrex::Real(0.0);
@@ -95,7 +95,7 @@ CAMR_initdata( int i, int j, int k,
 #if (AMREX_SPACEDIM == 3)
         state(i,j,k,UMZ  ) = amrex::Real(0.0);
 #endif
-        amrex::Real et = Pt/(EOS::gamma-amrex::Real(1.0));
+        amrex::Real et = 0; // Pt/(EOS::gamma-amrex::Real(1.0));
         state(i,j,k,UEINT) = et;
         state(i,j,k,UEDEN) = et + amrex::Real(0.5)*rhot*uzt*uzt;
         state(i,j,k,UTEMP) = amrex::Real(0.0);

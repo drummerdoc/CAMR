@@ -39,6 +39,10 @@ int CAMR::pstateRho = -1;
 int CAMR::pstateY = -1;
 int CAMR::pstateNum = 0;
 
+#ifdef USE_PR_EOS
+EOS::FluidProperties CAMR::fluid("CAMR");
+#endif
+
 amrex::Vector<amrex::AMRErrorTag> CAMR::errtags;
 
 #include "CAMR_defaults.H"
@@ -71,6 +75,33 @@ CAMR::read_params()
   pp.query("sum_interval", sum_interval);
   pp.query("dump_old", dump_old);
 
+#ifdef USE_PR_EOS
+  fluid.name   = "co2";
+  fluid.M_w    = 44.01e-3;
+  fluid.T_c    = 304.13;
+  fluid.P_c    = 7.3773e6;
+  fluid.omega  = 0.2239;
+  fluid.T_low  = 200.0;
+  fluid.T_mid  = 1000.0;
+  fluid.T_high = 6000.0;
+
+  // Low temperature coefficients for co2 (200K - 1000K)
+  fluid.nasa_low_temp[0] =  2.35677352e+00; // a1
+  fluid.nasa_low_temp[1] =  8.98459677e-03; // a2
+  fluid.nasa_low_temp[2] = -7.12356269e-06; // a3
+  fluid.nasa_low_temp[3] =  2.45919022e-09; // a4
+  fluid.nasa_low_temp[4] = -1.43699548e-13; // a5
+
+  // High temperature coefficients for co2 (1000K - 6000K)
+  fluid.nasa_high_temp[0] =  4.63659493e+00;
+  fluid.nasa_high_temp[1] =  2.74131991e-03;
+  fluid.nasa_high_temp[2] = -9.95828531e-07;
+  fluid.nasa_high_temp[3] =  1.60373011e-10;
+  fluid.nasa_high_temp[4] = -9.16103415e-15;
+
+  EOS::Initialize(fluid);
+#endif
+  
   amrex::Vector<int> tilesize(AMREX_SPACEDIM);
   if (pp.queryarr("hydro_tile_size", tilesize, 0, AMREX_SPACEDIM))
   {
@@ -83,6 +114,8 @@ CAMR::read_params()
   pp.getarr("lo_bc", lo_bc_char, 0, AMREX_SPACEDIM);
   pp.getarr("hi_bc", hi_bc_char, 0, AMREX_SPACEDIM);
 
+  read_params_done = true;
+  
   amrex::Vector<int> lo_bc(AMREX_SPACEDIM);
   amrex::Vector<int> hi_bc(AMREX_SPACEDIM);
   for (int dir = 0; dir < AMREX_SPACEDIM; dir++) {
@@ -1022,7 +1055,11 @@ CAMR::enforce_min_density(amrex::MultiFab& S_new)
                 for (int is = 0; is < NUM_SPECIES; is++) {
                     massfrac[is] = Sarr(i,j,k,UFS+is) / Sarr(i,j,k,URHO);
                 }
+#ifdef USE_PR_EOS
+                small_e = EOS::RT2E(fluid,l_small_dens,small_temp);
+#else
                 EOS::RTY2E(l_small_dens,l_small_temp,massfrac,small_e);
+#endif
                 Sarr(i,j,k,URHO)  = l_small_dens;
                 Sarr(i,j,k,UTEMP) = l_small_temp;
                 AMREX_D_TERM( Sarr(i,j,k,UMX)   = 0.;,
@@ -1169,16 +1206,20 @@ CAMR::computeTemp(amrex::MultiFab& S, int ng)
        if (Sarr(i,j,k,URHO) > 0.)
 #endif
        {
-       amrex::Real rhoInv = 1.0 / Sarr(i, j, k, URHO);
-       amrex::Real T = Sarr(i, j, k, UTEMP);
-       amrex::Real e = Sarr(i, j, k, UEINT) * rhoInv;
-       amrex::Real massfrac[NUM_SPECIES];
-       for (int n = 0; n < NUM_SPECIES; ++n) {
-         massfrac[n] = Sarr(i, j, k, UFS + n) * rhoInv;
-       }
-       amrex::Real rho = Sarr(i, j, k, URHO);
-       EOS::REY2T(rho, e, massfrac, T);
-       Sarr(i, j, k, UTEMP) = T;
+         amrex::Real rhoInv = 1.0 / Sarr(i, j, k, URHO);
+         amrex::Real T = Sarr(i, j, k, UTEMP);
+         amrex::Real e = Sarr(i, j, k, UEINT) * rhoInv;
+         amrex::Real rho = Sarr(i, j, k, URHO);
+#ifdef USE_PR_EOS
+	     EOS::RE2T(fluid, rho, e, T);
+#else
+         amrex::Real massfrac[NUM_SPECIES];
+         for (int n = 0; n < NUM_SPECIES; ++n) {
+           massfrac[n] = Sarr(i, j, k, UFS + n) * rhoInv;
+         }
+         EOS::REY2T(rho, e, massfrac, T);
+#endif
+         Sarr(i, j, k, UTEMP) = T;
        }
     });
   }

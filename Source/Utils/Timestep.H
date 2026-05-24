@@ -32,17 +32,26 @@ CAMR_estdt_hydro(
 #ifdef AMREX_USE_EB
     if (!flags(i, j, k).isCovered()) {
 #endif
-      const amrex::Real rho = u(i, j, k, URHO);
-      const amrex::Real rhoInv = 1.0 / rho;
+      amrex::Real rho = u(i, j, k, URHO);
+      amrex::Real rhoInv = 1.0 / rho;
       amrex::Real massfrac[NUM_SPECIES];
       amrex::Real eint = u(i, j, k, UEINT)/rho;
-      amrex::Real c, gam, pres;
+      amrex::Real c, pres;
+#ifdef USE_PR_EOS
+	  amrex::Real T = u(i, j, k, UTEMP); // Do we want to capture if T is modified?
+	  amrex::Real chi, kappa;
+	  EOS::RET2C(CAMR::fluid, eint, rho, T, c, pres, chi, kappa);
+	  rhoInv = 1.0 / rho; // Might change inside RET2C - do we want to capture?
+#else
+	  // Should be pull RET2C into gamma-law EOS?
+      amrex::Real gam;
       for (int n = 0; n < NUM_SPECIES; ++n) {
         massfrac[n] = u(i, j, k, UFS + n) * rhoInv;
       }
       EOS::REY2P(rho,eint,massfrac,pres);
       EOS::REY2Gam(rho,eint,massfrac,gam);
       c = std::sqrt(gam*pres/rho);
+#endif
       AMREX_D_TERM(const amrex::Real ux = u(i, j, k, UMX) * rhoInv;
                    const amrex::Real dt1 = dx / (c + std::abs(ux));
                    dt = std::min(dt, dt1);

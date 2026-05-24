@@ -257,6 +257,21 @@ trace_ppm(
       amrex::Real alpha0r = drho - dptot / csq_ref;
       amrex::Real alpha0e_g = drhoe_g - dptot * h_g_ref;
 
+	  amrex::Print() << "dptotm: " << dptotm << std::endl;
+	  amrex::Print() << "rho_ref: " << rho_ref << std::endl;
+	  amrex::Print() << "un_ref: " << un_ref << std::endl;
+	  amrex::Print() << "p_ref: " << p_ref << std::endl;
+	  amrex::Print() << "rhoe_g_ref: " << rhoe_g_ref << std::endl;
+	  amrex::Print() << "gam_ref: " << gam_ref << std::endl;
+	  amrex::Print() << "rho_ref_inv: " << rho_ref_inv << std::endl;
+	  amrex::Print() << "cc_ref: " << cc_ref << std::endl;
+	  amrex::Print() << "cc_ref_inv: " << cc_ref_inv << std::endl;
+	  amrex::Print() << "alpham: " << alpham << std::endl;
+	  amrex::Print() << "alphap: " << alphap << std::endl;
+	  amrex::Print() << "alpha0r: " << alpha0r << std::endl;
+	  amrex::Print() << "alpha0e_g: " << alpha0e_g << std::endl;
+	  amrex::Print() << "un: " << un << std::endl;
+	  amrex::Print() << "cc: " << cc << std::endl;
       if (un-cc > 0.) {
           alpham = 0.;
       } else if (un-cc < 0.) {

@@ -603,7 +603,8 @@ CAMR_dersoundspeed(
     amrex::Real gam,pres;
     amrex::Real eint = dat(i, j, k, UEINT)/rho;
     EOS::REY2P(rho,eint,massfrac,pres);
-    EOS::REY2Gam(rho,eint,massfrac,gam);
+	amrex::Print() << "no gamma" << std::endl;
+    //EOS::REY2Gam(rho,eint,massfrac,gam);
     c = std::sqrt(gam*pres/rho);
    // EOS::RTY2Cs(rho, T, massfrac, c);
     cfab(i, j, k) = c;
@@ -643,7 +644,8 @@ CAMR_dermachnumber(
     amrex::Real gam,pres;
     amrex::Real eint = dat(i, j, k, UEINT)/rho;
     EOS::REY2P(rho,eint,massfrac,pres);
-    EOS::REY2Gam(rho,eint,massfrac,gam);
+	amrex::Print() << "no gamma" << std::endl;
+    //EOS::REY2Gam(rho,eint,massfrac,gam);
     c = std::sqrt(gam*pres/rho);
     //EOS::RTY2Cs(rho, T, massfrac, c);
     const amrex::Real datxsq = dat(i, j, k, UMX) * dat(i, j, k, UMX);

@@ -29,7 +29,7 @@ DEBUG = FALSE
 
 # CAMR
 USE_EB = FALSE
-Eos_Model := GammaLaw
+Eos_Model := PengRobinson
 
 # GNU Make
 Bpack := ./Make.package

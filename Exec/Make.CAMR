@@ -26,6 +26,10 @@ ifeq ($(Eos_Model),$(filter $(Eos_Model),GammaLaw))
    DEFINES += -DUSE_GAMMALAW_EOS
    EOS_DIR = GammaLaw
 endif
+ifeq ($(Eos_Model),$(filter $(Eos_Model),PengRobinson))
+   DEFINES += -DUSE_PR_EOS
+   EOS_DIR = PengRobinson
+endif
 ifeq ($(Eos_Model),$(filter $(Eos_Model),TableEOS))
    DEFINES += -DUSE_TABLE_EOS
    EOS_DIR = TableEOS

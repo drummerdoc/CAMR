@@ -69,13 +69,22 @@ hydro_ctoprim(
         }
 
         amrex::Real T = u(i, j, k, UTEMP);
+        amrex::Real dpdr_e, dpde, gam1, cs,  p;
+
+#ifdef USE_PR_EOS
+		amrex::Real rho_temp = rho;
+		amrex::Real chi, kappa;
+		EOS::RET2C(CAMR::fluid, e, rho_temp, T, cs, p, chi, kappa);
+		
+        q(i, j, k, QTEMP)  = T;
+        q(i, j, k, QREINT) = e * rho;
+        q(i, j, k, QPRES)  = p;
+#else		
         amrex::Real massfrac[NUM_SPECIES];
         for (int sp = 0; sp < NUM_SPECIES; ++sp) {
           q(i, j, k, sp + QFS) = u(i,j,k,UFS+sp) * rhoinv;
           massfrac[sp] = q(i, j, k, sp + QFS);
         }
-
-        amrex::Real dpdr_e, dpde, gam1, cs,  p;
 
         // Are all these EOS calls needed? Seems fairly convoluted.
         EOS::REY2T  (rho, e, massfrac, T);
@@ -95,6 +104,7 @@ hydro_ctoprim(
         qa(i, j, k, QDPDE) = dpde;
         qa(i, j, k, QGAMC) = gam1;
         cs =  std::sqrt(gam1*p/rho);
+#endif
         qa(i, j, k, QC) = cs;
         qa(i, j, k, QCSML) = std::max(l_small_num, l_small_num * cs);
     }
@@ -140,7 +150,6 @@ hydro_srctoprim(
         const int nq = pmap.qpassMap[ip];
         srcq(i, j, k, nq) = (src(i, j, k, n) - q(i, j, k, nq) * srcrho) * rhoinv;
       }
-
       srcq(i, j, k, QPRES) =
         qa(i, j, k, QDPDE) *
           (srcq(i, j, k, QREINT) - q(i, j, k, QREINT) * srcrho * rhoinv) * rhoinv +
