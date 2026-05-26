@@ -1,0 +1,12 @@
+CEXE_headers +=  Compute_Face_Flux_3D_CTU.H \
+                 Perform_1D_PPM_Time_Centered_Reconstruction.H \
+				 solve_exact_pr_hem_riemann.H \
+				 Time_Centered_CTU_Fluxes_3D.H \
+				 apply_positivity_flux_limiter_3d.H \
+				 compute_phase_aware_viscosity_x.H \
+				 compute_pr_speed_of_sound.H \
+				 enforce_thermodynamic_state_floor.H \
+				 perform_pr_hem_flash.H \
+				 solve_exact_pr_hem_riemann.H
+
+CEXE_sources +=  Time_Centered_CTU_Fluxes_3D.cpp

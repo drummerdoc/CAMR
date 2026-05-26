@@ -2,7 +2,7 @@ CAMR_HOME      ?= ../..
 AMREX_HOME     ?= ../../../amrex
 
 # AMReX
-DIM = 2
+DIM = 3
 COMP = gnu
 PRECISION = DOUBLE
 

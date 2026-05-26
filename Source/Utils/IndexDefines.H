@@ -29,52 +29,79 @@
 #define UEDEN 3
 #define UEINT 4
 #define UTEMP 5
-#define UFA 6
 
 #define QGAME 3
 #define QPRES 4
 #define QREINT 5
 #define QTEMP 6
+#ifdef USE_PR_EOS
+#define QC 7
+#define QY 8
+#define QFA 9
+#define QTHERM 10
+#define UY 6
+#define UFA 7
+#define NTHERM 8
+#else
 #define QFA 7
+#define QTHERM 8
+#define UFA 6
+#define NTHERM 7
+#endif
 
 #define GDPRES 3
 #define GDGAME 4
 #define NGDNV 5
 
-#define NTHERM 6
-#define QTHERM 7
 
 #elif (AMREX_SPACEDIM == 3)
 #define UMZ 3
 #define UEDEN 4
 #define UEINT 5
 #define UTEMP 6
-#define UFA 7
 
 #define QW 3
 #define QGAME 4
 #define QPRES 5
 #define QREINT 6
 #define QTEMP 7
+#ifdef USE_PR_EOS
+#define QC 8
+#define QY 9
+#define QFA 10
+#define QTHERM 11
+#define UY 7
+#define UFA 8
+#define NTHERM 9
+#else
 #define QFA 8
+#define QTHERM 9
+#define UFA 7
+#define NTHERM 8
+#endif
 
 #define GDW 3
 #define GDPRES 4
 #define GDGAME 5
 #define NGDNV 6
 
-#define NTHERM 7
-#define QTHERM 8
 #endif
 
 #define NUM_ADV 0
 
 #define QGAMC 0
+#ifdef USE_PR_EOS
+#define QCSML 1
+#define QDPDR 2
+#define QDPDE 3
+#define NQAUX 4
+#else
 #define QC 1
 #define QCSML 2
 #define QDPDR 3
 #define QDPDE 4
 #define NQAUX 5
+#endif
 
 #ifndef CAMR_USE_AUX
 #define NUM_AUX 0

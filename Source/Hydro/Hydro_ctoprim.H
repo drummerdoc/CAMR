@@ -80,6 +80,7 @@ hydro_ctoprim(
         q(i, j, k, QREINT) = e * rho;
         q(i, j, k, QPRES)  = p;
         q(i, j, k, QGAME)  = 0; // TODO
+        q(i, j, k, QC)     = cs;
 #else		
         amrex::Real massfrac[NUM_SPECIES];
         for (int sp = 0; sp < NUM_SPECIES; ++sp) {
@@ -99,14 +100,16 @@ hydro_ctoprim(
         q(i, j, k, QREINT) = e * rho;
         q(i, j, k, QPRES)  = p;
         q(i, j, k, QGAME)  = p / (e * rho) + 1.0;
+#endif
 
         // Auxilary Fab
         qa(i, j, k, QDPDR) = dpdr_e;
         qa(i, j, k, QDPDE) = dpde;
+#ifndef USE_PR_EOS
         qa(i, j, k, QGAMC) = gam1;
         cs =  std::sqrt(gam1*p/rho);
-#endif
         qa(i, j, k, QC) = cs;
+#endif
         qa(i, j, k, QCSML) = std::max(l_small_num, l_small_num * cs);
     }
 }

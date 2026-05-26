@@ -33,6 +33,7 @@ namespace EOS{
 	amrex::GpuArray<amrex::Real, 5> nasa_high_temp; // Fit for T_mid <= T <= T_high
 
 	amrex::Real cubic_a_crit, cubic_b;
+	amrex::Real R;
 
 	bool initialized = false;
   };
@@ -59,6 +60,7 @@ namespace EOS{
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void Initialize(FluidProperties& fluid) {
 	compute_cubic_constants(fluid);
+	fluid.R = R_univ / fluid.M_w;
 	fluid.initialized = true;
   }
 
@@ -238,12 +240,11 @@ namespace EOS{
   }
   
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-  void RET2C(const FluidProperties& fluid, amrex::Real e, amrex::Real& rho, amrex::Real& T, amrex::Real& c, amrex::Real& p, amrex::Real& chi, amrex::Real& kappa)
+  void RT2C(const FluidProperties& fluid, amrex::Real& rho, amrex::Real& T, amrex::Real& c, amrex::Real& p, amrex::Real& chi, amrex::Real& kappa)
   {
 	AMREX_ALWAYS_ASSERT_WITH_MESSAGE(rho > 0.0,"RET2C: Non-positive density");
 	amrex::Real v = protected_specific_volume(fluid, rho);
 
-	RE2T(fluid, rho, e, T);
 	amrex::Real a, dadt;
 	get_a_param(fluid, T, a, dadt);
 	p = (R_univ * T) / (v - fluid.cubic_b) - a / (v * v + 2.0 * fluid.cubic_b * v - fluid.cubic_b * fluid.cubic_b);
@@ -255,6 +256,17 @@ namespace EOS{
 	chi   = -(v * v / fluid.M_w) * dpdv + (v * v / (fluid.M_w * fluid.M_w * cv_final)) * dpdT * (T * dpdT - p);
 	kappa = dpdT / cv_final;
 	validate_and_floor_sound_speed(rho, p, c, chi, kappa);
+  }
+
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void RET2C(const FluidProperties& fluid, amrex::Real e, amrex::Real& rho, amrex::Real& T, amrex::Real& c, amrex::Real& p, amrex::Real& chi, amrex::Real& kappa)
+  {
+	AMREX_ALWAYS_ASSERT_WITH_MESSAGE(rho > 0.0,"RET2C: Non-positive density");
+	amrex::Real v = protected_specific_volume(fluid, rho);
+
+	RE2T(fluid, rho, e, T);
+
+	RT2C(fluid, rho, T, c, p, chi, kappa);
   }
 
   // Fast tracking function for the vapor pressure line using reduced properties

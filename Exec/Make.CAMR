@@ -40,6 +40,9 @@ Bdirs += $(CAMR_HOME)/Source/Hydro/Godunov
 Bdirs += $(CAMR_HOME)/Source/Hydro/MOL
 Bdirs += $(CAMR_HOME)/Source/Utils
 Bdirs += $(CAMR_HOME)/Source/EOS/$(EOS_DIR) $(CAMR_HOME)/Source/EOS
+ifeq ($(Eos_Model),$(filter $(Eos_Model),PengRobinson))
+Bdirs += $(CAMR_HOME)/Source/Hydro/PR_PPM
+endif
 Bdirs += $(CAMR_HOME)/Source/Params/param_includes
 
 Pdirs := Base Amr Boundary AmrCore
