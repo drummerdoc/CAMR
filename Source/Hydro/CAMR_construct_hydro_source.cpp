@@ -2,6 +2,9 @@
 #include "Hydro.H"
 #include "Hydro_ctoprim.H"
 #include "CAMR_Constants.H"
+#ifdef USE_PS_HYDRO
+#include "PS_ctoprim.H"
+#endif
 
 using namespace amrex;
 
@@ -112,6 +115,17 @@ CAMR::construct_hydro_source (const MultiFab& S,
 #endif
                     hydro_ctoprim(i, j, k, sarr, qarr, qauxar, *lpmap,
                                   small_num, dual_energy_eta, l_allow_negative_energy);
+#ifdef USE_PS_HYDRO
+                    // Populate the P-S 2014 six-equation primitive
+                    // slots (QALPHA1, QRHO1, QRHO2, QP1, QP2) and
+                    // override QPRES with the volume-fraction mixture
+                    // rule.  See Source/Hydro/PelantiShyue/PS_ctoprim.H.
+                    // Runs whenever USE_PS_HYDRO is compiled in, even
+                    // if CAMR.ps_hydro=0 — the augmented primitives
+                    // are cheap and give Godunov / MOL access to the
+                    // per-phase state should it want it in future.
+                    ps_augment_primitives(i, j, k, sarr, qarr);
+#endif
 #ifdef AMREX_USE_EB
                 } else {
                    for (int n=0; n<QVAR; n++) qarr(i,j,k,n) = 0.;

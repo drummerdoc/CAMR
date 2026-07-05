@@ -27,6 +27,7 @@ void PS_umeth(
     const amrex::Box& bx,
     const int* bclo, const int* bchi,
     const int* domlo, const int* domhi,
+    amrex::Array4<const amrex::Real> const& uin_arr,
     amrex::Array4<const amrex::Real> const& q,
     amrex::Array4<const amrex::Real> const& qa,
     amrex::Array4<amrex::Real> const& dsdt_arr,

@@ -62,11 +62,8 @@ hydro_umdrv (bool do_mol,
 #ifdef USE_PS_HYDRO
     if (do_ps_hydro) {
         // Pelanti–Shyue six-equation wave-propagation solver.  See
-        // Source/Hydro/PelantiShyue/README.md .  In Phase 4c-α the
-        // PS_umeth body is a stub that aborts with an actionable
-        // message; Phase 4c-β lifts the wave-propagation kernel
-        // from hem_pelanti_shyue.H.
-        PS_umeth(bx, bclo, bchi, domlo, domhi, q_arr, qaux_arr, dsdt_arr,
+        // Source/Hydro/PelantiShyue/README.md .
+        PS_umeth(bx, bclo, bchi, domlo, domhi, uin_arr, q_arr, qaux_arr, dsdt_arr,
                  AMREX_D_DECL(flx[0], flx[1], flx[2]),
                  AMREX_D_DECL(qec_arr[0], qec_arr[1], qec_arr[2]),
                  AMREX_D_DECL(a[0], a[1], a[2]), pdivuarr, vol, dx, dt,

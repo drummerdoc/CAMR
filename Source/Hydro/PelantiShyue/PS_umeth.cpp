@@ -213,24 +213,47 @@ ps_max_wave_speed(int i, int j, int k,
 }
 
 // =====================================================================
-//  PS_umeth (Phase 4c-β2a body): abort with clear next-step guidance.
+//  PS_umeth (Phase 4c-β2b body): first-order LLF flux populating the
+//  per-direction flx arrays.
 //
-//  The dispatch from Hydro_umdrv.cpp will reach here whenever
-//  USE_PS_HYDRO is compiled in and CAMR.ps_hydro=1 at run time.
-//  We stop early because the flux-kernel wiring below the helpers
-//  above needs a compile-and-test iteration that this commit
-//  cannot deliver.
+//  For each direction idir ∈ {0..AMREX_SPACEDIM-1}, loop over the
+//  face-centered box surroundingNodes(bx, idir) and compute:
+//
+//      F_face_n = ½·(F(U_L)_n + F(U_R)_n) − ½·λ_max·(U_R − U_L)_n
+//
+//  for every n ∈ [0, NVAR).  L and R are the cells adjacent to the
+//  face; λ_max = max(|u_L,n| + c_L, |u_R,n| + c_R) with the P-S
+//  Wallis mixture c_frozen.  Write F_face into flx[idir](i,j,k, n).
+//
+//  The umdrv wrapper's downstream hydro_consup then produces
+//     dsdt = -(F_hi - F_lo) / vol
+//  which for a Cartesian grid with unit areas reduces to the
+//  standard finite-volume divergence and gives the correct update
+//  for a first-order LLF solver.
+//
+//  Not yet implemented in this file (Phase 4c-β3 or later):
+//    * PLM slope-limited reconstruction of L/R states at the face.
+//      For now L = cell(i-1,j,k), R = cell(i,j,k); first-order.
+//    * Non-conservative α source ∂α/∂t + u·∇α .  For an initially
+//      single-phase run (α₁ ≈ 1 everywhere at t=0), this source is
+//      zero to good approximation; the transport equation is
+//      trivially satisfied by the passive advection encoded in
+//      F[UALPHA1] = α₁ u_n .  For a proper two-phase test
+//      (e.g. B4-Cross-critical), this becomes a large correction
+//      and needs 4c-β3.
+//    * Pelanti / MT / flash relaxation (Phase 4d, source-term MFs).
 // =====================================================================
 void
-PS_umeth(const Box& /*bx*/,
+PS_umeth(const Box& bx,
          const int* /*bclo*/, const int* /*bchi*/,
          const int* /*domlo*/, const int* /*domhi*/,
-         Array4<const Real> const& /*q*/,
+         Array4<const Real> const& uin_arr,
+         Array4<const Real> const& q,
          Array4<const Real> const& /*qa*/,
          Array4<Real> const& /*dsdt_arr*/,
-         AMREX_D_DECL(Array4<Real> const& /*flx1*/,
-                      Array4<Real> const& /*flx2*/,
-                      Array4<Real> const& /*flx3*/),
+         AMREX_D_DECL(Array4<Real> const& flx1,
+                      Array4<Real> const& flx2,
+                      Array4<Real> const& flx3),
          AMREX_D_DECL(Array4<Real> const& /*q1*/,
                       Array4<Real> const& /*q2*/,
                       Array4<Real> const& /*q3*/),
@@ -248,24 +271,85 @@ PS_umeth(const Box& /*bx*/,
          const int /*slope_order*/,
          const PassMap* /*lpmap*/)
 {
-    amrex::Abort(
-        "PS_umeth flux kernel not yet wired (Phase 4c-β2b pending).\n"
-        "  The physical-flux and max-wave-speed HELPERS in this file\n"
-        "  are ready and reviewable, but the ParallelFor loops that\n"
-        "  populate flx1/flx2/flx3 need one more compile-and-test\n"
-        "  iteration on-machine.  See\n"
-        "  Source/Hydro/PelantiShyue/README.md §4c-β2 for the plan.\n"
-        "\n"
-        "  To make progress without PS_umeth active:\n"
-        "    * set  CAMR.ps_hydro = 0  in inputs to run Godunov with\n"
-        "      the PS slots passively advected on the contact\n"
-        "      velocity (Phase 4b's behaviour).  Approximation-quality\n"
-        "      6-eq mixture — for CO2_TBlowdown this behaves as a\n"
-        "      single-p supercritical fluid, effectively equivalent\n"
-        "      to Godunov + RealFluidCO2 EOS.\n"
-        "\n"
-        "  Silences suppressed to keep this stub honest — the\n"
-        "  helpers below are HOST_DEVICE and unused-until-wired.\n");
+    BL_PROFILE("PS_umeth()");
+
+    // Banner so anyone running PS mode knows this is the LLF
+    // baseline, not the wp4 production algorithm.
+    {
+        static bool banner_shown = false;
+        if (!banner_shown) {
+            amrex::Print() << "  PS_umeth: first-order LLF (Phase 4c-β2b baseline)\n";
+            banner_shown = true;
+        }
+    }
+
+    // ------ x-direction faces --------------------------------------
+    const Box xfbx = amrex::surroundingNodes(bx, 0);
+    amrex::ParallelFor(xfbx,
+    [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
+    {
+        Real FL[NVAR], FR[NVAR];
+        ps_physical_flux(i-1, j, k, 0, uin_arr, q, FL);
+        ps_physical_flux(i,   j, k, 0, uin_arr, q, FR);
+        const Real lamL = ps_max_wave_speed(i-1, j, k, 0, uin_arr, q);
+        const Real lamR = ps_max_wave_speed(i,   j, k, 0, uin_arr, q);
+        const Real lam  = amrex::max(lamL, lamR);
+        for (int n = 0; n < NVAR; ++n) {
+            const Real UL = uin_arr(i-1, j, k, n);
+            const Real UR = uin_arr(i,   j, k, n);
+            flx1(i,j,k, n) = Real(0.5) * (FL[n] + FR[n])
+                           - Real(0.5) * lam * (UR - UL);
+        }
+    });
+
+#if (AMREX_SPACEDIM >= 2)
+    // ------ y-direction faces --------------------------------------
+    const Box yfbx = amrex::surroundingNodes(bx, 1);
+    amrex::ParallelFor(yfbx,
+    [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
+    {
+        Real FL[NVAR], FR[NVAR];
+        ps_physical_flux(i, j-1, k, 1, uin_arr, q, FL);
+        ps_physical_flux(i, j,   k, 1, uin_arr, q, FR);
+        const Real lamL = ps_max_wave_speed(i, j-1, k, 1, uin_arr, q);
+        const Real lamR = ps_max_wave_speed(i, j,   k, 1, uin_arr, q);
+        const Real lam  = amrex::max(lamL, lamR);
+        for (int n = 0; n < NVAR; ++n) {
+            const Real UL = uin_arr(i, j-1, k, n);
+            const Real UR = uin_arr(i, j,   k, n);
+            flx2(i,j,k, n) = Real(0.5) * (FL[n] + FR[n])
+                           - Real(0.5) * lam * (UR - UL);
+        }
+    });
+#endif
+
+#if (AMREX_SPACEDIM == 3)
+    // ------ z-direction faces --------------------------------------
+    const Box zfbx = amrex::surroundingNodes(bx, 2);
+    amrex::ParallelFor(zfbx,
+    [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
+    {
+        Real FL[NVAR], FR[NVAR];
+        ps_physical_flux(i, j, k-1, 2, uin_arr, q, FL);
+        ps_physical_flux(i, j, k,   2, uin_arr, q, FR);
+        const Real lamL = ps_max_wave_speed(i, j, k-1, 2, uin_arr, q);
+        const Real lamR = ps_max_wave_speed(i, j, k,   2, uin_arr, q);
+        const Real lam  = amrex::max(lamL, lamR);
+        for (int n = 0; n < NVAR; ++n) {
+            const Real UL = uin_arr(i, j, k-1, n);
+            const Real UR = uin_arr(i, j, k,   n);
+            flx3(i,j,k, n) = Real(0.5) * (FL[n] + FR[n])
+                           - Real(0.5) * lam * (UR - UL);
+        }
+    });
+#endif
+
+    // pdivu is used by hydro_consup for the ∫ P ∇·u dt term.  For our
+    // first-order LLF that term is already encoded implicitly in the
+    // energy flux (F[UEDEN] carries P·u_n), so we leave pdivu = 0
+    // and consup's Saxpy will be a no-op for our case.  A more
+    // careful implementation would populate pdivu with the mixture
+    // pressure * face-normal velocity; deferred until 4c-β3.
 }
 
 #else  // !USE_PS_HYDRO
@@ -274,6 +358,7 @@ void
 PS_umeth(const amrex::Box& /*bx*/,
          const int* /*bclo*/, const int* /*bchi*/,
          const int* /*domlo*/, const int* /*domhi*/,
+         amrex::Array4<const amrex::Real> const& /*uin_arr*/,
          amrex::Array4<const amrex::Real> const& /*q*/,
          amrex::Array4<const amrex::Real> const& /*qa*/,
          amrex::Array4<amrex::Real> const& /*dsdt_arr*/,
