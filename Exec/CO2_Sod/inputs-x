@@ -13,10 +13,15 @@ stop_time = 1.33e-3
 geometry.is_periodic = 0 0 0
 geometry.coord_sys   = 0  # 0 => cart, 1 => RZ  2=>spherical
 
-geometry.prob_lo     =   0.0  0.0  0.0
-geometry.prob_hi     =   1.0  1.0  1.0
-# n_cell must be divisible by amr.blocking_factor in every direction.
-# 256 / 32 = 8, 32 / 32 = 1 → both OK for blocking_factor = 32 too.
+geometry.prob_lo     =   0.0    0.0    0.0
+geometry.prob_hi     =   1.0    0.125  0.125
+# n_cell must be divisible by amr.blocking_factor in every direction,
+# AND dx = dy = dz (CAMR hydro requires isotropic cells).
+#   x: 1.0    / 256 = 3.906e-3
+#   y: 0.125  /  32 = 3.906e-3  ✓
+#   z: 0.125  /  32 = 3.906e-3  ✓
+# In 2-D the z line is ignored.  The transverse domain is arbitrary
+# but must be a whole number of blocks.
 amr.n_cell           =   256   32   32
 
 # >>>>>>>>>>>>>  BC FLAGS <<<<<<<<<<<<<<<<
