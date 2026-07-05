@@ -42,6 +42,11 @@ small_pres                   Real          1.e-200
 # uses MOL aapproach to timestep advection and diffusion
 do_mol                       int          0
 
+# uses the Pelanti-Shyue six-equation wave-propagation solver
+# (co2-eos-cfd integration Phase 4).  Requires the code to have
+# been built with USE_PS_HYDRO = TRUE in the Exec GNUmakefile.
+ps_hydro                     int          0
+
 # React fuel + air -> product
 do_react                     int          0
 

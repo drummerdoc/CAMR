@@ -2,13 +2,18 @@
 #include "Hydro.H"
 #include "Hydro_utils_K.H"
 #include "MOL_umeth.H"
+#ifdef USE_PS_HYDRO
+#include "PS_umeth.H"
+#endif
 
 #include "AMReX_MultiFab.H"
 
 using namespace amrex;
 
 void
-hydro_umdrv (bool do_mol, Box const& bx,
+hydro_umdrv (bool do_mol,
+             [[maybe_unused]] bool do_ps_hydro,
+             Box const& bx,
              amrex::Geometry const& geom,
              const int* bclo, const int* bchi,
              Array4<const Real> const& uin_arr,
@@ -54,6 +59,21 @@ hydro_umdrv (bool do_mol, Box const& bx,
     auto const& divuarr = divu.array();
     auto const& pdivuarr = pdivu.array();
 
+#ifdef USE_PS_HYDRO
+    if (do_ps_hydro) {
+        // Pelanti–Shyue six-equation wave-propagation solver.  See
+        // Source/Hydro/PelantiShyue/README.md .  In Phase 4c-α the
+        // PS_umeth body is a stub that aborts with an actionable
+        // message; Phase 4c-β lifts the wave-propagation kernel
+        // from hem_pelanti_shyue.H.
+        PS_umeth(bx, bclo, bchi, domlo, domhi, q_arr, qaux_arr, dsdt_arr,
+                 AMREX_D_DECL(flx[0], flx[1], flx[2]),
+                 AMREX_D_DECL(qec_arr[0], qec_arr[1], qec_arr[2]),
+                 AMREX_D_DECL(a[0], a[1], a[2]), pdivuarr, vol, dx, dt,
+                 small, small_dens, small_pres, smallu, plm_iorder, lpmap);
+
+    } else
+#endif
     if (do_mol) {
         MOL_umeth(bx, bclo, bchi, domlo, domhi, q_arr, qaux_arr,
                   AMREX_D_DECL(flx[0], flx[1], flx[2]),

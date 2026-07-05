@@ -12,6 +12,7 @@
 [[maybe_unused]] static amrex::Real small_temp;
 [[maybe_unused]] static amrex::Real small_pres;
 [[maybe_unused]] static int do_mol;
+[[maybe_unused]] static int ps_hydro;
 [[maybe_unused]] static int do_react;
 [[maybe_unused]] static int add_ext_src;
 [[maybe_unused]] static int add_grav_src;

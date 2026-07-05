@@ -72,6 +72,35 @@ CAMR_initdata( int i, int j, int k,
     state(i,j,k, UFS  ) = Y[0] * rho0;
     state(i,j,k, UFS+1) = Y[1] * rho0;
     state(i,j,k, UFS+2) = Y[2] * rho0;
+
+#ifdef USE_PS_HYDRO
+    // ---------------------------------------------------------------
+    //  Pelanti–Shyue six-equation state extension (Phase 4b/c).
+    //
+    //  For a single-phase supercritical initial condition we treat
+    //  phase 1 as the dominant fluid (α_1 ≈ 1) and inject a trace
+    //  amount of "phase 2" that shares the same (T, P) — so the
+    //  mechanical and thermal equilibria are exactly satisfied at
+    //  t=0.  This matches the standalone co2-eos-cfd wp driver's
+    //  matched-init default with PS_ALPHA_TRACE = 1e-6.
+    //
+    //  Once the flow encounters a rarefaction that dips into the
+    //  metastable region, the mass-transfer / flash-source physics
+    //  (Phase 4d) will drive α_2 away from the trace level.
+    // ---------------------------------------------------------------
+    const amrex::Real alpha_trace = amrex::Real(1.0e-6);
+    const amrex::Real alpha_1     = amrex::Real(1.0) - alpha_trace;
+    const amrex::Real alpha_2     = alpha_trace;
+    const amrex::Real rho_1       = rho0;      // same fluid, same (T,P)
+    const amrex::Real rho_2       = rho0;
+    // Per-phase total energy density  α_k · ρ_k · E_k :
+    const amrex::Real E_spec      = e0 + amrex::Real(0.5) * prob_parm.u0 * prob_parm.u0;
+    state(i,j,k, UALPHA1) = alpha_1;
+    state(i,j,k, UM1RHO1) = alpha_1 * rho_1;
+    state(i,j,k, UM2RHO2) = alpha_2 * rho_2;
+    state(i,j,k, UE1    ) = alpha_1 * rho_1 * E_spec;
+    state(i,j,k, UE2    ) = alpha_2 * rho_2 * E_spec;
+#endif
 }
 
 
@@ -201,6 +230,33 @@ bcnormal(
     s_ext[UFS  ] = Y[0] * rho_ghost;
     s_ext[UFS+1] = Y[1] * rho_ghost;
     s_ext[UFS+2] = Y[2] * rho_ghost;
+
+#ifdef USE_PS_HYDRO
+    // Extend the ghost state to the six-equation components.  For
+    // the outflow BC we extrapolate α_1 and let the partial
+    // densities / per-phase energies follow from the ghost ρ and
+    // acoustic-invariant e computed above.  A more sophisticated
+    // per-phase LODI belongs in Phase 4c-β once PS_umeth is real.
+    const amrex::Real alpha_1 = s_int[UALPHA1];  // extrapolated
+    const amrex::Real alpha_2 = amrex::Real(1.0) - alpha_1;
+    const amrex::Real rho1_int = (alpha_1 > amrex::Real(1.0e-12))
+        ? s_int[UM1RHO1] / alpha_1 : rho_int;
+    const amrex::Real rho2_int = (alpha_2 > amrex::Real(1.0e-12))
+        ? s_int[UM2RHO2] / alpha_2 : rho_int;
+    // Assume phasic densities extrapolate (isentropic outflow).
+    const amrex::Real E_ghost = e_ghost
+                              + amrex::Real(0.5) *
+                                (ux_ghost*ux_ghost + uy_ghost*uy_ghost
+#if (AMREX_SPACEDIM == 3)
+                                 + uz_ghost*uz_ghost
+#endif
+                                );
+    s_ext[UALPHA1] = alpha_1;
+    s_ext[UM1RHO1] = alpha_1 * rho1_int;
+    s_ext[UM2RHO2] = alpha_2 * rho2_int;
+    s_ext[UE1    ] = alpha_1 * rho1_int * E_ghost;
+    s_ext[UE2    ] = alpha_2 * rho2_int * E_ghost;
+#endif
 }
 
 #endif

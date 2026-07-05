@@ -9,6 +9,7 @@
 #endif
 
 void hydro_umdrv (bool do_mol,
+                  bool do_ps_hydro,
                   amrex::Box const& bx,
                   amrex::Geometry const& geom,
                   const int* bclo, const int* bchi,

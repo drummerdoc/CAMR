@@ -230,7 +230,13 @@ CAMR::construct_hydro_source (const MultiFab& S,
             // Note that the dt here is only used if (do_mol == 0), i.e.
             //      in the Godunov prediction
             //
-            hydro_umdrv(do_mol, bx, geom, phys_bc.lo(), phys_bc.hi(),
+            hydro_umdrv(do_mol,
+#ifdef USE_PS_HYDRO
+                       (ps_hydro != 0),
+#else
+                       false,
+#endif
+                       bx, geom, phys_bc.lo(), phys_bc.hi(),
                        sarr, hyd_src, qarr, qauxar, srcqarr, dx,
                        dt, ppm_type, plm_iorder, use_pslope,
                        use_flattening, transverse_reset_density,
