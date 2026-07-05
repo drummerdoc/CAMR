@@ -30,6 +30,10 @@ ifeq ($(Eos_Model),$(filter $(Eos_Model),TableEOS))
    DEFINES += -DUSE_TABLE_EOS
    EOS_DIR = TableEOS
 endif
+ifeq ($(Eos_Model),$(filter $(Eos_Model),RealFluidCO2))
+   DEFINES += -DUSE_REALFLUID_CO2_EOS
+   EOS_DIR = RealFluidCO2
+endif
 Bdirs := $(CAMR_HOME)/Source
 Bdirs += $(CAMR_HOME)/Source/Hydro
 Bdirs += $(CAMR_HOME)/Source/Hydro/Godunov
