@@ -198,6 +198,19 @@ CAMR::variableSetUp()
     name[cnt] = "rho_" + spec_names[i];
   }
 
+#ifdef USE_PS_HYDRO
+  // Pelanti-Shyue six-equation state extensions.  All are scalar-
+  // like at walls (reflect_even) so use set_scalar_bc.  Without
+  // this loop the extended slots receive garbage in ghost cells and
+  // the flux kernel produces NaN on the first timestep at every
+  // physical boundary.
+  set_scalar_bc(bc, phys_bc); bcs[UALPHA1] = bc; name[UALPHA1] = "alpha_1";
+  set_scalar_bc(bc, phys_bc); bcs[UM1RHO1] = bc; name[UM1RHO1] = "alpha1_rho1";
+  set_scalar_bc(bc, phys_bc); bcs[UM2RHO2] = bc; name[UM2RHO2] = "alpha2_rho2";
+  set_scalar_bc(bc, phys_bc); bcs[UE1    ] = bc; name[UE1    ] = "alpha1_rho1_E1";
+  set_scalar_bc(bc, phys_bc); bcs[UE2    ] = bc; name[UE2    ] = "alpha2_rho2_E2";
+#endif
+
     amrex::StateDescriptor::BndryFunc bndryfunc1(CAMR_bcfill_hyp);
     bndryfunc1.setRunOnGPU(true);
 
