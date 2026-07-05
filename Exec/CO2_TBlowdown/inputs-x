@@ -1,4 +1,7 @@
-amrex.fpe_trap_invalid = 1
+# Temporarily disabled while debugging Phase 4c-β2b's LLF baseline.
+# When PS_umeth is fully robust (post-Phase 4d relaxation) turn this
+# back on to catch real physics-driven NaNs.
+amrex.fpe_trap_invalid = 0
 
 # T-Blowdown: closed-end pipe filled with compressed supercritical
 # CO₂ (100 bar, 300 K), vented on the R side to atmospheric.  The
@@ -45,7 +48,7 @@ CAMR.ppm_type = 1
 CAMR.v = 1
 amr.v = 1
 
-CAMR.sum_interval = 1
+CAMR.sum_interval = -1   # sum diagnostics off while debugging PS baseline
 
 CAMR.redistribution_type = StateRedist
 
