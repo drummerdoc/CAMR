@@ -93,35 +93,128 @@ Verify existing Godunov + MOL cases still compile with
 
 ### 4c — Ctoprim + face fluctuations
 
-**Files:**
-- `Source/Hydro/PelantiShyue/PS_ctoprim.H` — extended `hydro_ctoprim`
-  that reads the 6-eq components and populates `Q(i,j,k, QALPHA1…)`.
-- `Source/Hydro/PelantiShyue/PS_umeth.cpp` — mirror of
-  `Godunov_umeth.cpp` / `MOL_umeth.cpp` that
-    (1) reconstructs primitives at faces (PPM / MUSCL)
-    (2) invokes `hem::ps_hllc_fluctuations` from the copied header
-    (3) writes A±ΔQ into two scratch face arrays
-    (4) accumulates cell updates as   `U_new = U - Δt · A_plus_left − Δt · A_minus_right` .
+Split into three sub-sub-phases because the algorithm port is
+substantial (~1000 lines of C++ to lift from the standalone driver,
+plus 3D generalisation of what is originally a 1-D algorithm).
 
-  Because CAMR's `hydro_consup` expects `flx[dir]` to hold face
-  fluxes, we either (a) write the fluctuations INTO `flx[dir]` in a
-  reinterpretable way and add a `PS_consup` variant, or (b) leave
-  `flx[dir]` empty and do the entire cell update inside `PS_umeth`.
-  Option (b) is simpler and does not disturb existing reflux paths.
+#### 4c-α — Dispatch stub  (**landed** in commit b6b0d98)
 
-**Dispatch:** modify `Hydro_umdrv.cpp` to accept a third branch
-guarded by an int flag `ps_hydro` (queried from ParmParse):
+Wires `PS_umeth` into `Hydro_umdrv.cpp` behind `#ifdef USE_PS_HYDRO`
+and `CAMR.ps_hydro` runtime flag.  Definition of `PS_umeth` is a
+one-line `amrex::Abort` — the algorithm is not there yet, but the
+compile graph closes.  Also registers ParmParse for `ps_hydro` and
+a consistency check in `CAMR::read_params()` catches the case where
+the flag is set but `USE_PS_HYDRO` is not compiled in.
+
+#### 4c-β1 — `PS_ctoprim.H`  (**landed** in commit — this commit)
+
+Device-inline `ps_augment_primitives(i,j,k, U, Q)` populates the
+five extended primitive slots `QALPHA1, QRHO1, QRHO2, QP1, QP2`
+from the extended conservative slots.  Also overrides `QPRES` with
+the P-S 2014 volume-fraction-weighted mixture rule
+`P_mix = α_1 P_1 + α_2 P_2`.  Depends on `EOS::REY2P` being
+device-inline (satisfied by `RealFluidCO2` and `GammaLaw`).
+
+The routine is not called yet — the umdrv wiring for it goes in
+4c-β2 alongside `PS_umeth`'s body.
+
+#### 4c-β2 — `PS_umeth.cpp` first-order dimensional-sweep body  (pending)
+
+The bulk of the port.  Replace the `amrex::Abort` stub with:
 
 ```cpp
-} else if (ps_hydro) {
-    PS_umeth(bx, bclo, bchi, ..., q_arr, qaux_arr, ...);
-} else {
-    Godunov_umeth(...);
+void PS_umeth(...) {
+    // 0. Augment primitives with per-phase state.
+    amrex::ParallelFor(bxg2,
+        [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
+            ps_augment_primitives(i,j,k, /*U??*/, q_augmented);
+        });
+    // Note: `q` handed in is `const`; we need a mutable copy inside
+    // this routine, or ps_augment_primitives should write to a
+    // separate `q_ps` FArrayBox allocated here.
+
+    // 1. Per-direction fluctuations.
+    for (int idir = 0; idir < AMREX_SPACEDIM; ++idir) {
+        const amrex::Box& fbx = amrex::surroundingNodes(bx, idir);
+        amrex::ParallelFor(fbx,
+            [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
+                // Build PsState for the L and R cells along `idir`.
+                //  - `PsPhase.alpha, rho, e, P` from the per-phase
+                //    primitives written by ps_augment_primitives.
+                //  - `PsState.u` = the NORMAL velocity along idir
+                //    (QU for idir=0, QV for idir=1, QW for idir=2).
+                //  - Tangential velocities carried in a scratch
+                //    array so they can be upwind-advected by u_star.
+                //
+                // Call hem::ps_hllc_fluctuations(sL, sR).  Handle
+                // the fallback: if flu.valid==false, use LLF.
+                //
+                // Store A_minus[6] and A_plus[6] into two face
+                // FABs.  For the 6-eq components (α₁, α₁ρ₁, α₂ρ₂,
+                // ρu_normal, α₁ρ₁E₁, α₂ρ₂E₂) this is direct.  For
+                // the mixture (URHO, UMX, UMY, UMZ, UEDEN, UEINT)
+                // we need to reassemble from the 6-eq A±:
+                //     URHO_flux = A±[ALPHA1_slot] · (ρ₁ - ρ₂)
+                //                + A±[M1RHO1_slot]  + A±[M2RHO2_slot]
+                //     UM(normal)_flux = A±[MOM_slot]
+                //     UM(tang)_flux   = upwind_u_star * ρ · u_tang
+                //     UEDEN_flux = A±[E1_slot] + A±[E2_slot]
+                //     UEINT_flux = same minus KE reconstruction
+                // (This bookkeeping is why a hybrid solver is more
+                // subtle than "swap Riemann function"; the standalone
+                // 1-D driver hides it because α, ρ_k, E_k, u are
+                // the only variables it carries.)
+            });
+    }
+
+    // 2. Cell update — accumulate A±ΔQ into dsdt_arr.
+    amrex::ParallelFor(bx,
+        [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
+            for (int n = 0; n < NVAR; ++n) {
+                dsdt_arr(i,j,k,n) =
+                    - (A_plus_x(i,j,k,n) + A_minus_x(i+1,j,k,n)) / dx
+#if (AMREX_SPACEDIM >= 2)
+                    - (A_plus_y(i,j,k,n) + A_minus_y(i,j+1,k,n)) / dy
+#endif
+#if (AMREX_SPACEDIM == 3)
+                    - (A_plus_z(i,j,k,n) + A_minus_z(i,j,k+1,n)) / dz
+#endif
+                    ;
+            }
+        });
+
+    // 3. Non-conservative α source (from ppm_1d_ps_wp.cpp:
+    //    apply_alpha_nc_source).  Adds (1 - α₁) α₁ * ∇·u * dt to
+    //    the α₁ update.  In the fluctuation formulation this can
+    //    be baked into A± computation, but the standalone applies
+    //    it as a post-flux correction.
 }
 ```
 
-Register the flag in `Source/Params/_cpp_parameters` alongside
-`do_mol`.
+Concrete todos for this sub-phase, in landing order:
+
+1. Allocate an augmented primitive FArrayBox `q_ps(bxg2, QVAR)`
+   inside `PS_umeth`.  Copy from `q` and then call
+   `ps_augment_primitives` on the extended slots.
+2. Allocate `A_minus[dir]` and `A_plus[dir]` face FABs of `NVAR`
+   components per direction.
+3. Write the face-Riemann kernel using `hem::ps_hllc_fluctuations`.
+4. Write the cell-update kernel accumulating A± into `dsdt_arr`.
+5. Handle the α non-conservative source (initially skip; add in
+   4c-β3 once first-order fluxes verified).
+
+**Deferred to 4c-β3** (subsequent commit):
+- Higher-order reconstruction (PLM slopes; the standalone shows PPM
+  and MUSCL are incompatible with the WP form, so PLM is the target).
+- LW correction fluxes (2nd-order accuracy).
+- Wave limiters (minmod / vanleer / superbee / MC).
+
+**Deferred to 4d, 4e, 4f**: relaxation source terms, AMR reflux,
+validation.
+
+**Dispatch:** the third branch in `Hydro_umdrv.cpp` was landed in
+4c-α.  It calls `PS_umeth` which in 4c-α aborts; in 4c-β2 it will
+do real work.
 
 ### 4d — Relaxation source terms
 
