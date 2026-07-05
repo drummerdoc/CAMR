@@ -16,6 +16,19 @@ ifeq ($(USE_MOVING_EB), TRUE)
   DEFINES += -DCAMR_USE_MOVING_EB
 endif
 
+# Pelanti-Shyue six-equation hydro module (co2-eos-cfd Phase 4).
+# Off by default; per-case opt-in via USE_PS_HYDRO := TRUE in the
+# Exec GNUmakefile.  When set, the conservative state grows by 5
+# components (α₁, α_k ρ_k, α_k ρ_k E_k) and the PelantiShyue Hydro
+# module is compiled in.  See Source/Hydro/PelantiShyue/README.md .
+# NOTE: the Bdirs += line belongs alongside the other Bdirs additions
+# further down (after `Bdirs :=`); here we only set DEFINES + the
+# suffix so build-output directories are separable.
+ifeq ($(USE_PS_HYDRO), TRUE)
+  DEFINES += -DUSE_PS_HYDRO
+  USERSuffix += .PS
+endif
+
 all: $(executable)
 ifneq ($(KEEP_BUILDINFO_CPP),TRUE)
 	$(SILENT) $(RM) AMReX_buildInfo.cpp
@@ -38,6 +51,9 @@ Bdirs := $(CAMR_HOME)/Source
 Bdirs += $(CAMR_HOME)/Source/Hydro
 Bdirs += $(CAMR_HOME)/Source/Hydro/Godunov
 Bdirs += $(CAMR_HOME)/Source/Hydro/MOL
+ifeq ($(USE_PS_HYDRO), TRUE)
+  Bdirs += $(CAMR_HOME)/Source/Hydro/PelantiShyue
+endif
 Bdirs += $(CAMR_HOME)/Source/Utils
 Bdirs += $(CAMR_HOME)/Source/EOS/$(EOS_DIR) $(CAMR_HOME)/Source/EOS
 Bdirs += $(CAMR_HOME)/Source/Params/param_includes

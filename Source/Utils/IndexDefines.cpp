@@ -19,4 +19,14 @@ init_pass_map(PassMap* pmap)
     pmap->qpassMap[curMapIndx] = i + QFX;
     curMapIndx++;
   }
+#ifdef USE_PS_HYDRO
+  // Pelanti-Shyue extra components (α₁, α_k ρ_k, α_k ρ_k E_k) are
+  // marked passive so Godunov/MOL passively advect them along the
+  // contact until PS_umeth (Phase 4c) takes over.
+  for (int i = 0; i < NUM_PS; ++i) {
+    pmap->upassMap[curMapIndx] = i + UPS;
+    pmap->qpassMap[curMapIndx] = i + QPS;
+    curMapIndx++;
+  }
+#endif
 }

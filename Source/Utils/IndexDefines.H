@@ -80,16 +80,56 @@
 #define NUM_AUX 0
 #endif
 
+// ---------------------------------------------------------------------
+//  Pelanti-Shyue six-equation state extension (co2-eos-cfd Phase 4).
+//
+//  When USE_PS_HYDRO is defined (per-case, via -DUSE_PS_HYDRO in the
+//  Exec GNUmakefile), the conservative array is extended by five
+//  components — volume fraction α₁, per-phase densities α_k ρ_k, and
+//  per-phase total energy densities α_k ρ_k E_k.  These extra slots
+//  are declared as passive scalars so that Godunov / MOL harmlessly
+//  advect them along the contact velocity; the PelantiShyue hydro
+//  module (Phase 4c) will replace that treatment with the correct
+//  A±ΔQ wave-propagation update.
+//
+//  When USE_PS_HYDRO is NOT defined (default) the layout is identical
+//  to upstream CAMR — no additional slots, no changes to NVAR or the
+//  passive-scalar map.
+// ---------------------------------------------------------------------
+#ifdef USE_PS_HYDRO
+#define NUM_PS 5
+#else
+#define NUM_PS 0
+#endif
+
 #define UFS (UFA + NUM_ADV)
 #define UFX (UFS + NUM_SPECIES)
-#define NVAR (NTHERM + NUM_ADV + NUM_SPECIES + NUM_AUX)
+#define UPS (UFX + NUM_AUX)
+#define NVAR (NTHERM + NUM_ADV + NUM_SPECIES + NUM_AUX + NUM_PS)
 
 #define QFS (QFA + NUM_ADV)
 #define QFX (QFS + NUM_SPECIES)
-#define QVAR (QTHERM + NUM_ADV + NUM_SPECIES + NUM_AUX)
+#define QPS (QFX + NUM_AUX)
+#define QVAR (QTHERM + NUM_ADV + NUM_SPECIES + NUM_AUX + NUM_PS)
 #define NQ QVAR
 
-#define NPASSIVE (NUM_SPECIES + NUM_ADV + NUM_AUX)
+#define NPASSIVE (NUM_SPECIES + NUM_ADV + NUM_AUX + NUM_PS)
+
+#ifdef USE_PS_HYDRO
+// PS conservative slots
+#define UALPHA1 (UPS + 0)   // volume fraction α₁                (dimensionless)
+#define UM1RHO1 (UPS + 1)   // α₁ ρ₁                             [kg/m³]
+#define UM2RHO2 (UPS + 2)   // α₂ ρ₂                             [kg/m³]
+#define UE1     (UPS + 3)   // α₁ ρ₁ E₁ (per-phase total energy) [J/m³]
+#define UE2     (UPS + 4)   // α₂ ρ₂ E₂                          [J/m³]
+
+// PS primitive slots (populated by PS_ctoprim in Phase 4c)
+#define QALPHA1 (QPS + 0)   // α₁
+#define QRHO1   (QPS + 1)   // ρ₁ per-phase density
+#define QRHO2   (QPS + 2)   // ρ₂
+#define QP1     (QPS + 3)   // P₁ per-phase pressure
+#define QP2     (QPS + 4)   // P₂
+#endif
 
 struct PassMap
 {
