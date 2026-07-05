@@ -121,11 +121,19 @@ ps_augment_primitives(int i, int j, int k,
     // Pressure floor — real-fluid PR can return negative P for
     // deeply compressed or two-phase-envelope-adjacent states.
     // Downstream ps_max_wave_speed calls sqrt(γ P / ρ) which NaNs
-    // on P < 0; clamp here so the mixture rule q[QPRES] stays
-    // positive too.
+    // on P < 0.  If EITHER per-phase EOS call went bad, keep the
+    // mixture pressure the stock ctoprim already computed (it's a
+    // single-fluid EOS evaluation on (ρ, e), which is always sane
+    // for RealFluidCO2 within its calibrated range).  This is a
+    // gentler recovery than clamping to 1 Pa which would create a
+    // huge pressure gradient at the recovered cell.
     constexpr amrex::Real P_floor = amrex::Real(1.0);   // 1 Pa
-    if (P1 < P_floor || !std::isfinite(P1)) P1 = P_floor;
-    if (P2 < P_floor || !std::isfinite(P2)) P2 = P_floor;
+    amrex::Real P_stock = q(i,j,k, QPRES);              // mixture EOS result
+    if (P_stock < P_floor || !std::isfinite(P_stock)) P_stock = P_floor;
+    bool P1_bad = (P1 < P_floor) || !std::isfinite(P1);
+    bool P2_bad = (P2 < P_floor) || !std::isfinite(P2);
+    if (P1_bad) P1 = P_stock;
+    if (P2_bad) P2 = P_stock;
 
     // Write the extended primitive slots.
     q(i,j,k, QALPHA1) = a1;
@@ -134,15 +142,17 @@ ps_augment_primitives(int i, int j, int k,
     q(i,j,k, QP1    ) = P1;
     q(i,j,k, QP2    ) = P2;
 
-    // The mixture pressure q[QPRES] set by the stock ctoprim needs to
-    // be OVERWRITTEN under USE_PS_HYDRO: the standalone driver uses
-    // the P-S 2014 volume-fraction-weighted mixture rule
-    //     P_mix = α_1 P_1 + α_2 P_2
-    // rather than the single-fluid EOS evaluation on the mixture
-    // (ρ, e) that Hydro_ctoprim.H performs.  Overriding here keeps
-    // subsequent hydro machinery (timestep computation, plotfile
-    // derives) internally consistent.
-    q(i,j,k, QPRES) = a1 * P1 + a2 * P2;
+    // Override QPRES with the P-S 2014 volume-fraction rule ONLY if
+    // BOTH per-phase pressures were computed sanely.  Otherwise
+    // leave QPRES = mixture single-fluid EOS result (already in
+    // q[QPRES] from stock hydro_ctoprim) so the outer hydro
+    // machinery (timestep estimator, plotfile derives) never sees a
+    // garbage pressure originating from an unhealthy per-phase
+    // inversion.  This decouples the PS numerical stability from
+    // the outer CAMR advance's dt estimation.
+    if (!P1_bad && !P2_bad) {
+        q(i,j,k, QPRES) = a1 * P1 + a2 * P2;
+    }
 }
 
 #endif // USE_PS_HYDRO

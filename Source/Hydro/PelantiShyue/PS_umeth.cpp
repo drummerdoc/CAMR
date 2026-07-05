@@ -274,7 +274,7 @@ PS_umeth(const Box& bx,
          AMREX_D_DECL(Array4<const Real> const& /*a1*/,
                       Array4<const Real> const& /*a2*/,
                       Array4<const Real> const& /*a3*/),
-         Array4<Real> const& /*pdivu*/,
+         Array4<Real> const& pdivu,
          Array4<const Real> const& /*vol*/,
          const GpuArray<Real, AMREX_SPACEDIM> /*dx*/,
          const Real /*dt*/,
@@ -296,6 +296,20 @@ PS_umeth(const Box& bx,
             banner_shown = true;
         }
     }
+
+    // hydro_umdrv creates pdivu as an uninitialised FArrayBox and
+    // relies on the solver body to write into it.  Godunov / MOL do
+    // that inside their kernels; our LLF baseline does not compute
+    // a P∇·u term separately (P-work already sits in F[UEDEN]), so
+    // we MUST explicitly zero pdivu to prevent hydro_consup from
+    // Saxpying uninitialised memory into dsdt.  Missing this zeroing
+    // step manifests as a deterministic FPE crash after ~12 steps
+    // as garbage floats accumulate in dsdt.
+    amrex::ParallelFor(bx,
+    [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
+    {
+        pdivu(i,j,k) = Real(0.0);
+    });
 
     // ------ x-direction faces --------------------------------------
     const Box xfbx = amrex::surroundingNodes(bx, 0);
