@@ -1,0 +1,65 @@
+amrex.fpe_trap_invalid = 1
+
+# T-Blowdown: closed-end pipe filled with compressed supercritical
+# CO₂ (100 bar, 300 K), vented on the R side to atmospheric.  The
+# initial rarefaction propagates leftwards to the wall, reflects,
+# and produces the classic "wall pressure history" signature of a
+# blowdown event.  Physical run time is a few ms.
+max_step  = 4000
+stop_time = 5.0e-3
+
+geometry.is_periodic = 0 0 0
+geometry.coord_sys   = 0  # 0 => cart
+
+# 1-m pipe, isotropic cells (dx = dy).
+geometry.prob_lo     =   0.0    0.0    0.0
+geometry.prob_hi     =   1.0    0.125  0.125
+amr.n_cell           =   256   32   32
+
+# >>>>>>>>>>>>>  BC FLAGS <<<<<<<<<<<<<<<<
+# 0 = Interior           3 = Symmetry
+# 1 = Inflow             4 = SlipWall
+# 2 = Outflow            5 = NoSlipWall
+# >>>>>>>>>>>>>  BC FLAGS <<<<<<<<<<<<<<<<
+#   lo_x = SlipWall (closed pipe end, normal momentum reflected)
+#   hi_x = Inflow   (dispatches to bcnormal — NRBC outflow at P_amb)
+#   y/z  = SlipWall (side walls, no lateral flow in 1-D pipe)
+CAMR.lo_bc       =  SlipWall   SlipWall   SlipWall
+CAMR.hi_bc       =  Inflow     SlipWall   SlipWall
+
+CAMR.cfl = 0.4
+
+CAMR.do_mol = 0
+CAMR.ppm_type = 1
+
+CAMR.v = 1
+amr.v = 1
+
+CAMR.sum_interval = 1
+
+CAMR.redistribution_type = StateRedist
+
+amr.loadbalance_with_workestimates = 0
+
+amr.max_level       = 0
+amr.ref_ratio       = 2 2 2 2
+amr.regrid_int      = 2 2 2 2
+amr.blocking_factor = 16
+amr.max_grid_size   = 64
+amr.n_error_buf     = 0 0 0 0
+amr.grid_eff        = 0.99
+
+amr.checkpoint_files_output = 0
+amr.check_file              = chk
+amr.check_int               = 500
+
+amr.plot_files_output = 1
+amr.plot_file         = plt
+amr.plot_int          = 100
+amr.derive_plot_vars  = x_velocity y_velocity z_velocity vfrac
+
+# T-Blowdown inputs — SI units.
+prob.p0    = 1.0e7    # Pa   (100 bar)
+prob.T0    = 300.0    # K    (supercritical CO₂)
+prob.u0    = 0.0      # m/s
+prob.p_amb = 1.0e5    # Pa   (atmospheric)
