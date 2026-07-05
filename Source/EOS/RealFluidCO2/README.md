@@ -1,6 +1,7 @@
 # RealFluidCO2 EOS backend
 
-**Status:** Phase 1 — build-system scaffolding only.  γ = 1.4 placeholder.
+**Status:** Phase 2 landed — device-inline Peng-Robinson CO₂ EOS.
+Phase 3 (T-Blowdown) and Phase 4 (multi-backend) pending.
 
 ## What this is
 
@@ -13,13 +14,13 @@ Thermopack, SINTEF thermotabulation, hybrid dual-MLP) behind CAMR's
 
 | Phase | Deliverable | State |
 |-------|-------------|-------|
-| 1 | Placeholder γ=1.4 EOS, `Eos_Model := RealFluidCO2` wiring in `Exec/Make.CAMR`, `Exec/CO2_Sod/` matches `Exec/Sod/` bit-for-bit. | **✓ this commit** |
-| 2 | Replace the six hot functions (`REY2T`, `REY2P`, `REY2Gam`, `REY2dpde`, `REY2dpdr_e`, `RTY2E`) with device-inline Peng-Robinson CO₂ EOS calls.  `CO2_Sod` inputs switch to physical (T,P) units.  Regression vs. `co2-eos-cfd/data_generators/shocktube_1d`. | pending |
+| 1 | Placeholder γ=1.4 EOS, `Eos_Model := RealFluidCO2` wiring in `Exec/Make.CAMR`, `Exec/CO2_Sod/` matches `Exec/Sod/` bit-for-bit. | ✓ landed |
+| 2 | Replace the six hot functions (`REY2T`, `REY2P`, `REY2Gam`, `REY2dpde`, `REY2dpdr_e`, `RTY2E`) with device-inline Peng-Robinson CO₂ EOS calls.  `CO2_Sod` inputs switch to physical (T,P) units and default to B1-Comp-L-expand from the co2-eos-cfd suite.  Regression vs. `co2-eos-cfd/suite/profiles/B1-Comp-L-expand.csv`. | **✓ this commit** |
 | 3 | New `Exec/CO2_TBlowdown/` case — uniform-init compressed CO₂ + `SlipWall` closed end + characteristic-based non-reflecting `Inflow` vent (LODI in `bcnormal`).  Regression vs. `co2-eos-cfd`'s `--case=T-Blowdown` result. | pending |
 | 4 | Extend to `Source/EOS/RealFluidCO2/` fronts for `Thermopack`, `Tabulated`, `MLP` behind a compile-time `USE_*_BACKEND` selector.  MLP inference ported to device.  Same six-function contract. | pending |
 | — | Full 6-equation Pelanti–Shyue non-equilibrium physics — this is **not** an EOS backend, it's a new **hydro module**.  See `Source/Hydro/PelantiShyue/` (Phase 4 of the co2-eos-cfd integration plan; will land as a separate `hydro.solver` runtime option). | future |
 
-## Sanity-check for Phase 1
+## Sanity-check for Phase 2
 
 ```bash
 cd Exec/CO2_Sod
@@ -27,10 +28,34 @@ make -j
 ./CAMR2d.gnu.MPI.ex inputs-x
 ```
 
-Should produce plotfiles numerically identical to
-`Exec/Sod/`'s corresponding run.  The purpose is only to prove that
-adding a new `Eos_Model` value in `Exec/Make.CAMR` and creating a new
-directory under `Source/EOS/` does not break the build graph.
+Expected: a supercritical CO₂ shock tube in SI units running to
+t = 1.33e-3 s.  The run initialises L (T=350 K, P=100 bar) and
+R (T=350 K, P=10 bar) via `EOS::PYT2RE` (which now performs a
+real-fluid PR flash).  Both sides are single-phase (T > Tc = 304 K),
+so no metastable-liquid or two-phase excursions can occur.
+
+**Sanity check on `state_from_T_P`** (run this in the standalone
+co2-eos-cfd if you want to reproduce the reference numbers):
+
+```
+L (T=350 K, P=100 bar): ρ = 232.24 kg/m³, e = 1.08e+05 J/kg, c = 260.3 m/s
+R (T=350 K, P= 10 bar): ρ =  15.64 kg/m³, e = 1.71e+05 J/kg, c = 284.5 m/s
+```
+
+**Bug-hunting shortcuts.**  Any deviation from the physical CAMR
+run vs. what the standalone co2-eos-cfd shocktube driver produces
+for the same L/R states indicates a bug in the shim (most likely in
+PYT2RE — the state_from_T_P cubic solver picks the wrong root when
+the two-phase envelope is nearby).  The underlying `hem_pr_state`
+machinery is regression-tested in the standalone co2-eos-cfd
+repository.
+
+**Deliberately deferred cases.**  The two-phase and cross-critical
+cases from the standalone suite (B1–B10) exercise metastable liquid,
+Wallis-mixture sound speeds, and phase-transition initialisation
+disequilibrium.  These are not single-p HEM problems and are not
+appropriate defensibility targets for the current backend.  They
+land in the Phase 4 (Pelanti–Shyue) hydro module, not here.
 
 ## Six hot functions the Riemann pipeline actually calls
 

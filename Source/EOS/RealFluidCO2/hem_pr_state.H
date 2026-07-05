@@ -1,0 +1,877 @@
+// =====================================================================
+//  hem_pr_state.H
+//
+//  Full HEM thermodynamic state machinery on top of hem_saturation_amrex.H .
+//  Per-mass SI units in/out (rho[kg/m^3], P[Pa], e[J/kg], s[J/(kg.K)],
+//  h[J/kg], c[m/s]).  Ideal-gas heat capacity given by a NASA 7-coefficient
+//  polynomial  c_p^ig / R = sum_{i=0..4}  a_i  T^i .
+//
+//  Provides:
+//      pureParams2           - a(T), da/dT, d2a/dT2, b
+//      cp_ig_over_R, e_ig    - ideal-gas integrals (per mole)
+//      h_ig, s_ig_per_mole
+//      departureFunctions    - e_dep, s_dep, cv_dep   (per mole)
+//      state_from_T_v        - closed-form single-phase state
+//      state_from_T_P        - solve cubic, pick phase root
+//      Psat                  - saturation pressure inversion
+//      satStateL / satStateV - saturated liquid / vapor states
+//      state_from_T_x        - two-phase state with equilibrium sound speed
+//      classify_T_rho        - Liquid / Vapor / TwoPhase from (T, rho)
+//      state_from_P_rho      - phase-detected state from (P, rho)
+//      state_from_rho_e      - phase-detected state from (rho, e)
+//      state_from_P_s        - state along an isentrope at given P
+//
+//  All entry points are AMREX_GPU_HOST_DEVICE so they can be called from
+//  a ParallelFor.  The HEM_NO_AMREX shim from hem_saturation_amrex.H is
+//  inherited.
+// =====================================================================
+#pragma once
+
+#include "hem_saturation_amrex.H"
+#include <cmath>
+
+namespace hem {
+
+// ---------------------------------------------------------------------
+//  Extended fluid description: PR cubic + molar mass + ideal-gas c_p^ig
+//  + optional Peneloux volume translation.
+//
+//  Volume translation:
+//      v_real = v_PR + c_shift                                  (constant)
+//  Thermodynamic consequences (per Peneloux et al. 1982):
+//      P, e, s, c_v, c_p unchanged at corresponding states
+//      rho_real = M / (v_PR + c_shift)
+//      h_real   = h_PR + P * c_shift / M   (per mass)
+//      c^2      = -(v_real^2 / M) * gamma * (dP/dv)_T     (real volume in prefactor)
+//
+//  c_shift = 0 reproduces the un-translated PR exactly.
+//  For CO2 a useful starting point is c_shift = -2.0e-6 m^3/mol
+//  (Magoulas-Tassios-type correction); for hydrocarbons c_shift > 0.
+// ---------------------------------------------------------------------
+struct PRFluid {
+    PR          pr;          // PR EOS struct (Tc, Pc, omega, kappa)
+    amrex::Real M;           // molar mass [kg/mol]
+    amrex::Real a_cp[5];     // c_p^ig / R = sum a_i T^i ,  i = 0..4
+    amrex::Real c_shift;     // Peneloux volume shift [m^3/mol]; 0 disables.
+
+    AMREX_GPU_HOST_DEVICE
+    static PRFluid make(amrex::Real Tc, amrex::Real Pc, amrex::Real omega,
+                        amrex::Real M_kg_per_mol,
+                        amrex::Real a0, amrex::Real a1,
+                        amrex::Real a2, amrex::Real a3, amrex::Real a4,
+                        amrex::Real c_shift_in = amrex::Real(0))
+    {
+        PRFluid f{};
+        f.pr      = PR::make(Tc, Pc, omega);
+        f.M       = M_kg_per_mol;
+        f.a_cp[0] = a0;
+        f.a_cp[1] = a1;
+        f.a_cp[2] = a2;
+        f.a_cp[3] = a3;
+        f.a_cp[4] = a4;
+        f.c_shift = c_shift_in;
+        return f;
+    }
+};
+
+// Convenience: convert between PR molar volume and per-mass density.
+AMREX_GPU_HOST_DEVICE
+inline amrex::Real rho_from_v_PR(const PRFluid& f, amrex::Real v_PR) {
+    return f.M / (v_PR + f.c_shift);
+}
+AMREX_GPU_HOST_DEVICE
+inline amrex::Real v_PR_from_rho(const PRFluid& f, amrex::Real rho) {
+    return f.M/rho - f.c_shift;
+}
+
+// ---------------------------------------------------------------------
+//  Phase classification used by state inversions.
+// ---------------------------------------------------------------------
+enum class Phase3 { Liquid, Vapor, TwoPhase };
+
+// ---------------------------------------------------------------------
+//  Full thermodynamic state, per mass.
+// ---------------------------------------------------------------------
+struct State {
+    amrex::Real T;     // temperature             [K]
+    amrex::Real P;     // pressure                [Pa]
+    amrex::Real rho;   // density                 [kg/m^3]
+    amrex::Real e;     // specific internal energy [J/kg]
+    amrex::Real s;     // specific entropy        [J/(kg.K)]
+    amrex::Real h;     // specific enthalpy       [J/kg]
+    amrex::Real c;     // sound speed             [m/s]
+    amrex::Real x;     // vapor mass fraction (0=L, 1=V; in two-phase 0<x<1)
+    Phase3      phase;
+};
+
+// =====================================================================
+//  Ideal-gas helpers (per mole; differences are what enter physics)
+// =====================================================================
+AMREX_GPU_HOST_DEVICE
+inline amrex::Real cp_ig_over_R(const PRFluid& f, amrex::Real T) {
+    return f.a_cp[0] + T*(f.a_cp[1]
+         + T*(f.a_cp[2] + T*(f.a_cp[3] + T*f.a_cp[4])));
+}
+
+// h_ig(T)/R = a0 T + a1 T^2/2 + a2 T^3/3 + a3 T^4/4 + a4 T^5/5
+AMREX_GPU_HOST_DEVICE
+inline amrex::Real h_ig_per_mole(const PRFluid& f, amrex::Real T) {
+    return R_gas*T*(f.a_cp[0] + T*(f.a_cp[1]*amrex::Real(0.5)
+         + T*(f.a_cp[2]*amrex::Real(1.0/3.0)
+         + T*(f.a_cp[3]*amrex::Real(0.25)
+         + T*f.a_cp[4]*amrex::Real(0.2)))));
+}
+
+AMREX_GPU_HOST_DEVICE
+inline amrex::Real e_ig_per_mole(const PRFluid& f, amrex::Real T) {
+    return h_ig_per_mole(f, T) - R_gas*T;
+}
+
+// s_ig(T, v_m)/R = a0 ln T + a1 T + a2 T^2/2 + a3 T^3/3 + a4 T^4/4
+//                  - ln T + ln v_m  + const
+//                = (a0-1) ln T + a1 T + ... + ln v_m + const
+AMREX_GPU_HOST_DEVICE
+inline amrex::Real s_ig_per_mole(const PRFluid& f, amrex::Real T,
+                                 amrex::Real v_m)
+{
+    amrex::Real lnT = std::log(T);
+    amrex::Real lnv = std::log(v_m);
+    amrex::Real I = (f.a_cp[0] - amrex::Real(1))*lnT
+                  + T*(f.a_cp[1]
+                  + T*(f.a_cp[2]*amrex::Real(0.5)
+                  + T*(f.a_cp[3]*amrex::Real(1.0/3.0)
+                  + T*f.a_cp[4]*amrex::Real(0.25))));
+    return R_gas*(I + lnv);
+}
+
+AMREX_GPU_HOST_DEVICE
+inline amrex::Real cv_ig_over_R(const PRFluid& f, amrex::Real T) {
+    return cp_ig_over_R(f, T) - amrex::Real(1);
+}
+
+// =====================================================================
+//  Extended PR parameters: a(T), da/dT, d2a/dT2, b
+// =====================================================================
+AMREX_GPU_HOST_DEVICE
+inline void pureParams2(const PR& e, amrex::Real T,
+                        amrex::Real& a, amrex::Real& dadT,
+                        amrex::Real& d2adT2, amrex::Real& b)
+{
+    amrex::Real Tc = e.Tc, kappa = e.kappa;
+    amrex::Real sqTTc   = std::sqrt(T*Tc);
+    amrex::Real sqrt_a  = amrex::Real(1) + kappa*(amrex::Real(1) - std::sqrt(T/Tc));
+    amrex::Real alpha   = sqrt_a*sqrt_a;
+    amrex::Real ac      = PR_Omega_a * R_gas*R_gas * Tc*Tc / e.Pc;
+
+    a       = ac * alpha;
+    dadT    = ac * (-kappa * sqrt_a / sqTTc);
+
+    // d2alpha/dT2 = (kappa/(2T)) * (kappa/Tc + sqrt_alpha / sqrt(T Tc))
+    amrex::Real d2alpha = (kappa/(amrex::Real(2)*T))
+                        * (kappa/Tc + sqrt_a/sqTTc);
+    d2adT2  = ac * d2alpha;
+
+    b = PR_Omega_b * R_gas * Tc / e.Pc;
+}
+
+// =====================================================================
+//  PR departure functions (per mole)
+//      L(v) = ln[(v + (1+sqrt 2) b) / (v + (1-sqrt 2) b)]
+//      e_dep  = -(a - T a') L / (2 sqrt 2 b)
+//      s_dep  =  R ln((v-b)/v) + a' L / (2 sqrt 2 b)
+//      cv_dep =  T a'' L / (2 sqrt 2 b)
+// =====================================================================
+AMREX_GPU_HOST_DEVICE
+inline void departureFunctions(const PRFluid& f, amrex::Real T, amrex::Real v_m,
+                               amrex::Real& e_dep, amrex::Real& s_dep,
+                               amrex::Real& cv_dep)
+{
+    amrex::Real a, dadT, d2adT2, b;
+    pureParams2(f.pr, T, a, dadT, d2adT2, b);
+
+    amrex::Real L = std::log((v_m + PR_sigma1*b)/(v_m + PR_sigma2*b));
+    amrex::Real K = amrex::Real(1) / (PR_sdiff * b);
+
+    e_dep  = -(a - T*dadT) * L * K;
+    s_dep  =  R_gas * std::log((v_m - b)/v_m) + dadT * L * K;
+    cv_dep =  T * d2adT2 * L * K;
+}
+
+// =====================================================================
+//  state_from_T_v  -- closed-form single-phase PR state at (T, v_m).
+//  No iteration.  Sound speed uses c^2 = -v^2 gamma (dP/dv)_T / M .
+//  The caller picks v_m by selecting the appropriate cubic root for
+//  the desired phase (see state_from_T_P below).
+// =====================================================================
+AMREX_GPU_HOST_DEVICE
+inline State state_from_T_v(const PRFluid& f, amrex::Real T, amrex::Real v_m,
+                            Phase3 phase = Phase3::Vapor)
+{
+    amrex::Real a, dadT, d2adT2, b;
+    pureParams2(f.pr, T, a, dadT, d2adT2, b);
+
+    // PR pressure
+    amrex::Real D    = v_m*v_m + amrex::Real(2)*b*v_m - b*b;     // (v+s1 b)(v+s2 b)
+    amrex::Real P    = R_gas*T/(v_m - b) - a/D;
+
+    // departure functions
+    amrex::Real e_dep, s_dep, cv_dep;
+    departureFunctions(f, T, v_m, e_dep, s_dep, cv_dep);
+
+    // ideal-gas part (per mole)
+    amrex::Real e_ig = e_ig_per_mole(f, T);
+    amrex::Real s_ig = s_ig_per_mole(f, T, v_m);
+    amrex::Real cv_ig = R_gas * cv_ig_over_R(f, T);
+
+    // totals (per mole)
+    amrex::Real e_mol  = e_ig + e_dep;
+    amrex::Real s_mol  = s_ig + s_dep;
+    amrex::Real h_mol  = e_mol + P*v_m;
+    amrex::Real cv_mol = cv_ig + cv_dep;
+
+    // single-phase sound speed (uses v_real^2 prefactor with Peneloux shift)
+    amrex::Real dPdv_T = -R_gas*T/((v_m-b)*(v_m-b))
+                       + amrex::Real(2)*a*(v_m+b)/(D*D);
+    amrex::Real dPdT_v =  R_gas/(v_m-b) - dadT/D;
+
+    // c_p - c_v = -T (dP/dT)^2 / (dP/dv)_T
+    amrex::Real cp_mol = cv_mol - T*dPdT_v*dPdT_v / dPdv_T;
+    amrex::Real gamma  = cp_mol / cv_mol;
+
+    // (dP/drho)_s = -v_real^2 gamma (dP/dv)_T / M ; v_real = v_PR + c_shift.
+    // dv_real/dv_PR = 1, so (dP/dv)_T is identical in either variable.
+    amrex::Real v_real = v_m + f.c_shift;
+    amrex::Real csq    = -v_real*v_real * gamma * dPdv_T / f.M;
+    amrex::Real c_snd  = (csq > amrex::Real(0)) ? std::sqrt(csq) : amrex::Real(0);
+
+    // Peneloux: h_real = h_PR + P * c_shift  (per mole)
+    amrex::Real h_mol_real = h_mol + P*f.c_shift;
+
+    State st;
+    st.T     = T;
+    st.P     = P;
+    st.rho   = f.M / v_real;
+    st.e     = e_mol / f.M;            // e unchanged
+    st.s     = s_mol / f.M;            // s unchanged
+    st.h     = h_mol_real / f.M;       // h shifted
+    st.c     = c_snd;
+    st.x     = (phase == Phase3::Vapor) ? amrex::Real(1) : amrex::Real(0);
+    st.phase = phase;
+    return st;
+}
+
+// =====================================================================
+//  state_from_T_P -- solve cubic, pick requested phase root
+// =====================================================================
+AMREX_GPU_HOST_DEVICE
+inline State state_from_T_P(const PRFluid& f,
+                            amrex::Real T, amrex::Real P, Phase3 phase)
+{
+    amrex::Real a, dadT, d2adT2, b;
+    pureParams2(f.pr, T, a, dadT, d2adT2, b);
+    amrex::Real A = a*P / (R_gas*R_gas*T*T);
+    amrex::Real B = b*P / (R_gas*T);
+    amrex::Real roots[3];
+    int nroots = solveCubicRoots(A, B, roots);
+
+    amrex::Real zL, zV;
+    selectPhysicalRoots(roots, nroots, B, zL, zV);
+    amrex::Real Z = (phase == Phase3::Vapor) ? zV : zL;
+    amrex::Real v_m = Z*R_gas*T / P;
+    return state_from_T_v(f, T, v_m, phase);
+}
+
+
+// =====================================================================
+//  Session 89v: ideal-gas state at (T, P)
+//
+//  Used as a "metastable" fallback when the requested phase branch of
+//  PR has no physical root at the query point (e.g., "vapor at 270 K,
+//  100 bar" is above P_sat and PR has only one real root, the liquid).
+//
+//  Returns rho, e, h, s, c computed from the ideal-gas formulas using
+//  the existing e_ig_per_mole / h_ig_per_mole / s_ig_per_mole helpers
+//  (which use the a_cp polynomial already carried by PRFluid).
+//
+//  This keeps the same reference/frame conventions as state_from_T_v
+//  in the ideal-gas limit, so e, h, s are numerically continuous with
+//  PR results when the actual state is near ideal-gas conditions.
+// =====================================================================
+AMREX_GPU_HOST_DEVICE
+inline State state_from_T_P_ig(const PRFluid& f,
+                                amrex::Real T, amrex::Real P,
+                                Phase3 phase = Phase3::Vapor)
+{
+    // Ideal-gas molar volume: v_m = R T / P
+    amrex::Real v_m = R_gas * T / P;
+    amrex::Real rho = f.M / v_m;   // no Peneloux shift for ideal gas
+
+    amrex::Real e_mol = e_ig_per_mole(f, T);
+    amrex::Real s_mol = s_ig_per_mole(f, T, v_m);
+    amrex::Real h_mol = e_mol + P * v_m;   // h = e + P v = e + R T for ideal gas
+
+    amrex::Real cv_mol = R_gas * cv_ig_over_R(f, T);
+    amrex::Real cp_mol = cv_mol + R_gas;   // cp - cv = R for ideal gas
+    amrex::Real gamma  = cp_mol / cv_mol;
+
+    amrex::Real c_snd = std::sqrt(gamma * P / rho);
+
+    State st;
+    st.T     = T;
+    st.P     = P;
+    st.rho   = rho;
+    st.e     = e_mol / f.M;
+    st.s     = s_mol / f.M;
+    st.h     = h_mol / f.M;
+    st.c     = c_snd;
+    st.x     = (phase == Phase3::Vapor) ? amrex::Real(1) : amrex::Real(0);
+    st.phase = phase;
+    return st;
+}
+
+
+// =====================================================================
+//  Session 89v: state_from_T_P_metastable
+//
+//  Behaves like state_from_T_P when the requested phase has a physical
+//  PR root at (T, P).  Otherwise, returns an ideal-gas state via
+//  state_from_T_P_ig -- a well-defined "metastable" extrapolation for
+//  the absent phase.
+//
+//  Detection of "requested phase has physical root":
+//    - Solve cubic; if nroots == 3, both phases have real roots (below
+//      spinodal for both), use standard state_from_T_P.
+//    - If nroots == 1, only one phase has a real root.  Determine
+//      which by looking at Z: Z close to B ~ small volume = liquid;
+//      Z far from B ~ ideal-gas-like = vapor.  A common criterion is
+//      to compare the single Z to a threshold (like Z > 0.5 -> vapor,
+//      else liquid), but we use selectPhysicalRoots' zL/zV which
+//      collapses both to the single root when nroots == 1.  So if
+//      Phase3::Vapor is requested and zV was returned same as zL,
+//      we know vapor branch is absent -> return ideal gas.
+//    - Similarly for Liquid at supercritical T.
+// =====================================================================
+AMREX_GPU_HOST_DEVICE
+inline State state_from_T_P_metastable(const PRFluid& f,
+                                        amrex::Real T, amrex::Real P,
+                                        Phase3 phase)
+{
+    amrex::Real a, dadT, d2adT2, b;
+    pureParams2(f.pr, T, a, dadT, d2adT2, b);
+    amrex::Real A = a*P / (R_gas*R_gas*T*T);
+    amrex::Real B = b*P / (R_gas*T);
+    amrex::Real roots[3];
+    int nroots = solveCubicRoots(A, B, roots);
+
+    if (nroots == 3) {
+        // Both phases have real roots; use standard extraction.
+        return state_from_T_P(f, T, P, phase);
+    }
+
+    // Only one real root.  Determine whether it's the requested phase.
+    // The single root's Z value: Z_single = roots[0] (all three equal
+    // or two complex -- solveCubicRoots convention).
+    amrex::Real Z_single = roots[0];
+    amrex::Real v_single = Z_single * R_gas * T / P;
+
+    // Heuristic: liquid v is close to b (small); vapor v is large.
+    // Compare to the arithmetic midpoint of b and R T / P.
+    const bool single_is_liquid = (v_single < amrex::Real(0.5) * (b + R_gas*T/P));
+
+    const bool requested_is_liquid = (phase == Phase3::Liquid);
+    const bool requested_matches   = (single_is_liquid == requested_is_liquid);
+
+    if (requested_matches) {
+        // Physical root exists for the requested phase; use it.
+        return state_from_T_v(f, T, v_single, phase);
+    }
+
+    // Requested phase has no physical root at (T, P).  Return an
+    // ideal-gas fallback (metastable extrapolation).
+    return state_from_T_P_ig(f, T, P, phase);
+}
+
+// =====================================================================
+//  Psat(T)   -- saturation pressure inversion.
+//  Newton on   h(P) = lnphi_L(T,P) - lnphi_V(T,P)   at fixed T.
+//  dh/dP is taken from a one-sided finite difference; we only need it
+//  to get an O(quadratic) iteration, not for asymptotic precision.
+// =====================================================================
+AMREX_GPU_HOST_DEVICE
+inline amrex::Real Psat(const PR& e, amrex::Real T,
+                        amrex::Real P_init   = amrex::Real(-1),
+                        int         max_iter = 60,
+                        amrex::Real tol      = amrex::Real(1e-9))
+{
+    amrex::Real P;
+    if (P_init > amrex::Real(0) && std::isfinite(P_init)) {
+        P = P_init;
+    } else {
+        // Wilson estimate
+        P = e.Pc * std::exp(amrex::Real(5.373)*(amrex::Real(1) + e.omega)
+                          * (amrex::Real(1) - e.Tc/T));
+        if (P < amrex::Real(1) || !std::isfinite(P)) P = amrex::Real(1);
+        if (P > e.Pc)                                 P = amrex::Real(0.95)*e.Pc;
+    }
+
+    for (int it = 0; it < max_iter; ++it) {
+        amrex::Real lnphiL, lnphiV, junk;
+        lnPhi(e, T, P, Phase::Liquid, lnphiL, junk);
+        lnPhi(e, T, P, Phase::Vapor , lnphiV, junk);
+        amrex::Real h = lnphiL - lnphiV;
+        if (amrex::Math::abs(h) < tol) return P;
+
+        amrex::Real dP = amrex::Real(1e-4) * P;
+        amrex::Real lnL2, lnV2;
+        lnPhi(e, T, P+dP, Phase::Liquid, lnL2, junk);
+        lnPhi(e, T, P+dP, Phase::Vapor , lnV2, junk);
+        amrex::Real dh_dP = ((lnL2 - lnV2) - h)/dP;
+
+        amrex::Real step = -h/dh_dP;
+        if (amrex::Math::abs(step) > amrex::Real(0.3)*P)
+            step = (step > amrex::Real(0) ? amrex::Real(1) : amrex::Real(-1))
+                 * amrex::Real(0.3)*P;
+        P += step;
+        if (P < amrex::Real(1))   P = amrex::Real(1);
+        if (P > e.Pc)             P = amrex::Real(0.95)*e.Pc;
+    }
+    return P;
+}
+
+// =====================================================================
+//  Saturated liquid / vapor states at given T
+// =====================================================================
+AMREX_GPU_HOST_DEVICE
+inline State satStateL(const PRFluid& f, amrex::Real T, amrex::Real Psat_hint = amrex::Real(-1))
+{
+    amrex::Real Ps = Psat(f.pr, T, Psat_hint);
+    State s = state_from_T_P(f, T, Ps, Phase3::Liquid);
+    s.x = amrex::Real(0);
+    return s;
+}
+
+AMREX_GPU_HOST_DEVICE
+inline State satStateV(const PRFluid& f, amrex::Real T, amrex::Real Psat_hint = amrex::Real(-1))
+{
+    amrex::Real Ps = Psat(f.pr, T, Psat_hint);
+    State s = state_from_T_P(f, T, Ps, Phase3::Vapor);
+    s.x = amrex::Real(1);
+    return s;
+}
+
+// =====================================================================
+//  state_from_T_x   -- two-phase HEM state with equilibrium sound speed.
+//
+//  Mixture per-mass rules:
+//      1/rho = (1-x)/rho_L + x/rho_V
+//      e     = (1-x) e_L + x e_V         (similarly s, h)
+//
+//  Equilibrium sound speed (Wood / "frozen vs equilibrium" - here the
+//  equilibrium one):
+//      c_e^2 = -(dPsat/dT) / (rho^2 * dv/dT|_s)
+//      dv/dT|_s   = (x v_V' + (1-x) v_L') + (v_V - v_L) dx/dT|_s
+//      dx/dT|_s   = -(x s_V' + (1-x) s_L') / (s_V - s_L)
+//      dPsat/dT   = (s_V - s_L) / (v_V - v_L)              (Clausius-Clapeyron)
+//
+//  The phase-saturated derivatives v_L'(T), v_V'(T), s_L'(T), s_V'(T)
+//  are computed analytically from the PR cubic by implicit differentiation
+//  of  P_sat(T) = P_PR(T, v_sat(T))  along each branch.
+// =====================================================================
+AMREX_GPU_HOST_DEVICE
+inline State state_from_T_x(const PRFluid& f, amrex::Real T, amrex::Real x)
+{
+    if (x < amrex::Real(0)) x = amrex::Real(0);
+    if (x > amrex::Real(1)) x = amrex::Real(1);
+
+    amrex::Real Ps = Psat(f.pr, T);
+
+    // saturated phase states (single-phase quantities at Psat)
+    State Lst = state_from_T_P(f, T, Ps, Phase3::Liquid);
+    State Vst = state_from_T_P(f, T, Ps, Phase3::Vapor );
+
+    // PR molar volumes (used inside the cubic derivative formulae) and the
+    // real (Peneloux-translated) molar volumes used for the mixing rule.
+    amrex::Real v_real_L = f.M / Lst.rho;
+    amrex::Real v_real_V = f.M / Vst.rho;
+    amrex::Real v_L      = v_real_L - f.c_shift;  // PR volume - used for cubic
+    amrex::Real v_V      = v_real_V - f.c_shift;
+
+    // PR derivatives at each branch (per mole)
+    amrex::Real a, dadT, d2adT2, b;
+    pureParams2(f.pr, T, a, dadT, d2adT2, b);
+
+    auto branchDeriv = [&](amrex::Real v_m,
+                           amrex::Real& dvdT_sat,
+                           amrex::Real& dsdT_sat)
+    {
+        amrex::Real D = v_m*v_m + amrex::Real(2)*b*v_m - b*b;
+        amrex::Real dPdv_T = -R_gas*T/((v_m-b)*(v_m-b))
+                           + amrex::Real(2)*a*(v_m+b)/(D*D);
+        amrex::Real dPdT_v =  R_gas/(v_m-b) - dadT/D;
+
+        // dPsat/dT = (s_V - s_L)/(v_V - v_L) - same value on both branches,
+        // computed once outside.  But for branchDeriv we need dPsat/dT.
+        // We will inject it below via closure variables -- so compute
+        // it just before calling.
+
+        // dv_sat / dT = (dPsat/dT - dPdT_v) / dPdv_T
+        // We compute it in the outer scope.
+        amrex::Real dPsatdT = (Vst.s*f.M - Lst.s*f.M) / (v_V - v_L);
+        dvdT_sat = (dPsatdT - dPdT_v) / dPdv_T;
+
+        // s along sat branch: ds/dT|_sat = c_v/T + dPdT_v * dv_sat/dT
+        amrex::Real e_dep, s_dep, cv_dep;
+        departureFunctions(f, T, v_m, e_dep, s_dep, cv_dep);
+        amrex::Real cv_mol = R_gas*cv_ig_over_R(f, T) + cv_dep;
+        dsdT_sat = cv_mol/T + dPdT_v * dvdT_sat;
+    };
+
+    amrex::Real dvL_dT, dsL_dT, dvV_dT, dsV_dT;
+    branchDeriv(v_L, dvL_dT, dsL_dT);
+    branchDeriv(v_V, dvV_dT, dsV_dT);
+
+    // mixture per-mole quantities (using v_real for volume, h already shifted)
+    amrex::Real v_mix_real = (amrex::Real(1) - x)*v_real_L + x*v_real_V;
+    amrex::Real e_L_mol   = Lst.e * f.M;
+    amrex::Real e_V_mol   = Vst.e * f.M;
+    amrex::Real s_L_mol   = Lst.s * f.M;
+    amrex::Real s_V_mol   = Vst.s * f.M;
+    amrex::Real h_L_mol   = Lst.h * f.M;   // already Peneloux-shifted
+    amrex::Real h_V_mol   = Vst.h * f.M;
+
+    amrex::Real e_mol = (amrex::Real(1) - x)*e_L_mol + x*e_V_mol;
+    amrex::Real s_mol = (amrex::Real(1) - x)*s_L_mol + x*s_V_mol;
+    amrex::Real h_mol = (amrex::Real(1) - x)*h_L_mol + x*h_V_mol;
+
+    // equilibrium sound speed.  dv_real/dT = dv_PR/dT (c_shift constant),
+    // and Clausius-Clapeyron is unchanged by Peneloux:
+    //   dPsat/dT = (s_V - s_L)/(v_real_V - v_real_L).
+    amrex::Real dPsatdT = (s_V_mol - s_L_mol)/(v_real_V - v_real_L);
+    amrex::Real dxdT_s  = -(x*dsV_dT + (amrex::Real(1)-x)*dsL_dT)
+                         / (s_V_mol - s_L_mol);
+    amrex::Real dvdT_s  = (x*dvV_dT + (amrex::Real(1)-x)*dvL_dT)
+                         + (v_real_V - v_real_L)*dxdT_s;
+
+    amrex::Real rho_mix = f.M / v_mix_real;
+    // c_e^2 = -(dPsat/dT) / (rho^2 * dv_mass/dT|_s)  with everything per-mass.
+    // Internal dvdT_s is in molar units (m^3/(mol K)); divide by M once to
+    // convert to per-mass.  (Earlier code divided by M^2, which gave csq
+    // in J/mol instead of m^2/s^2 -- making the reported c off by a factor
+    // of sqrt(M) in two-phase states.)
+    amrex::Real csq     = -dPsatdT / (rho_mix*rho_mix * dvdT_s / f.M);
+
+    State st;
+    st.T     = T;
+    st.P     = Ps;
+    st.rho   = rho_mix;
+    st.e     = e_mol / f.M;
+    st.s     = s_mol / f.M;
+    st.h     = h_mol / f.M;
+    st.c     = (csq > amrex::Real(0)) ? std::sqrt(csq) : amrex::Real(0);
+    st.x     = x;
+    st.phase = Phase3::TwoPhase;
+    return st;
+}
+
+// =====================================================================
+//  classify_T_rho   -- given T and per-mass density, return phase region.
+//      At T >= Tc : single phase (Liquid label, but really supercritical).
+//      Otherwise : compare 1/rho with [v_L(T), v_V(T)] at saturation.
+// =====================================================================
+AMREX_GPU_HOST_DEVICE
+inline Phase3 classify_T_rho(const PRFluid& f, amrex::Real T, amrex::Real rho)
+{
+    if (T >= f.pr.Tc) return Phase3::Liquid;          // supercritical
+    State L = satStateL(f, T);
+    State V = satStateV(f, T);
+    if (rho >= L.rho) return Phase3::Liquid;          // subcooled / sat L
+    if (rho <= V.rho) return Phase3::Vapor;           // superheated / sat V
+    return Phase3::TwoPhase;
+}
+
+// =====================================================================
+//  state_from_P_rho  -- phase-detected state from (P, rho).
+//  Strategy:
+//      If P >= Pc :  single-phase, solve cubic at this P for the root
+//                    whose Z matches the given rho.
+//      Else :        compute Tsat(P).  Use saturated phase densities at
+//                    Tsat(P) to bracket: if rho >= rho_L_sat -> liquid
+//                    (find T by Newton on rho), if rho <= rho_V_sat ->
+//                    vapor, otherwise two-phase at T = Tsat(P) with
+//                    lever-rule x.
+// =====================================================================
+AMREX_GPU_HOST_DEVICE
+inline State state_from_P_rho(const PRFluid& f, amrex::Real P, amrex::Real rho)
+{
+    // Convert per-mass density to PR molar volume (Peneloux-aware).
+    amrex::Real v_m_target = v_PR_from_rho(f, rho);
+	  
+    if (P >= f.pr.Pc) {
+        // Supercritical or above-critical pressure: single-phase root.
+        // Newton on T such that v_m_from_PR(T, P, root_with_correct_v) = v_target.
+        // Use Tc as initial guess; both roots collapse to one above Pc.
+        amrex::Real T = f.pr.Tc;
+        for (int it = 0; it < 60; ++it) {
+            amrex::Real a, dadT, d2adT2, b;
+            pureParams2(f.pr, T, a, dadT, d2adT2, b);
+            amrex::Real D = v_m_target*v_m_target
+                          + amrex::Real(2)*b*v_m_target - b*b;
+            amrex::Real P_PR = R_gas*T/(v_m_target - b) - a/D;
+            amrex::Real dPdT_v = R_gas/(v_m_target - b) - dadT/D;
+            amrex::Real r = P_PR - P;
+            if (amrex::Math::abs(r) < amrex::Real(1e-3)) break;
+            T -= r/dPdT_v;
+            if (T < amrex::Real(10)) T = amrex::Real(10);
+        }
+        return state_from_T_v(f, T, v_m_target, Phase3::Liquid);   // label arbitrary
+    }
+
+    // Subcritical: compare to saturation
+    amrex::Real T_sat = satTemperature(f.pr, P).T;
+    State L = satStateL(f, T_sat, P);
+    State V = satStateV(f, T_sat, P);
+
+    if (rho >= L.rho) {
+        // subcooled (or saturated) liquid : Newton on T at fixed v_m
+        amrex::Real T = T_sat;
+        for (int it = 0; it < 60; ++it) {
+            amrex::Real a, dadT, d2adT2, b;
+            pureParams2(f.pr, T, a, dadT, d2adT2, b);
+            amrex::Real D = v_m_target*v_m_target
+                          + amrex::Real(2)*b*v_m_target - b*b;
+            amrex::Real P_PR = R_gas*T/(v_m_target - b) - a/D;
+            amrex::Real dPdT_v = R_gas/(v_m_target - b) - dadT/D;
+            amrex::Real r = P_PR - P;
+            if (amrex::Math::abs(r) < amrex::Real(1e-3)) break;
+            amrex::Real dT = -r/dPdT_v;
+            // damp toward T < T_sat
+            if (T + dT >= f.pr.Tc) dT = amrex::Real(0.5)*(f.pr.Tc - T);
+            if (T + dT <= amrex::Real(1)) dT = amrex::Real(0.5)*(amrex::Real(1) - T);
+            T += dT;
+        }
+        return state_from_T_v(f, T, v_m_target, Phase3::Liquid);
+    }
+    if (rho <= V.rho) {
+        // superheated vapor
+        amrex::Real T = T_sat;
+        for (int it = 0; it < 60; ++it) {
+            amrex::Real a, dadT, d2adT2, b;
+            pureParams2(f.pr, T, a, dadT, d2adT2, b);
+            amrex::Real D = v_m_target*v_m_target
+                          + amrex::Real(2)*b*v_m_target - b*b;
+            amrex::Real P_PR = R_gas*T/(v_m_target - b) - a/D;
+            amrex::Real dPdT_v = R_gas/(v_m_target - b) - dadT/D;
+            amrex::Real r = P_PR - P;
+            if (amrex::Math::abs(r) < amrex::Real(1e-3)) break;
+            amrex::Real dT = -r/dPdT_v;
+            if (T + dT <= amrex::Real(1)) dT = amrex::Real(0.5)*(amrex::Real(1) - T);
+            T += dT;
+        }
+        return state_from_T_v(f, T, v_m_target, Phase3::Vapor);
+    }
+
+    // two-phase: x by lever rule on per-mass specific volume (Peneloux-safe;
+    // 1/L.rho and 1/V.rho are real specific volumes already).
+    amrex::Real v_L_mass = amrex::Real(1)/L.rho;
+    amrex::Real v_V_mass = amrex::Real(1)/V.rho;
+    amrex::Real v_mix    = amrex::Real(1)/rho;
+    amrex::Real x = (v_mix - v_L_mass)/(v_V_mass - v_L_mass);
+    return state_from_T_x(f, T_sat, x);
+}
+
+// =====================================================================
+//  state_from_rho_e   -- phase-detected state from (rho, e).
+//  This is the workhorse for conservative-variable Riemann steps.
+//
+//  Algorithm:
+//      1. Try single-phase: Newton on T at fixed v_m = M/rho so that
+//         e_PR(T, v_m) = e_target.  Pick which root (L or V) based on
+//         whichever gives a consistent state.
+//      2. If T < Tc and the single-phase result puts us inside the
+//         saturation envelope (rho between rho_L_sat(T) and rho_V_sat(T)
+//         AND e between e_L_sat(T) and e_V_sat(T)), redo as two-phase:
+//         Newton on T such that the lever-rule mixture energy matches.
+// =====================================================================
+AMREX_GPU_HOST_DEVICE
+inline State state_from_rho_e(const PRFluid& f, amrex::Real rho, amrex::Real e_target)
+{
+    amrex::Real v_m = v_PR_from_rho(f, rho);   // PR-space volume
+    amrex::Real e_mol_target = e_target * f.M;
+
+    // -------- 1) single-phase Newton on T  -----------------------------
+    amrex::Real T = f.pr.Tc * amrex::Real(0.8);
+    for (int it = 0; it < 80; ++it) {
+        amrex::Real e_dep, s_dep, cv_dep;
+        departureFunctions(f, T, v_m, e_dep, s_dep, cv_dep);
+        amrex::Real e_ig  = e_ig_per_mole(f, T);
+        amrex::Real cv_ig = R_gas * cv_ig_over_R(f, T);
+        amrex::Real e_mol = e_ig + e_dep;
+        amrex::Real cv_mol_total = cv_ig + cv_dep;   // de/dT|_v
+        amrex::Real r = e_mol - e_mol_target;
+        if (amrex::Math::abs(r) < amrex::Real(1e-6)*amrex::Math::abs(e_mol_target) + amrex::Real(1e-3))
+            break;
+        amrex::Real dT = -r/cv_mol_total;
+        if (amrex::Math::abs(dT) > amrex::Real(0.3)*T)
+            dT = (dT > amrex::Real(0) ? amrex::Real(1) : amrex::Real(-1))
+               * amrex::Real(0.3)*T;
+        T += dT;
+        if (T < amrex::Real(1)) T = amrex::Real(1);
+    }
+
+    // -------- 2) phase check : are we inside the dome at this T? ------
+    if (T < f.pr.Tc) {
+        State L = satStateL(f, T);
+        State V = satStateV(f, T);
+        if (rho < L.rho && rho > V.rho) {
+            // inside the dome in density - check energy bracket
+            if (e_target > L.e && e_target < V.e) {
+                // two-phase: Newton on T for mixture energy match
+                amrex::Real Tt = T;
+                for (int it = 0; it < 60; ++it) {
+                    State Lt = satStateL(f, Tt);
+                    State Vt = satStateV(f, Tt);
+                    amrex::Real vL = amrex::Real(1)/Lt.rho;
+                    amrex::Real vV = amrex::Real(1)/Vt.rho;
+                    amrex::Real v_mix = amrex::Real(1)/rho;
+                    amrex::Real x = (v_mix - vL)/(vV - vL);
+                    if (x < amrex::Real(0)) x = amrex::Real(0);
+                    if (x > amrex::Real(1)) x = amrex::Real(1);
+                    amrex::Real e_mix = (amrex::Real(1)-x)*Lt.e + x*Vt.e;
+                    amrex::Real r = e_mix - e_target;
+                    if (amrex::Math::abs(r) < amrex::Real(1e-3)) {
+                        return state_from_T_x(f, Tt, x);
+                    }
+                    // numerical dT (analytic is messy)
+                    amrex::Real dT = amrex::Real(0.01)*Tt;
+                    State Lp = satStateL(f, Tt+dT);
+                    State Vp = satStateV(f, Tt+dT);
+                    amrex::Real vLp = amrex::Real(1)/Lp.rho;
+                    amrex::Real vVp = amrex::Real(1)/Vp.rho;
+                    amrex::Real xp = (v_mix - vLp)/(vVp - vLp);
+                    if (xp < amrex::Real(0)) xp = amrex::Real(0);
+                    if (xp > amrex::Real(1)) xp = amrex::Real(1);
+                    amrex::Real e_mix_p = (amrex::Real(1)-xp)*Lp.e + xp*Vp.e;
+                    amrex::Real drdT = (e_mix_p - e_mix)/dT;
+                    amrex::Real step = -r/drdT;
+                    if (amrex::Math::abs(step) > amrex::Real(0.2)*Tt)
+                        step = (step > amrex::Real(0) ? amrex::Real(1) : amrex::Real(-1))
+                             * amrex::Real(0.2)*Tt;
+                    Tt += step;
+                    if (Tt < amrex::Real(1))     Tt = amrex::Real(1);
+                    if (Tt >= f.pr.Tc)           Tt = amrex::Real(0.99)*f.pr.Tc;
+                }
+                // fall through if didn't converge
+            }
+        }
+    }
+    // single-phase result : pick L/V label by where rho sits relative to the
+    // ideal-gas density at this (T, P_PR(T, v_m)) - a benign heuristic.
+    amrex::Real a, dadT, d2adT2, b;
+    pureParams2(f.pr, T, a, dadT, d2adT2, b);
+    amrex::Real D    = v_m*v_m + amrex::Real(2)*b*v_m - b*b;
+    amrex::Real P_PR = R_gas*T/(v_m - b) - a/D;
+    amrex::Real rho_ig = f.M*P_PR / (R_gas*T);
+    Phase3 ph = (rho > amrex::Real(2)*rho_ig) ? Phase3::Liquid : Phase3::Vapor;
+    return state_from_T_v(f, T, v_m, ph);
+}
+
+// =====================================================================
+//  state_from_rho_e_phase  --  phase-locked single-phase state from (rho, e).
+//
+//  Like state_from_rho_e, but FORCES the single-phase EOS evaluation for
+//  the requested phase, skipping the dome check and the two-phase mixture
+//  Newton.  Inside the saturation envelope this returns the metastable
+//  PR-extrapolated state -- the analytic continuation of the single-
+//  phase PR cubic past the saturation envelope.  That is exactly what the
+//  KMS multi-fluid model needs to represent each phase independently when
+//  the mixture is genuinely two-phase (0 < alpha_1 < 1).
+//
+//  The Newton on T uses the same iteration as the single-phase prelude
+//  of state_from_rho_e; only the post-Newton dispatch differs.
+// =====================================================================
+AMREX_GPU_HOST_DEVICE
+inline State state_from_rho_e_phase(const PRFluid& f, amrex::Real rho,
+                                    amrex::Real e_target, Phase3 phase)
+{
+    amrex::Real v_m = v_PR_from_rho(f, rho);
+    amrex::Real e_mol_target = e_target * f.M;
+
+    // Single-phase Newton on T to match the target internal energy.
+    // Initial guess is biased by phase: liquid starts cooler, vapor warmer.
+    // Helps convergence near the dome where the cubic has multiple roots.
+    amrex::Real T = (phase == Phase3::Liquid)
+                  ? amrex::Real(0.7) * f.pr.Tc
+                  : amrex::Real(1.0) * f.pr.Tc;
+
+    for (int it = 0; it < 80; ++it) {
+        amrex::Real e_dep, s_dep, cv_dep;
+        departureFunctions(f, T, v_m, e_dep, s_dep, cv_dep);
+        amrex::Real e_ig  = e_ig_per_mole(f, T);
+        amrex::Real cv_ig = R_gas * cv_ig_over_R(f, T);
+        amrex::Real e_mol = e_ig + e_dep;
+        amrex::Real cv_mol_total = cv_ig + cv_dep;
+        amrex::Real r = e_mol - e_mol_target;
+        if (amrex::Math::abs(r) <
+            amrex::Real(1e-6)*amrex::Math::abs(e_mol_target) + amrex::Real(1e-3))
+            break;
+        amrex::Real dT = -r / cv_mol_total;
+        // Damp to 30% of current T to avoid blowing past the cubic's
+        // valid range near the spinodals.
+        if (amrex::Math::abs(dT) > amrex::Real(0.3)*T)
+            dT = (dT > amrex::Real(0) ? amrex::Real(1) : amrex::Real(-1))
+               * amrex::Real(0.3)*T;
+        T += dT;
+        if (T < amrex::Real(1)) T = amrex::Real(1);
+    }
+
+    // No dome check -- return the requested phase regardless.  Inside the
+    // dome this is the metastable extrapolation of the PR cubic; the
+    // PR EOS is mathematically smooth there even though the physical
+    // saturated mixture would prefer two-phase equilibrium.
+    return state_from_T_v(f, T, v_m, phase);
+}
+
+// =====================================================================
+//  state_from_P_s  -- state along an isentrope at given P.
+//  Used by the rarefaction wave integration in the Riemann solver.
+//  Algorithm: Newton on (T) with target entropy at the chosen phase.
+//  Phase resolution: compare candidate T to the saturation envelope.
+// =====================================================================
+AMREX_GPU_HOST_DEVICE
+inline State state_from_P_s(const PRFluid& f, amrex::Real P, amrex::Real s_target,
+                            Phase3 hint = Phase3::Vapor)
+{
+    // We have h(T) = s_PR(T, P, hint) - s_target = 0
+    // Use Newton with ds/dT|_P = c_p/T (per mass).
+    // First guess from ideal-gas: solve for T from s_ig.
+    amrex::Real T = f.pr.Tc;
+    for (int it = 0; it < 80; ++it) {
+        State st = state_from_T_P(f, T, P, hint);
+        amrex::Real r = st.s - s_target;
+        if (amrex::Math::abs(r) < amrex::Real(1e-6)*amrex::Math::abs(s_target) + amrex::Real(1e-3))
+            return st;
+        // ds/dT|_P = c_p / T per mass; need c_p
+        amrex::Real a, dadT, d2adT2, b;
+        pureParams2(f.pr, T, a, dadT, d2adT2, b);
+        amrex::Real v_m = f.M / st.rho;
+        amrex::Real D = v_m*v_m + amrex::Real(2)*b*v_m - b*b;
+        amrex::Real dPdv_T = -R_gas*T/((v_m-b)*(v_m-b))
+                           + amrex::Real(2)*a*(v_m+b)/(D*D);
+        amrex::Real dPdT_v =  R_gas/(v_m-b) - dadT/D;
+        amrex::Real e_dep, s_dep, cv_dep;
+        departureFunctions(f, T, v_m, e_dep, s_dep, cv_dep);
+        amrex::Real cv_mol = R_gas*cv_ig_over_R(f, T) + cv_dep;
+        amrex::Real cp_mol = cv_mol - T*dPdT_v*dPdT_v/dPdv_T;
+        amrex::Real cp_mass = cp_mol / f.M;
+        amrex::Real dsdT_P  = cp_mass / T;
+        amrex::Real step = -r/dsdT_P;
+        if (amrex::Math::abs(step) > amrex::Real(0.2)*T)
+            step = (step > amrex::Real(0) ? amrex::Real(1) : amrex::Real(-1))
+                 * amrex::Real(0.2)*T;
+        T += step;
+        if (T < amrex::Real(1))     T = amrex::Real(1);
+    }
+    return state_from_T_P(f, T, P, hint);
+}
+
+} // namespace hem

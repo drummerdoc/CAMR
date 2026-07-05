@@ -1,1 +1,3 @@
 CEXE_headers += EOS.H
+CEXE_headers += hem_pr_state.H
+CEXE_headers += hem_saturation_amrex.H
