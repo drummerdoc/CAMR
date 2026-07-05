@@ -87,6 +87,18 @@ using namespace amrex;
 //    - Tangential momenta (UMX and UMY when idir=2, etc.) are passive
 //      wrt the normal direction and get the standard ρu_n u_tang form.
 // =====================================================================
+// Local sanitiser — replaces NaN/Inf with `fallback`; passes finite
+// values through unchanged.  Used at every read of `U(...)` and
+// `q(...)` inside the flux helpers so a single bad cell can't
+// poison the whole timestep.
+AMREX_GPU_HOST_DEVICE
+AMREX_FORCE_INLINE
+Real
+ps_finite_or(Real x, Real fallback) noexcept
+{
+    return std::isfinite(x) ? x : fallback;
+}
+
 AMREX_GPU_HOST_DEVICE
 AMREX_FORCE_INLINE
 void
@@ -96,15 +108,18 @@ ps_physical_flux(int i, int j, int k,
                  Array4<const Real> const& q,
                  Real F[NVAR]) noexcept
 {
-    const Real rho    = U(i,j,k, URHO);
-    const Real ux     = q(i,j,k, QU);
+    // Guard every cell read.  Ghost cells or LLF-diffused cells
+    // could carry NaN if the previous step drifted; keeping every
+    // read finite means F stays finite.
+    const Real rho    = amrex::max(ps_finite_or(U(i,j,k, URHO), Real(1.0e-6)), Real(1.0e-6));
+    const Real ux     = ps_finite_or(q(i,j,k, QU), Real(0.0));
 #if (AMREX_SPACEDIM >= 2)
-    const Real uy     = q(i,j,k, QV);
+    const Real uy     = ps_finite_or(q(i,j,k, QV), Real(0.0));
 #else
     const Real uy     = Real(0.0);
 #endif
 #if (AMREX_SPACEDIM == 3)
-    const Real uz     = q(i,j,k, QW);
+    const Real uz     = ps_finite_or(q(i,j,k, QW), Real(0.0));
 #else
     const Real uz     = Real(0.0);
 #endif
@@ -113,9 +128,9 @@ ps_physical_flux(int i, int j, int k,
     if      (idir == 1) un = uy;
     else if (idir == 2) un = uz;
 
-    const Real P_mix  = q(i,j,k, QPRES);
-    const Real UEden  = U(i,j,k, UEDEN);
-    const Real UEint  = U(i,j,k, UEINT);
+    const Real P_mix  = amrex::max(ps_finite_or(q(i,j,k, QPRES), Real(1.0)), Real(1.0));
+    const Real UEden  = ps_finite_or(U(i,j,k, UEDEN), Real(0.0));
+    const Real UEint  = ps_finite_or(U(i,j,k, UEINT), Real(0.0));
 
     for (int n = 0; n < NVAR; ++n) F[n] = Real(0.0);
 
@@ -131,25 +146,37 @@ ps_physical_flux(int i, int j, int k,
     F[UEINT] = UEint * un;
     F[UTEMP] = Real(0.0);
 
-    for (int n = 0; n < NUM_SPECIES; ++n) F[UFS + n] = U(i,j,k, UFS + n) * un;
+    for (int n = 0; n < NUM_SPECIES; ++n)
+        F[UFS + n] = ps_finite_or(U(i,j,k, UFS + n), Real(0.0)) * un;
 #if (NUM_ADV > 0)
-    for (int n = 0; n < NUM_ADV;    ++n) F[UFA + n] = U(i,j,k, UFA + n) * un;
+    for (int n = 0; n < NUM_ADV;    ++n)
+        F[UFA + n] = ps_finite_or(U(i,j,k, UFA + n), Real(0.0)) * un;
 #endif
 #if (NUM_AUX > 0)
-    for (int n = 0; n < NUM_AUX;    ++n) F[UFX + n] = U(i,j,k, UFX + n) * un;
+    for (int n = 0; n < NUM_AUX;    ++n)
+        F[UFX + n] = ps_finite_or(U(i,j,k, UFX + n), Real(0.0)) * un;
 #endif
 
     // ------------------ P-S 2014 six-equation extension ---------------
-    const Real alpha_1 = q(i,j,k, QALPHA1);
+    Real alpha_1 = ps_finite_or(q(i,j,k, QALPHA1), Real(1.0));
+    // Clamp α₁ into [α_floor, 1−α_floor] so α₂ = 1−α₁ is also positive.
+    constexpr Real alpha_floor = Real(1.0e-6);
+    if (alpha_1 < alpha_floor)              alpha_1 = alpha_floor;
+    if (alpha_1 > Real(1.0) - alpha_floor)  alpha_1 = Real(1.0) - alpha_floor;
     const Real alpha_2 = Real(1.0) - alpha_1;
-    const Real P1      = q(i,j,k, QP1);
-    const Real P2      = q(i,j,k, QP2);
+    const Real P1      = amrex::max(ps_finite_or(q(i,j,k, QP1), P_mix), Real(1.0));
+    const Real P2      = amrex::max(ps_finite_or(q(i,j,k, QP2), P_mix), Real(1.0));
 
     F[UALPHA1] = alpha_1 * un;
-    F[UM1RHO1] = U(i,j,k, UM1RHO1) * un;
-    F[UM2RHO2] = U(i,j,k, UM2RHO2) * un;
-    F[UE1    ] = (U(i,j,k, UE1) + alpha_1 * P1) * un;
-    F[UE2    ] = (U(i,j,k, UE2) + alpha_2 * P2) * un;
+    F[UM1RHO1] = ps_finite_or(U(i,j,k, UM1RHO1), Real(0.0)) * un;
+    F[UM2RHO2] = ps_finite_or(U(i,j,k, UM2RHO2), Real(0.0)) * un;
+    F[UE1    ] = (ps_finite_or(U(i,j,k, UE1), Real(0.0)) + alpha_1 * P1) * un;
+    F[UE2    ] = (ps_finite_or(U(i,j,k, UE2), Real(0.0)) + alpha_2 * P2) * un;
+
+    // Final belt-and-suspenders: any F component that somehow ended
+    // up non-finite gets replaced with zero.  Better a zero flux
+    // (locally stagnates the wave) than a NaN flux (poisons dsdt).
+    for (int n = 0; n < NVAR; ++n) F[n] = ps_finite_or(F[n], Real(0.0));
 }
 
 // =====================================================================
@@ -173,21 +200,24 @@ ps_max_wave_speed(int i, int j, int k,
                   Array4<const Real> const& U,
                   Array4<const Real> const& q) noexcept
 {
-    Real un = q(i,j,k, QU);
+    Real un = ps_finite_or(q(i,j,k, QU), Real(0.0));
 #if (AMREX_SPACEDIM >= 2)
-    if (idir == 1) un = q(i,j,k, QV);
+    if (idir == 1) un = ps_finite_or(q(i,j,k, QV), Real(0.0));
 #endif
 #if (AMREX_SPACEDIM == 3)
-    if (idir == 2) un = q(i,j,k, QW);
+    if (idir == 2) un = ps_finite_or(q(i,j,k, QW), Real(0.0));
 #endif
 
-    const Real rho_mix = U(i,j,k, URHO);
-    const Real alpha_1 = q(i,j,k, QALPHA1);
+    const Real rho_mix = amrex::max(ps_finite_or(U(i,j,k, URHO), Real(1.0)), Real(1.0e-6));
+    Real alpha_1 = ps_finite_or(q(i,j,k, QALPHA1), Real(1.0));
+    constexpr Real alpha_floor = Real(1.0e-6);
+    if (alpha_1 < alpha_floor)              alpha_1 = alpha_floor;
+    if (alpha_1 > Real(1.0) - alpha_floor)  alpha_1 = Real(1.0) - alpha_floor;
     const Real alpha_2 = Real(1.0) - alpha_1;
-    const Real rho_1   = q(i,j,k, QRHO1);
-    const Real rho_2   = q(i,j,k, QRHO2);
-    const Real P1      = q(i,j,k, QP1);
-    const Real P2      = q(i,j,k, QP2);
+    const Real rho_1   = amrex::max(ps_finite_or(q(i,j,k, QRHO1), Real(1.0)), Real(1.0e-6));
+    const Real rho_2   = amrex::max(ps_finite_or(q(i,j,k, QRHO2), Real(1.0)), Real(1.0e-6));
+    const Real P1      = amrex::max(ps_finite_or(q(i,j,k, QP1),   Real(1.0)), Real(1.0));
+    const Real P2      = amrex::max(ps_finite_or(q(i,j,k, QP2),   Real(1.0)), Real(1.0));
 
     Real Y_dummy[NUM_SPECIES];
     Y_dummy[0] = Real(1.0);
@@ -321,12 +351,14 @@ PS_umeth(const Box& bx,
         ps_physical_flux(i,   j, k, 0, uin_arr, q, FR);
         const Real lamL = ps_max_wave_speed(i-1, j, k, 0, uin_arr, q);
         const Real lamR = ps_max_wave_speed(i,   j, k, 0, uin_arr, q);
-        const Real lam  = amrex::max(lamL, lamR);
+        const Real lam_raw = amrex::max(lamL, lamR);
+        const Real lam = std::isfinite(lam_raw) ? lam_raw : Real(0.0);
         for (int n = 0; n < NVAR; ++n) {
-            const Real UL = uin_arr(i-1, j, k, n);
-            const Real UR = uin_arr(i,   j, k, n);
-            flx1(i,j,k, n) = Real(0.5) * (FL[n] + FR[n])
-                           - Real(0.5) * lam * (UR - UL);
+            const Real UL = ps_finite_or(uin_arr(i-1, j, k, n), Real(0.0));
+            const Real UR = ps_finite_or(uin_arr(i,   j, k, n), Real(0.0));
+            const Real f  = Real(0.5) * (FL[n] + FR[n])
+                          - Real(0.5) * lam * (UR - UL);
+            flx1(i,j,k, n) = ps_finite_or(f, Real(0.0));
         }
     });
 
@@ -341,12 +373,14 @@ PS_umeth(const Box& bx,
         ps_physical_flux(i, j,   k, 1, uin_arr, q, FR);
         const Real lamL = ps_max_wave_speed(i, j-1, k, 1, uin_arr, q);
         const Real lamR = ps_max_wave_speed(i, j,   k, 1, uin_arr, q);
-        const Real lam  = amrex::max(lamL, lamR);
+        const Real lam_raw = amrex::max(lamL, lamR);
+        const Real lam = std::isfinite(lam_raw) ? lam_raw : Real(0.0);
         for (int n = 0; n < NVAR; ++n) {
-            const Real UL = uin_arr(i, j-1, k, n);
-            const Real UR = uin_arr(i, j,   k, n);
-            flx2(i,j,k, n) = Real(0.5) * (FL[n] + FR[n])
-                           - Real(0.5) * lam * (UR - UL);
+            const Real UL = ps_finite_or(uin_arr(i, j-1, k, n), Real(0.0));
+            const Real UR = ps_finite_or(uin_arr(i, j,   k, n), Real(0.0));
+            const Real f  = Real(0.5) * (FL[n] + FR[n])
+                          - Real(0.5) * lam * (UR - UL);
+            flx2(i,j,k, n) = ps_finite_or(f, Real(0.0));
         }
     });
 #endif
@@ -362,12 +396,14 @@ PS_umeth(const Box& bx,
         ps_physical_flux(i, j, k,   2, uin_arr, q, FR);
         const Real lamL = ps_max_wave_speed(i, j, k-1, 2, uin_arr, q);
         const Real lamR = ps_max_wave_speed(i, j, k,   2, uin_arr, q);
-        const Real lam  = amrex::max(lamL, lamR);
+        const Real lam_raw = amrex::max(lamL, lamR);
+        const Real lam = std::isfinite(lam_raw) ? lam_raw : Real(0.0);
         for (int n = 0; n < NVAR; ++n) {
-            const Real UL = uin_arr(i, j, k-1, n);
-            const Real UR = uin_arr(i, j, k,   n);
-            flx3(i,j,k, n) = Real(0.5) * (FL[n] + FR[n])
-                           - Real(0.5) * lam * (UR - UL);
+            const Real UL = ps_finite_or(uin_arr(i, j, k-1, n), Real(0.0));
+            const Real UR = ps_finite_or(uin_arr(i, j, k,   n), Real(0.0));
+            const Real f  = Real(0.5) * (FL[n] + FR[n])
+                          - Real(0.5) * lam * (UR - UL);
+            flx3(i,j,k, n) = ps_finite_or(f, Real(0.0));
         }
     });
 #endif
