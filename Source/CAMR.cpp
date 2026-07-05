@@ -90,6 +90,15 @@ CAMR::read_params()
     amrex::Print() << "CAMR: hydro solver = Pelanti-Shyue "
                       "wave-propagation (USE_PS_HYDRO on, ps_hydro=1)\n";
 #endif
+  } else if (do_mol != 0) {
+    amrex::Print() << "CAMR: hydro solver = MOL (do_mol=1)\n";
+  } else {
+    amrex::Print() << "CAMR: hydro solver = Godunov"
+#ifdef USE_PS_HYDRO
+                      " (USE_PS_HYDRO built in but ps_hydro=0; 6-eq slots "
+                      "carried as passive scalars)"
+#endif
+                      "\n";
   }
 
   pp.query("v", verbose);
