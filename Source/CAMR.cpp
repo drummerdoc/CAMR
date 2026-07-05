@@ -67,6 +67,31 @@ CAMR::read_params()
 
 #include "CAMR_queries.H"
 
+  // ---------------------------------------------------------------------
+  //  Pelanti-Shyue solver dispatch consistency check.
+  //
+  //  CAMR.ps_hydro is a runtime flag but it only has any effect if
+  //  the code was compiled with USE_PS_HYDRO = TRUE (which pulls in
+  //  Source/Hydro/PelantiShyue/PS_umeth.cpp and activates the
+  //  dispatch branch in Hydro_umdrv.cpp).  If the user sets ps_hydro
+  //  in the inputs file but forgot to rebuild with the flag, that's
+  //  a silent misconfiguration — the code would just run Godunov and
+  //  they'd wonder why their PS run behaves exactly like Godunov.
+  //  Catch it here.
+  if (ps_hydro != 0) {
+#ifndef USE_PS_HYDRO
+    amrex::Abort(
+        "CAMR.ps_hydro = 1 requires USE_PS_HYDRO = TRUE in the Exec "
+        "GNUmakefile, but this binary was built without it.  Either "
+        "  (a) set CAMR.ps_hydro = 0 to run Godunov, or "
+        "  (b) rebuild after adding 'USE_PS_HYDRO := TRUE' to your "
+        "GNUmakefile.  See Source/Hydro/PelantiShyue/README.md .");
+#else
+    amrex::Print() << "CAMR: hydro solver = Pelanti-Shyue "
+                      "wave-propagation (USE_PS_HYDRO on, ps_hydro=1)\n";
+#endif
+  }
+
   pp.query("v", verbose);
   pp.query("sum_interval", sum_interval);
   pp.query("dump_old", dump_old);
