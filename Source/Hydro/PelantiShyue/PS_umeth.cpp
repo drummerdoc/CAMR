@@ -193,14 +193,28 @@ ps_max_wave_speed(int i, int j, int k,
     Y_dummy[0] = Real(1.0);
     for (int n = 1; n < NUM_SPECIES; ++n) Y_dummy[n] = Real(0.0);
 
+    // Clamp per-phase inputs to sane values before calling
+    // EOS::RPY2Cs.  RPY2Cs internally computes sqrt(γ P / ρ) which
+    // NaNs on non-positive P or ρ.  LLF diffusion can transiently
+    // drive the trace phase into a non-physical (P, ρ) corner before
+    // Phase 4d's relaxation is available to correct it.
+    const Real P_floor   = Real(1.0);       // 1 Pa
+    const Real rho_floor = Real(1.0e-6);    // kg/m³
+    const Real rho_1_safe = (rho_1 > rho_floor && std::isfinite(rho_1)) ? rho_1 : rho_floor;
+    const Real rho_2_safe = (rho_2 > rho_floor && std::isfinite(rho_2)) ? rho_2 : rho_floor;
+    const Real P1_safe    = (P1    > P_floor   && std::isfinite(P1   )) ? P1    : P_floor;
+    const Real P2_safe    = (P2    > P_floor   && std::isfinite(P2   )) ? P2    : P_floor;
+
     Real c1, c2;
-    EOS::RPY2Cs(rho_1, P1, Y_dummy, c1);
-    EOS::RPY2Cs(rho_2, P2, Y_dummy, c2);
+    EOS::RPY2Cs(rho_1_safe, P1_safe, Y_dummy, c1);
+    EOS::RPY2Cs(rho_2_safe, P2_safe, Y_dummy, c2);
+    if (!std::isfinite(c1) || c1 <= Real(0.0)) c1 = Real(1.0);
+    if (!std::isfinite(c2) || c2 <= Real(0.0)) c2 = Real(1.0);
 
     Real c_mix;
     if (rho_mix > Real(1.0e-30)) {
-        const Real Y1 = alpha_1 * rho_1 / rho_mix;
-        const Real Y2 = alpha_2 * rho_2 / rho_mix;
+        const Real Y1 = alpha_1 * rho_1_safe / rho_mix;
+        const Real Y2 = alpha_2 * rho_2_safe / rho_mix;
         const Real c2_frozen = alpha_1 * Y1 * c1 * c1
                              + alpha_2 * Y2 * c2 * c2;
         c_mix = (c2_frozen > Real(0.0)) ? std::sqrt(c2_frozen)

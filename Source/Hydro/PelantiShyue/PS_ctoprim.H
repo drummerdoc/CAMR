@@ -57,9 +57,18 @@ ps_augment_primitives(int i, int j, int k,
     if (a1 > amrex::Real(1.0) - alpha_floor) a1 = amrex::Real(1.0) - alpha_floor;
     const amrex::Real a2 = amrex::Real(1.0) - a1;
 
-    // Per-phase densities ρ_k = (α_k ρ_k) / α_k .
-    const amrex::Real rho1 = m1rho1 / a1;
-    const amrex::Real rho2 = m2rho2 / a2;
+    // Per-phase densities ρ_k = (α_k ρ_k) / α_k .  LLF diffusion in
+    // the trace phase (α₂ ≈ 1e-6 initially) can drive α_k ρ_k
+    // slightly negative over many timesteps; clamp to a small
+    // positive floor to keep everything downstream finite.  A more
+    // physical remedy is the vanish-fold + mass-transfer relaxation
+    // (Phase 4d) which redistributes mass between phases; here we
+    // just guarantee positivity.
+    constexpr amrex::Real rho_floor = amrex::Real(1.0e-6);
+    amrex::Real rho1 = m1rho1 / a1;
+    amrex::Real rho2 = m2rho2 / a2;
+    if (rho1 < rho_floor || !std::isfinite(rho1)) rho1 = rho_floor;
+    if (rho2 < rho_floor || !std::isfinite(rho2)) rho2 = rho_floor;
 
     // Per-phase specific internal energies e_k = E_k − ½ u²
     // (per-phase kinetic energy uses the mixture velocity, which
@@ -78,14 +87,15 @@ ps_augment_primitives(int i, int j, int k,
     const amrex::Real ke_spec =
         amrex::Real(0.5) * (ux*ux + uy*uy + uz*uz);
 
-    // e_k = (α_k ρ_k E_k) / (α_k ρ_k) − ke .  Guarded by α_k ρ_k > 0
-    // — the volume-fraction floor above ensures a1, a2 > 0, and the
-    // vanish-fold at the end of PS_umeth will keep the partial
-    // densities from collapsing to zero.
-    const amrex::Real e1 = (m1rho1 > amrex::Real(0.0))
-        ? E1_tot / m1rho1 - ke_spec : amrex::Real(0.0);
-    const amrex::Real e2 = (m2rho2 > amrex::Real(0.0))
-        ? E2_tot / m2rho2 - ke_spec : amrex::Real(0.0);
+    // e_k = (α_k ρ_k E_k) / (α_k ρ_k) − ke .  Guarded by α_k ρ_k > 0.
+    // Fall back to the mixture specific internal energy if the
+    // per-phase partial mass goes bad — an approximation but keeps
+    // downstream EOS calls in a valid regime.
+    const amrex::Real E_mix = u(i,j,k, UEINT) / u(i,j,k, URHO);
+    const amrex::Real e1 = (m1rho1 > amrex::Real(1.0e-12))
+        ? E1_tot / m1rho1 - ke_spec : E_mix;
+    const amrex::Real e2 = (m2rho2 > amrex::Real(1.0e-12))
+        ? E2_tot / m2rho2 - ke_spec : E_mix;
 
     // Per-phase pressures.  The stock EOS is single-phase (a single
     // fluid model wrapped in namespace EOS { … }); for the 6-eq
@@ -107,6 +117,15 @@ ps_augment_primitives(int i, int j, int k,
     amrex::Real P1, P2;
     EOS::REY2P(rho1, e1, Y, P1);
     EOS::REY2P(rho2, e2, Y, P2);
+
+    // Pressure floor — real-fluid PR can return negative P for
+    // deeply compressed or two-phase-envelope-adjacent states.
+    // Downstream ps_max_wave_speed calls sqrt(γ P / ρ) which NaNs
+    // on P < 0; clamp here so the mixture rule q[QPRES] stays
+    // positive too.
+    constexpr amrex::Real P_floor = amrex::Real(1.0);   // 1 Pa
+    if (P1 < P_floor || !std::isfinite(P1)) P1 = P_floor;
+    if (P2 < P_floor || !std::isfinite(P2)) P2 = P_floor;
 
     // Write the extended primitive slots.
     q(i,j,k, QALPHA1) = a1;
