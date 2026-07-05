@@ -29,6 +29,16 @@ CAMR.hi_bc       =  Inflow     SlipWall   SlipWall
 
 CAMR.cfl = 0.4
 
+# Real-fluid EOS reference frame: PR CO₂ internal energy can be
+# negative for compressed states because ρe is measured relative to
+# the ideal-gas enthalpy at Tref = 298.15 K.  CAMR's γ-law-oriented
+# positivity assertion AMREX_ALWAYS_ASSERT(u(i,j,k,UEDEN) > 0.) then
+# fires spuriously.  Setting allow_negative_energy = 1 skips the
+# assertion; downstream code paths continue to enforce physical
+# positivity of density, pressure, and sound speed.  Safe for the
+# RealFluidCO2 backend.
+CAMR.allow_negative_energy = 1
+
 CAMR.do_mol = 0
 CAMR.ppm_type = 1
 
@@ -60,6 +70,9 @@ amr.derive_plot_vars  = x_velocity y_velocity z_velocity vfrac
 
 # T-Blowdown inputs — SI units.
 prob.p0    = 1.0e7    # Pa   (100 bar)
-prob.T0    = 300.0    # K    (supercritical CO₂)
+prob.T0    = 320.0    # K    (16 K above Tc = 304.13 K, defensibly
+                      #        supercritical; the depressurized
+                      #        rarefaction cools to ~290 K which
+                      #        still stays single-phase)
 prob.u0    = 0.0      # m/s
 prob.p_amb = 1.0e5    # Pa   (atmospheric)

@@ -34,6 +34,11 @@ CAMR.hi_bc       =  Outflow  NoSlipWall   SlipWall
 
 CAMR.cfl = 0.3  # cfl number for hyperbolic system
 
+# Real-fluid PR CO₂ internal energies are referenced to the ideal-gas
+# enthalpy at Tref = 298.15 K and can be negative for compressed
+# subcritical states — turn off the AMReX γ-law positivity assertion.
+CAMR.allow_negative_energy = 1
+
 # Use Godunov PPM
 CAMR.do_mol = 0
 CAMR.ppm_type = 1
