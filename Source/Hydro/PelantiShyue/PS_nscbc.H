@@ -292,16 +292,36 @@ right_x_outflow(const amrex::Real s_N  [NVAR],
     const Real Rp_Nm1 = ux_Nm1 + P_Nm1 / rho_c;
     const Real Rp_Nm2 = ux_Nm2 + P_Nm2 / rho_c;
 
-    // Backward 2nd-order FD derivative of R_+ at cell N:
+    // Minmod-limited backward slope on R_+.  A naive 2nd-order FD
     //     ∂R_+/∂x |_N ≈ (3 R_+_N − 4 R_+_{N-1} + R_+_{N-2}) / (2 dx)
-    const Real dRp_dx = (Real(3.0)*Rp_N - Real(4.0)*Rp_Nm1 + Rp_Nm2)
-                        / (Real(2.0) * dx);
+    // amplifies boundary oscillations catastrophically: in the wake
+    // of a T-Blowdown rarefaction, P near the outflow can oscillate
+    // between neighbour cells by 2× within 4 cells, giving a
+    // spurious ∂R_+/∂x on the order of 10⁵ /m that extrapolates the
+    // deep ghost cells (layer_offset up to numGrow) to unphysical
+    // values.  Minmod on the two consecutive backward slopes gives
+    // the same 2nd-order accuracy in smooth regions but automatically
+    // collapses to zero (i.e. flat extrapolation R_+_ghost = R_+_N,
+    // which reproduces bcnormal) wherever the slopes disagree in
+    // sign — exactly the oscillatory regions we want to protect.
+    const Real slope_hi = Rp_N   - Rp_Nm1;     // between cells N and N-1
+    const Real slope_lo = Rp_Nm1 - Rp_Nm2;     // between cells N-1 and N-2
+    Real dRp_scaled;                            // dx · ∂R_+/∂x |_N
+    if (slope_hi * slope_lo <= Real(0.0)) {
+        dRp_scaled = Real(0.0);
+    } else if (std::abs(slope_hi) < std::abs(slope_lo)) {
+        dRp_scaled = slope_hi;
+    } else {
+        dRp_scaled = slope_lo;
+    }
 
     // Extrapolate R_+ into ghost layer.  For layer_offset = 1 this
-    // sits one cell outside the domain.  Higher layer_offset for
-    // deeper ghosts (MUSCL wants a smooth 3-4 cell stencil at the
-    // boundary).
-    const Real Rp_ghost = Rp_N + static_cast<Real>(layer_offset) * dx * dRp_dx;
+    // sits one cell outside the domain.  Deeper ghosts (layer_offset
+    // up to numGrow) extend the linear-in-x profile so MUSCL sees a
+    // clean stencil at the boundary — but only where the smooth-slope
+    // check above passed.
+    const Real Rp_ghost = Rp_N
+                        + static_cast<Real>(layer_offset) * dRp_scaled;
 
     // R_- target from ambient far-field (u_amb = 0, P = P_amb).
     // Optional Poinsot-Lele soft relaxation with the same impedance:
