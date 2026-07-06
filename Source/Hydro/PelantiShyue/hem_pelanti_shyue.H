@@ -687,8 +687,8 @@ inline PsWaveSpeeds ps_wave_speeds(const PsState& sL, const PsState& sR)
             const double d = std::atof(v);
             return (d >= 1.0 && d <= 10.0) ? d : 2.0;
         }();
-        auto q_factor = [q_max](double P_star, double P_K, double rho_K,
-                                double c_K) -> double {
+        auto q_factor = [](double P_star, double P_K, double rho_K,
+                            double c_K) -> double {
             if (P_star <= P_K) return 1.0;                  // rarefaction
             if (P_K   <= 0.0 || rho_K <= 0.0 || c_K <= 0.0) return 1.0;
             const double gamma_eff = c_K * c_K * rho_K / P_K;
