@@ -40,6 +40,15 @@ CAMR.hi_bc       =  Inflow     SlipWall   SlipWall
 
 CAMR.cfl = 0.4
 
+# Fixed dt bypasses CAMR::estTimeStep entirely (which the TinyProfile
+# showed dominating wall-clock at 83 %, since every cell's PR Newton
+# in state_from_rho_e is called per step to compute sound speed).
+# 5.5e-6 s is 92 % of the previously-observed hydro-limited dt
+# (5.985e-6 s at t≈0) with margin for the wave-speed growth as the
+# rarefaction develops.  If the sim ever becomes unstable, drop this
+# by another factor of 2 or comment it out to re-enable dynamic dt.
+CAMR.fixed_dt = 5.5e-6
+
 # Real-fluid EOS reference frame: PR CO₂ internal energy can be
 # negative for compressed states because ρe is measured relative to
 # the ideal-gas enthalpy at Tref = 298.15 K.  CAMR's γ-law-oriented
