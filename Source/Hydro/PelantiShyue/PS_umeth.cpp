@@ -493,7 +493,7 @@ PS_umeth(const Box& bx,
          Array4<const Real> const& uin_arr,
          Array4<const Real> const& q,
          Array4<const Real> const& /*qa*/,
-         Array4<Real> const& /*dsdt_arr*/,
+         Array4<Real> const& dsdt_arr,
          AMREX_D_DECL(Array4<Real> const& flx1,
                       Array4<Real> const& flx2,
                       Array4<Real> const& flx3),
@@ -505,7 +505,7 @@ PS_umeth(const Box& bx,
                       Array4<const Real> const& /*a3*/),
          Array4<Real> const& pdivu,
          Array4<const Real> const& /*vol*/,
-         const GpuArray<Real, AMREX_SPACEDIM> /*dx*/,
+         const GpuArray<Real, AMREX_SPACEDIM> dx,
          const Real /*dt*/,
          const Real /*small*/,
          const Real /*small_dens*/,
@@ -603,6 +603,11 @@ PS_umeth(const Box& bx,
                           - Real(0.5) * lam * (UR_face[n] - UL_face[n]);
             flx1(i,j,k, n) = ps_finite_or(f, Real(0.0));
         }
+        // Wave-propagation form for α_1: bypass consup for this slot.
+        // See end-of-file α_wp cell kernel; setting flx[UALPHA1] = 0
+        // makes consup add nothing to dsdt[UALPHA1], preserving the
+        // upwind non-conservative update we write directly.
+        flx1(i,j,k, UALPHA1) = Real(0.0);
     });
 
 #if (AMREX_SPACEDIM >= 2)
@@ -637,6 +642,7 @@ PS_umeth(const Box& bx,
                           - Real(0.5) * lam * (UR_face[n] - UL_face[n]);
             flx2(i,j,k, n) = ps_finite_or(f, Real(0.0));
         }
+        flx2(i,j,k, UALPHA1) = Real(0.0);   // WP form for α_1 — see end-of-file kernel.
     });
 #endif
 
@@ -672,6 +678,7 @@ PS_umeth(const Box& bx,
                           - Real(0.5) * lam * (UR_face[n] - UL_face[n]);
             flx3(i,j,k, n) = ps_finite_or(f, Real(0.0));
         }
+        flx3(i,j,k, UALPHA1) = Real(0.0);   // WP form for α_1 — see end-of-file kernel.
     });
 #endif
 
@@ -681,6 +688,186 @@ PS_umeth(const Box& bx,
     // and consup's Saxpy will be a no-op for our case.  A more
     // careful implementation would populate pdivu with the mixture
     // pressure * face-normal velocity; deferred until 4c-β3.
+
+    // ==============================================================
+    //  Wave-propagation α_1 update  (Phase 4c-β3 second-pass fix).
+    //
+    //  The α_1 volume fraction obeys a non-conservative transport
+    //
+    //        ∂_t α_1 + u · ∇α_1 = μ (P_1 − P_2)                (1)
+    //
+    //  where the RHS is a pressure-relaxation source handled by
+    //  ps_apply_relaxation.  The transport term is NOT a flux
+    //  divergence, so the conservative-flux + post-consup
+    //  cancellation approach (PS_alpha_transport.H) requires the
+    //  flux and cancellation to be face-consistent.  Under MUSCL
+    //  reconstruction the flux uses face-consistent divergence
+    //  while the cancellation used cell-centred central-diff,
+    //  producing a residual  dt · α · (∇·u_central − ∇·u_face)
+    //  that accumulated to α > 1.4 by step 300 on T-Blowdown.
+    //
+    //  Following the standalone ppm_1d_ps_wp.cpp design, this
+    //  kernel implements α transport directly via upwind
+    //  fluctuations at each face.  Cell i receives a contribution
+    //  from face f iff the face-normal velocity there points INTO
+    //  cell i:
+    //
+    //      face i-1/2 (between cells i-1 and i):
+    //          if u_face > 0:  d α_i /d t  −= u_face · (α_i - α_{i-1}) / dx
+    //      face i+1/2 (between cells i and i+1):
+    //          if u_face < 0:  d α_i /d t  −= u_face · (α_{i+1} - α_i) / dx
+    //
+    //  Same construction in y and z.  For MUSCL the face velocity
+    //  and adjacent α's are reconstructed via ps_muscl_reconstruct;
+    //  for Godunov (use_muscl == 0) they are cell-centre values.
+    //
+    //  The write path: we set flx[dir](i,j,k, UALPHA1) = 0 in every
+    //  face kernel (above) so hydro_consup adds ZERO to dsdt_arr
+    //  for the α slot.  We THEN write the WP update directly into
+    //  dsdt_arr(i,j,k, UALPHA1) — consup's per-cell ParallelFor and
+    //  ours are sequential (consup runs after PS_umeth returns), so
+    //  the sequence is:
+    //
+    //      1. dsdt_arr set to 0 by construct_hydro_source (setVal 0).
+    //      2. PS_umeth face loops write flx[]. flx[UALPHA1] = 0.
+    //      3. PS_umeth WP kernel (below) writes dsdt_arr[UALPHA1] = WP update.
+    //      4. adjust_fluxes modifies flx[] (but UALPHA1 stays 0).
+    //      5. hydro_consup does dsdt_arr[n] += -div(flx[n])/vol.
+    //         For UALPHA1: += -div(0) = += 0.  WP update preserved.
+    //
+    //  This also OBVIATES the ps_correct_alpha_transport call in
+    //  CAMR::CAMR_advance — CAMR_advance.cpp is updated to skip it
+    //  when running PS mode.  PS_alpha_transport.H is preserved but
+    //  unused (documentation of the Godunov-era cancellation
+    //  approach for reference).
+    // ==============================================================
+    amrex::ParallelFor(bx,
+    [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
+    {
+        // Cell-centre velocity helpers.  Used in the Godunov branch
+        // (no reconstruction) and as a safe fallback when a MUSCL
+        // reconstruction returns non-finite face state.
+        auto u_cell = [&] (int di, int dj, int dk, int d) -> Real
+        {
+            const int ii = i + di, jj = j + dj, kk = k + dk;
+            const Real r_raw = uin_arr(ii, jj, kk, URHO);
+            const Real r = (std::isfinite(r_raw) && r_raw > Real(1.0e-30))
+                            ? r_raw : Real(1.0e-30);
+            const int MU = (d == 0) ? UMX
+#if (AMREX_SPACEDIM >= 2)
+                         : (d == 1) ? UMY
+#endif
+#if (AMREX_SPACEDIM == 3)
+                         : (d == 2) ? UMZ
+#endif
+                         : UMX;
+            const Real m = ps_finite_or(uin_arr(ii, jj, kk, MU), Real(0.0));
+            return m / r;
+        };
+
+        // Face-normal velocity + face-adjacent α values at the face
+        // that has cell (fi, fj, fk) = (i + fL_di, ...) on its low
+        // (L) side and (fi + di, ...) on its high (R) side, in
+        // direction d.  Returns (u_face_n, α_L, α_R).
+        auto face_state = [&] (int fLi, int fLj, int fLk, int d)
+        {
+            const int di = (d == 0) ? 1 : 0;
+            const int dj = (d == 1) ? 1 : 0;
+            const int dk = (d == 2) ? 1 : 0;
+            const int fRi = fLi + di, fRj = fLj + dj, fRk = fLk + dk;
+
+            Real u_face_n = Real(0.0), aL = Real(0.0), aR = Real(0.0);
+            const int MU = (d == 0) ? UMX
+#if (AMREX_SPACEDIM >= 2)
+                         : (d == 1) ? UMY
+#endif
+#if (AMREX_SPACEDIM == 3)
+                         : (d == 2) ? UMZ
+#endif
+                         : UMX;
+
+            if (use_muscl != 0) {
+                Real UL_f[NVAR], UR_f[NVAR];
+                // Reconstruct at the face whose R cell is (fRi, fRj, fRk).
+                ps_muscl_reconstruct(fRi, fRj, fRk, d, uin_arr, UL_f, UR_f);
+                const Real rL = amrex::max(UL_f[URHO], Real(1.0e-30));
+                const Real rR = amrex::max(UR_f[URHO], Real(1.0e-30));
+                u_face_n = Real(0.5) * (UL_f[MU]/rL + UR_f[MU]/rR);
+                aL = UL_f[UALPHA1];
+                aR = UR_f[UALPHA1];
+                if (!std::isfinite(u_face_n) || !std::isfinite(aL) || !std::isfinite(aR)) {
+                    // Fall back to cell values if MUSCL produced a
+                    // non-finite face state (positivity failure).
+                    u_face_n = Real(0.5) * (u_cell(0,0,0,d) + u_cell(di,dj,dk,d));
+                    aL = ps_finite_or(uin_arr(fLi, fLj, fLk, UALPHA1), Real(1.0));
+                    aR = ps_finite_or(uin_arr(fRi, fRj, fRk, UALPHA1), Real(1.0));
+                }
+            } else {
+                // Godunov: cell-centre velocity averaged across the face,
+                // cell-centre α on each side.  This is the same u_face
+                // implicit in the Godunov flux, so the update below is
+                // 1st-order upwind advection consistent with the flux.
+                const Real uLc = u_cell(fLi - i, fLj - j, fLk - k, d);
+                const Real uRc = u_cell(fRi - i, fRj - j, fRk - k, d);
+                u_face_n = Real(0.5) * (uLc + uRc);
+                aL = ps_finite_or(uin_arr(fLi, fLj, fLk, UALPHA1), Real(1.0));
+                aR = ps_finite_or(uin_arr(fRi, fRj, fRk, UALPHA1), Real(1.0));
+            }
+            return amrex::GpuArray<Real, 3>{u_face_n, aL, aR};
+        };
+
+        Real da_dt = Real(0.0);
+
+        // --- x-direction faces of cell (i,j,k) ------------------------
+        {
+            // Left face: between (i-1, j, k) [L] and (i, j, k) [R].
+            const auto s = face_state(i-1, j, k, 0);
+            const Real u = s[0], aL = s[1], aR = s[2];
+            if (u > Real(0.0)) {
+                da_dt -= u * (aR - aL) / dx[0];
+            }
+        }
+        {
+            // Right face: between (i, j, k) [L] and (i+1, j, k) [R].
+            const auto s = face_state(i, j, k, 0);
+            const Real u = s[0], aL = s[1], aR = s[2];
+            if (u < Real(0.0)) {
+                da_dt -= u * (aR - aL) / dx[0];
+            }
+        }
+
+#if (AMREX_SPACEDIM >= 2)
+        // --- y-direction faces ----------------------------------------
+        {
+            const auto s = face_state(i, j-1, k, 1);
+            const Real u = s[0], aL = s[1], aR = s[2];
+            if (u > Real(0.0)) da_dt -= u * (aR - aL) / dx[1];
+        }
+        {
+            const auto s = face_state(i, j, k, 1);
+            const Real u = s[0], aL = s[1], aR = s[2];
+            if (u < Real(0.0)) da_dt -= u * (aR - aL) / dx[1];
+        }
+#endif
+#if (AMREX_SPACEDIM == 3)
+        // --- z-direction faces ----------------------------------------
+        {
+            const auto s = face_state(i, j, k-1, 2);
+            const Real u = s[0], aL = s[1], aR = s[2];
+            if (u > Real(0.0)) da_dt -= u * (aR - aL) / dx[2];
+        }
+        {
+            const auto s = face_state(i, j, k, 2);
+            const Real u = s[0], aL = s[1], aR = s[2];
+            if (u < Real(0.0)) da_dt -= u * (aR - aL) / dx[2];
+        }
+#endif
+
+        // Write into dsdt_arr — this slot's contribution from the
+        // upcoming hydro_consup call is 0 because we set the flux to
+        // 0 above, so this value is preserved through consup +=.
+        dsdt_arr(i, j, k, UALPHA1) = ps_finite_or(da_dt, Real(0.0));
+    });
 }
 
 #else  // !USE_PS_HYDRO
