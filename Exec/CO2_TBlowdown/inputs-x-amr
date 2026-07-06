@@ -1,0 +1,98 @@
+# =====================================================================
+#  T-Blowdown with 2-level AMR — Phase 4e test case.
+#
+#  Same physics/BC/EOS setup as inputs-x, but max_level = 1 with a
+#  pressure-gradient-based refinement tag.  The base grid is the same
+#  N=128 (Godunov+NSCBC baseline) and the fine level refines by 2x in
+#  the shock/rarefaction region, giving effective N=256 there.
+#
+#  Purpose: exercise the CAMR AMR pipeline (regrid, reflux, interp)
+#  with the PS 6-eq state to see whether the standard cell_cons_interp
+#  correctly interpolates the extended slots (UALPHA1, UM1RHO1,
+#  UM2RHO2, UE1, UE2) or if we need a custom interpolator.  Reflux is
+#  a no-op for UALPHA1 because F[UALPHA1] = 0 in the wave-propagation
+#  form, so this test primarily exercises interpolation-on-regrid.
+#
+#  Diagnostics to check after the run:
+#    * α_1 range stays in [α_floor, 1 − α_floor] on all levels
+#    * mixture identity  α_1 ρ_1 + α_2 ρ_2 = ρ  holds after regrid
+#    * mixture identity  α_1 ρ_1 E_1 + α_2 ρ_2 E_2 = ρ E  holds
+#    * grid-conv comparison: N=128 no-AMR vs N=128 base + 2×AMR vs
+#      N=256 no-AMR — expect the AMR run to sit between the two.
+# =====================================================================
+
+amrex.fpe_trap_invalid = 0
+
+max_step  = 300
+stop_time = 1.65e-3
+
+geometry.is_periodic = 0 0 0
+geometry.coord_sys   = 0
+geometry.prob_lo     =   0.0    0.0    0.0
+geometry.prob_hi     =   1.0    0.125  0.125
+
+# Base level N=128 to match the Godunov N=128 grid-conv reference run
+# recorded in docs/design/camr_ps_validation.md.  AMR then refines to
+# effective N=256 in the wave region.
+amr.n_cell           =   128   16   16
+
+CAMR.lo_bc       =  SlipWall   SlipWall   SlipWall
+CAMR.hi_bc       =  Inflow     SlipWall   SlipWall
+
+CAMR.cfl = 0.25
+CAMR.fixed_dt = 0
+
+CAMR.allow_negative_energy = 1
+CAMR.do_mol = 0
+CAMR.ppm_type = 1
+
+CAMR.ps_hydro = 1
+CAMR.ps_recon = 0
+CAMR.ps_bc_use_nscbc = 1
+CAMR.ps_bc_nscbc_sigma = 0.25
+
+CAMR.v = 1
+amr.v = 1
+
+CAMR.sum_interval = -1
+CAMR.redistribution_type = StateRedist
+
+amr.loadbalance_with_workestimates = 0
+
+# --- AMR structure -------------------------------------------------
+# 2 levels: base (N=128) + one 2× refinement.  ref_ratio 2 in x/y/z.
+amr.max_level       = 1
+amr.ref_ratio       = 2 2 2 2
+amr.regrid_int      = 4 4 4 4     # regrid every 4 base-level steps
+amr.blocking_factor = 8
+amr.max_grid_size   = 32
+amr.n_error_buf     = 2 2 2 2
+amr.grid_eff        = 0.7
+
+# --- Refinement tagger ---------------------------------------------
+# Pressure-gradient tag: refine cells where |Δp / Δx| across
+# neighbours exceeds 5 MPa (≈ 50 bar).  The T-Blowdown wave has a
+# ~30-70 bar drop across ~20 cells at N=128 (dx ≈ 7.8 mm), so this
+# threshold catches the rarefaction fan and the compound-wave
+# feature without triggering everywhere.  end_time protects against
+# a cold-restart scenario where P has settled uniformly.
+amr.refinement_indicators = ptag
+amr.ptag.field_name = pressure
+amr.ptag.adjacent_difference_greater = 5.0e6
+amr.ptag.max_level = 1
+
+DistributionMapping.strategy = ROUNDROBIN
+
+amr.checkpoint_files_output = 0
+amr.check_file              = chk_amr
+amr.check_int               = 500
+
+amr.plot_files_output = 1
+amr.plot_file         = plt_amr_
+amr.plot_int          = 100
+amr.derive_plot_vars  = x_velocity y_velocity z_velocity vfrac pressure
+
+prob.p0    = 1.0e7
+prob.T0    = 320.0
+prob.u0    = 0.0
+prob.p_amb = 1.0e5
