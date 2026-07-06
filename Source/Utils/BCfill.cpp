@@ -215,6 +215,21 @@ CAMR_bcfill_hyp(
   use_nscbc = 0;   // safety: NSCBC is a no-op without PS_HYDRO.
 #endif
 
+  // One-time per-run banner so runlogs record which outflow BC path
+  // is actually in play.  Diagnostic-only; no performance impact.
+  {
+    static bool banner_shown = false;
+    if (!banner_shown) {
+      amrex::Print()
+          << "  CAMR bcfill: outflow (Inflow-flagged) BC = "
+          << (use_nscbc != 0
+                  ? "PS-NSCBC (BCfill.cpp characteristic-invariant)"
+                  : "bcnormal (prob.H linearised Riemann invariant)")
+          << ",  σ = " << nscbc_sigma << "\n";
+      banner_shown = true;
+    }
+  }
+
   amrex::GpuBndryFuncFab<PCHypFillExtDir> hyp_bndry_func(
     PCHypFillExtDir{lprobparm, use_nscbc, nscbc_sigma});
   hyp_bndry_func(bx, data, dcomp, numcomp, geom, time, bcr, bcomp, scomp);
