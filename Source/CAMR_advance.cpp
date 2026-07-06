@@ -160,15 +160,23 @@ CAMR::CAMR_advance (Real time,
     Sborder.define(grids, dmap, NVAR, numGrow(), amrex::MFInfo(), Factory());
 
 #ifdef USE_PS_HYDRO
-    // Phase 4d step 1: mechanical relaxation (drives P₁ → P₂).
-    // Applied unconditionally when the code is built with
-    // USE_PS_HYDRO — even under ps_hydro = 0 (Godunov with
-    // passively-advected 6-eq state), because the per-phase
-    // primitives populated by ps_augment_primitives are used by
-    // downstream plotfile-derives and staying near P₁ = P₂ makes
-    // those diagnostics sensible.  Cost is one EOS::REY2P +
-    // EOS::RPY2Cs pair per cell — negligible next to the hydro step.
-    if (ps_hydro != 0) {
+    // Phase 4d relaxation dispatch — currently DISABLED after
+    // empirical testing showed the HEM e_k reset increased wall-
+    // clock per step rather than decreasing it.  The relaxation
+    // logic still lives in Source/Hydro/PelantiShyue/PS_relaxation.H
+    // for future re-enable.
+    //
+    // Root cause of the wall-clock growth is per-cell PR Newton
+    // iteration hitting its 80-iter cap in cells whose per-phase
+    // (ρ_k, e_k) has drifted; our HEM reset didn't touch enough
+    // of the problem.  The fix is a proper finite-rate Pelanti
+    // mechanical + mass-transfer relaxation (Phase 4d-2/4d-3),
+    // which keeps ALL cells on-manifold every step.  Until that
+    // lands, the LLF baseline runs unbraced.
+    //
+    // To re-enable for experimentation, un-comment the block.
+    // (void)ps_apply_relaxation;  // silence unused warning
+    if (false && ps_hydro != 0) {
         ps_apply_relaxation(S_new);
         clean_state(S_new);
     }
