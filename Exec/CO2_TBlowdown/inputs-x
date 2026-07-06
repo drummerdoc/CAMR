@@ -88,6 +88,15 @@ amr.max_grid_size   = 16
 amr.n_error_buf     = 0 0 0 0
 amr.grid_eff        = 0.99
 
+# AMReX default DistributionMapping::Strategy is SFC (space-filling
+# curve), which keeps neighboring boxes on the same rank to minimise
+# FillBoundary traffic.  For a rarefaction-fan case that's exactly
+# what pins all the slow-Newton boxes onto ONE rank — the profile
+# shows ctoprim MAX/AVG ≈ 6× because of it.  Force ROUNDROBIN to
+# spread neighbors across ranks by construction, accepting the
+# extra FillBoundary bandwidth cost in exchange for load balance.
+DistributionMapping.strategy = ROUNDROBIN
+
 amr.checkpoint_files_output = 0
 amr.check_file              = chk
 amr.check_int               = 500
