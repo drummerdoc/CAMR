@@ -88,6 +88,51 @@ namespace EOS {
   static constexpr amrex::Real gamma = 1.4;
 
   // ----------------------------------------------------------------
+  //  Per-thread (ρ, e) → State cache.
+  //
+  //  hydro_ctoprim calls REY2T, REY2P, REY2Gam, REY2dpde, and
+  //  REY2dpdr_e on the SAME (ρ, e) back-to-back per cell.  Without
+  //  caching each does an independent Newton on the PR cubic
+  //  (state_from_rho_e), producing 5× redundant work.  The cache
+  //  reuses the last computed State when (ρ, e) match to within a
+  //  strict tolerance — so hydro_ctoprim's 5 EOS calls become
+  //  1 Newton + 4 free reads.  CAMR_estdt_hydro's 2 calls become 1
+  //  Newton + 1 free read.
+  //
+  //  Because USE_OMP = FALSE for this build (MPI-only), a plain
+  //  function-local static is safe.  For a later USE_OMP=TRUE
+  //  build this needs to become #pragma omp threadprivate.
+  //
+  //  For device builds (USE_CUDA / USE_HIP / USE_SYCL), the static
+  //  cache is a no-op — the compiler places it in per-thread stack
+  //  or DEVICE memory and every GPU thread starts with a fresh
+  //  cache.  That's actually a valid semantic (the cache is
+  //  advisory), so no #ifdef needed.
+  // ----------------------------------------------------------------
+  AMREX_GPU_HOST_DEVICE
+  AMREX_FORCE_INLINE
+  hem::State
+  co2_state_from_rho_e_cached(amrex::Real rho, amrex::Real e)
+  {
+      static amrex::Real     rho_cache = amrex::Real(-1);
+      static amrex::Real     e_cache   = amrex::Real(0);
+      static hem::State      state_cache{};
+      static bool            cache_valid = false;
+
+      // Bit-exact cache hit: same (ρ, e) as previous call.  Robust
+      // against noisy inputs because ctoprim uses the same values
+      // in back-to-back calls.
+      if (cache_valid && rho == rho_cache && e == e_cache) {
+          return state_cache;
+      }
+      state_cache = hem::state_from_rho_e(co2_fluid(), rho, e);
+      rho_cache   = rho;
+      e_cache     = e;
+      cache_valid = true;
+      return state_cache;
+  }
+
+  // ----------------------------------------------------------------
   //  Utilities (composition helpers)
   // ----------------------------------------------------------------
   AMREX_GPU_HOST_DEVICE
@@ -124,7 +169,7 @@ namespace EOS {
   AMREX_FORCE_INLINE
   void REY2T(amrex::Real R, amrex::Real E, amrex::Real* /*Y*/, amrex::Real& T)
   {
-      hem::State s = hem::state_from_rho_e(co2_fluid(), R, E);
+      hem::State s = co2_state_from_rho_e_cached(R, E);
       T = s.T;
   }
 
@@ -133,7 +178,7 @@ namespace EOS {
   AMREX_FORCE_INLINE
   void REY2P(amrex::Real R, amrex::Real E, amrex::Real* /*Y*/, amrex::Real& P)
   {
-      hem::State s = hem::state_from_rho_e(co2_fluid(), R, E);
+      hem::State s = co2_state_from_rho_e_cached(R, E);
       P = s.P;
   }
 
@@ -144,8 +189,7 @@ namespace EOS {
   AMREX_FORCE_INLINE
   void REY2Gam(amrex::Real R, amrex::Real E, amrex::Real* /*Y*/, amrex::Real& gam1)
   {
-      hem::State s = hem::state_from_rho_e(co2_fluid(), R, E);
-      // c is set inside state_from_rho_e; P likewise.
+      hem::State s = co2_state_from_rho_e_cached(R, E);
       gam1 = (s.rho * s.c * s.c) / s.P;
   }
 
@@ -177,7 +221,7 @@ namespace EOS {
   AMREX_FORCE_INLINE
   void REY2dpde(amrex::Real R, amrex::Real E, amrex::Real* /*Y*/, amrex::Real& dpde)
   {
-      hem::State s = hem::state_from_rho_e(co2_fluid(), R, E);
+      hem::State s = co2_state_from_rho_e_cached(R, E);
       const amrex::Real gam1 = (s.rho * s.c * s.c) / s.P;
       dpde = (gam1 - amrex::Real(1.0)) * R;
   }
@@ -186,7 +230,7 @@ namespace EOS {
   AMREX_FORCE_INLINE
   void REY2dpdr_e(amrex::Real R, amrex::Real E, amrex::Real* /*Y*/, amrex::Real& dpdr_e)
   {
-      hem::State s = hem::state_from_rho_e(co2_fluid(), R, E);
+      hem::State s = co2_state_from_rho_e_cached(R, E);
       dpdr_e = s.P / s.rho;
   }
 
