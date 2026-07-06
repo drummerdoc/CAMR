@@ -1,6 +1,7 @@
 #include "CAMR.H"
 #include "IndexDefines.H"
 #ifdef USE_PS_HYDRO
+#include "PS_alpha_transport.H"
 #include "PS_relaxation.H"
 #endif
 
@@ -156,20 +157,34 @@ CAMR::CAMR_advance (Real time,
         clean_state(S_new);
     }
 
-    Sborder.clear();
-    Sborder.define(grids, dmap, NVAR, numGrow(), amrex::MFInfo(), Factory());
-
 #ifdef USE_PS_HYDRO
-    // Phase 4d: Pelanti mechanical relaxation.  Uses the standalone
-    // ps_pressure_relax_cell verbatim — preserves per-phase masses
-    // and mixture ρE while driving P_1 → P_2 via a coupled Newton
-    // on (α, e_1, e_2).  No HEM shortcuts, no e_k reset — real
-    // physics.  See Source/Hydro/PelantiShyue/PS_relaxation.H .
+    // Phase 4c-β3 (transport) + Phase 4d (relaxation) applied here,
+    // BEFORE Sborder is cleared, because ps_correct_alpha_transport
+    // needs Sborder's numGrow() ghost cells to build a centered
+    // ∇·u stencil at box boundaries.
+    //
+    //   1. ps_correct_alpha_transport:
+    //      Cancels the spurious α · ∇·u contribution from the
+    //      conservative F[UALPHA1] = α u_n update produced by
+    //      PS_umeth + hydro_consup.  See PS_alpha_transport.H .
+    //      Without this correction α_1 accumulates outside [0,1]
+    //      under expansion/compression waves.
+    //
+    //   2. ps_apply_relaxation:
+    //      Standalone ps_pressure_relax_cell verbatim — preserves
+    //      per-phase masses and mixture ρE while driving P_1 → P_2
+    //      via a coupled Newton on (α, e_1, e_2).  No HEM shortcuts,
+    //      no e_k reset — real physics.  See PS_relaxation.H .
     if (ps_hydro != 0) {
+        ps_correct_alpha_transport(Sborder, S_new, dt, Geom());
+        clean_state(S_new);
         ps_apply_relaxation(S_new);
         clean_state(S_new);
     }
 #endif
+
+    Sborder.clear();
+    Sborder.define(grids, dmap, NVAR, numGrow(), amrex::MFInfo(), Factory());
 
     if (do_react) {
         react(S_new);

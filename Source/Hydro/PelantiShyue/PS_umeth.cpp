@@ -278,13 +278,18 @@ ps_max_wave_speed(int i, int j, int k,
 //  Not yet implemented in this file (Phase 4c-β3 or later):
 //    * PLM slope-limited reconstruction of L/R states at the face.
 //      For now L = cell(i-1,j,k), R = cell(i,j,k); first-order.
-//    * Non-conservative α source ∂α/∂t + u·∇α .  For an initially
-//      single-phase run (α₁ ≈ 1 everywhere at t=0), this source is
-//      zero to good approximation; the transport equation is
-//      trivially satisfied by the passive advection encoded in
-//      F[UALPHA1] = α₁ u_n .  For a proper two-phase test
-//      (e.g. B4-Cross-critical), this becomes a large correction
-//      and needs 4c-β3.
+//    * Non-conservative α transport: this file still ships
+//      F[UALPHA1] = α₁ u_n, whose conservative divergence carries
+//      a spurious α · ∇·u contribution beyond the true u · ∇α
+//      transport term.  Phase 4c-β3 (this commit) adds
+//      ps_correct_alpha_transport (PS_alpha_transport.H) which
+//      cancels the spurious term post-consup by adding
+//         Δα = dt · α · ∇·u
+//      to S_new[UALPHA1].  Called from CAMR::CAMR_advance
+//      immediately before ps_apply_relaxation.  The T-Blowdown
+//      case initially α₁ ≈ 1 everywhere then relies on the
+//      correction + relaxation to keep α_1 pinned to 1 − α_floor
+//      as it should be for a single-phase evolution.
 //    * Pelanti / MT / flash relaxation (Phase 4d, source-term MFs).
 // =====================================================================
 void
