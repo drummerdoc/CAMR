@@ -42,8 +42,10 @@
 
 #ifdef USE_PS_HYDRO
 
+#include "CAMR.H"
 #include "EOS.H"
 #include "PS_ctoprim.H"
+#include "PS_reconstruction.H"
 
 using namespace amrex;
 
@@ -256,6 +258,197 @@ ps_max_wave_speed(int i, int j, int k,
     return std::abs(un) + c_mix;
 }
 
+
+// =====================================================================
+//  _from_state variants of the flux and wave-speed helpers, taking a
+//  local NVAR array of the conservative state and deriving the
+//  extended primitives inline.  Used by the MUSCL reconstruction path
+//  (CAMR.ps_recon = 1), where the reconstructed face states are not
+//  cell-centred and so cannot be read from the q Array4.
+//
+//  This is essentially PS_ctoprim's ps_augment_primitives, unrolled
+//  to a local-array signature.  It duplicates the EOS::REY2P and
+//  RPY2Cs work of ctoprim per face; the (ρ, e) → State cache in the
+//  RealFluidCO2 backend catches the redundant back-to-back solves
+//  when adjacent faces share a phase state.  Two EOS calls per phase
+//  per face is the intrinsic cost of 2nd-order in space.
+//
+//  For maximum reuse and clarity we produce F(U) via exactly the
+//  same formulas as ps_physical_flux — only the inputs differ.
+// =====================================================================
+AMREX_GPU_HOST_DEVICE
+AMREX_FORCE_INLINE
+void
+ps_physical_flux_from_state(int idir, const Real U[NVAR], Real F[NVAR]) noexcept
+{
+    // Derive mixture primitives.
+    const Real rho    = amrex::max(ps_finite_or(U[URHO], Real(1.0e-6)), Real(1.0e-6));
+    const Real inv_r  = Real(1.0) / rho;
+    const Real ux     = ps_finite_or(U[UMX], Real(0.0)) * inv_r;
+#if (AMREX_SPACEDIM >= 2)
+    const Real uy     = ps_finite_or(U[UMY], Real(0.0)) * inv_r;
+#else
+    const Real uy     = Real(0.0);
+#endif
+#if (AMREX_SPACEDIM == 3)
+    const Real uz     = ps_finite_or(U[UMZ], Real(0.0)) * inv_r;
+#else
+    const Real uz     = Real(0.0);
+#endif
+    Real un = ux;
+    if      (idir == 1) un = uy;
+    else if (idir == 2) un = uz;
+
+    const Real UEden  = ps_finite_or(U[UEDEN], Real(0.0));
+    const Real UEint  = ps_finite_or(U[UEINT], Real(0.0));
+    const Real e_mix  = UEint * inv_r;
+
+    // Derive per-phase primitives.
+    Real alpha_1 = ps_finite_or(U[UALPHA1], Real(1.0));
+    constexpr Real alpha_floor = Real(1.0e-6);
+    if (alpha_1 < alpha_floor)              alpha_1 = alpha_floor;
+    if (alpha_1 > Real(1.0) - alpha_floor)  alpha_1 = Real(1.0) - alpha_floor;
+    const Real alpha_2 = Real(1.0) - alpha_1;
+
+    const Real m1 = amrex::max(ps_finite_or(U[UM1RHO1], Real(0.0)), Real(0.0));
+    const Real m2 = amrex::max(ps_finite_or(U[UM2RHO2], Real(0.0)), Real(0.0));
+    constexpr Real rho_floor = Real(1.0e-6);
+    Real rho_1 = (m1 > Real(0.0)) ? m1 / alpha_1 : rho_floor;
+    Real rho_2 = (m2 > Real(0.0)) ? m2 / alpha_2 : rho_floor;
+    if (rho_1 < rho_floor || !std::isfinite(rho_1)) rho_1 = rho_floor;
+    if (rho_2 < rho_floor || !std::isfinite(rho_2)) rho_2 = rho_floor;
+
+    const Real ke_spec = Real(0.5) * (ux*ux + uy*uy + uz*uz);
+    const Real E1_tot = ps_finite_or(U[UE1], Real(0.0));
+    const Real E2_tot = ps_finite_or(U[UE2], Real(0.0));
+    const Real e1 = (m1 > Real(1.0e-12)) ? E1_tot / m1 - ke_spec : e_mix;
+    const Real e2 = (m2 > Real(1.0e-12)) ? E2_tot / m2 - ke_spec : e_mix;
+
+    Real Y[NUM_SPECIES];
+    Y[0] = Real(1.0);
+    for (int n = 1; n < NUM_SPECIES; ++n) Y[n] = Real(0.0);
+
+    Real P1, P2, P_stock;
+    EOS::REY2P(rho_1, e1,    Y, P1);
+    EOS::REY2P(rho_2, e2,    Y, P2);
+    EOS::REY2P(rho,   e_mix, Y, P_stock);
+    constexpr Real P_floor = Real(1.0);
+    if (P_stock < P_floor || !std::isfinite(P_stock)) P_stock = P_floor;
+    const bool P1_bad = (P1 < P_floor) || !std::isfinite(P1);
+    const bool P2_bad = (P2 < P_floor) || !std::isfinite(P2);
+    if (P1_bad) P1 = P_stock;
+    if (P2_bad) P2 = P_stock;
+    const Real P_mix = (!P1_bad && !P2_bad)
+        ? (alpha_1 * P1 + alpha_2 * P2)
+        : P_stock;
+
+    // ---- Assemble the flux exactly as ps_physical_flux does --------
+    for (int n = 0; n < NVAR; ++n) F[n] = Real(0.0);
+
+    F[URHO ] = rho * un;
+    F[UMX  ] = rho * un * ux + (idir == 0 ? P_mix : Real(0.0));
+#if (AMREX_SPACEDIM >= 2)
+    F[UMY  ] = rho * un * uy + (idir == 1 ? P_mix : Real(0.0));
+#endif
+#if (AMREX_SPACEDIM == 3)
+    F[UMZ  ] = rho * un * uz + (idir == 2 ? P_mix : Real(0.0));
+#endif
+    F[UEDEN] = (UEden + P_mix) * un;
+    F[UEINT] = UEint * un;
+    F[UTEMP] = Real(0.0);
+
+    for (int n = 0; n < NUM_SPECIES; ++n) {
+        // Face UFS from face U (rather than face Y × face URHO — the
+        // latter would need a Y reconstruction).
+        F[UFS + n] = ps_finite_or(U[UFS + n], Real(0.0)) * un;
+    }
+#if (NUM_ADV > 0)
+    for (int n = 0; n < NUM_ADV; ++n)
+        F[UFA + n] = ps_finite_or(U[UFA + n], Real(0.0)) * un;
+#endif
+#if (NUM_AUX > 0)
+    for (int n = 0; n < NUM_AUX; ++n)
+        F[UFX + n] = ps_finite_or(U[UFX + n], Real(0.0)) * un;
+#endif
+
+    F[UALPHA1] = alpha_1 * un;
+    F[UM1RHO1] = ps_finite_or(U[UM1RHO1], Real(0.0)) * un;
+    F[UM2RHO2] = ps_finite_or(U[UM2RHO2], Real(0.0)) * un;
+    F[UE1    ] = (ps_finite_or(U[UE1], Real(0.0)) + alpha_1 * P1) * un;
+    F[UE2    ] = (ps_finite_or(U[UE2], Real(0.0)) + alpha_2 * P2) * un;
+
+    for (int n = 0; n < NVAR; ++n) F[n] = ps_finite_or(F[n], Real(0.0));
+}
+
+
+AMREX_GPU_HOST_DEVICE
+AMREX_FORCE_INLINE
+Real
+ps_max_wave_speed_from_state(int idir, const Real U[NVAR]) noexcept
+{
+    const Real rho    = amrex::max(ps_finite_or(U[URHO], Real(1.0)), Real(1.0e-6));
+    const Real inv_r  = Real(1.0) / rho;
+    const Real ux     = ps_finite_or(U[UMX], Real(0.0)) * inv_r;
+#if (AMREX_SPACEDIM >= 2)
+    const Real uy     = ps_finite_or(U[UMY], Real(0.0)) * inv_r;
+#else
+    const Real uy     = Real(0.0);
+#endif
+#if (AMREX_SPACEDIM == 3)
+    const Real uz     = ps_finite_or(U[UMZ], Real(0.0)) * inv_r;
+#else
+    const Real uz     = Real(0.0);
+#endif
+    Real un = ux;
+    if      (idir == 1) un = uy;
+    else if (idir == 2) un = uz;
+
+    Real alpha_1 = ps_finite_or(U[UALPHA1], Real(1.0));
+    constexpr Real alpha_floor = Real(1.0e-6);
+    if (alpha_1 < alpha_floor)              alpha_1 = alpha_floor;
+    if (alpha_1 > Real(1.0) - alpha_floor)  alpha_1 = Real(1.0) - alpha_floor;
+    const Real alpha_2 = Real(1.0) - alpha_1;
+
+    const Real m1 = amrex::max(ps_finite_or(U[UM1RHO1], Real(0.0)), Real(0.0));
+    const Real m2 = amrex::max(ps_finite_or(U[UM2RHO2], Real(0.0)), Real(0.0));
+    constexpr Real rho_floor = Real(1.0e-6);
+    Real rho_1 = (m1 > Real(0.0)) ? m1 / alpha_1 : rho_floor;
+    Real rho_2 = (m2 > Real(0.0)) ? m2 / alpha_2 : rho_floor;
+    if (rho_1 < rho_floor || !std::isfinite(rho_1)) rho_1 = rho_floor;
+    if (rho_2 < rho_floor || !std::isfinite(rho_2)) rho_2 = rho_floor;
+
+    const Real ke_spec = Real(0.5) * (ux*ux + uy*uy + uz*uz);
+    const Real E1_tot = ps_finite_or(U[UE1], Real(0.0));
+    const Real E2_tot = ps_finite_or(U[UE2], Real(0.0));
+    const Real e_mix  = ps_finite_or(U[UEINT], Real(0.0)) * inv_r;
+    const Real e1 = (m1 > Real(1.0e-12)) ? E1_tot / m1 - ke_spec : e_mix;
+    const Real e2 = (m2 > Real(1.0e-12)) ? E2_tot / m2 - ke_spec : e_mix;
+
+    Real Y[NUM_SPECIES];
+    Y[0] = Real(1.0);
+    for (int n = 1; n < NUM_SPECIES; ++n) Y[n] = Real(0.0);
+    Real P1, P2;
+    EOS::REY2P(rho_1, e1, Y, P1);
+    EOS::REY2P(rho_2, e2, Y, P2);
+    constexpr Real P_floor = Real(1.0);
+    if (P1 < P_floor || !std::isfinite(P1)) P1 = P_floor;
+    if (P2 < P_floor || !std::isfinite(P2)) P2 = P_floor;
+
+    Real c1, c2;
+    EOS::RPY2Cs(rho_1, P1, Y, c1);
+    EOS::RPY2Cs(rho_2, P2, Y, c2);
+    if (!std::isfinite(c1) || c1 <= Real(0.0)) c1 = Real(1.0);
+    if (!std::isfinite(c2) || c2 <= Real(0.0)) c2 = Real(1.0);
+
+    const Real Y1 = alpha_1 * rho_1 / rho;
+    const Real Y2 = alpha_2 * rho_2 / rho;
+    const Real c2_frozen = alpha_1 * Y1 * c1 * c1 + alpha_2 * Y2 * c2 * c2;
+    const Real c_mix = (c2_frozen > Real(0.0)) ? std::sqrt(c2_frozen)
+                                                : amrex::max(c1, c2);
+    return std::abs(un) + c_mix;
+}
+
+
 // =====================================================================
 //  PS_umeth (Phase 4c-β2b body): first-order LLF flux populating the
 //  per-direction flx arrays.
@@ -322,12 +515,27 @@ PS_umeth(const Box& bx,
 {
     BL_PROFILE("PS_umeth()");
 
-    // Banner so anyone running PS mode knows this is the LLF
-    // baseline, not the wp4 production algorithm.
+    // Phase 4c-β3: runtime reconstruction dispatch.
+    //   CAMR.ps_recon = 0  →  first-order Godunov (LLF baseline)
+    //   CAMR.ps_recon = 1  →  MUSCL slope-limited PLM (minmod) on
+    //                         conservative slots with contact-jump
+    //                         fallback.  See PS_reconstruction.H.
+    //
+    // Read once per call — the parmparse-queried static member is
+    // populated during CAMR::read_params, which runs once before
+    // any advance.  For USE_OMP=FALSE the read is race-free.
+    const int use_muscl = CAMR::ps_recon;
+
+    // Banner (once per rank per run) with the recon in play.
     {
         static bool banner_shown = false;
         if (!banner_shown) {
-            amrex::Print() << "  PS_umeth: first-order LLF (Phase 4c-β2b baseline)\n";
+            amrex::Print()
+                << "  PS_umeth: "
+                << (use_muscl ? "MUSCL (minmod PLM) 2nd-order in space"
+                              : "first-order LLF")
+                << "  (Phase 4c-β"
+                << (use_muscl ? "3" : "2b") << ")\n";
             banner_shown = true;
         }
     }
@@ -351,18 +559,33 @@ PS_umeth(const Box& bx,
     amrex::ParallelFor(xfbx,
     [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
     {
+        Real UL_face[NVAR], UR_face[NVAR];
         Real FL[NVAR], FR[NVAR];
-        ps_physical_flux(i-1, j, k, 0, uin_arr, q, FL);
-        ps_physical_flux(i,   j, k, 0, uin_arr, q, FR);
-        const Real lamL = ps_max_wave_speed(i-1, j, k, 0, uin_arr, q);
-        const Real lamR = ps_max_wave_speed(i,   j, k, 0, uin_arr, q);
+        Real lamL, lamR;
+        if (use_muscl != 0) {
+            // MUSCL reconstruction on U (all NVAR slots), contact-jump
+            // fallback + positivity clamps applied inside.
+            ps_muscl_reconstruct(i, j, k, 0, uin_arr, UL_face, UR_face);
+            ps_physical_flux_from_state(0, UL_face, FL);
+            ps_physical_flux_from_state(0, UR_face, FR);
+            lamL = ps_max_wave_speed_from_state(0, UL_face);
+            lamR = ps_max_wave_speed_from_state(0, UR_face);
+        } else {
+            // First-order: L = cell(i-1), R = cell(i).
+            for (int n = 0; n < NVAR; ++n) {
+                UL_face[n] = ps_finite_or(uin_arr(i-1, j, k, n), Real(0.0));
+                UR_face[n] = ps_finite_or(uin_arr(i,   j, k, n), Real(0.0));
+            }
+            ps_physical_flux(i-1, j, k, 0, uin_arr, q, FL);
+            ps_physical_flux(i,   j, k, 0, uin_arr, q, FR);
+            lamL = ps_max_wave_speed(i-1, j, k, 0, uin_arr, q);
+            lamR = ps_max_wave_speed(i,   j, k, 0, uin_arr, q);
+        }
         const Real lam_raw = amrex::max(lamL, lamR);
         const Real lam = std::isfinite(lam_raw) ? lam_raw : Real(0.0);
         for (int n = 0; n < NVAR; ++n) {
-            const Real UL = ps_finite_or(uin_arr(i-1, j, k, n), Real(0.0));
-            const Real UR = ps_finite_or(uin_arr(i,   j, k, n), Real(0.0));
             const Real f  = Real(0.5) * (FL[n] + FR[n])
-                          - Real(0.5) * lam * (UR - UL);
+                          - Real(0.5) * lam * (UR_face[n] - UL_face[n]);
             flx1(i,j,k, n) = ps_finite_or(f, Real(0.0));
         }
     });
@@ -373,18 +596,30 @@ PS_umeth(const Box& bx,
     amrex::ParallelFor(yfbx,
     [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
     {
+        Real UL_face[NVAR], UR_face[NVAR];
         Real FL[NVAR], FR[NVAR];
-        ps_physical_flux(i, j-1, k, 1, uin_arr, q, FL);
-        ps_physical_flux(i, j,   k, 1, uin_arr, q, FR);
-        const Real lamL = ps_max_wave_speed(i, j-1, k, 1, uin_arr, q);
-        const Real lamR = ps_max_wave_speed(i, j,   k, 1, uin_arr, q);
+        Real lamL, lamR;
+        if (use_muscl != 0) {
+            ps_muscl_reconstruct(i, j, k, 1, uin_arr, UL_face, UR_face);
+            ps_physical_flux_from_state(1, UL_face, FL);
+            ps_physical_flux_from_state(1, UR_face, FR);
+            lamL = ps_max_wave_speed_from_state(1, UL_face);
+            lamR = ps_max_wave_speed_from_state(1, UR_face);
+        } else {
+            for (int n = 0; n < NVAR; ++n) {
+                UL_face[n] = ps_finite_or(uin_arr(i, j-1, k, n), Real(0.0));
+                UR_face[n] = ps_finite_or(uin_arr(i, j,   k, n), Real(0.0));
+            }
+            ps_physical_flux(i, j-1, k, 1, uin_arr, q, FL);
+            ps_physical_flux(i, j,   k, 1, uin_arr, q, FR);
+            lamL = ps_max_wave_speed(i, j-1, k, 1, uin_arr, q);
+            lamR = ps_max_wave_speed(i, j,   k, 1, uin_arr, q);
+        }
         const Real lam_raw = amrex::max(lamL, lamR);
         const Real lam = std::isfinite(lam_raw) ? lam_raw : Real(0.0);
         for (int n = 0; n < NVAR; ++n) {
-            const Real UL = ps_finite_or(uin_arr(i, j-1, k, n), Real(0.0));
-            const Real UR = ps_finite_or(uin_arr(i, j,   k, n), Real(0.0));
             const Real f  = Real(0.5) * (FL[n] + FR[n])
-                          - Real(0.5) * lam * (UR - UL);
+                          - Real(0.5) * lam * (UR_face[n] - UL_face[n]);
             flx2(i,j,k, n) = ps_finite_or(f, Real(0.0));
         }
     });
@@ -396,18 +631,30 @@ PS_umeth(const Box& bx,
     amrex::ParallelFor(zfbx,
     [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
     {
+        Real UL_face[NVAR], UR_face[NVAR];
         Real FL[NVAR], FR[NVAR];
-        ps_physical_flux(i, j, k-1, 2, uin_arr, q, FL);
-        ps_physical_flux(i, j, k,   2, uin_arr, q, FR);
-        const Real lamL = ps_max_wave_speed(i, j, k-1, 2, uin_arr, q);
-        const Real lamR = ps_max_wave_speed(i, j, k,   2, uin_arr, q);
+        Real lamL, lamR;
+        if (use_muscl != 0) {
+            ps_muscl_reconstruct(i, j, k, 2, uin_arr, UL_face, UR_face);
+            ps_physical_flux_from_state(2, UL_face, FL);
+            ps_physical_flux_from_state(2, UR_face, FR);
+            lamL = ps_max_wave_speed_from_state(2, UL_face);
+            lamR = ps_max_wave_speed_from_state(2, UR_face);
+        } else {
+            for (int n = 0; n < NVAR; ++n) {
+                UL_face[n] = ps_finite_or(uin_arr(i, j, k-1, n), Real(0.0));
+                UR_face[n] = ps_finite_or(uin_arr(i, j, k,   n), Real(0.0));
+            }
+            ps_physical_flux(i, j, k-1, 2, uin_arr, q, FL);
+            ps_physical_flux(i, j, k,   2, uin_arr, q, FR);
+            lamL = ps_max_wave_speed(i, j, k-1, 2, uin_arr, q);
+            lamR = ps_max_wave_speed(i, j, k,   2, uin_arr, q);
+        }
         const Real lam_raw = amrex::max(lamL, lamR);
         const Real lam = std::isfinite(lam_raw) ? lam_raw : Real(0.0);
         for (int n = 0; n < NVAR; ++n) {
-            const Real UL = ps_finite_or(uin_arr(i, j, k-1, n), Real(0.0));
-            const Real UR = ps_finite_or(uin_arr(i, j, k,   n), Real(0.0));
             const Real f  = Real(0.5) * (FL[n] + FR[n])
-                          - Real(0.5) * lam * (UR - UL);
+                          - Real(0.5) * lam * (UR_face[n] - UL_face[n]);
             flx3(i,j,k, n) = ps_finite_or(f, Real(0.0));
         }
     });
