@@ -13,6 +13,7 @@ amrex::Real CAMR::small_temp = 1.e2;
 amrex::Real CAMR::small_pres = 1.e-200;
 int CAMR::do_mol = 0;
 int CAMR::ps_hydro = 0;
+int CAMR::ps_recon = 0;
 int CAMR::do_react = 0;
 int CAMR::add_ext_src = 0;
 int CAMR::add_grav_src = 1;

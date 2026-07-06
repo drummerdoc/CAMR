@@ -47,6 +47,16 @@ do_mol                       int          0
 # been built with USE_PS_HYDRO = TRUE in the Exec GNUmakefile.
 ps_hydro                     int          0
 
+# PS_umeth reconstruction order.
+#   0 = godunov (first-order, cell-centred).  Default.  Robust and
+#       CFL-1 stable.
+#   1 = muscl   (second-order slope-limited PLM, minmod, on the
+#       conservative U slots as in the standalone WP driver).
+#       Halves the stable CFL to ~0.5.  Enable with
+#           CAMR.ps_recon = 1
+#       and drop CAMR.fixed_dt or CAMR.cfl accordingly.
+ps_recon                     int          0
+
 # React fuel + air -> product
 do_react                     int          0
 
