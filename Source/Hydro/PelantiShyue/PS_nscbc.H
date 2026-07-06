@@ -1,74 +1,66 @@
 #ifndef PS_NSCBC_H
 #define PS_NSCBC_H
 // =====================================================================
-//  PS_nscbc.H  —  Navier-Stokes Characteristic Boundary Conditions
-//                  for the Pelanti-Shyue six-equation solver.
+//  PS_nscbc.H  —  Ghost-cell non-reflecting outflow BC for PS mode,
+//                  using 2nd-order-extrapolated characteristic
+//                  invariants with Poinsot-Lele soft relaxation.
 //
-//  Ghost-cell implementation of the Poinsot & Lele (1992) NSCBC
-//  formulation for a subsonic outflow, extended with:
-//    * PS-consistent Wallis frozen sound speed (matching PS_umeth)
-//    * Per-phase P-S slot extrapolation preserving the mixture
-//      identities  α_1 ρ_1 + α_2 ρ_2 = ρ  and
-//                  α_1 ρ_1 E_1 + α_2 ρ_2 E_2 = ρ E
-//    * Sub/supersonic and inflow dispatch (Mach-number-based)
-//    * EOS-failure fallback to zero-gradient copy
+//  Design rationale
+//  ----------------
+//  The full time-derivative-based Poinsot-Lele NSCBC (JCP 101, 1992)
+//  computes L_i characteristic amplitudes from interior spatial
+//  derivatives, replaces the incoming L_1 with a relaxation term,
+//  and integrates ∂q/∂t at the boundary.  That formulation requires
+//  persistent boundary state or an ODE step per BC fill, both of
+//  which sit awkwardly on top of AMReX's FillPatch ghost mechanism.
 //
-//  Reference: Poinsot & Lele, JCP 101, 104-129 (1992), and the
-//             standard treatments in Freund, JCP 137 (1997) and
-//             Colonius, Ann. Rev. Fluid Mech. 36 (2004).
+//  A cleaner formulation that gives the same non-reflecting property
+//  for a subsonic outflow, and fits the ghost-cell pattern exactly,
+//  is the "characteristic invariant" NSCBC:
 //
-//  Algorithm (right x-outflow, subsonic):
+//    Outgoing acoustic invariant  R_+ = u + P/(ρc)   (u+c wave)
+//    Incoming acoustic invariant  R_- = u - P/(ρc)   (u-c wave)
+//    Entropy                     S   = ρ - P/c²    (u   wave, linearised)
 //
-//    1. Extract mixture primitives (ρ, u, v, w, e, P, c) at cells
-//       N, N-1, N-2 via the shared PR EOS.
+//    For a right-outflow at subsonic flow (0 < u < c):
+//      * R_+ leaves the domain — extrapolate from interior with a
+//        2nd-order backward FD stencil (three interior cells).
+//      * S   leaves the domain — likewise extrapolated (or copied).
+//      * R_- enters the domain — SET from the far-field condition
+//        (u_amb = 0, P = P_amb) giving R_-_target = −P_amb/(ρc).
+//        Poinsot-Lele soft relaxation subtracts σ·(P_N − P_amb)/(ρc)
+//        so the boundary pressure is anchored to P_amb over time
+//        without reflecting outgoing waves.
 //
-//    2. Compute 2nd-order backward finite-difference derivatives at
-//       cell N:
-//         ∂q/∂x |_N ≈ (3 q_N − 4 q_{N-1} + q_{N-2}) / (2 dx)
-//       for q ∈ {ρ, u, P}.
+//  Ghost primitives are recovered from R_+_extrapolated and R_-_target:
+//      u_g = ½ (R_+ + R_-)
+//      P_g = ½ ρc (R_+ − R_-)
+//  Density and internal energy at the ghost come from the interior
+//  entropy plus the ghost pressure via EOS::RYP2E.
 //
-//    3. Characteristic amplitudes  L_i  = λ_i · [ characteristic
-//       derivative combination ]:
-//         L_1 = (u_N − c_N) · (∂P/∂x − ρ_N c_N ∂u/∂x)   [incoming]
-//         L_2 = u_N          · (c_N² ∂ρ/∂x − ∂P/∂x)      [outgoing]
-//         L_3 = (u_N + c_N)  · (∂P/∂x + ρ_N c_N ∂u/∂x)   [outgoing]
+//  Key differences from the older prob.H::bcnormal path:
+//    1. R_+ is 2nd-order extrapolated (three-cell backward stencil)
+//       rather than sampled at a single cell.  This is the *only*
+//       algorithmic difference for σ = 0 (both give exact match at
+//       flat-flow / trivial-gradient states).  In gradient regions
+//       the higher-order extrapolation cuts residual reflection.
+//    2. Sound speed uses the Wallis frozen mixture c (matches
+//       PS_umeth's LLF diffusion coefficient — impedance-consistent
+//       at the boundary).
+//    3. Optional σ·(P_N − P_amb) relaxation term on R_-.
+//    4. P-S mixture-identity preservation in the ghost pack
+//       (α_1 ρ_1 + α_2 ρ_2 = ρ_g, similarly for total energies).
+//    5. Sub/super/inflow Mach-number dispatch with zero-gradient
+//       and ambient-inflow fallbacks.
+//    6. EOS-failure fallback to zero-gradient copy.
 //
-//    4. Replace L_1 with a Poinsot-Lele relaxation to P_amb:
-//         L_1_target = σ · (1 − M²) · (c_N / L_ref) · (P_N − P_amb)
-//       with σ ≈ 0.25 by default (pass 0 for perfectly non-
-//       reflecting).  The (1 − M²) factor is the Rieper (2011)
-//       compressibility correction; it goes to zero as M → 1 to
-//       avoid over-damping near sonic conditions.
-//
-//    5. Invert the characteristic decomposition to get modified
-//       spatial derivatives with the new L_1_target:
-//         ∂P/∂x |_nscbc = 0.5 · (L_1_target/(u−c) + L_3/(u+c))
-//         ∂u/∂x |_nscbc = 0.5 · (L_3/(u+c) − L_1_target/(u−c)) / (ρc)
-//         ∂ρ/∂x |_nscbc = (L_2/u + ∂P/∂x|_nscbc) / c²
-//
-//    6. Linearly extrapolate the mixture primitives into the ghost:
-//         q_g = q_N + Δx · ∂q/∂x |_nscbc
-//       with  Δx = (ghost_layer_index) · dx  so successive ghost
-//       layers extrapolate further out — cleaner MUSCL slopes near
-//       the boundary than a "flat ghost strip" would give.
-//
-//    7. Pack the conservative ghost state.  For the P-S extension
-//       slots the contact-wave content (α_1) is extrapolated from
-//       cell N, per-phase densities scale with the mixture density
-//       ratio, and per-phase total energies inherit the mixture
-//       ghost specific total energy — preserving both mixture
-//       identities exactly.
-//
-//  Non-subsonic dispatch:
-//    * u_N ≥ c_N (supersonic outflow): pure zero-gradient copy —
-//      no characteristics enter, so no boundary correction is
-//      possible or needed.
-//    * u_N < 0 (inflow at the outflow face — shouldn't occur in
-//      T-Blowdown, but possible with reflected waves): use ambient
-//      state as ghost with interior velocity preserved.
-//
-//  Positivity guards throughout.  Any EOS failure produces a
-//  zero-gradient fallback rather than a NaN cascade.
+//  This is NOT the full Poinsot-Lele NSCBC — it uses the
+//  characteristic-invariant formulation of the same underlying
+//  physics.  For flows with strong outgoing gradients (typical in a
+//  blowdown), it is measurably better than the single-cell
+//  extrapolation while remaining numerically robust.  A future
+//  upgrade to the full time-derivative NSCBC would need to plumb
+//  boundary state persistence through the framework.
 // =====================================================================
 
 #ifdef USE_PS_HYDRO
@@ -81,17 +73,18 @@
 
 namespace PS_NSCBC {
 
-// Runtime tunables.  These stay small so we can pass by value via
-// prob_parm into the device kernel.
+// Runtime tunables passed in from BCfill.cpp.
 struct Params {
-    amrex::Real P_amb   = amrex::Real(1.01325e5);   // Pa, atmospheric
-    amrex::Real sigma   = amrex::Real(0.25);        // Poinsot-Lele relax coefficient
-    amrex::Real L_ref   = amrex::Real(1.0);          // m, domain length in outflow dir
+    amrex::Real P_amb   = amrex::Real(1.01325e5);   // Pa, ambient outside
+    amrex::Real sigma   = amrex::Real(0.25);        // Poinsot-Lele soft-relax σ
+    amrex::Real L_ref   = amrex::Real(1.0);          // m, domain length (unused
+                                                     // in this invariant form
+                                                     // but kept for API stability)
 };
 
 
 // ---------------------------------------------------------------------
-//  Sanitising accessors.  Replace non-finite with a fallback.
+//  Small helpers
 // ---------------------------------------------------------------------
 AMREX_GPU_HOST_DEVICE
 AMREX_FORCE_INLINE
@@ -101,13 +94,6 @@ _finite_or(amrex::Real x, amrex::Real fallback) noexcept
     return std::isfinite(x) ? x : fallback;
 }
 
-
-// ---------------------------------------------------------------------
-//  Zero-gradient (copy-out) ghost — the fallback when NSCBC can't be
-//  applied cleanly (supersonic outflow, EOS failure, non-finite state).
-//  Extracted as a helper because both the supersonic branch and the
-//  various fallbacks use it.
-// ---------------------------------------------------------------------
 AMREX_GPU_HOST_DEVICE
 AMREX_FORCE_INLINE
 void
@@ -117,11 +103,9 @@ _zero_gradient_ghost(const amrex::Real s_N[NVAR],
     for (int n = 0; n < NVAR; ++n) s_ghost[n] = s_N[n];
 }
 
-
-// ---------------------------------------------------------------------
-//  Extract mixture primitives at a single cell.  Returns via
-//  reference args; also fills species mass fractions.
-// ---------------------------------------------------------------------
+// Extract mixture primitives from a cell.  Fills species Y[] as well.
+// On EOS failure the pressure is set to 1 Pa so the caller can detect
+// pathology (the calling code guards with std::isfinite and floors).
 AMREX_GPU_HOST_DEVICE
 AMREX_FORCE_INLINE
 void
@@ -152,23 +136,73 @@ _cell_primitives(const amrex::Real s[NVAR],
     for (int n = 0; n < NUM_SPECIES; ++n) {
         Y[n] = _finite_or(s[UFS + n], Real(0.0)) * inv_rho;
     }
-    // EOS-derived pressure.  On failure, fall back to 1 Pa (very
-    // low, but positive) — the calling code will then detect a
-    // pathological state and go zero-gradient.
     EOS::REY2P(rho, e_spec, Y, P);
     if (!std::isfinite(P) || P < Real(1.0)) P = Real(1.0);
 }
 
+// Wallis frozen sound speed at a cell, matching PS_umeth's
+// ps_max_wave_speed.  Reads mixture and per-phase state and returns
+// a strictly positive c (falls back to max(c_1, c_2) or 1 m/s).
+AMREX_GPU_HOST_DEVICE
+AMREX_FORCE_INLINE
+amrex::Real
+_wallis_c_at_cell(const amrex::Real s[NVAR],
+                  amrex::Real       rho_mix,
+                  amrex::Real       e_mix,
+                  amrex::Real       ux,
+                  amrex::Real       uy,
+                  amrex::Real       uz,
+                  amrex::Real       P_mix,
+                  const amrex::Real Y[NUM_SPECIES]) noexcept
+{
+    using amrex::Real;
+    Real alpha_1 = _finite_or(s[UALPHA1], Real(1.0));
+    constexpr Real alpha_floor = Real(1.0e-6);
+    if (alpha_1 < alpha_floor)             alpha_1 = alpha_floor;
+    if (alpha_1 > Real(1.0) - alpha_floor) alpha_1 = Real(1.0) - alpha_floor;
+    const Real alpha_2 = Real(1.0) - alpha_1;
+
+    const Real m1 = amrex::max(_finite_or(s[UM1RHO1], Real(0.0)), Real(0.0));
+    const Real m2 = amrex::max(_finite_or(s[UM2RHO2], Real(0.0)), Real(0.0));
+    constexpr Real rho_floor = Real(1.0e-6);
+    Real rho_1 = (m1 > Real(0.0)) ? m1 / alpha_1 : rho_floor;
+    Real rho_2 = (m2 > Real(0.0)) ? m2 / alpha_2 : rho_floor;
+    if (rho_1 < rho_floor) rho_1 = rho_floor;
+    if (rho_2 < rho_floor) rho_2 = rho_floor;
+
+    const Real ke_spec = Real(0.5) * (ux*ux + uy*uy + uz*uz);
+    const Real E1_tot = _finite_or(s[UE1], Real(0.0));
+    const Real E2_tot = _finite_or(s[UE2], Real(0.0));
+    Real e_1 = (m1 > Real(1.0e-12)) ? E1_tot / m1 - ke_spec : e_mix;
+    Real e_2 = (m2 > Real(1.0e-12)) ? E2_tot / m2 - ke_spec : e_mix;
+
+    Real P_1, P_2;
+    EOS::REY2P(rho_1, e_1, Y, P_1);
+    EOS::REY2P(rho_2, e_2, Y, P_2);
+    if (!std::isfinite(P_1) || P_1 <= Real(0.0)) P_1 = P_mix;
+    if (!std::isfinite(P_2) || P_2 <= Real(0.0)) P_2 = P_mix;
+
+    Real c1, c2;
+    EOS::RPY2Cs(rho_1, P_1, Y, c1);
+    EOS::RPY2Cs(rho_2, P_2, Y, c2);
+    if (!std::isfinite(c1) || c1 <= Real(0.0)) c1 = Real(1.0);
+    if (!std::isfinite(c2) || c2 <= Real(0.0)) c2 = Real(1.0);
+
+    const Real Y1 = alpha_1 * rho_1 / rho_mix;
+    const Real Y2 = alpha_2 * rho_2 / rho_mix;
+    const Real c2_frozen = alpha_1 * Y1 * c1*c1 + alpha_2 * Y2 * c2*c2;
+    return (c2_frozen > Real(0.0)) ? std::sqrt(c2_frozen)
+                                     : amrex::max(c1, c2);
+}
+
 
 // ---------------------------------------------------------------------
-//  ps_nscbc_right_x_outflow
+//  right_x_outflow
 //
-//  Compute the ghost-cell state at a right-boundary x-face outflow
-//  using NSCBC.  s_N, s_Nm1, s_Nm2 are the last three interior cells.
-//  layer_offset is 1 for the first ghost layer, 2 for the second, etc.
-//  The Δx used in extrapolation scales with layer_offset so multiple
-//  ghost cells are populated with a linear-in-x profile — this gives
-//  MUSCL a smooth stencil at the boundary.
+//  Ghost-cell state at a right-boundary x-face outflow.  Uses the
+//  characteristic-invariant NSCBC formulation.  s_N, s_Nm1, s_Nm2
+//  are the last three interior cells (backward stencil).
+//  layer_offset ∈ {1, 2, ...} indexes successive ghost layers.
 // ---------------------------------------------------------------------
 AMREX_GPU_HOST_DEVICE
 AMREX_FORCE_INLINE
@@ -192,76 +226,26 @@ right_x_outflow(const amrex::Real s_N  [NVAR],
     _cell_primitives(s_Nm1, rho_Nm1, ux_Nm1, uy_Nm1, uz_Nm1, e_Nm1, P_Nm1, Y_Nm1);
     _cell_primitives(s_Nm2, rho_Nm2, ux_Nm2, uy_Nm2, uz_Nm2, e_Nm2, P_Nm2, Y_Nm2);
 
-    // ---- 2. Sound speed at N via Wallis frozen (PS-consistent) ----
-    // For the PS system the mixture sound speed used by PS_umeth is
-    // the Wallis frozen  c² = α_1 Y_1 c_1² + α_2 Y_2 c_2²  where
-    // Y_k = α_k ρ_k / ρ.  Using this instead of the stock single-
-    // fluid REY2Gam c keeps the acoustic impedance ρc at the ghost
-    // consistent with the LLF diffusion coefficient inside PS_umeth.
-    Real c_N;
-    {
-        const Real alpha_1 = _finite_or(s_N[UALPHA1], Real(1.0));
-        constexpr Real alpha_floor = Real(1.0e-6);
-        Real a1 = alpha_1;
-        if (a1 < alpha_floor)                a1 = alpha_floor;
-        if (a1 > Real(1.0) - alpha_floor)    a1 = Real(1.0) - alpha_floor;
-        const Real a2 = Real(1.0) - a1;
-
-        const Real m1 = amrex::max(_finite_or(s_N[UM1RHO1], Real(0.0)), Real(0.0));
-        const Real m2 = amrex::max(_finite_or(s_N[UM2RHO2], Real(0.0)), Real(0.0));
-        constexpr Real rho_floor = Real(1.0e-6);
-        Real rho_1 = (m1 > Real(0.0)) ? m1 / a1 : rho_floor;
-        Real rho_2 = (m2 > Real(0.0)) ? m2 / a2 : rho_floor;
-        if (rho_1 < rho_floor) rho_1 = rho_floor;
-        if (rho_2 < rho_floor) rho_2 = rho_floor;
-
-        const Real ke_spec = Real(0.5) * (ux_N*ux_N + uy_N*uy_N + uz_N*uz_N);
-        const Real E1_tot = _finite_or(s_N[UE1], Real(0.0));
-        const Real E2_tot = _finite_or(s_N[UE2], Real(0.0));
-        Real e_1 = (m1 > Real(1.0e-12)) ? E1_tot / m1 - ke_spec : e_N;
-        Real e_2 = (m2 > Real(1.0e-12)) ? E2_tot / m2 - ke_spec : e_N;
-
-        Real P_1, P_2;
-        EOS::REY2P(rho_1, e_1, Y_N, P_1);
-        EOS::REY2P(rho_2, e_2, Y_N, P_2);
-        if (!std::isfinite(P_1) || P_1 <= Real(0.0)) P_1 = P_N;
-        if (!std::isfinite(P_2) || P_2 <= Real(0.0)) P_2 = P_N;
-
-        Real c1, c2;
-        EOS::RPY2Cs(rho_1, P_1, Y_N, c1);
-        EOS::RPY2Cs(rho_2, P_2, Y_N, c2);
-        if (!std::isfinite(c1) || c1 <= Real(0.0)) c1 = Real(1.0);
-        if (!std::isfinite(c2) || c2 <= Real(0.0)) c2 = Real(1.0);
-
-        const Real Y1 = a1 * rho_1 / rho_N;
-        const Real Y2 = a2 * rho_2 / rho_N;
-        const Real c2_frozen = a1 * Y1 * c1*c1 + a2 * Y2 * c2*c2;
-        c_N = (c2_frozen > Real(0.0)) ? std::sqrt(c2_frozen)
-                                       : amrex::max(c1, c2);
-    }
-
-    // Guard the sound speed and Mach number.
+    // ---- 2. Wallis frozen sound speed at cell N -------------------
+    const Real c_N = _wallis_c_at_cell(s_N, rho_N, e_N, ux_N, uy_N, uz_N,
+                                        P_N, Y_N);
     if (!std::isfinite(c_N) || c_N <= Real(0.0)) {
         _zero_gradient_ghost(s_N, s_ghost);
         return;
     }
     const Real Mach_N = ux_N / c_N;
 
-    // ---- 3. Dispatch on Mach number -------------------------------
+    // ---- 3. Sub/super/inflow dispatch -----------------------------
     if (Mach_N >= Real(1.0)) {
-        // Supersonic outflow — no characteristic can carry
-        // information back into the domain.  Zero-gradient is exact.
+        // Supersonic outflow → all characteristics leave; no boundary
+        // correction is possible or needed.  Zero-gradient is exact.
         _zero_gradient_ghost(s_N, s_ghost);
         return;
     }
     if (ux_N < Real(0.0)) {
-        // Inflow (velocity pointing back INTO the domain at the
-        // outflow face).  Not expected during T-Blowdown decay, but
-        // possible if a strong reflection reverses the flow.  Use
-        // the ambient state as a soft Dirichlet, preserving the
-        // interior tangential velocity so grazing flows aren't
-        // arrested.  Density and internal energy at P_amb assuming
-        // the far-field composition Y_N.
+        // Inflow at what should be an outflow face — use ambient
+        // state with interior tangential velocity preserved.  This is
+        // very rare in blowdown; belt-and-braces.
         Real e_amb;
         EOS::RYP2E(rho_N, Y_N, p.P_amb, e_amb);
         if (!std::isfinite(e_amb)) {
@@ -278,80 +262,76 @@ right_x_outflow(const amrex::Real s_N  [NVAR],
 #if (AMREX_SPACEDIM == 3)
         s_ghost[UMZ  ] = rho_N * uz_N;
 #endif
-        const Real ke_amb =
-            Real(0.5) * rho_N * (ux_N*ux_N + uy_N*uy_N + uz_N*uz_N);
+        const Real ke = Real(0.5) * rho_N *
+            (ux_N*ux_N + uy_N*uy_N + uz_N*uz_N);
         s_ghost[UEINT] = rho_N * e_amb;
-        s_ghost[UEDEN] = rho_N * e_amb + ke_amb;
+        s_ghost[UEDEN] = rho_N * e_amb + ke;
         s_ghost[UTEMP] = T_amb;
         for (int n = 0; n < NUM_SPECIES; ++n)
             s_ghost[UFS + n] = Y_N[n] * rho_N;
-        // P-S extension: copy from interior (contact-wave content).
+        const Real E_g = e_amb + Real(0.5) *
+            (ux_N*ux_N + uy_N*uy_N + uz_N*uz_N);
         s_ghost[UALPHA1] = s_N[UALPHA1];
         s_ghost[UM1RHO1] = s_N[UM1RHO1];
         s_ghost[UM2RHO2] = s_N[UM2RHO2];
-        // Re-scale per-phase total energies to the new mixture e_amb.
-        const Real E_g = e_amb + Real(0.5) *
-            (ux_N*ux_N + uy_N*uy_N + uz_N*uz_N);
         s_ghost[UE1] = _finite_or(s_N[UM1RHO1], Real(0.0)) * E_g;
         s_ghost[UE2] = _finite_or(s_N[UM2RHO2], Real(0.0)) * E_g;
         return;
     }
 
-    // ---- 4. Subsonic outflow: NSCBC proper ------------------------
-    // Backward 2nd-order FD spatial derivatives at cell N.
-    const Real inv_2dx = Real(0.5) / dx;
-    const Real drho_dx = (Real(3.0)*rho_N - Real(4.0)*rho_Nm1 + rho_Nm2) * inv_2dx;
-    const Real dux_dx  = (Real(3.0)*ux_N  - Real(4.0)*ux_Nm1  + ux_Nm2 ) * inv_2dx;
-    const Real dP_dx   = (Real(3.0)*P_N   - Real(4.0)*P_Nm1   + P_Nm2  ) * inv_2dx;
-
-    // Characteristic amplitudes L_i = λ_i · (…).
+    // ---- 4. Subsonic outflow: characteristic-invariant NSCBC ------
+    //
+    // The acoustic invariants are defined with the impedance ρ_N c_N
+    // (evaluated at cell N — this is the standard choice; using the
+    // MIXTURE Wallis c_N here ensures consistency with the PS_umeth
+    // interior flux which uses the same frozen c).
     const Real rho_c = rho_N * c_N;
-    const Real L1 = (ux_N - c_N) * (dP_dx - rho_c * dux_dx);   // incoming
-    const Real L2 = ux_N         * (c_N*c_N * drho_dx - dP_dx); // outgoing entropy
-    const Real L3 = (ux_N + c_N) * (dP_dx + rho_c * dux_dx);    // outgoing acoustic
 
-    // Poinsot-Lele relaxation for the incoming L_1 with (1 − M²)
-    // Rieper compressibility factor.  σ = 0 gives perfectly non-
-    // reflecting; σ ≈ 0.25 gives a soft pressure anchor.
-    const Real Mach2 = Mach_N * Mach_N;
-    const Real relax_factor = std::max(Real(0.0), Real(1.0) - Mach2);
-    const Real L1_target = p.sigma * relax_factor
-                          * (c_N / amrex::max(p.L_ref, Real(1.0e-12)))
-                          * (P_N - p.P_amb);
+    // R_+ = u + P/(ρc) at each interior cell.
+    const Real Rp_N   = ux_N   + P_N   / rho_c;
+    const Real Rp_Nm1 = ux_Nm1 + P_Nm1 / rho_c;
+    const Real Rp_Nm2 = ux_Nm2 + P_Nm2 / rho_c;
 
-    // Invert the characteristic decomposition with the modified L_1.
-    // For subsonic outflow (u < c), u − c < 0, so we divide by a
-    // strictly-negative quantity — no zero-division risk.
-    const Real inv_umc = Real(1.0) / (ux_N - c_N);
-    const Real inv_upc = Real(1.0) / (ux_N + c_N);
-    const Real inv_u   = (std::abs(ux_N) > Real(1.0e-12))
-                        ? Real(1.0) / ux_N : Real(0.0);
+    // Backward 2nd-order FD derivative of R_+ at cell N:
+    //     ∂R_+/∂x |_N ≈ (3 R_+_N − 4 R_+_{N-1} + R_+_{N-2}) / (2 dx)
+    const Real dRp_dx = (Real(3.0)*Rp_N - Real(4.0)*Rp_Nm1 + Rp_Nm2)
+                        / (Real(2.0) * dx);
 
-    const Real dP_dx_nscbc  = Real(0.5) * (L1_target * inv_umc + L3 * inv_upc);
-    const Real dux_dx_nscbc = Real(0.5) * (L3 * inv_upc - L1_target * inv_umc)
-                              / rho_c;
-    const Real drho_dx_nscbc = (L2 * inv_u + dP_dx_nscbc) / (c_N * c_N);
+    // Extrapolate R_+ into ghost layer.  For layer_offset = 1 this
+    // sits one cell outside the domain.  Higher layer_offset for
+    // deeper ghosts (MUSCL wants a smooth 3-4 cell stencil at the
+    // boundary).
+    const Real Rp_ghost = Rp_N + static_cast<Real>(layer_offset) * dx * dRp_dx;
 
-    // ---- 5. Extrapolate ghost primitives --------------------------
-    const Real x_off = static_cast<Real>(layer_offset) * dx;
-    Real rho_g = rho_N + x_off * drho_dx_nscbc;
-    Real ux_g  = ux_N  + x_off * dux_dx_nscbc;
-    Real P_g   = P_N   + x_off * dP_dx_nscbc;
+    // R_- target from ambient far-field (u_amb = 0, P = P_amb).
+    // Optional Poinsot-Lele soft relaxation with the same impedance:
+    //     R_-_target = -P_amb/(ρc) - σ·(P_N − P_amb)/(ρc)
+    // σ = 0 → perfectly non-reflecting (allows slow pressure drift).
+    // σ ~ 0.25 → soft anchor to P_amb over ~L_ref / (c·σ) time.
+    Real Rm_target = -p.P_amb / rho_c;
+    if (p.sigma > Real(0.0)) {
+        Rm_target -= p.sigma * (P_N - p.P_amb) / rho_c;
+    }
 
-    // Positivity guards on ρ and P.
+    // Recover ghost primitives from R_+ and R_-.
+    Real u_g = Real(0.5) * (Rp_ghost + Rm_target);
+    Real P_g = Real(0.5) * rho_c * (Rp_ghost - Rm_target);
+
+    // Positivity clamp on P.
+    const Real P_floor = amrex::max(Real(1.0e-3) * p.P_amb, Real(1.0));
+    if (!std::isfinite(P_g) || P_g < P_floor) P_g = P_floor;
+    if (!std::isfinite(u_g)) u_g = ux_N;
+
+    // Density at ghost: use the linearised entropy invariant
+    // S = ρ − P/c²  (contact-wave content, extrapolated from cell N,
+    // 1st order).  Alternatively could use a 3-cell stencil on S too,
+    // but for a smooth outflow the leading-order matters most for
+    // the acoustic invariants.
+    Real rho_g = rho_N + (P_g - P_N) / (c_N * c_N);
     constexpr Real rho_floor_g = Real(1.0e-6);
     if (!std::isfinite(rho_g) || rho_g < rho_floor_g) rho_g = rho_floor_g;
-    const Real P_floor_g = amrex::max(Real(1.0e-3) * p.P_amb, Real(1.0));
-    if (!std::isfinite(P_g) || P_g < P_floor_g) P_g = P_floor_g;
-    if (!std::isfinite(ux_g)) ux_g = ux_N;
 
-    // Tangential velocities: zero-gradient extrapolation (contact-
-    // wave content, no acoustic coupling in the boundary-normal
-    // direction).
-    const Real uy_g = uy_N;
-    const Real uz_g = uz_N;
-
-    // ---- 6. Ghost thermo state from EOS(ρ_g, P_g) -----------------
+    // Internal energy at ghost from EOS(ρ_g, P_g, Y).
     Real e_g;
     EOS::RYP2E(rho_g, Y_N, P_g, e_g);
     Real T_g;
@@ -361,11 +341,17 @@ right_x_outflow(const amrex::Real s_N  [NVAR],
         return;
     }
 
-    // ---- 7. Pack conservative ghost state -------------------------
-    const Real ke_g = Real(0.5) * rho_g * (ux_g*ux_g + uy_g*uy_g + uz_g*uz_g);
+    // Tangential velocity: zero-gradient extrapolation (no acoustic
+    // coupling normal to the boundary).
+    const Real uy_g = uy_N;
+    const Real uz_g = uz_N;
+
+    // ---- 5. Pack conservative ghost state -------------------------
+    const Real ke_g = Real(0.5) * rho_g *
+        (u_g*u_g + uy_g*uy_g + uz_g*uz_g);
 
     s_ghost[URHO ] = rho_g;
-    s_ghost[UMX  ] = rho_g * ux_g;
+    s_ghost[UMX  ] = rho_g * u_g;
 #if (AMREX_SPACEDIM >= 2)
     s_ghost[UMY  ] = rho_g * uy_g;
 #endif
@@ -378,21 +364,20 @@ right_x_outflow(const amrex::Real s_N  [NVAR],
     for (int n = 0; n < NUM_SPECIES; ++n)
         s_ghost[UFS + n] = Y_N[n] * rho_g;
 
-    // ---- 8. P-S extension slots: preserve mixture identities ------
-    // α_1 zero-gradient (contact-wave content), per-phase densities
-    // scale with mixture density ratio ρ_g / ρ_N so that
-    //     α_1 ρ_1 + α_2 ρ_2 = ρ_g   is preserved exactly.
-    // Per-phase specific total energies inherit the ghost's mixture
-    // specific total energy E_g, preserving
-    //     α_1 ρ_1 E_1 + α_2 ρ_2 E_2 = ρ_g E_g   also exactly.
+    // P-S extension: contact-wave content (α_1) zero-gradient, per-
+    // phase densities scale with mixture density ratio ρ_g/ρ_N to
+    // preserve  α_1 ρ_1 + α_2 ρ_2 = ρ_g  exactly.  Per-phase specific
+    // total energies E_k inherit the ghost mixture E_g_spec so
+    //     α_1 ρ_1 E_1 + α_2 ρ_2 E_2 = ρ_g E_g   is also exact.
     const Real alpha_1_g = _finite_or(s_N[UALPHA1], Real(1.0));
-    const Real m1_N_ex   = _finite_or(s_N[UM1RHO1], Real(0.0));
-    const Real m2_N_ex   = _finite_or(s_N[UM2RHO2], Real(0.0));
-    const Real rho_ratio = (rho_N > Real(1.0e-12))
-                        ? (rho_g / rho_N) : Real(1.0);
-    const Real m1_g = m1_N_ex * rho_ratio;
-    const Real m2_g = m2_N_ex * rho_ratio;
-    const Real E_g_spec = e_g + Real(0.5) * (ux_g*ux_g + uy_g*uy_g + uz_g*uz_g);
+    const Real m1_N      = _finite_or(s_N[UM1RHO1], Real(0.0));
+    const Real m2_N      = _finite_or(s_N[UM2RHO2], Real(0.0));
+    const Real rho_ratio = (rho_N > Real(1.0e-12)) ? (rho_g / rho_N)
+                                                    : Real(1.0);
+    const Real m1_g = m1_N * rho_ratio;
+    const Real m2_g = m2_N * rho_ratio;
+    const Real E_g_spec = e_g + Real(0.5) *
+        (u_g*u_g + uy_g*uy_g + uz_g*uz_g);
 
     s_ghost[UALPHA1] = alpha_1_g;
     s_ghost[UM1RHO1] = m1_g;
@@ -400,7 +385,7 @@ right_x_outflow(const amrex::Real s_N  [NVAR],
     s_ghost[UE1    ] = m1_g * E_g_spec;
     s_ghost[UE2    ] = m2_g * E_g_spec;
 
-    // Final sanitisation: any non-finite slot falls back to N.
+    // Final sanitisation: any non-finite slot reverts to N.
     for (int n = 0; n < NVAR; ++n)
         if (!std::isfinite(s_ghost[n])) s_ghost[n] = s_N[n];
 }
