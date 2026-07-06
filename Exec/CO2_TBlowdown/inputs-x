@@ -69,14 +69,11 @@ CAMR.sum_interval = -1   # sum diagnostics off while debugging PS baseline
 
 CAMR.redistribution_type = StateRedist
 
-# Load balance the box distribution by actual per-box work cost
-# rather than by cell count.  With a rarefaction wave sweeping the
-# pipe, some boxes have cells whose PR Newton iterates many more
-# steps than the uniform-interior boxes.  Work-estimate balancing
-# reassigns boxes across ranks to equalise cost.  Requires the boxes
-# to be small enough that finer distribution is possible.
-amr.loadbalance_with_workestimates = 1
-amr.loadbalance_level0_int         = 20    # rebalance every 20 steps
+# NOTE: amr.loadbalance_with_workestimates = 1 segfaults in this
+# CAMR build — the Amr::LoadBalanceLevel0 path calls a StateData
+# for per-cell cost that CAMR hasn't registered.  Leaving disabled;
+# smaller max_grid_size below already helps with granularity.
+amr.loadbalance_with_workestimates = 0
 
 amr.max_level       = 0
 amr.ref_ratio       = 2 2 2 2
