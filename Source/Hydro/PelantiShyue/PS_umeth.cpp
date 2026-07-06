@@ -42,10 +42,11 @@
 
 #ifdef USE_PS_HYDRO
 
-#include "CAMR.H"
 #include "EOS.H"
 #include "PS_ctoprim.H"
 #include "PS_reconstruction.H"
+
+#include <AMReX_ParmParse.H>
 
 using namespace amrex;
 
@@ -521,10 +522,24 @@ PS_umeth(const Box& bx,
     //                         conservative slots with contact-jump
     //                         fallback.  See PS_reconstruction.H.
     //
-    // Read once per call — the parmparse-queried static member is
-    // populated during CAMR::read_params, which runs once before
-    // any advance.  For USE_OMP=FALSE the read is race-free.
-    const int use_muscl = CAMR::ps_recon;
+    // CAMR::ps_recon is a protected static member (matches ps_hydro,
+    // do_mol, etc.) so it can't be read directly from this free
+    // function.  We instead query ParmParse once and cache the result
+    // in a function-local static.  Under USE_OMP=FALSE + MPI-only
+    // this is race-free.  A future public accessor on CAMR would
+    // remove the redundant query — this is the least-invasive fix.
+    auto ps_recon_cached = []() -> int
+    {
+        static int cached = -1;
+        if (cached < 0) {
+            int v = 0;
+            amrex::ParmParse pp("CAMR");
+            pp.query("ps_recon", v);
+            cached = v;
+        }
+        return cached;
+    };
+    const int use_muscl = ps_recon_cached();
 
     // Banner (once per rank per run) with the recon in play.
     {
