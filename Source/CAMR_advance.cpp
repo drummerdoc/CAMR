@@ -160,23 +160,12 @@ CAMR::CAMR_advance (Real time,
     Sborder.define(grids, dmap, NVAR, numGrow(), amrex::MFInfo(), Factory());
 
 #ifdef USE_PS_HYDRO
-    // Phase 4d relaxation dispatch — currently DISABLED after
-    // empirical testing showed the HEM e_k reset increased wall-
-    // clock per step rather than decreasing it.  The relaxation
-    // logic still lives in Source/Hydro/PelantiShyue/PS_relaxation.H
-    // for future re-enable.
-    //
-    // Root cause of the wall-clock growth is per-cell PR Newton
-    // iteration hitting its 80-iter cap in cells whose per-phase
-    // (ρ_k, e_k) has drifted; our HEM reset didn't touch enough
-    // of the problem.  The fix is a proper finite-rate Pelanti
-    // mechanical + mass-transfer relaxation (Phase 4d-2/4d-3),
-    // which keeps ALL cells on-manifold every step.  Until that
-    // lands, the LLF baseline runs unbraced.
-    //
-    // To re-enable for experimentation, un-comment the block.
-    // (void)ps_apply_relaxation;  // silence unused warning
-    if (false && ps_hydro != 0) {
+    // Phase 4d: Pelanti mechanical relaxation.  Uses the standalone
+    // ps_pressure_relax_cell verbatim — preserves per-phase masses
+    // and mixture ρE while driving P_1 → P_2 via a coupled Newton
+    // on (α, e_1, e_2).  No HEM shortcuts, no e_k reset — real
+    // physics.  See Source/Hydro/PelantiShyue/PS_relaxation.H .
+    if (ps_hydro != 0) {
         ps_apply_relaxation(S_new);
         clean_state(S_new);
     }
