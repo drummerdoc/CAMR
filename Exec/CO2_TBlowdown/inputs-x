@@ -33,16 +33,21 @@ amr.n_cell           =   256   32   32
 CAMR.lo_bc       =  SlipWall   SlipWall   SlipWall
 CAMR.hi_bc       =  Inflow     SlipWall   SlipWall
 
-CAMR.cfl = 0.4
+# PS + NSCBC empirical CFL-threshold characterisation on this problem:
+#   CFL ≤ 0.30  → outflow BC stays clean
+#   CFL ≥ 0.35  → last ~20 cells develop O(20-50 m/s) oscillations
+#                  in u (see runlog.cflsweep.* diagnostic runs).
+# fixed_dt = 5.5e-6 (initial effective CFL ≈ 0.37) is also clean,
+# so the threshold is not a pure CFL number — the CFL-driven code
+# path itself has a dt-dependent interaction with the boundary
+# that we've not yet fully diagnosed.  Setting the default to 0.25
+# stays clear of the threshold under all observed conditions.
+CAMR.cfl = 0.25
 
-# Fixed dt bypasses CAMR::estTimeStep entirely (which the TinyProfile
-# showed dominating wall-clock at 83 %, since every cell's PR Newton
-# in state_from_rho_e is called per step to compute sound speed).
-# 5.5e-6 s is 92 % of the previously-observed hydro-limited dt
-# (5.985e-6 s at t≈0) with margin for the wave-speed growth as the
-# rarefaction develops.  If the sim ever becomes unstable, drop this
-# by another factor of 2 or comment it out to re-enable dynamic dt.
-CAMR.fixed_dt = 5.5e-6
+# fixed_dt = 0 lets the CFL setting above drive the timestep.
+# Set to a positive value (e.g. 5.5e-6) to bypass estTimeStep and
+# gain ~10-15 % wall-clock at the cost of losing CFL adaptivity.
+CAMR.fixed_dt = 0
 
 # Real-fluid EOS reference frame: PR CO₂ internal energy can be
 # negative for compressed states because ρe is measured relative to
