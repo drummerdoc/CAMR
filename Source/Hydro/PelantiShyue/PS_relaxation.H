@@ -62,14 +62,22 @@
 // ---------------------------------------------------------------------
 struct PsRelaxDiag {
     int n_calls        = 0;   // total cells the relax visited
-    int n_skipped      = 0;   // early-exit (near-single-phase, m_k<=0, etc)
+    // --- refined skip taxonomy (was n_skipped) --------------------
+    int n_skip_nan     = 0;   // α_in was NaN/Inf
+    int n_skip_lo      = 0;   // α_in < α_floor           (near-pure-phase-2)
+    int n_skip_hi_ok   = 0;   // α_in ∈ (1 − α_floor, 1.0] (legitimate near-pure-1)
+    int n_skip_hi_bad  = 0;   // α_in > 1.0               (impossible → flux bug)
+    int n_skip_mk      = 0;   // m_1 or m_2 non-positive
+    // -----------------------------------------------------------------
     int n_failed       = 0;   // ps_pressure_relax_cell returned false
     int n_alpha_low    = 0;   // α_1 written < α_floor
     int n_alpha_high   = 0;   // α_1 written > 1 − α_floor
     int n_alpha_gt_one = 0;   // α_1 written > 1  (impossible physically)
     int n_alpha_lt_zero= 0;   // α_1 written < 0  (impossible physically)
-    double alpha_min_seen = 1.0;
-    double alpha_max_seen = 0.0;
+    double alpha_min_seen    = 1.0;   // min of relax-written α
+    double alpha_max_seen    = 0.0;   // max of relax-written α
+    double alpha_in_max_seen = 0.0;   // max of α_in (BEFORE relax, catches flux overshoot)
+    double alpha_in_min_seen = 1.0;   // min of α_in
 };
 
 inline PsRelaxDiag& ps_relax_diag() {
@@ -131,20 +139,38 @@ ps_mechanical_relax_cell(int i, int j, int k,
 
     // Skip cells that are essentially single-phase — the standalone
     // routine has its own skip logic (line 1811) but we also want to
-    // avoid unpacking work.
+    // avoid unpacking work.  Classify each skip so we can distinguish
+    // legitimate near-pure-phase-1 cells (α_in ∈ (1 − α_floor, 1.0]) from
+    // physically-impossible overshoot (α_in > 1.0) that would indicate
+    // the flux update is producing bad states.
     constexpr Real alpha_floor = Real(1.0e-6);
     const Real alpha1_in = U(i,j,k, UALPHA1);
-    if (!std::isfinite(alpha1_in) ||
-        alpha1_in < alpha_floor ||
-        alpha1_in > Real(1.0) - alpha_floor) {
-        ++diag.n_skipped;
+
+    // Track incoming α extremes (all cells, not just skipped) — even
+    // cells that go on to relax will have their pre-relax value here.
+    if (std::isfinite(alpha1_in)) {
+        if (alpha1_in > diag.alpha_in_max_seen) diag.alpha_in_max_seen = alpha1_in;
+        if (alpha1_in < diag.alpha_in_min_seen) diag.alpha_in_min_seen = alpha1_in;
+    }
+
+    if (!std::isfinite(alpha1_in)) {
+        ++diag.n_skip_nan;
+        return;
+    }
+    if (alpha1_in < alpha_floor) {
+        ++diag.n_skip_lo;
+        return;
+    }
+    if (alpha1_in > Real(1.0) - alpha_floor) {
+        if (alpha1_in > Real(1.0)) ++diag.n_skip_hi_bad;
+        else                        ++diag.n_skip_hi_ok;
         return;
     }
 
     const Real m1 = U(i,j,k, UM1RHO1);
     const Real m2 = U(i,j,k, UM2RHO2);
     if (m1 <= Real(0.0) || m2 <= Real(0.0)) {
-        ++diag.n_skipped;
+        ++diag.n_skip_mk;
         return;
     }
 
@@ -231,23 +257,57 @@ ps_apply_relaxation(amrex::MultiFab& S_new)
         });
     }
 
-    // Summary per rank (each MPI rank prints its own set of counters
-    // so we can spot rank-specific anomalies).  Report only when at
-    // least one anomaly was seen — silent for healthy steps.
+    // Per-rank summary — report only when an anomaly appears.  With the
+    // refined counters we also flag n_skip_hi_bad (α_in > 1 from the
+    // flux update, an *upstream* problem the relax can't fix because it
+    // early-outs before touching those cells).
     const PsRelaxDiag& d = ps_relax_diag();
-    if (d.n_failed > 0 || d.n_alpha_gt_one > 0 ||
-        d.n_alpha_lt_zero > 0 || d.n_alpha_low > 0 || d.n_alpha_high > 0) {
+    const bool anomaly =
+        d.n_failed        > 0 ||
+        d.n_alpha_gt_one  > 0 || d.n_alpha_lt_zero > 0 ||
+        d.n_alpha_low     > 0 || d.n_alpha_high    > 0 ||
+        d.n_skip_hi_bad   > 0 || d.n_skip_nan      > 0 ||
+        d.n_skip_mk       > 0;
+    if (anomaly) {
         amrex::AllPrint()
             << "[ps_relax] rank " << amrex::ParallelDescriptor::MyProc()
             << " calls=" << d.n_calls
-            << " skipped=" << d.n_skipped
+            << " skip(nan="   << d.n_skip_nan
+            <<    ",lo="      << d.n_skip_lo
+            <<    ",hi_ok="   << d.n_skip_hi_ok
+            <<    ",hi_BAD="  << d.n_skip_hi_bad
+            <<    ",mk="      << d.n_skip_mk << ")"
             << " failed=" << d.n_failed
             << " α<0="   << d.n_alpha_lt_zero
             << " α>1="   << d.n_alpha_gt_one
             << " α<floor=" << d.n_alpha_low
             << " α>1-floor=" << d.n_alpha_high
-            << " α_range=[" << d.alpha_min_seen
-            << ", "         << d.alpha_max_seen << "]\n";
+            << " α_in_range=["  << d.alpha_in_min_seen
+            << ", "             << d.alpha_in_max_seen << "]"
+            << " α_out_range=[" << d.alpha_min_seen
+            << ", "             << d.alpha_max_seen << "]\n";
+    }
+
+    // ---------------------------------------------------------------
+    //  Option B: post-relaxation global min/max of α_1 in S_new.
+    //  MultiFab::min/max do an MPI reduction, so only rank 0 needs to
+    //  print.  Print every step so we get a per-step time series of
+    //  the extremes, whether or not any counter tripped.  Any print
+    //  showing amax > 1.0 or amin < 0.0 in the *output* MultiFab is a
+    //  hard bug regardless of where it originated.
+    // ---------------------------------------------------------------
+    const amrex::Real amin_out = S_new.min(UALPHA1, 0, false);
+    const amrex::Real amax_out = S_new.max(UALPHA1, 0, false);
+    if (amrex::ParallelDescriptor::IOProcessor()) {
+        const bool flag = (amax_out > amrex::Real(1.0)) ||
+                          (amin_out < amrex::Real(0.0)) ||
+                          !std::isfinite(amin_out) ||
+                          !std::isfinite(amax_out);
+        amrex::Print()
+            << "[ps_relax] post-relax α_1 range = ["
+            << amin_out << ", " << amax_out << "]"
+            << (flag ? "  *** OUT OF PHYSICAL RANGE ***" : "")
+            << "\n";
     }
 }
 
