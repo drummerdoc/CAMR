@@ -71,16 +71,21 @@ CAMR.ps_hydro = 1
 CAMR.ps_recon = 0
 
 # PS-mode non-reflecting outflow: NSCBC (Poinsot-Lele) applied via
-# BCfill.cpp on faces flagged CAMR.hi_bc = Inflow.  Uses a 2nd-order
-# backward FD stencil (three interior cells) to compute characteristic
-# amplitudes at the boundary, replaces the incoming L_1 with a soft
-# pressure-relaxation to P = p_amb (prob_parm), and extrapolates the
-# ghost cells linearly.  When 0 (default) the older single-cell
-# linearised Riemann-invariant path in prob.H::bcnormal is used.
+# BCfill.cpp on faces flagged CAMR.hi_bc = Inflow.  Uses minmod-
+# limited characteristic-invariant extrapolation across three
+# interior cells and a Poinsot-Lele soft-relaxation term on the
+# incoming R_- toward the ambient P = p_amb.  Validated on the
+# T-Blowdown outflow against the older single-cell bcnormal path:
+# with σ = 0.25 the residual x > 0.8 boundary-reflection oscillations
+# are almost entirely damped while the interior physics (x < 0.78) is
+# identical to bcnormal within round-off.  See PS_nscbc.H for the
+# algorithm.
 #
-# CAMR.ps_bc_nscbc_sigma is the Poinsot-Lele relaxation coefficient
-# (0 = perfectly non-reflecting, 0.25 = classical soft anchor).
-CAMR.ps_bc_use_nscbc = 0
+# Set CAMR.ps_bc_use_nscbc = 0 to revert to the older bcnormal path.
+# CAMR.ps_bc_nscbc_sigma = 0 gives perfectly non-reflecting (same
+# oscillation amplitude as bcnormal but 2nd-order in smooth regions);
+# 0.25 is the recommended default (classical Poinsot-Lele soft anchor).
+CAMR.ps_bc_use_nscbc = 1
 CAMR.ps_bc_nscbc_sigma = 0.25
 
 CAMR.v = 1
