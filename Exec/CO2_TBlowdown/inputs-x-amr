@@ -70,15 +70,17 @@ amr.n_error_buf     = 2 2 2 2
 amr.grid_eff        = 0.7
 
 # --- Refinement tagger ---------------------------------------------
-# Pressure-gradient tag: refine cells where |Δp / Δx| across
-# neighbours exceeds 5 MPa (≈ 50 bar).  The T-Blowdown wave has a
-# ~30-70 bar drop across ~20 cells at N=128 (dx ≈ 7.8 mm), so this
-# threshold catches the rarefaction fan and the compound-wave
-# feature without triggering everywhere.  end_time protects against
-# a cold-restart scenario where P has settled uniformly.
+# Pressure-jump tag: refine cells where |P(i+1) − P(i)| exceeds
+# 5 × 10^4 Pa = 0.05 MPa.  Measured on the N=128 baseline slice,
+# the T-Blowdown rarefaction has |ΔP| ≈ 0.10-0.12 MPa/cell in its
+# middle and up to ~1 MPa/cell at the compound-wave transition.
+# A threshold of 0.05 MPa tags the entire wave region (a strip
+# ~30 cells wide) plus a few cells in the outflow.  The initial
+# uniform 100 bar state has |ΔP| ≈ 0 → no tag; the ambient outflow
+# tail settles to |ΔP| ≈ 0 → no tag.  Only the wave itself refines.
 amr.refinement_indicators = ptag
 amr.ptag.field_name = pressure
-amr.ptag.adjacent_difference_greater = 5.0e6
+amr.ptag.adjacent_difference_greater = 5.0e4
 amr.ptag.max_level = 1
 
 DistributionMapping.strategy = ROUNDROBIN
