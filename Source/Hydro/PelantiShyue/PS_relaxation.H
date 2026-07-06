@@ -41,7 +41,42 @@
 #include "hem_pelanti_shyue.H"
 #include <AMReX_Array4.H>
 #include <AMReX_GpuQualifiers.H>
+#include <AMReX_Print.H>
 #include <cmath>
+
+
+// ---------------------------------------------------------------------
+//  Diagnostic counters — Phase 4d instrumentation.
+//
+//  The relaxation was observed to write α_1 outside the physical
+//  range [α_floor, 1 − α_floor] in some cells during CO2_TBlowdown.
+//  Rather than clamp the symptom, count each write-back category to
+//  identify where and how often it happens.  ps_apply_relaxation
+//  resets these to zero at the start of each MFIter sweep and
+//  prints a summary line at the end.  Because MPI-only + USE_OMP=
+//  FALSE means each process is single-threaded through this code,
+//  plain int suffices — no atomics required.
+//
+//  Values are function-local statics of `ps_relax_diag()` so the
+//  header stays include-safe (no ODR violations).
+// ---------------------------------------------------------------------
+struct PsRelaxDiag {
+    int n_calls        = 0;   // total cells the relax visited
+    int n_skipped      = 0;   // early-exit (near-single-phase, m_k<=0, etc)
+    int n_failed       = 0;   // ps_pressure_relax_cell returned false
+    int n_alpha_low    = 0;   // α_1 written < α_floor
+    int n_alpha_high   = 0;   // α_1 written > 1 − α_floor
+    int n_alpha_gt_one = 0;   // α_1 written > 1  (impossible physically)
+    int n_alpha_lt_zero= 0;   // α_1 written < 0  (impossible physically)
+    double alpha_min_seen = 1.0;
+    double alpha_max_seen = 0.0;
+};
+
+inline PsRelaxDiag& ps_relax_diag() {
+    static PsRelaxDiag d;
+    return d;
+}
+
 
 // -----------------------------------------------------------------
 //  Construct the PsPhaseAPI callback that ps_pressure_relax_cell
@@ -91,6 +126,8 @@ ps_mechanical_relax_cell(int i, int j, int k,
                           hem::PsPhaseAPI const& eos)
 {
     using amrex::Real;
+    PsRelaxDiag& diag = ps_relax_diag();
+    ++diag.n_calls;
 
     // Skip cells that are essentially single-phase — the standalone
     // routine has its own skip logic (line 1811) but we also want to
@@ -99,11 +136,17 @@ ps_mechanical_relax_cell(int i, int j, int k,
     const Real alpha1_in = U(i,j,k, UALPHA1);
     if (!std::isfinite(alpha1_in) ||
         alpha1_in < alpha_floor ||
-        alpha1_in > Real(1.0) - alpha_floor) return;
+        alpha1_in > Real(1.0) - alpha_floor) {
+        ++diag.n_skipped;
+        return;
+    }
 
     const Real m1 = U(i,j,k, UM1RHO1);
     const Real m2 = U(i,j,k, UM2RHO2);
-    if (m1 <= Real(0.0) || m2 <= Real(0.0)) return;
+    if (m1 <= Real(0.0) || m2 <= Real(0.0)) {
+        ++diag.n_skipped;
+        return;
+    }
 
     // Mixture momentum magnitude → V6[3] = ρ_mix · |u| so that
     // ½ (V6[3]/ρ_mix)² = ½|u|² is what the standalone uses for
@@ -138,7 +181,22 @@ ps_mechanical_relax_cell(int i, int j, int k,
     // return, Uv[0], Uv[4], Uv[5] are updated in place; Uv[1..3]
     // are invariants.
     const bool ok = hem::ps_pressure_relax_cell(Uv, eos);
-    if (!ok) return;   // failure → leave cell unchanged
+    if (!ok) {
+        ++diag.n_failed;
+        return;   // failure → leave cell unchanged
+    }
+
+    // Diagnostic: catch any relaxation result outside the physical
+    // range.  DO NOT clamp — that would hide the bug we're chasing.
+    const Real alpha_out = Uv[0];
+    if      (alpha_out < Real(0.0))                  ++diag.n_alpha_lt_zero;
+    else if (alpha_out > Real(1.0))                  ++diag.n_alpha_gt_one;
+    if      (alpha_out < alpha_floor)                ++diag.n_alpha_low;
+    else if (alpha_out > Real(1.0) - alpha_floor)    ++diag.n_alpha_high;
+    if (std::isfinite(alpha_out)) {
+        if (alpha_out < diag.alpha_min_seen) diag.alpha_min_seen = alpha_out;
+        if (alpha_out > diag.alpha_max_seen) diag.alpha_max_seen = alpha_out;
+    }
 
     // Write back only the components the relaxation touches.
     U(i,j,k, UALPHA1) = Uv[0];
@@ -158,6 +216,9 @@ ps_apply_relaxation(amrex::MultiFab& S_new)
 {
     const hem::PsPhaseAPI eos = ps_make_camr_eos_api();
 
+    // Reset diagnostic counters for this sweep.
+    ps_relax_diag() = PsRelaxDiag{};
+
     for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
         const amrex::Box& bx = mfi.tilebox();
         amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
@@ -168,6 +229,25 @@ ps_apply_relaxation(amrex::MultiFab& S_new)
         {
             ps_mechanical_relax_cell(i, j, k, U, eos);
         });
+    }
+
+    // Summary per rank (each MPI rank prints its own set of counters
+    // so we can spot rank-specific anomalies).  Report only when at
+    // least one anomaly was seen — silent for healthy steps.
+    const PsRelaxDiag& d = ps_relax_diag();
+    if (d.n_failed > 0 || d.n_alpha_gt_one > 0 ||
+        d.n_alpha_lt_zero > 0 || d.n_alpha_low > 0 || d.n_alpha_high > 0) {
+        amrex::AllPrint()
+            << "[ps_relax] rank " << amrex::ParallelDescriptor::MyProc()
+            << " calls=" << d.n_calls
+            << " skipped=" << d.n_skipped
+            << " failed=" << d.n_failed
+            << " α<0="   << d.n_alpha_lt_zero
+            << " α>1="   << d.n_alpha_gt_one
+            << " α<floor=" << d.n_alpha_low
+            << " α>1-floor=" << d.n_alpha_high
+            << " α_range=[" << d.alpha_min_seen
+            << ", "         << d.alpha_max_seen << "]\n";
     }
 }
 
