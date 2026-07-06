@@ -14,6 +14,8 @@ pp.query("small_pres", small_pres);
 pp.query("do_mol", do_mol);
 pp.query("ps_hydro", ps_hydro);
 pp.query("ps_recon", ps_recon);
+pp.query("ps_bc_use_nscbc", ps_bc_use_nscbc);
+pp.query("ps_bc_nscbc_sigma", ps_bc_nscbc_sigma);
 pp.query("do_react", do_react);
 pp.query("add_ext_src", add_ext_src);
 pp.query("add_grav_src", add_grav_src);

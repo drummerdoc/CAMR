@@ -57,6 +57,20 @@ ps_hydro                     int          0
 #       and drop CAMR.fixed_dt or CAMR.cfl accordingly.
 ps_recon                     int          0
 
+# PS-mode non-reflecting outflow: NSCBC (Poinsot-Lele 1992) applied
+# via BCfill.cpp for boundary faces flagged CAMR.hi_bc = Inflow (the
+# characteristic-BC dispatch route).  When 0, the older single-cell
+# linearised Riemann-invariant path in prob.H::bcnormal is used.
+ps_bc_use_nscbc              int          0
+
+# NSCBC pressure-relaxation coefficient (Poinsot-Lele σ).  0 gives
+# perfectly non-reflecting (allows slow pressure drift over long
+# runs); 0.25 is the classical soft-relaxation default that anchors
+# the boundary pressure to the ambient without measurably reflecting
+# outgoing waves.  Rieper (2011) (1 − M²) compressibility factor is
+# always applied on top.
+ps_bc_nscbc_sigma            Real         0.25
+
 # React fuel + air -> product
 do_react                     int          0
 
