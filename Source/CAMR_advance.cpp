@@ -1,5 +1,8 @@
 #include "CAMR.H"
 #include "IndexDefines.H"
+#ifdef USE_PS_HYDRO
+#include "PS_relaxation.H"
+#endif
 
 #include <cmath>
 
