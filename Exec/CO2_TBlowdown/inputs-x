@@ -69,13 +69,25 @@ CAMR.sum_interval = -1   # sum diagnostics off while debugging PS baseline
 
 CAMR.redistribution_type = StateRedist
 
-amr.loadbalance_with_workestimates = 0
+# Load balance the box distribution by actual per-box work cost
+# rather than by cell count.  With a rarefaction wave sweeping the
+# pipe, some boxes have cells whose PR Newton iterates many more
+# steps than the uniform-interior boxes.  Work-estimate balancing
+# reassigns boxes across ranks to equalise cost.  Requires the boxes
+# to be small enough that finer distribution is possible.
+amr.loadbalance_with_workestimates = 1
+amr.loadbalance_level0_int         = 20    # rebalance every 20 steps
 
 amr.max_level       = 0
 amr.ref_ratio       = 2 2 2 2
 amr.regrid_int      = 2 2 2 2
+# Smaller boxes → finer granularity for the load balancer.
+# 256×32 grid, blocking_factor 16, max_grid_size 16 gives 32 boxes
+# of 16×16 cells, distributed across 4 MPI ranks (default) = 8
+# boxes per rank.  The load balancer can then move the 1–2 "hot"
+# boxes (in the rarefaction fan) between ranks each rebalance.
 amr.blocking_factor = 16
-amr.max_grid_size   = 64
+amr.max_grid_size   = 16
 amr.n_error_buf     = 0 0 0 0
 amr.grid_eff        = 0.99
 
