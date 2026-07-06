@@ -156,6 +156,21 @@ CAMR::CAMR_advance (Real time,
     Sborder.clear();
     Sborder.define(grids, dmap, NVAR, numGrow(), amrex::MFInfo(), Factory());
 
+#ifdef USE_PS_HYDRO
+    // Phase 4d step 1: mechanical relaxation (drives P₁ → P₂).
+    // Applied unconditionally when the code is built with
+    // USE_PS_HYDRO — even under ps_hydro = 0 (Godunov with
+    // passively-advected 6-eq state), because the per-phase
+    // primitives populated by ps_augment_primitives are used by
+    // downstream plotfile-derives and staying near P₁ = P₂ makes
+    // those diagnostics sensible.  Cost is one EOS::REY2P +
+    // EOS::RPY2Cs pair per cell — negligible next to the hydro step.
+    if (ps_hydro != 0) {
+        ps_apply_relaxation(S_new);
+        clean_state(S_new);
+    }
+#endif
+
     if (do_react) {
         react(S_new);
     }
