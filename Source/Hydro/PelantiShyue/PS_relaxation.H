@@ -65,21 +65,38 @@ ps_mechanical_relax_cell(int i, int j, int k,
 {
     using amrex::Real;
 
-    // Skip cells that are essentially single-phase — nothing to
-    // relax, and dP/dα ≈ 0 which would produce a divide-by-zero.
-    constexpr Real alpha_floor  = Real(1.0e-6);
+    // Phase 4d-first-cut: aggressive HEM-approximation relaxation.
+    //
+    // The per-phase specific internal energies e_k drift under LLF
+    // because our flux kernel treats E_1 and E_2 as (nearly)
+    // passively-advected quantities.  Over many steps that drift
+    // pushes some cells into pathological (ρ_k, e_k) regimes and
+    // the PR Newton solver slows down dramatically.
+    //
+    // Simplest robust cure: after each step, RESET both phases to
+    // share the mixture specific internal energy e_mix = UEINT/URHO.
+    // This is equivalent to a full mechanical + thermal + Gibbs
+    // relaxation (HEM), which is stronger than the physical
+    // Pelanti mechanical relaxation but keeps the code fast until
+    // Phase 4d-2/4d-3 install the finite-rate versions.  The mixture
+    // conservation quantities URHO, UMX/UMY/UMZ, UEDEN, UEINT are
+    // completely untouched — only UE1 and UE2 are rewritten so
+    // that E_k = m_k · (e_mix + ½|u|²).
+    //
+    // A quantitative refinement (Phase 4d-2) will restore a
+    // finite-rate split so per-phase T_1 ≠ T_2 remains observable.
+
+    constexpr Real alpha_floor = Real(1.0e-6);
     Real alpha1 = U(i,j,k, UALPHA1);
     if (!std::isfinite(alpha1)) return;
-    if (alpha1 < alpha_floor || alpha1 > Real(1.0) - alpha_floor) return;
+    if (alpha1 < alpha_floor)             alpha1 = alpha_floor;
+    if (alpha1 > Real(1.0) - alpha_floor) alpha1 = Real(1.0) - alpha_floor;
     Real alpha2 = Real(1.0) - alpha1;
 
-    // Per-phase partial masses (conserved by relaxation).
     const Real m1 = U(i,j,k, UM1RHO1);
     const Real m2 = U(i,j,k, UM2RHO2);
     if (m1 <= Real(1.0e-12) || m2 <= Real(1.0e-12)) return;
 
-    // Mixture kinetic-energy density.  Mixture momentum is
-    // conserved by relaxation.
     const Real rho_mix = U(i,j,k, URHO);
     if (rho_mix <= Real(1.0e-12)) return;
     const Real px = U(i,j,k, UMX);
@@ -93,82 +110,45 @@ ps_mechanical_relax_cell(int i, int j, int k,
 #else
     const Real pz = Real(0.0);
 #endif
-    // Specific kinetic energy (per unit mixture mass) — the same
-    // ½|u|² that appears in each per-phase E_k in the standalone
-    // driver (where the two phases share the mixture velocity).
+    // Specific kinetic energy (per unit mixture mass).
     const Real ke_spec = Real(0.5) * (px*px + py*py + pz*pz)
                        / (rho_mix * rho_mix);
 
-    // Per-phase densities and specific internal energies at the
-    // start of the step.  E_k / m_k is the per-phase TOTAL specific
-    // energy; subtracting ke_spec leaves the specific INTERNAL
-    // energy the EOS wants.
-    const Real E1_dens = U(i,j,k, UE1);
-    const Real E2_dens = U(i,j,k, UE2);
-    const Real rho_1 = m1 / alpha1;
-    const Real rho_2 = m2 / alpha2;
-    const Real e1 = E1_dens / m1 - ke_spec;
-    const Real e2 = E2_dens / m2 - ke_spec;
+    // Mixture specific internal energy — the same quantity the
+    // stock hydro_ctoprim computes as q(QREINT)/q(QRHO).  Reading
+    // it directly from the conservative slots avoids depending on
+    // q being up-to-date here (we're operating on S_new AFTER the
+    // flux update, before the next ctoprim).
+    const Real UEden = U(i,j,k, UEDEN);
+    const Real UEint = U(i,j,k, UEINT);
+    // Prefer UEINT for the specific IE when the dual-energy
+    // formalism kept it separate; otherwise fall back to
+    // UEDEN − kinetic.
+    Real e_mix = UEint / rho_mix;
+    if (!std::isfinite(e_mix)) {
+        e_mix = (UEden - Real(0.5) * (px*px + py*py + pz*pz) / rho_mix) / rho_mix;
+    }
+    if (!std::isfinite(e_mix)) return;
 
-    // EOS calls — per-phase P.  Use pure-CO₂ mass-fraction stub.
-    Real Y[NUM_SPECIES];
-    Y[0] = Real(1.0);
-    for (int n = 1; n < NUM_SPECIES; ++n) Y[n] = Real(0.0);
-    Real P1, P2;
-    EOS::REY2P(rho_1, e1, Y, P1);
-    EOS::REY2P(rho_2, e2, Y, P2);
-    if (!std::isfinite(P1) || !std::isfinite(P2)) return;
+    // The specific total energy per phase equals e_mix + ke_spec
+    // (both phases share the mixture velocity).  Write the new
+    // per-phase total-energy densities so E_1 + E_2 = ρE_mix is
+    // preserved exactly:
+    //   UE_k_new = m_k * (e_mix + ke_spec)
+    //   sum      = (m_1 + m_2) * (e_mix + ke_spec)
+    //            = rho_mix * (UEint/rho_mix + ½|u|²/rho_mix²·rho_mix)
+    //            = UEint + ½|u|²/rho_mix   ≈ UEden  ✓
+    const Real E1_new = m1 * (e_mix + ke_spec);
+    const Real E2_new = m2 * (e_mix + ke_spec);
 
-    // If per-phase pressures already agree, nothing to do.
-    const Real Ptol = Real(1.0e-3) * (std::abs(P1) + std::abs(P2) + Real(1.0));
-    if (std::abs(P1 - P2) < Ptol) return;
-
-    // dP/dα approximation.  For an isentropic per-phase compression
-    // at fixed m_k:  ρ_k = m_k/α_k,  ∂ρ_k/∂α_k = -m_k/α_k² = -ρ_k/α_k,
-    // so  ∂P_k/∂α_k = (∂P/∂ρ)_e * ∂ρ/∂α = -c_k² · ρ_k / α_k .
-    // The sign convention for phase 2 relative to α₁: as α₁ grows,
-    // α₂ shrinks, ρ_2 grows, so  ∂P_2/∂α₁ = +c_2² · ρ_2 / α_2 .
-    Real c1, c2;
-    EOS::RPY2Cs(rho_1, P1, Y, c1);
-    EOS::RPY2Cs(rho_2, P2, Y, c2);
-    if (!std::isfinite(c1) || c1 <= Real(0.0)) c1 = Real(1.0);
-    if (!std::isfinite(c2) || c2 <= Real(0.0)) c2 = Real(1.0);
-    const Real dP1_dalpha = -rho_1 * c1 * c1 / alpha1;   // P₁ decreases as α₁ grows
-    const Real dP2_dalpha =  rho_2 * c2 * c2 / alpha2;   // P₂ increases as α₁ grows
-    const Real denom = dP1_dalpha - dP2_dalpha;          // Newton denominator
-    if (std::abs(denom) < Real(1.0e-30)) return;
-
-    // Newton step:  α ← α − (P₁ − P₂) / (dP₁ − dP₂) , with relax_frac
-    // ∈ [0, 1] scaling for partial (finite-τ) relaxation.  Default
-    // 1.0 = full one-step iso-pressure relax.
-    Real delta_alpha = (P1 - P2) / denom;
-    delta_alpha *= relax_frac;
-
-    Real alpha1_new = alpha1 - delta_alpha;
-    if (alpha1_new < alpha_floor)              alpha1_new = alpha_floor;
-    if (alpha1_new > Real(1.0) - alpha_floor)  alpha1_new = Real(1.0) - alpha_floor;
-    const Real alpha2_new = Real(1.0) - alpha1_new;
-
-    // Note: post-relax ρ_k = m_k/α_k_new is IMPLICITLY updated
-    // whenever ps_augment_primitives is next called; we don't need
-    // to write it into a conservative slot (we don't have one).
-    //
-    // Re-partition the per-phase energies: keep the specific IE
-    // e_k FIXED across the relaxation.  Since m_k is also fixed,
-    // E_k = m_k*(e_k + ½|u|²) is unchanged, and mixture
-    // ρE_mix = E1 + E2 is automatically preserved.  Full P-S 2014
-    // iso-relaxation would additionally adjust e_1 and e_2 to
-    // reach exact P₁ = P₂ in one step (conserving ρE_mix); our
-    // simpler version relies on multiple timesteps to drive the
-    // pressure disequilibrium down linearly.
-    const Real E1_new = m1 * (e1 + ke_spec);
-    const Real E2_new = m2 * (e2 + ke_spec);
-
-    // Write back.  UM1RHO1, UM2RHO2, URHO, momenta, UEDEN, UEINT
-    // are all unchanged by mechanical relaxation.
-    U(i,j,k, UALPHA1) = alpha1_new;
+    // (α₁ is left unchanged — mass-preserving mechanical relax on
+    // α is a much smaller effect than the e_k reset when the trace
+    // phase has drifted badly.  A follow-up 4d-2 will add back the
+    // Newton-α step on top of the HEM reset.)
+    U(i,j,k, UALPHA1) = alpha1;      // clamped to [α_floor, 1-α_floor]
     U(i,j,k, UE1    ) = E1_new;
     U(i,j,k, UE2    ) = E2_new;
+    amrex::ignore_unused(relax_frac, alpha2);
     // UM1RHO1 and UM2RHO2 unchanged by mechanical relaxation.
     // URHO, UMX/UMY/UMZ, UEDEN, UEINT all unchanged (mixture
     // conservation).
