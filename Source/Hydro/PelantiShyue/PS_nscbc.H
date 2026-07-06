@@ -153,7 +153,7 @@ _wallis_c_at_cell(const amrex::Real s[NVAR],
                   amrex::Real       uy,
                   amrex::Real       uz,
                   amrex::Real       P_mix,
-                  const amrex::Real Y[NUM_SPECIES]) noexcept
+                  amrex::Real       Y[NUM_SPECIES]) noexcept
 {
     using amrex::Real;
     Real alpha_1 = _finite_or(s[UALPHA1], Real(1.0));
