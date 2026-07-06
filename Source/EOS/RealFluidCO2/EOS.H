@@ -88,48 +88,57 @@ namespace EOS {
   static constexpr amrex::Real gamma = 1.4;
 
   // ----------------------------------------------------------------
-  //  Per-thread (ρ, e) → State cache.
+  //  Per-thread (ρ, e) → State ring-buffer cache.
   //
-  //  hydro_ctoprim calls REY2T, REY2P, REY2Gam, REY2dpde, and
-  //  REY2dpdr_e on the SAME (ρ, e) back-to-back per cell.  Without
-  //  caching each does an independent Newton on the PR cubic
-  //  (state_from_rho_e), producing 5× redundant work.  The cache
-  //  reuses the last computed State when (ρ, e) match to within a
-  //  strict tolerance — so hydro_ctoprim's 5 EOS calls become
-  //  1 Newton + 4 free reads.  CAMR_estdt_hydro's 2 calls become 1
-  //  Newton + 1 free read.
+  //  Two access patterns produce redundant Newton solves that this
+  //  cache eliminates:
   //
-  //  Because USE_OMP = FALSE for this build (MPI-only), a plain
-  //  function-local static is safe.  For a later USE_OMP=TRUE
-  //  build this needs to become #pragma omp threadprivate.
+  //  (A) SAME (ρ, e), MANY calls  — hydro_ctoprim does 5 back-to-
+  //      back calls (REY2T, REY2P, REY2Gam, REY2dpde, REY2dpdr_e)
+  //      per cell.  estdt_hydro does 2 (REY2P, REY2Gam).
   //
-  //  For device builds (USE_CUDA / USE_HIP / USE_SYCL), the static
-  //  cache is a no-op — the compiler places it in per-thread stack
-  //  or DEVICE memory and every GPU thread starts with a fresh
-  //  cache.  That's actually a valid semantic (the cache is
-  //  advisory), so no #ifdef needed.
+  //  (B) ALTERNATING (ρ, e) pairs — ps_augment_primitives (Phase
+  //      4c-β1) calls REY2P(ρ_1, e_1) then REY2P(ρ_2, e_2), and
+  //      may be called immediately after ctoprim's mixture calls.
+  //      A single-slot cache misses on the phase-2 call.
+  //
+  //  A 4-slot ring catches both patterns: back-to-back same-input
+  //  hits the same slot; alternating phase-1/phase-2 pairs stay
+  //  resident.  Rare misses fall through to a fresh Newton solve.
+  //
+  //  Threading: function-local static — safe for USE_OMP=FALSE and
+  //  MPI-only builds (each process has its own cache).  For future
+  //  USE_OMP=TRUE this needs #pragma omp threadprivate.  For device
+  //  builds the static becomes per-thread and starts fresh, which
+  //  is semantically fine (cache is advisory).
   // ----------------------------------------------------------------
   AMREX_GPU_HOST_DEVICE
   AMREX_FORCE_INLINE
   hem::State
   co2_state_from_rho_e_cached(amrex::Real rho, amrex::Real e)
   {
-      static amrex::Real     rho_cache = amrex::Real(-1);
-      static amrex::Real     e_cache   = amrex::Real(0);
-      static hem::State      state_cache{};
-      static bool            cache_valid = false;
+      constexpr int NSLOTS = 4;
+      static amrex::Real rho_cache[NSLOTS] = {amrex::Real(-1), amrex::Real(-1),
+                                              amrex::Real(-1), amrex::Real(-1)};
+      static amrex::Real e_cache  [NSLOTS] = {amrex::Real(0), amrex::Real(0),
+                                              amrex::Real(0), amrex::Real(0)};
+      static hem::State  state_cache[NSLOTS];
+      static int         next_slot = 0;
 
-      // Bit-exact cache hit: same (ρ, e) as previous call.  Robust
-      // against noisy inputs because ctoprim uses the same values
-      // in back-to-back calls.
-      if (cache_valid && rho == rho_cache && e == e_cache) {
-          return state_cache;
+      // Bit-exact hit against any slot.
+      for (int s = 0; s < NSLOTS; ++s) {
+          if (rho == rho_cache[s] && e == e_cache[s] && rho_cache[s] > amrex::Real(0)) {
+              return state_cache[s];
+          }
       }
-      state_cache = hem::state_from_rho_e(co2_fluid(), rho, e);
-      rho_cache   = rho;
-      e_cache     = e;
-      cache_valid = true;
-      return state_cache;
+
+      // Miss: full Newton, evict oldest slot (round-robin).
+      hem::State st = hem::state_from_rho_e(co2_fluid(), rho, e);
+      rho_cache  [next_slot] = rho;
+      e_cache    [next_slot] = e;
+      state_cache[next_slot] = st;
+      next_slot = (next_slot + 1) % NSLOTS;
+      return st;
   }
 
   // ----------------------------------------------------------------
