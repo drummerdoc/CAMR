@@ -137,7 +137,7 @@ bcnormal(
   const amrex::Real s_int[NVAR],
   amrex::Real s_ext[NVAR],
   const int idir,
-  const int /*sgn*/,
+  const int sgn,
   const amrex::Real /*time*/,
   amrex::GeometryData const& /*geomdata*/,
   ProbParmDevice const& prob_parm)
@@ -175,11 +175,36 @@ bcnormal(
     const amrex::Real rhoc    = rho_int * c_int;
 
     // ---- 3. Acoustic-invariant outflow update ----
+    //
+    //  sgn convention (per BCfill.cpp dispatch):
+    //     sgn = +1  →  LOW-side face  (iv[idir] < domlo[idir])
+    //     sgn = -1  →  HIGH-side face (iv[idir] > domhi[idir])
+    //
+    //  For a subsonic outflow the OUTWARD-pointing normal is opposite
+    //  to sgn (points in +idir on the hi face, −idir on the lo face).
+    //  The acoustic invariant that leaves the domain is
+    //     R_+ = u_out + P/(ρc)     where u_out = (−sgn) · un_int
+    //  Solving with R_- from the ambient far-field state
+    //  (u_out_amb = 0, P = P_amb):
+    //     u_out_ghost = ½ · (u_out_int + (P_int − P_amb)/(ρc))
+    //     P_ghost     = ½ · (P_int + P_amb + (ρc)·u_out_int)
+    //  and un_ghost = (−sgn) · u_out_ghost , so:
+    //     un_ghost = ½ · (un_int + (−sgn)·(P_int − P_amb)/(ρc))
+    //     P_ghost  = ½ · (P_int + P_amb + (−sgn)·(ρc)·un_int)
+    //
+    //  For sgn = −1 (hi face) both signs collapse to +, matching the
+    //  original single-sided formula.  For sgn = +1 (lo face) the
+    //  signs flip on the two direction-dependent terms.  Without this
+    //  correction, a low-side outflow (e.g. CO2_TBlowdown inputs-sym-
+    //  x-hi with Inflow at x-lo) drives the ghost cell the wrong way
+    //  and physics diverges from the correct symmetric answer.
     const amrex::Real P_amb   = prob_parm.p_amb;
+    const amrex::Real n_sgn   = amrex::Real(-sgn);    // outward-normal
+                                                       // sign along +idir
     amrex::Real un_ghost = amrex::Real(0.5) *
-                            (un_int + (P_int - P_amb) / rhoc);
+                            (un_int + n_sgn * (P_int - P_amb) / rhoc);
     amrex::Real P_ghost  = amrex::Real(0.5) *
-                            (P_int + P_amb + rhoc * un_int);
+                            (P_int + P_amb + n_sgn * rhoc * un_int);
 
     // Safety: keep P_ghost strictly positive.
     if (P_ghost < amrex::Real(1.0e-3) * P_amb) P_ghost = amrex::Real(1.0e-3) * P_amb;
