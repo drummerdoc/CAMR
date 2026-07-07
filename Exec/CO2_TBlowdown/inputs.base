@@ -43,7 +43,14 @@ CAMR.ppm_type = 1
 
 CAMR.ps_hydro = 1
 CAMR.ps_recon = 0
-CAMR.ps_bc_use_nscbc = 1
+# Phase 1 symmetry test uses bcnormal on ALL outflow faces because
+# our NSCBC dispatch in BCfill.cpp only wires the right x-face path;
+# a y-oriented tube would silently fall through to bcnormal and we
+# would be comparing two different BCs across orientations.  Force
+# bcnormal everywhere for a fair PS_umeth kernel-symmetry check.
+# Once BCfill.cpp gains NSCBC dispatch for all six faces this line
+# can be removed (or flipped to 1) and the symmetry test re-run.
+CAMR.ps_bc_use_nscbc = 0
 CAMR.ps_bc_nscbc_sigma = 0.25
 
 CAMR.v = 1
