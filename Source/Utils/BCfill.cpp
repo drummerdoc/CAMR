@@ -45,6 +45,9 @@ struct PCHypFillExtDir
     const int* domlo = geomdata.Domain().loVect();
     const int* domhi = geomdata.Domain().hiVect();
     const auto& prob_lo = geomdata.ProbLo();
+#ifdef USE_PS_HYDRO
+    const auto& prob_hi = geomdata.ProbHi();
+#endif
     const auto& dx = geomdata.CellSize();
     const amrex::Real x[AMREX_SPACEDIM] = {AMREX_D_DECL(
       prob_lo[0] + static_cast<amrex::Real>(iv[0] + 0.5) * dx[0],
@@ -53,133 +56,95 @@ struct PCHypFillExtDir
 
     const int* bc = bcr->data();
 
-    amrex::Real s_int[NVAR] = {0.0};
-    amrex::Real s_ext[NVAR] = {0.0};
+    // ---- Common per-face dispatch --------------------------------
+    // Handles both PS-mode NSCBC and the legacy bcnormal path
+    // uniformly.  Called for each face on which the BCRec is
+    // ext_dir and the current ghost cell iv is outside the domain
+    // along that face.
+    //
+    //   idir  =  boundary-normal direction (0=x, 1=y, 2=z)
+    //   sgn   = +1 for low-side face, -1 for high-side face
+    //           (AMReX convention).
+    //
+    // The stencil walks INWARD from the boundary cell N (=domlo[idir]
+    // for a lo face, domhi[idir] for a hi face) with step +sgn in
+    // the idir component; layer_offset counts how many cells iv sits
+    // outside the boundary.
+    auto do_bc_face = [&, x] (int idir, int sgn) {
+      // Boundary cell N along the normal direction.  Tangential
+      // components are copied from the current ghost's iv[].
+      const int N_pos = (sgn > 0) ? domlo[idir] : domhi[idir];
+      const int layer = sgn * (N_pos - iv[idir]);   // positive for ghosts outside
 
-    // xlo and xhi
-    int idir = 0;
-    if ((bc[idir] == amrex::BCType::ext_dir) && (iv[idir] < domlo[idir])) {
-      amrex::IntVect loc(AMREX_D_DECL(domlo[idir], iv[1], iv[2]));
-      for (int n = 0; n < NVAR; n++) {
-        s_int[n] = dest(loc, n);
-      }
-      bcnormal(x, s_int, s_ext, idir, +1, time, geomdata, *lprobparm);
-      for (int n = 0; n < NVAR; n++) {
-        dest(iv, n) = s_ext[n];
-      }
-    } else if (
-      (bc[idir + AMREX_SPACEDIM] == amrex::BCType::ext_dir) &&
-      (iv[idir] > domhi[idir])) {
+      // Build IntVects for N, N-1, N-2 along idir.  Non-idir
+      // components come from iv (so the stencil is on the correct
+      // tangential column of interior cells).
+      amrex::IntVect coord_v(AMREX_D_DECL(iv[0], iv[1], iv[2]));
+      auto stencil_iv = [&] (int step) {
+        amrex::IntVect r = coord_v;
+        r[idir] = N_pos + sgn * step;   // step 0 → N; step 1 → N-1 (inward); …
+        return r;
+      };
+
 #ifdef USE_PS_HYDRO
-      if (use_nscbc != 0 && domhi[idir] - 2 >= domlo[idir]) {
-        // ---- PS-mode NSCBC on right x-face outflow ----------------
-        // Sample three interior cells: N, N-1, N-2 (backward stencil
-        // for 2nd-order FD derivatives).  Requires at least 3 cells
-        // in this direction — enforced by the >= 2 check on
-        // (domhi - 2 vs domlo).
+      if (use_nscbc != 0
+          && (sgn > 0 ? (domlo[idir] + 2 <= domhi[idir])
+                      : (domhi[idir] - 2 >= domlo[idir]))) {
+        // ---- PS-NSCBC characteristic-invariant path -----------------
         amrex::Real s_N[NVAR], s_Nm1[NVAR], s_Nm2[NVAR];
-        amrex::IntVect ivN  (AMREX_D_DECL(domhi[idir],     iv[1], iv[2]));
-        amrex::IntVect ivNm1(AMREX_D_DECL(domhi[idir] - 1, iv[1], iv[2]));
-        amrex::IntVect ivNm2(AMREX_D_DECL(domhi[idir] - 2, iv[1], iv[2]));
+        const amrex::IntVect ivN   = stencil_iv(0);
+        const amrex::IntVect ivNm1 = stencil_iv(1);
+        const amrex::IntVect ivNm2 = stencil_iv(2);
         for (int n = 0; n < NVAR; n++) {
           s_N  [n] = dest(ivN,   n);
           s_Nm1[n] = dest(ivNm1, n);
           s_Nm2[n] = dest(ivNm2, n);
         }
-        // Layer offset: 1 for the first ghost, 2 for the second, ...
-        // Each ghost gets a linear-in-x extrapolation of the modified
-        // NSCBC-corrected derivatives, giving MUSCL a smooth stencil
-        // across the boundary.
-        const int layer = iv[idir] - domhi[idir];
-        // Domain length in the boundary-normal direction — used by
-        // the Poinsot-Lele pressure-relaxation term.
-        const auto& prob_lo_g = geomdata.ProbLo();
-        const auto& prob_hi_g = geomdata.ProbHi();
-        const amrex::Real L_ref =
-            prob_hi_g[idir] - prob_lo_g[idir];
         PS_NSCBC::Params params;
         params.P_amb = lprobparm->p_amb;
         params.sigma = nscbc_sigma;
-        params.L_ref = L_ref;
+        params.L_ref = prob_hi[idir] - prob_lo[idir];
         amrex::Real s_ghost[NVAR];
-        PS_NSCBC::right_x_outflow(s_N, s_Nm1, s_Nm2,
-                                   dx[idir], layer, params, s_ghost);
-        for (int n = 0; n < NVAR; n++) {
-          dest(iv, n) = s_ghost[n];
-        }
-        // Skip the standard bcnormal path — NSCBC already produced
-        // the ghost.  Fall through the rest of the x/y/z blocks:
-        // NSCBC currently only handles right-x outflow.  Other
-        // boundary faces (yhi/ylo/zhi/zlo, xlo) continue via bcnormal
-        // through the remaining conditional branches below.
-      } else {
-        amrex::IntVect loc(AMREX_D_DECL(domhi[idir], iv[1], iv[2]));
-        for (int n = 0; n < NVAR; n++) {
-          s_int[n] = dest(loc, n);
-        }
-        bcnormal(x, s_int, s_ext, idir, -1, time, geomdata, *lprobparm);
-        for (int n = 0; n < NVAR; n++) {
-          dest(iv, n) = s_ext[n];
-        }
-      }
-#else
-      amrex::IntVect loc(AMREX_D_DECL(domhi[idir], iv[1], iv[2]));
-      for (int n = 0; n < NVAR; n++) {
-        s_int[n] = dest(loc, n);
-      }
-      bcnormal(x, s_int, s_ext, idir, -1, time, geomdata, *lprobparm);
-      for (int n = 0; n < NVAR; n++) {
-        dest(iv, n) = s_ext[n];
+        PS_NSCBC::outflow_face(s_N, s_Nm1, s_Nm2, dx[idir],
+                                idir, sgn, layer, params, s_ghost);
+        for (int n = 0; n < NVAR; n++) dest(iv, n) = s_ghost[n];
+        return;
       }
 #endif
+      // ---- Legacy single-cell bcnormal path -----------------------
+      amrex::Real s_int_local[NVAR], s_ext_local[NVAR];
+      const amrex::IntVect ivN = stencil_iv(0);
+      for (int n = 0; n < NVAR; n++) s_int_local[n] = dest(ivN, n);
+      bcnormal(x, s_int_local, s_ext_local, idir, sgn, time,
+               geomdata, *lprobparm);
+      for (int n = 0; n < NVAR; n++) dest(iv, n) = s_ext_local[n];
+    };
+
+    // ---- Dispatch: check each ext_dir face --------------------
+    // xlo / xhi
+    if ((bc[0] == amrex::BCType::ext_dir) && (iv[0] < domlo[0])) {
+      do_bc_face(0, +1);
+    } else if ((bc[0 + AMREX_SPACEDIM] == amrex::BCType::ext_dir)
+               && (iv[0] > domhi[0])) {
+      do_bc_face(0, -1);
     }
 #if AMREX_SPACEDIM > 1
-    // ylo and yhi
-    idir = 1;
-    if ((bc[idir] == amrex::BCType::ext_dir) && (iv[idir] < domlo[idir])) {
-      amrex::IntVect loc(AMREX_D_DECL(iv[0], domlo[idir], iv[2]));
-      for (int n = 0; n < NVAR; n++) {
-        s_int[n] = dest(loc, n);
-      }
-      bcnormal(x, s_int, s_ext, idir, +1, time, geomdata, *lprobparm);
-      for (int n = 0; n < NVAR; n++) {
-        dest(iv, n) = s_ext[n];
-      }
-    } else if (
-      (bc[idir + AMREX_SPACEDIM] == amrex::BCType::ext_dir) &&
-      (iv[idir] > domhi[idir])) {
-      amrex::IntVect loc(AMREX_D_DECL(iv[0], domhi[idir], iv[2]));
-      for (int n = 0; n < NVAR; n++) {
-        s_int[n] = dest(loc, n);
-      }
-      bcnormal(x, s_int, s_ext, idir, -1, time, geomdata, *lprobparm);
-      for (int n = 0; n < NVAR; n++) {
-        dest(iv, n) = s_ext[n];
-      }
-    }
-#if AMREX_SPACEDIM == 3
-    // zlo and zhi
-    idir = 2;
-    if ((bc[idir] == amrex::BCType::ext_dir) && (iv[idir] < domlo[idir])) {
-      for (int n = 0; n < NVAR; n++) {
-        s_int[n] = dest(iv[0], iv[1], domlo[idir], n);
-      }
-      bcnormal(x, s_int, s_ext, idir, +1, time, geomdata, *lprobparm);
-      for (int n = 0; n < NVAR; n++) {
-        dest(iv, n) = s_ext[n];
-      }
-    } else if (
-      (bc[idir + AMREX_SPACEDIM] == amrex::BCType::ext_dir) &&
-      (iv[idir] > domhi[idir])) {
-      for (int n = 0; n < NVAR; n++) {
-        s_int[n] = dest(iv[0], iv[1], domhi[idir], n);
-      }
-      bcnormal(x, s_int, s_ext, idir, -1, time, geomdata, *lprobparm);
-      for (int n = 0; n < NVAR; n++) {
-        dest(iv, n) = s_ext[n];
-      }
+    // ylo / yhi
+    if ((bc[1] == amrex::BCType::ext_dir) && (iv[1] < domlo[1])) {
+      do_bc_face(1, +1);
+    } else if ((bc[1 + AMREX_SPACEDIM] == amrex::BCType::ext_dir)
+               && (iv[1] > domhi[1])) {
+      do_bc_face(1, -1);
     }
 #endif
+#if AMREX_SPACEDIM == 3
+    // zlo / zhi
+    if ((bc[2] == amrex::BCType::ext_dir) && (iv[2] < domlo[2])) {
+      do_bc_face(2, +1);
+    } else if ((bc[2 + AMREX_SPACEDIM] == amrex::BCType::ext_dir)
+               && (iv[2] > domhi[2])) {
+      do_bc_face(2, -1);
+    }
 #endif
   }
 };

@@ -197,25 +197,55 @@ _wallis_c_at_cell(const amrex::Real s[NVAR],
 
 
 // ---------------------------------------------------------------------
-//  right_x_outflow
+//  outflow_face
 //
-//  Ghost-cell state at a right-boundary x-face outflow.  Uses the
-//  characteristic-invariant NSCBC formulation.  s_N, s_Nm1, s_Nm2
-//  are the last three interior cells (backward stencil).
-//  layer_offset ∈ {1, 2, ...} indexes successive ghost layers.
+//  Ghost-cell state at a subsonic outflow face on any of the six
+//  boundaries {x-lo, x-hi, y-lo, y-hi, z-lo, z-hi}.  Uses the
+//  characteristic-invariant NSCBC formulation.
+//
+//  Arguments
+//    s_N, s_Nm1, s_Nm2  Interior states in a 3-cell backward stencil
+//                        walking INWARD from the boundary.  Caller
+//                        (BCfill.cpp) is responsible for reading the
+//                        right cells in the right order.
+//    dx_normal          Cell size along the boundary-normal direction.
+//    idir               Boundary-normal direction (0=x, 1=y, 2=z).
+//    sgn                AMReX BC convention:  +1 for low-side face
+//                        (iv[idir] < domlo), -1 for high-side face
+//                        (iv[idir] > domhi).
+//    layer_offset       Which ghost layer this call fills (1 = nearest
+//                        the domain, 2 = second-nearest, …).  Deeper
+//                        layers extrapolate the smooth-region R_+
+//                        further outward; the minmod-limited slope
+//                        guarantees safe behaviour at oscillatory
+//                        boundaries.
+//    p                  Runtime tunables (P_amb, σ, …).
+//
+//  Returns via  s_ghost[NVAR]  the conservative ghost state.
+//
+//  Direction handling.  Let  n_sgn = -sgn  be the outward-normal
+//  sign along +idir (+1 for hi, -1 for lo).  We work in the "outward
+//  velocity" frame  u_out ≡ n_sgn · u_int_normal,  in which any
+//  outflow satisfies u_out > 0 regardless of which face we're on.
+//  All invariants and inversions are formulated in this frame; the
+//  final ghost velocity is converted back to u_int_normal_ghost =
+//  n_sgn · u_out_ghost before writing to s_ghost.
 // ---------------------------------------------------------------------
 AMREX_GPU_HOST_DEVICE
 AMREX_FORCE_INLINE
 void
-right_x_outflow(const amrex::Real s_N  [NVAR],
-                const amrex::Real s_Nm1[NVAR],
-                const amrex::Real s_Nm2[NVAR],
-                amrex::Real       dx,
-                int               layer_offset,
-                Params const&     p,
-                amrex::Real       s_ghost[NVAR]) noexcept
+outflow_face(const amrex::Real s_N  [NVAR],
+             const amrex::Real s_Nm1[NVAR],
+             const amrex::Real s_Nm2[NVAR],
+             amrex::Real       dx_normal,
+             int               idir,
+             int               sgn,
+             int               layer_offset,
+             Params const&     p,
+             amrex::Real       s_ghost[NVAR]) noexcept
 {
     using amrex::Real;
+    amrex::ignore_unused(dx_normal);   // reserved for future full-NSCBC
 
     // ---- 1. Mixture primitives at N, N-1, N-2 ---------------------
     Real rho_N,   ux_N,   uy_N,   uz_N,   e_N,   P_N;
@@ -226,6 +256,18 @@ right_x_outflow(const amrex::Real s_N  [NVAR],
     _cell_primitives(s_Nm1, rho_Nm1, ux_Nm1, uy_Nm1, uz_Nm1, e_Nm1, P_Nm1, Y_Nm1);
     _cell_primitives(s_Nm2, rho_Nm2, ux_Nm2, uy_Nm2, uz_Nm2, e_Nm2, P_Nm2, Y_Nm2);
 
+    // Convenience: pick along-normal component from (ux, uy, uz) for
+    // each of the three interior cells.  In 2-D and 1-D the z entry
+    // is 0; harmless to fall through.
+    auto pick_un = [idir] (Real ux, Real uy, Real uz) -> Real {
+        if      (idir == 0) return ux;
+        else if (idir == 1) return uy;
+        else                return uz;
+    };
+    const Real un_int_N   = pick_un(ux_N,   uy_N,   uz_N);
+    const Real un_int_Nm1 = pick_un(ux_Nm1, uy_Nm1, uz_Nm1);
+    const Real un_int_Nm2 = pick_un(ux_Nm2, uy_Nm2, uz_Nm2);
+
     // ---- 2. Wallis frozen sound speed at cell N -------------------
     const Real c_N = _wallis_c_at_cell(s_N, rho_N, e_N, ux_N, uy_N, uz_N,
                                         P_N, Y_N);
@@ -233,19 +275,27 @@ right_x_outflow(const amrex::Real s_N  [NVAR],
         _zero_gradient_ghost(s_N, s_ghost);
         return;
     }
-    const Real Mach_N = ux_N / c_N;
+
+    // Outward-normal sign along +idir.  All the invariants below are
+    // written in the u_out frame where an outflow has u_out > 0.
+    const Real n_sgn = static_cast<Real>(-sgn);   // +1 for hi, -1 for lo
+    const Real un_out_N   = n_sgn * un_int_N;
+    const Real un_out_Nm1 = n_sgn * un_int_Nm1;
+    const Real un_out_Nm2 = n_sgn * un_int_Nm2;
+    const Real Mach_N     = un_out_N / c_N;
 
     // ---- 3. Sub/super/inflow dispatch -----------------------------
     if (Mach_N >= Real(1.0)) {
-        // Supersonic outflow → all characteristics leave; no boundary
-        // correction is possible or needed.  Zero-gradient is exact.
+        // Supersonic outflow → no characteristic can carry information
+        // in from outside.  Zero-gradient copy is exact.
         _zero_gradient_ghost(s_N, s_ghost);
         return;
     }
-    if (ux_N < Real(0.0)) {
-        // Inflow at what should be an outflow face — use ambient
-        // state with interior tangential velocity preserved.  This is
-        // very rare in blowdown; belt-and-braces.
+    if (un_out_N < Real(0.0)) {
+        // Inflow at what should be an outflow face — rare in blowdown
+        // (a strong reflection can transiently reverse flow).  Use
+        // ambient P for internal energy but preserve interior
+        // tangential velocity so a grazing flow isn't arrested.
         Real e_amb;
         EOS::RYP2E(rho_N, Y_N, p.P_amb, e_amb);
         if (!std::isfinite(e_amb)) {
@@ -281,29 +331,22 @@ right_x_outflow(const amrex::Real s_N  [NVAR],
 
     // ---- 4. Subsonic outflow: characteristic-invariant NSCBC ------
     //
-    // The acoustic invariants are defined with the impedance ρ_N c_N
-    // (evaluated at cell N — this is the standard choice; using the
-    // MIXTURE Wallis c_N here ensures consistency with the PS_umeth
-    // interior flux which uses the same frozen c).
+    // Acoustic impedance ρ c evaluated at cell N (standard choice;
+    // using the Wallis mixture c keeps the boundary impedance
+    // consistent with PS_umeth's interior LLF diffusion).
     const Real rho_c = rho_N * c_N;
 
-    // R_+ = u + P/(ρc) at each interior cell.
-    const Real Rp_N   = ux_N   + P_N   / rho_c;
-    const Real Rp_Nm1 = ux_Nm1 + P_Nm1 / rho_c;
-    const Real Rp_Nm2 = ux_Nm2 + P_Nm2 / rho_c;
+    // R_+ = u_out + P/(ρc) at each interior cell.  Formulated in the
+    // outward frame so the same code handles all six faces.
+    const Real Rp_N   = un_out_N   + P_N   / rho_c;
+    const Real Rp_Nm1 = un_out_Nm1 + P_Nm1 / rho_c;
+    const Real Rp_Nm2 = un_out_Nm2 + P_Nm2 / rho_c;
 
-    // Minmod-limited backward slope on R_+.  A naive 2nd-order FD
-    //     ∂R_+/∂x |_N ≈ (3 R_+_N − 4 R_+_{N-1} + R_+_{N-2}) / (2 dx)
-    // amplifies boundary oscillations catastrophically: in the wake
-    // of a T-Blowdown rarefaction, P near the outflow can oscillate
-    // between neighbour cells by 2× within 4 cells, giving a
-    // spurious ∂R_+/∂x on the order of 10⁵ /m that extrapolates the
-    // deep ghost cells (layer_offset up to numGrow) to unphysical
-    // values.  Minmod on the two consecutive backward slopes gives
-    // the same 2nd-order accuracy in smooth regions but automatically
-    // collapses to zero (i.e. flat extrapolation R_+_ghost = R_+_N,
-    // which reproduces bcnormal) wherever the slopes disagree in
-    // sign — exactly the oscillatory regions we want to protect.
+    // Minmod-limited backward slope on R_+ (see design notes at top
+    // of file: the naive 2nd-order FD amplifies boundary oscillations
+    // catastrophically; minmod on the two consecutive backward slopes
+    // gives 2nd-order accuracy in smooth regions and collapses to 0
+    // in oscillatory regions).
     const Real slope_hi = Rp_N   - Rp_Nm1;     // between cells N and N-1
     const Real slope_lo = Rp_Nm1 - Rp_Nm2;     // between cells N-1 and N-2
     Real dRp_scaled;                            // dx · ∂R_+/∂x |_N
@@ -314,39 +357,29 @@ right_x_outflow(const amrex::Real s_N  [NVAR],
     } else {
         dRp_scaled = slope_lo;
     }
-
-    // Extrapolate R_+ into ghost layer.  For layer_offset = 1 this
-    // sits one cell outside the domain.  Deeper ghosts (layer_offset
-    // up to numGrow) extend the linear-in-x profile so MUSCL sees a
-    // clean stencil at the boundary — but only where the smooth-slope
-    // check above passed.
     const Real Rp_ghost = Rp_N
                         + static_cast<Real>(layer_offset) * dRp_scaled;
 
-    // R_- target from ambient far-field (u_amb = 0, P = P_amb).
-    // Optional Poinsot-Lele soft relaxation with the same impedance:
-    //     R_-_target = -P_amb/(ρc) - σ·(P_N − P_amb)/(ρc)
-    // σ = 0 → perfectly non-reflecting (allows slow pressure drift).
-    // σ ~ 0.25 → soft anchor to P_amb over ~L_ref / (c·σ) time.
+    // R_- target from ambient far-field (u_out_amb = 0, P = P_amb).
+    // Optional Poinsot-Lele soft relaxation with the same impedance.
     Real Rm_target = -p.P_amb / rho_c;
     if (p.sigma > Real(0.0)) {
         Rm_target -= p.sigma * (P_N - p.P_amb) / rho_c;
     }
 
-    // Recover ghost primitives from R_+ and R_-.
-    Real u_g = Real(0.5) * (Rp_ghost + Rm_target);
-    Real P_g = Real(0.5) * rho_c * (Rp_ghost - Rm_target);
+    // Recover ghost primitives (still in the u_out frame).
+    Real un_out_g = Real(0.5) * (Rp_ghost + Rm_target);
+    Real P_g      = Real(0.5) * rho_c * (Rp_ghost - Rm_target);
 
     // Positivity clamp on P.
     const Real P_floor = amrex::max(Real(1.0e-3) * p.P_amb, Real(1.0));
     if (!std::isfinite(P_g) || P_g < P_floor) P_g = P_floor;
-    if (!std::isfinite(u_g)) u_g = ux_N;
+    if (!std::isfinite(un_out_g)) un_out_g = un_out_N;
 
-    // Density at ghost: use the linearised entropy invariant
-    // S = ρ − P/c²  (contact-wave content, extrapolated from cell N,
-    // 1st order).  Alternatively could use a 3-cell stencil on S too,
-    // but for a smooth outflow the leading-order matters most for
-    // the acoustic invariants.
+    // Convert back to interior frame: un_int_g = n_sgn · un_out_g.
+    const Real un_int_g = n_sgn * un_out_g;
+
+    // Density at ghost via linearised entropy invariant.
     Real rho_g = rho_N + (P_g - P_N) / (c_N * c_N);
     constexpr Real rho_floor_g = Real(1.0e-6);
     if (!std::isfinite(rho_g) || rho_g < rho_floor_g) rho_g = rho_floor_g;
@@ -361,17 +394,20 @@ right_x_outflow(const amrex::Real s_N  [NVAR],
         return;
     }
 
-    // Tangential velocity: zero-gradient extrapolation (no acoustic
-    // coupling normal to the boundary).
-    const Real uy_g = uy_N;
-    const Real uz_g = uz_N;
+    // Along-normal ghost velocity goes into the momentum slot for
+    // idir; the OTHER two components are zero-gradient extrapolated
+    // (no acoustic coupling normal to the boundary).
+    Real ux_g = ux_N, uy_g = uy_N, uz_g = uz_N;
+    if      (idir == 0) ux_g = un_int_g;
+    else if (idir == 1) uy_g = un_int_g;
+    else                uz_g = un_int_g;
 
     // ---- 5. Pack conservative ghost state -------------------------
     const Real ke_g = Real(0.5) * rho_g *
-        (u_g*u_g + uy_g*uy_g + uz_g*uz_g);
+        (ux_g*ux_g + uy_g*uy_g + uz_g*uz_g);
 
     s_ghost[URHO ] = rho_g;
-    s_ghost[UMX  ] = rho_g * u_g;
+    s_ghost[UMX  ] = rho_g * ux_g;
 #if (AMREX_SPACEDIM >= 2)
     s_ghost[UMY  ] = rho_g * uy_g;
 #endif
@@ -397,7 +433,7 @@ right_x_outflow(const amrex::Real s_N  [NVAR],
     const Real m1_g = m1_N * rho_ratio;
     const Real m2_g = m2_N * rho_ratio;
     const Real E_g_spec = e_g + Real(0.5) *
-        (u_g*u_g + uy_g*uy_g + uz_g*uz_g);
+        (ux_g*ux_g + uy_g*uy_g + uz_g*uz_g);
 
     s_ghost[UALPHA1] = alpha_1_g;
     s_ghost[UM1RHO1] = m1_g;
@@ -408,6 +444,28 @@ right_x_outflow(const amrex::Real s_N  [NVAR],
     // Final sanitisation: any non-finite slot reverts to N.
     for (int n = 0; n < NVAR; ++n)
         if (!std::isfinite(s_ghost[n])) s_ghost[n] = s_N[n];
+}
+
+
+// ---------------------------------------------------------------------
+//  Backwards-compatible thin wrapper for callers that still use the
+//  original right_x_outflow name.  Equivalent to outflow_face on the
+//  right x-face (idir=0, sgn=-1).  New code should call outflow_face
+//  directly with explicit idir/sgn.
+// ---------------------------------------------------------------------
+AMREX_GPU_HOST_DEVICE
+AMREX_FORCE_INLINE
+void
+right_x_outflow(const amrex::Real s_N  [NVAR],
+                const amrex::Real s_Nm1[NVAR],
+                const amrex::Real s_Nm2[NVAR],
+                amrex::Real       dx,
+                int               layer_offset,
+                Params const&     p,
+                amrex::Real       s_ghost[NVAR]) noexcept
+{
+    outflow_face(s_N, s_Nm1, s_Nm2, dx, /*idir=*/0, /*sgn=*/-1,
+                  layer_offset, p, s_ghost);
 }
 
 }  // namespace PS_NSCBC
