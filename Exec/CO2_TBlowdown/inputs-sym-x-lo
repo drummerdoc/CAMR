@@ -1,0 +1,14 @@
+# Symmetry test: wave source at x=0 wall, NRBC outflow at x=1.
+# THIS IS THE REFERENCE ORIENTATION — the other three are compared
+# to this one after folding their axes into a canonical view.
+FILE = inputs.base
+
+# Tube long axis = x.  256 × 32 grid; 1 m × 0.125 m domain.
+amr.n_cell           =   256   32   32
+geometry.prob_hi     =   1.0    0.125  0.125
+
+# Wall at x=lo, vent at x=hi.  Tangential (y, z) always SlipWall.
+CAMR.lo_bc       =  SlipWall   SlipWall   SlipWall
+CAMR.hi_bc       =  Inflow     SlipWall   SlipWall
+
+amr.plot_file = plt_sym_x_lo_

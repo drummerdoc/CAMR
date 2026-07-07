@@ -1,0 +1,78 @@
+# =====================================================================
+#  inputs.base — shared T-Blowdown parameters common to all
+#  orientation variants of the symmetry test suite.
+#
+#  Do NOT run this file directly.  It's included via
+#      FILE = inputs.base
+#  at the top of each inputs-sym-{x,y,z}-{lo,hi} orientation file,
+#  which then overrides only the orientation-specific bits:
+#      amr.n_cell        (long axis of the tube)
+#      geometry.prob_hi  (aspect ratio matches n_cell)
+#      CAMR.lo_bc, hi_bc (Inflow on the vent face, SlipWall elsewhere)
+#      amr.plot_file     (namespace isolation across variants)
+#
+#  Everything else — physics, EOS, CFL, NSCBC, AMR, plot machinery,
+#  prob_parm — must live here.  If you find yourself editing an
+#  orientation file to change something non-directional, move that
+#  edit here instead.
+# =====================================================================
+
+amrex.fpe_trap_invalid = 0
+
+max_step  = 300
+stop_time = 1.65e-3
+
+geometry.is_periodic = 0 0 0
+geometry.coord_sys   = 0  # 0 => Cartesian
+
+# geometry.prob_lo / prob_hi + amr.n_cell are set per-orientation.
+# The base always places prob_lo at the origin.
+geometry.prob_lo     =   0.0    0.0    0.0
+
+# CAMR.lo_bc / hi_bc are set per-orientation.  In each case exactly
+# ONE face is Inflow (dispatches to bcnormal / NSCBC for the
+# non-reflecting outflow) and the other five are SlipWall (reflecting
+# tube walls).
+
+# --- Physics + numerics ---------------------------------------------
+CAMR.cfl = 0.25
+CAMR.fixed_dt = 0
+CAMR.allow_negative_energy = 1
+CAMR.do_mol = 0
+CAMR.ppm_type = 1
+
+CAMR.ps_hydro = 1
+CAMR.ps_recon = 0
+CAMR.ps_bc_use_nscbc = 1
+CAMR.ps_bc_nscbc_sigma = 0.25
+
+CAMR.v = 1
+amr.v = 1
+CAMR.sum_interval = -1
+CAMR.redistribution_type = StateRedist
+
+amr.loadbalance_with_workestimates = 0
+
+amr.max_level       = 0
+amr.ref_ratio       = 2 2 2 2
+amr.regrid_int      = 2 2 2 2
+amr.blocking_factor = 16
+amr.max_grid_size   = 16
+amr.n_error_buf     = 0 0 0 0
+amr.grid_eff        = 0.99
+
+DistributionMapping.strategy = ROUNDROBIN
+
+amr.checkpoint_files_output = 0
+amr.check_file              = chk
+amr.check_int               = 500
+
+amr.plot_files_output = 1
+amr.plot_int          = 100
+amr.derive_plot_vars  = x_velocity y_velocity z_velocity vfrac pressure
+
+# --- Problem initial state -----------------------------------------
+prob.p0    = 1.0e7    # Pa   (100 bar, initial pressure)
+prob.T0    = 320.0    # K
+prob.u0    = 0.0      # m/s
+prob.p_amb = 1.0e5    # Pa   (atmospheric — target ambient at the vent)

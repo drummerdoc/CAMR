@@ -1,0 +1,12 @@
+# Symmetry test: wave source at x=1 wall (mirror in x of x-lo).
+# NRBC outflow at x=0.  The wave now propagates in the −x direction.
+# Folded profile (x → 1−x) should match x-lo exactly.
+FILE = inputs.base
+
+amr.n_cell           =   256   32   32
+geometry.prob_hi     =   1.0    0.125  0.125
+
+CAMR.lo_bc       =  Inflow     SlipWall   SlipWall
+CAMR.hi_bc       =  SlipWall   SlipWall   SlipWall
+
+amr.plot_file = plt_sym_x_hi_

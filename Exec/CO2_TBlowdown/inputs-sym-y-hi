@@ -1,0 +1,12 @@
+# Symmetry test: tube along y, wall at y=hi, NRBC vent at y=lo.
+# Wave propagates in the −y direction.  Slice along y and fold
+# (y → 1−y) to compare to x-lo.
+FILE = inputs.base
+
+amr.n_cell           =   32   256   32
+geometry.prob_hi     =   0.125    1.0    0.125
+
+CAMR.lo_bc       =  SlipWall   Inflow     SlipWall
+CAMR.hi_bc       =  SlipWall   SlipWall   SlipWall
+
+amr.plot_file = plt_sym_y_hi_

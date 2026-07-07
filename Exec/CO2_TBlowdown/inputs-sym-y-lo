@@ -1,0 +1,14 @@
+# Symmetry test: same physics as x-lo but the tube long axis is y.
+# Wall at y=0, NRBC vent at y=1.  Wave propagates in the +y direction.
+# Slice along y (rather than x) and compare to x-lo.
+FILE = inputs.base
+
+# Tube long axis = y.  32 × 256 grid; 0.125 m × 1 m domain.
+amr.n_cell           =   32   256   32
+geometry.prob_hi     =   0.125    1.0    0.125
+
+# Wall at y=lo, vent at y=hi.  Tangential (x, z) always SlipWall.
+CAMR.lo_bc       =  SlipWall   SlipWall   SlipWall
+CAMR.hi_bc       =  SlipWall   Inflow     SlipWall
+
+amr.plot_file = plt_sym_y_lo_
