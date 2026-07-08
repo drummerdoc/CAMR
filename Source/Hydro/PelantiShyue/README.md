@@ -330,6 +330,12 @@ plan (tasks #202 → #216, roughly).  They are what make the module
 match the standalone driver bit-exactly on B4 and pass production
 validation at the analytic R-star velocity.
 
+For the paper-to-code mapping (which Pelanti–Shyue 2014 equation
+lives in which function in the standalone AND in this CAMR port,
+plus the list of deliberate divergences we ship), see
+[`co2-eos-cfd/docs/design/ps_2014_algorithm_map.md`](../../../../SINTEF/co2-eos-cfd/docs/design/ps_2014_algorithm_map.md)
+(in the sibling standalone repo).
+
 ### 1. Non-conservative α₁ transport (task #202 / #207)
 
 The volume fraction α₁ obeys a NON-conservative transport equation
