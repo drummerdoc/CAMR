@@ -1,9 +1,26 @@
 # PelantiShyue hydro module for CAMR
 
-**Status:** Phase 4a — scaffolding.  Algorithm code (`hem_pelanti_shyue.H`)
-copied from `co2-eos-cfd/src/hem/`; **not yet wired into
-`Source/Hydro/Hydro_umdrv.cpp`**.  Selecting this solver will not do
-anything useful until Phase 4c.
+**Status (Jul 2026):** Phase 4a through 4f complete.  The module has
+been algorithmically validated on the B4-Cross-critical Riemann
+benchmark — it reproduces the standalone `co2-eos-cfd/ppm_1d_ps_wp`
+result bit-exactly at step 10 (single-level, N=128, forward-Euler
+lockstep) and matches the analytic R-star velocity `u* ≈ +8.99 m/s`
+at N=256 with the production RK2 + CFL-driven config.  A 2-level AMR
+run with box-refinement around the diaphragm also passes the R-star
+check.  See `co2-eos-cfd/docs/design/camr_ps_validation.md` for
+overlay plots, RMS diffs, and the CHECKPOINT 1–5 dumps that established
+bit-exactness.
+
+Recent algorithmic fixes are catalogued at the bottom of this file
+(see **"Recent state (2026)"**), including the mixture-P phase-energy
+flux fix, the WP-α transport / phase-energy defect infrastructure,
+and the auto-overrides that keep the base CAMR pipeline from
+corrupting the PS state.
+
+The rest of the file describes the ORIGINAL implementation plan for
+historical context; the sub-phase 4c-β3 pseudo-code below no longer
+matches the code exactly (e.g. the WP-α update is now done in a
+separate cell kernel rather than folded into the face loop).
 
 ## What this is
 
@@ -305,3 +322,198 @@ Subsequent phases will add:
 - `PS_face_ops.H` — 4c.
 - `PS_relaxation.H` — 4d.
 - `PS_params.H` — 4d.
+
+## Recent state (2026)
+
+This section documents fixes that landed after the original Phase 4
+plan (tasks #202 → #216, roughly).  They are what make the module
+match the standalone driver bit-exactly on B4 and pass production
+validation at the analytic R-star velocity.
+
+### 1. Non-conservative α₁ transport (task #202 / #207)
+
+The volume fraction α₁ obeys a NON-conservative transport equation
+
+    ∂α₁/∂t  +  u ∂α₁/∂x  =  0
+
+which cannot be written as a face-flux divergence for two-fluid
+Pelanti–Shyue.  Trying to shoe-horn it into `hydro_consup` via a
+`α · u` flux and then subtracting the spurious `α ∂S_M/∂x` source
+was the root cause of the earlier "α₁ drifts outside [0,1] at the
+cross-critical diaphragm" bug (task #202).
+
+The fix:
+- `PS_hllc::hllc_flux()` (and the LLF fallback in `PS_umeth`)
+  writes `flx[UALPHA1] = 0` explicitly on every face.  The
+  divergence contribution from `hydro_consup` for the α slot is
+  therefore zero.
+- A **separate per-cell kernel** at the end of `PS_umeth.cpp`
+  (search for `WP-α cell kernel`) reads the face-adjacent α
+  values plus the HLLC contact speed `S_M` and writes
+
+      dsdt_arr[UALPHA1] = -Σ_faces  s^± · (α_R − α_L) / dx
+
+  directly.  `s^+` fires for u_face > 0 at the LEFT face, `s^−`
+  for u_face < 0 at the RIGHT face — this is the standard
+  wave-propagation upwind for the S_M wave.  The subsequent
+  `hydro_consup +=` on this slot adds `-div(0)/vol = 0`, so the
+  WP-α update survives to the SAXPY.
+
+### 2. WP phase-energy defect (task #207 / #211)
+
+The Pelanti–Shyue mixture-pressure closure makes the phase-energy
+star state NOT locally conservative:
+
+    (A^+ + A^-)_f  ≠  (F_R − F_L)_f    for slots UE1, UE2
+
+where `A^±` are the wave-propagation fluctuations and `F_R`, `F_L`
+are the physical Euler fluxes computed with each side's own state.
+The **defect** at a face f is
+
+    defect_f  :=  (A^+ + A^-)_f  −  (F_R − F_L)_f
+
+and it must be applied per-cell as a source term so CAMR's Godunov
+flux path (which uses the HLLC F_HLLC as the single-valued face
+flux) matches the standalone driver's WP-form update.
+
+Data container — face-centered scratch FAB:
+
+```cpp
+// PS_umeth.cpp x-face loop:
+amrex::FArrayBox wp_corr_x_fab(xfbx, 2, amrex::The_Async_Arena());
+auto const&     wp_corr_x = wp_corr_x_fab.array();
+```
+
+- 2-component (index 0 = UE1 defect, index 1 = UE2 defect)
+- face-centered box `xfbx = surroundingNodes(bx, 0)`
+- `amrex::The_Async_Arena` lifetime, so it's automatically freed at
+  the end of `PS_umeth` — one scratch FAB per box per call, no
+  need to persist across timesteps.
+
+Population — inside the same x-face `ParallelFor` that fills `flx1`:
+
+```cpp
+// After computing HLLC flux F_hllc and stashing it into flx1,
+// but before returning from the face lambda:
+Real defect_UE1 = 0.0, defect_UE2 = 0.0;
+if (hllc_ok) {
+    PS_HLLC::wp_phase_energy_defect(0, UL_face, UR_face,
+                                      defect_UE1, defect_UE2);
+}
+wp_corr_x(i,j,k, 0) = ps_finite_or(defect_UE1, Real(0.0));
+wp_corr_x(i,j,k, 1) = ps_finite_or(defect_UE2, Real(0.0));
+```
+
+`PS_HLLC::wp_phase_energy_defect` (in `PS_hllc.H`) computes both
+sides' star states, forms `A^+ + A^-` as the sum `Σ_l s_l · W_l`
+over waves, and subtracts the physical `F_R − F_L`.  The result is
+written into `wp_corr_x` even for cells where the HLLC path
+returned invalid (defect=0 in that case — LLF fallback is locally
+conservative for phase-energy).
+
+Application — into `dsdt_arr` in the end-of-file WP-α cell kernel:
+
+```cpp
+// Same ParallelFor that writes dsdt_arr[UALPHA1] = da_dt:
+const Real inv_dx0 = Real(1.0) / dx[0];
+dsdt_arr(i, j, k, UE1) += -wp_corr_x(i, j, k, 0) * inv_dx0;
+dsdt_arr(i, j, k, UE2) += -wp_corr_x(i, j, k, 1) * inv_dx0;
+```
+
+This applies the defect at the LEFT face of cell i (face index i in
+the surrounding-nodes convention) as an additive source.  The
+mathematical derivation (see the top-of-file comment near line 415
+of `PS_hllc.H`) shows that for a cell interior to the domain, the
+total WP−Godunov correction reduces to `-defect(LEFT face) / dx`
+(the RIGHT-face contribution telescopes with the LEFT face's
+physical flux jump).  So a single per-cell add is sufficient.
+
+Currently only the x-face defect is applied.  For genuinely 2D/3D
+problems where the WP-vs-Godunov mismatch also lives on the y/z
+faces, `wp_corr_y_fab` / `wp_corr_z_fab` analogues would be needed
+— filed as followup.  Empirically B4 is 1-D in x so the current
+implementation gives bit-exact reproduction of the standalone.
+
+### 3. Mixture-P in phase-energy flux (task #211 — critical bugfix)
+
+Before this fix, `ps_physical_flux` and `ps_physical_flux_from_state`
+in `PS_umeth.cpp` wrote
+
+    F[UE1] = (U[UE1] + α_1 · P_1) · u_n
+    F[UE2] = (U[UE2] + α_2 · P_2) · u_n
+
+using per-phase pressures.  The Pelanti–Shyue mixture-P closure
+requires MIXTURE P:
+
+    F[UE1] = (U[UE1] + α_1 · P_mix) · u_n
+    F[UE2] = (U[UE2] + α_2 · P_mix) · u_n
+
+with `P_mix = α_1·P_1 + α_2·P_2`.  Sanity check: `wp_phase_energy_defect`
+in `PS_hllc.H` ALREADY used mixture P (line 488+), so the divergence
+path and the correction path were internally inconsistent, producing
+a ~5e-7 rel drift per step in the phase-1/phase-2 energy split that
+compounded to 1e-5 rel by step 10.  Fix: change both `ps_physical_flux*`
+call sites to use `P_mix`.
+
+### 4. Auto-overrides for PS-incompatible defaults (tasks #209 / #210)
+
+The base CAMR pipeline defaults would corrupt the PS state.  All
+three are now auto-overridden with GPU-safe first-once warnings
+(std::atomic<bool>) when `ps_hydro != 0`:
+
+| Setting                          | Default | Forced for PS | Why                                                     |
+|----------------------------------|---------|---------------|---------------------------------------------------------|
+| `CAMR.difmag`                    | 0.1     | 0             | Artificial-viscosity loop touches all NVAR slots, breaking the flx[UALPHA1]=0 invariant and the WP defect assumption for flx[UE1/UE2]. |
+| `CAMR.allow_negative_energy`     | 0       | 1             | Liquid CO2 has physical specific internal energy ≈ −130 kJ/kg (PR EOS); the positive-e assert trips at t=0. |
+| `CAMR.dual_energy_update_E_from_e` | 1     | 0             | Any e-derived UEDEN write would corrupt the PS phase-energy accounting. |
+| `CAMR.dual_energy_eta2`          | 1e-4    | 0             | Selects the pure `UEINT = UEDEN − ρ·ke` reset branch in `reset_internal_energy` (idempotent for PS state). |
+| `CAMR.dual_energy_eta1`          | 1.0     | 0 (at ctoprim) | Forces `hydro_ctoprim` to use `(UEDEN − kineng)/ρ` unconditionally, no UEINT fallback. |
+
+Sites:
+- `Hydro_umdrv.cpp` — difmag override with `ps_warn_once()` helper.
+- `CAMR.cpp::reset_internal_energy` — the three dual-energy / allow_neg overrides.
+- `CAMR_construct_hydro_source.cpp` — ctoprim-side eta1 + allow_neg override.
+
+Also: `PS_hllc.H:114` alpha_floor unified at 1e-6 (was briefly 1e-10;
+matches everywhere else in the PS pipeline and the standalone default).
+
+### 5. Interior-copy outflow BC default (task #206)
+
+`Exec/CO2_B4/prob.H::bcnormal` originally used a linear-acoustic
+Riemann-invariant ghost fill with an IDEAL-GAS sound speed
+`c = sqrt(γ · P / ρ)`.  For real-fluid cross-critical CO2 this
+differs from the actual c by 5–20% and produces a ~3% spurious
+upflow after the R-going wave transits the boundary (measured at
+t = 3× t_end).  New PS default (gated on `USE_PS_HYDRO`): ghost =
+interior copy, so the boundary face has zero L–R jump and HLLC
+returns the pure Euler flux F(U_interior).  Matches the standalone
+driver's `applyBCs` exactly.  Legacy behavior still available via
+env `CAMR_BC_COPY_INTERIOR=0`.  Non-PS builds unchanged.
+
+### 6. AMR coarse-fine sync — known gap
+
+The WP-α per-cell source and the WP phase-energy defect correction
+are per-cell source terms.  They are NOT captured by CAMR's flux
+register (which sees `flx[UALPHA1]=0` and only the HLLC part of
+`flx[UE1]/UE2`).  Empirically for B4 with box-refinement around
+the diaphragm this produces no measurable error (max rel diff
+between single-level and 2-level AMR = 8e-7 on α₁ at the contact),
+but formally it's a conservation gap.  Task #218 tracks the
+followup: either (a) push a virtual α-flux to the flux register,
+(b) track a separate defect flux register for UE1/UE2, or (c)
+enforce averaged-fine-to-coarse consistency post-regrid.  Waiting
+for a test case with measurable AMR error before implementing.
+
+## File inventory (current)
+
+| File                             | Purpose                                                    |
+|----------------------------------|------------------------------------------------------------|
+| `hem_pelanti_shyue.H` (3264 ln)  | full PS algorithm library (mirror of standalone)           |
+| `PS_ctoprim.H`                   | augment primitives with per-phase state                    |
+| `PS_umeth.cpp` / `.H`            | face flux + WP-α source + WP defect correction             |
+| `PS_hllc.H`                      | HLLC solver + `wp_phase_energy_defect` helper              |
+| `PS_reconstruction.H`            | MUSCL PLM reconstruction (env `CAMR.ps_recon=1`)           |
+| `PS_relaxation.H`                | Pelanti pressure relaxation Newton                         |
+| `PS_alpha_transport.H`           | (retained for reference; superseded by WP-α cell kernel)   |
+| `PS_nscbc.H`                     | NSCBC boundary treatment                                   |
+| `README.md`                      | this file                                                  |

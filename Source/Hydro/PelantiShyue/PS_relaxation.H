@@ -90,21 +90,33 @@ inline PsRelaxDiag& ps_relax_diag() {
 //  Construct the PsPhaseAPI callback that ps_pressure_relax_cell
 //  needs.  Only p.P and p.valid are read in the relaxation loop
 //  (line 1849-1854 of hem_pelanti_shyue.H); the rest are ignored,
-//  so we fill only what's needed.  Uses the RealFluidCO2 shim's
-//  EOS::REY2P (which itself uses the (ρ,e)→State cache).
+//  so we fill only what's needed.
+//
+//  Branch-locked per-phase EOS (task #185): dispatches to
+//  EOS::REY2P_liquid for phase 1 and EOS::REY2P_vapor for phase 2
+//  so the mechanical relaxation Newton sees per-phase pressures
+//  that are consistent with each phase's own PR branch (including
+//  the metastable extrapolation).  Without this the Newton drove
+//  the mixture off in an unphysical direction whenever any cell had
+//  a trace phase sitting on the "wrong" side of the saturation
+//  dome — the primary CAMR B4 R-star failure mode.
 // -----------------------------------------------------------------
 inline hem::PsPhaseAPI
 ps_make_camr_eos_api()
 {
     hem::PsPhaseAPI api;
     api.state_from_rho_e_phase =
-        [](int /*phase*/, double rho, double e, hem::PsPhase& ph)
+        [](int phase, double rho, double e, hem::PsPhase& ph)
     {
         amrex::Real Y[NUM_SPECIES];
         Y[0] = amrex::Real(1.0);
         for (int n = 1; n < NUM_SPECIES; ++n) Y[n] = amrex::Real(0.0);
         amrex::Real P;
-        EOS::REY2P(amrex::Real(rho), amrex::Real(e), Y, P);
+        if (phase == 1) {
+            EOS::REY2P_liquid(amrex::Real(rho), amrex::Real(e), Y, P);
+        } else {
+            EOS::REY2P_vapor (amrex::Real(rho), amrex::Real(e), Y, P);
+        }
         ph.rho   = rho;
         ph.e     = e;
         ph.P     = double(P);
@@ -230,6 +242,67 @@ ps_mechanical_relax_cell(int i, int j, int k,
     U(i,j,k, UE2    ) = Uv[5];
 }
 
+
+// -----------------------------------------------------------------
+//  ps_apply_vanish_fold  —  grid-level wrapper for the standalone's
+//  hem::ps_apply_vanish_fold.  When a cell's α_1 drops below
+//  alpha_vanish (or rises above 1 - alpha_vanish), the vanishing
+//  phase's mass and total-energy are folded into the surviving
+//  phase and the vanished slot is zeroed.  This prevents
+//  phantom-density buildup (m_k / α_k explodes as α_k → 0) which
+//  drives the R-star u hump on B4-class cross-critical problems.
+//
+//  Called from CAMR::CAMR_advance BEFORE ps_apply_relaxation so
+//  the relaxation Newton doesn't see cells with pathological
+//  per-phase (ρ, e).  Task #189.
+//
+//  Runtime toggle CAMR.ps_alpha_vanish (default 0 = disabled,
+//  matching pre-#189 behaviour).  Standalone winning B4 config
+//  uses 1e-8.
+// -----------------------------------------------------------------
+inline void
+ps_apply_vanish_fold(amrex::MultiFab& S_new)
+{
+    static const amrex::Real alpha_vanish_cached = []() -> amrex::Real {
+        amrex::Real v = amrex::Real(0.0);
+        amrex::ParmParse pp("CAMR");
+        pp.query("ps_alpha_vanish", v);
+        return v;
+    }();
+    if (alpha_vanish_cached <= amrex::Real(0.0)) return;
+    const double alpha_vanish = double(alpha_vanish_cached);
+
+    for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
+        const amrex::Box& bx = mfi.tilebox();
+        amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
+        amrex::LoopOnCpu(bx, [=] (int i, int j, int k) noexcept
+        {
+            // Pack the CAMR cell into the V6 layout the standalone
+            // fold helper expects.
+            hem::V6 Uv;
+            Uv[0] = double(U(i, j, k, UALPHA1));
+            Uv[1] = double(U(i, j, k, UM1RHO1));
+            Uv[2] = double(U(i, j, k, UM2RHO2));
+            // The velocity slot on V6 index 3 is ρ_mix · u; the fold
+            // only reads/writes UM1RHO1/UM2RHO2/UE1/UE2 and UALPHA1,
+            // so V6[3] doesn't matter — pass 0.
+            Uv[3] = 0.0;
+            Uv[4] = double(U(i, j, k, UE1));
+            Uv[5] = double(U(i, j, k, UE2));
+            if (hem::ps_apply_vanish_fold(Uv, alpha_vanish)) {
+                U(i, j, k, UALPHA1) = amrex::Real(Uv[0]);
+                U(i, j, k, UM1RHO1) = amrex::Real(Uv[1]);
+                U(i, j, k, UM2RHO2) = amrex::Real(Uv[2]);
+                U(i, j, k, UE1    ) = amrex::Real(Uv[4]);
+                U(i, j, k, UE2    ) = amrex::Real(Uv[5]);
+                // URHO / UEINT / UEDEN unchanged: total mass and
+                // total energy are preserved by the fold (mass/energy
+                // moved *between* phases within the cell, not
+                // between cells).
+            }
+        });
+    }
+}
 
 // -----------------------------------------------------------------
 //  ps_apply_relaxation  —  MFIter driver.  Constructs the EOS

@@ -1148,12 +1148,53 @@ CAMR::reset_internal_energy(amrex::MultiFab& S_new, int ng)
 #pragma omp parallel if (amrex::Gpu::notInLaunchRegion())
 #endif
   {
-    const auto l_allow_small_energy          = allow_small_energy;
-    const auto l_allow_negative_energy       = allow_negative_energy;
-    const auto l_dual_energy_update_E_from_e = dual_energy_update_E_from_e;
+    auto l_allow_small_energy                = allow_small_energy;
+    auto l_allow_negative_energy             = allow_negative_energy;
+    auto l_dual_energy_update_E_from_e       = dual_energy_update_E_from_e;
     const auto l_verbose                     = verbose;
-    const auto l_dual_energy_eta2            = dual_energy_eta2;
+    auto l_dual_energy_eta2                  = dual_energy_eta2;
     const auto l_small_temp                  = small_temp;
+
+    // Task #210: The Pelanti–Shyue 6-eq integrator has its own
+    // per-phase internal-energy accounting (UE1, UE2) and its own
+    // pressure closure; UEDEN and UEINT are book-keeping slots that
+    // must NOT be touched by CAMR's dual-energy reset machinery.
+    //
+    //   • The liquid CO2 phase has physical specific internal energy
+    //     e ≈ −130 kJ/kg at 270 K (PR EOS), so allow_negative_energy
+    //     must be 1 or the reset path will silently floor UEINT/UEDEN
+    //     via EOS::RTY2E(small_T,…).
+    //   • dual_energy_update_E_from_e = 1 would let a floored e
+    //     bleed back into UEDEN, breaking the m1E1 + m2E2 accounting.
+    //   • The stock UEINT-vs-(UEDEN−ke) blend controlled by eta2 does
+    //     the same job PS already does exactly, but with FP noise.
+    //
+    // Force the "no dual-energy formulation, allow negative e" branch
+    // (allow_small=1 and allow_neg=1 selects the pure
+    // UEINT = UEDEN − ρ·ke reset at CAMR_reset_internal_e.H:125 which
+    // is idempotent for PS state).  Warn once (GPU-safe).
+    if (ps_hydro != 0) {
+        if (l_allow_negative_energy == 0 ||
+            l_allow_small_energy == 0 ||
+            l_dual_energy_update_E_from_e != 0 ||
+            l_dual_energy_eta2 != amrex::Real(0.0)) {
+            static std::atomic<bool> warned_ps_denergy{false};
+            bool expected = false;
+            if (warned_ps_denergy.compare_exchange_strong(expected, true)) {
+                amrex::Warning(
+                  "CAMR::PS: forcing allow_negative_energy=1, "
+                  "allow_small_energy=1, dual_energy_update_E_from_e=0, "
+                  "dual_energy_eta2=0 for the Pelanti-Shyue integrator.  "
+                  "PS tracks per-phase e_1, e_2 directly; the dual-energy "
+                  "reset would corrupt UEINT/UEDEN book-keeping.  Also, "
+                  "physical liquid CO2 has e ≈ -130 kJ/kg.  See task #210.");
+            }
+        }
+        l_allow_negative_energy       = 1;
+        l_allow_small_energy          = 1;
+        l_dual_energy_update_E_from_e = 0;
+        l_dual_energy_eta2            = amrex::Real(0.0);
+    }
 
     for (amrex::MFIter mfi(S_new, amrex::TilingIfNotGPU()); mfi.isValid(); ++mfi)
     {
@@ -1290,6 +1331,45 @@ CAMR::clean_state(amrex::MultiFab& S)
   enforce_min_density(S);
 
   normalize_species(S);
+
+#ifdef USE_PS_HYDRO
+  // Task #203: 6-eq state clamp mirroring the standalone driver's
+  // clamp_cons6 (co2-eos-cfd ppm_1d_ps_wp.cpp:1255-1330).  Called
+  // after every hydro / source sub-step to prevent the α₁ overshoot
+  // that drives dt → 0 on cross-critical Riemann problems (B4).  Just
+  // like the standalone: clamp α₁ to [alpha_floor, 1-alpha_floor];
+  // clamp per-phase partial masses to RHO_FLOOR · α_k; sanitize NaN.
+  constexpr amrex::Real alpha_floor_cs = amrex::Real(1.0e-6);
+  constexpr amrex::Real rho_floor_cs   = amrex::Real(1.0e-6);
+  for (amrex::MFIter mfi(S, amrex::TilingIfNotGPU()); mfi.isValid(); ++mfi) {
+      const amrex::Box& bx = mfi.growntilebox();
+      auto const& Sa = S.array(mfi);
+      amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
+          amrex::Real a1 = Sa(i,j,k, UALPHA1);
+          if (!std::isfinite(a1)) a1 = amrex::Real(0.5);
+          if (a1 < alpha_floor_cs)             a1 = alpha_floor_cs;
+          if (a1 > amrex::Real(1.0) - alpha_floor_cs)
+              a1 = amrex::Real(1.0) - alpha_floor_cs;
+          Sa(i,j,k, UALPHA1) = a1;
+          const amrex::Real a2 = amrex::Real(1.0) - a1;
+
+          amrex::Real m1 = Sa(i,j,k, UM1RHO1);
+          if (!std::isfinite(m1) || m1 < rho_floor_cs * a1)
+              m1 = rho_floor_cs * a1;
+          Sa(i,j,k, UM1RHO1) = m1;
+
+          amrex::Real m2 = Sa(i,j,k, UM2RHO2);
+          if (!std::isfinite(m2) || m2 < rho_floor_cs * a2)
+              m2 = rho_floor_cs * a2;
+          Sa(i,j,k, UM2RHO2) = m2;
+
+          // Sanitize per-phase energies (sign is reference-frame
+          // dependent — finiteness only).
+          if (!std::isfinite(Sa(i,j,k, UE1))) Sa(i,j,k, UE1) = amrex::Real(0.0);
+          if (!std::isfinite(Sa(i,j,k, UE2))) Sa(i,j,k, UE2) = amrex::Real(0.0);
+      });
+  }
+#endif
 
   int ng = S.nGrow();
   computeTemp(S,ng);

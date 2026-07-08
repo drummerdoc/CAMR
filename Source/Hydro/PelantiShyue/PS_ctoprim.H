@@ -97,26 +97,32 @@ ps_augment_primitives(int i, int j, int k,
     const amrex::Real e2 = (m2rho2 > amrex::Real(1.0e-12))
         ? E2_tot / m2rho2 - ke_spec : E_mix;
 
-    // Per-phase pressures.  The stock EOS is single-phase (a single
-    // fluid model wrapped in namespace EOS { … }); for the 6-eq
-    // physics we evaluate the SAME EOS at each phase's (ρ_k, e_k),
-    // which is exactly what the standalone `ps_state_from_cons`
-    // does with a per-phase branch tag.  In the RealFluidCO2
-    // backend this is a call to
-    //     hem::state_from_rho_e(fluid, ρ_k, e_k)
-    // wrapped as EOS::REY2P(ρ_k, e_k, Y, &P_k).
+    // Per-phase pressures — branch-locked (task #185).
+    //
+    // The stock EOS auto-detects phase, which is wrong for the 6-eq
+    // module: when either phase sits at a state deep in the other
+    // phase's region (e.g., "phase 2 = vapor" held at (ρ, e) that
+    // lies deep in the compressed-liquid region of the PR cubic),
+    // auto-detect picks the wrong root and produces a P inconsistent
+    // with the metastable state the caller intended.  For the
+    // Pelanti relaxation this cascades — the Newton uses that
+    // inconsistent P as the driving force and pushes the mixture
+    // toward an unphysical equilibrium.
+    //
+    // Convention (matches the standalone driver's PsPhaseAPI):
+    //     Phase 1 = liquid branch  → EOS::REY2P_liquid
+    //     Phase 2 = vapor / SC     → EOS::REY2P_vapor
+    // Each wrapper calls hem::state_from_rho_e_phase, which forces
+    // the requested single-phase PR branch and returns the
+    // metastable extrapolation past the saturation dome when the
+    // physical root is absent.
     amrex::Real Y[NUM_SPECIES];
     Y[0] = amrex::Real(1.0);
     for (int n = 1; n < NUM_SPECIES; ++n) Y[n] = amrex::Real(0.0);
 
-    // We rely on EOS::REY2P being declared as HOST_DEVICE.  For
-    // RealFluidCO2 it is; for GammaLaw it is too.  For any future
-    // EOS backend without a device port, this would need
-    // `RunOn::Host`; enforced at build time by requiring the six
-    // hot functions to be HOST_DEVICE (see EOS/RealFluidCO2/README).
     amrex::Real P1, P2;
-    EOS::REY2P(rho1, e1, Y, P1);
-    EOS::REY2P(rho2, e2, Y, P2);
+    EOS::REY2P_liquid(rho1, e1, Y, P1);
+    EOS::REY2P_vapor (rho2, e2, Y, P2);
 
     // Pressure floor — real-fluid PR can return negative P for
     // deeply compressed or two-phase-envelope-adjacent states.

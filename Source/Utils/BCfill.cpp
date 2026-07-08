@@ -19,14 +19,17 @@ struct PCHypFillExtDir
   // static members from a free function.
   int         use_nscbc;
   amrex::Real nscbc_sigma;
+  int         nscbc_order;    // 1 or 2 — R+ extrapolation order.
 
   AMREX_GPU_HOST
   constexpr explicit PCHypFillExtDir(const ProbParmDevice* d_prob_parm,
                                      int         use_nscbc_,
-                                     amrex::Real nscbc_sigma_)
+                                     amrex::Real nscbc_sigma_,
+                                     int         nscbc_order_)
     : lprobparm(d_prob_parm)
     , use_nscbc(use_nscbc_)
     , nscbc_sigma(nscbc_sigma_)
+    , nscbc_order(nscbc_order_)
   {
   }
 
@@ -101,9 +104,10 @@ struct PCHypFillExtDir
           s_Nm2[n] = dest(ivNm2, n);
         }
         PS_NSCBC::Params params;
-        params.P_amb = lprobparm->p_amb;
-        params.sigma = nscbc_sigma;
-        params.L_ref = prob_hi[idir] - prob_lo[idir];
+        params.P_amb        = lprobparm->p_amb;
+        params.sigma        = nscbc_sigma;
+        params.L_ref        = prob_hi[idir] - prob_lo[idir];
+        params.nscbc_order  = nscbc_order;
         amrex::Real s_ghost[NVAR];
         PS_NSCBC::outflow_face(s_N, s_Nm1, s_Nm2, dx[idir],
                                 idir, sgn, layer, params, s_ghost);
@@ -171,14 +175,21 @@ CAMR_bcfill_hyp(
   // them without touching CAMR class internals.
   int         use_nscbc   = 0;
   amrex::Real nscbc_sigma = amrex::Real(0.25);
+  int         nscbc_order = 2;   // 1 or 2 — R+ extrapolation order.
   {
     amrex::ParmParse pp("CAMR");
     pp.query("ps_bc_use_nscbc",   use_nscbc);
     pp.query("ps_bc_nscbc_sigma", nscbc_sigma);
+    pp.query("ps_bc_nscbc_order", nscbc_order);
   }
 #ifndef USE_PS_HYDRO
   use_nscbc = 0;   // safety: NSCBC is a no-op without PS_HYDRO.
 #endif
+  if (nscbc_order != 1 && nscbc_order != 2) {
+    amrex::Print() << "  CAMR bcfill: unknown ps_bc_nscbc_order="
+                   << nscbc_order << ", forcing to 2.\n";
+    nscbc_order = 2;
+  }
 
   // One-time per-run banner so runlogs record which outflow BC path
   // is actually in play.  Diagnostic-only; no performance impact.
@@ -190,13 +201,14 @@ CAMR_bcfill_hyp(
           << (use_nscbc != 0
                   ? "PS-NSCBC (BCfill.cpp characteristic-invariant)"
                   : "bcnormal (prob.H linearised Riemann invariant)")
-          << ",  σ = " << nscbc_sigma << "\n";
+          << ",  σ = " << nscbc_sigma
+          << ",  R+ order = " << nscbc_order << "\n";
       banner_shown = true;
     }
   }
 
   amrex::GpuBndryFuncFab<PCHypFillExtDir> hyp_bndry_func(
-    PCHypFillExtDir{lprobparm, use_nscbc, nscbc_sigma});
+    PCHypFillExtDir{lprobparm, use_nscbc, nscbc_sigma, nscbc_order});
   hyp_bndry_func(bx, data, dcomp, numcomp, geom, time, bcr, bcomp, scomp);
 }
 

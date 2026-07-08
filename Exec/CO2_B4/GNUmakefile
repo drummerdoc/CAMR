@@ -6,14 +6,16 @@ USE_PS_HYDRO = TRUE
 # AMReX
 # DIM is conditionally-assigned so a `make DIM=1` on the command line
 # builds the 1D variant (produces CAMR1d.*.PS.ex alongside 2D binaries
-# in this same directory).  The T-Blowdown case is physically 1D — a
-# closed pipe with vent at one end — so DIM=1 gives a ~32× wall-clock
-# speedup at the same x-resolution for scheme-development iteration.
+# in this same directory).  The B4-Cross-critical Riemann problem is
+# physically 1D — a diaphragm-split tube — so DIM=1 gives a ~32×
+# wall-clock speedup at the same x-resolution for scheme-development
+# iteration on the R-star validation.
 DIM ?= 2
 COMP = gnu
 PRECISION = DOUBLE
 
 # Profiling
+USE_PS_HYDRO=TRUE
 PROFILE = FALSE
 COMM_PROFILE = FALSE
 TRACE_PROFILE = FALSE

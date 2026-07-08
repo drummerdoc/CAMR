@@ -18,3 +18,9 @@ tmp_build_dir
 Backtrace.*
 AMReX_buildInfo.cpp
 .DS_Store
+# PS diagnostic dumps (ephemeral).
+ic_dump.txt
+step_dump.txt
+face_dump_camr.txt
+runlog*
+User/

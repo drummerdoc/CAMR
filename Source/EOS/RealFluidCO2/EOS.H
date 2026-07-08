@@ -60,8 +60,11 @@ namespace EOS {
   //  breaks under CUDA / HIP / SYCL device compilation.
   //
   //  Physical parameters (identical to every co2-eos-cfd driver):
-  //      Tc = 304.13 K,  Pc = 7.3773 MPa,  ω = 0.2239
+  //      Tc = 304.13 K,  Pc = 7.3773 MPa,  ω = 0.22394
   //      M  = 0.04401 kg/mol
+  //  (ω was 0.2239 pre-task-#198; the extra digit matches the
+  //  standalone driver's PRFluid::make call at ppm_1d_ps_wp.cpp:2106
+  //  and closes the 6-ppm ρ discrepancy in the B4 step-locked trace.)
   //      NASA-7 c_p^ig/R polynomial for CO₂ (200–1000 K fit).
   //  Peneloux shift = 0 (untranslated PR).
   // ----------------------------------------------------------------
@@ -72,7 +75,7 @@ namespace EOS {
       return hem::PRFluid::make(
           amrex::Real(304.13),          // Tc [K]
           amrex::Real(7.3773e6),        // Pc [Pa]
-          amrex::Real(0.2239),          // acentric factor ω
+          amrex::Real(0.22394),         // acentric factor ω (task #198: match standalone driver's 5-digit value)
           amrex::Real(0.04401),         // molar mass [kg/mol]
           amrex::Real( 2.35681300E+00), // a0
           amrex::Real( 8.98412990E-03), // a1
@@ -132,12 +135,98 @@ namespace EOS {
           }
       }
 
-      // Miss: full Newton, evict oldest slot (round-robin).
-      hem::State st = hem::state_from_rho_e(co2_fluid(), rho, e);
+      // Miss: warm-start the Newton from the most-recently-written
+      // cache slot (task #191, follow-up to #190).  In AMReX's
+      // ParallelFor iteration order adjacent cells are visited in
+      // sequence, so the MRU slot holds a spatial neighbour whose T
+      // is close to the current cell's true T.  O(1) — no metric
+      // computation.  Empirically the 4×log nearest-search added
+      // ~19% wall-clock overhead vs no cache, wiping out any Newton
+      // savings; MRU has zero overhead and captures the dominant
+      // spatial-locality case.  If the MRU entry is somehow bad
+      // (rho_cache < 0 at startup), pass T_init = -1 to fall back
+      // to the phase-default.
+      const int mru = (next_slot + NSLOTS - 1) % NSLOTS;
+      const amrex::Real T_init = (rho_cache[mru] > amrex::Real(0))
+                                  ? state_cache[mru].T
+                                  : amrex::Real(-1.0);
+      hem::State st = hem::state_from_rho_e(co2_fluid(), rho, e, T_init);
       rho_cache  [next_slot] = rho;
       e_cache    [next_slot] = e;
       state_cache[next_slot] = st;
       next_slot = (next_slot + 1) % NSLOTS;
+      return st;
+  }
+
+  // -----------------------------------------------------------------
+  //  Branch-locked (ρ, e) → State cache (task #185 performance fix).
+  //
+  //  The branch-locked REY2P_liquid / _vapor / REY2Cs_* wrappers below
+  //  bypass co2_state_from_rho_e_cached because that cache stores
+  //  auto-detect states.  Without an equivalent per-branch cache, the
+  //  PS pipeline's per-face and per-cell EOS calls became
+  //  hot-loop Newton solves — measured slowdown ~3× on T-Blowdown
+  //  N=256 relative to the pre-#185 baseline.
+  //
+  //  Same 4-slot ring pattern per phase.  8 slots total.  Catches the
+  //  same access patterns the mixture cache handled: back-to-back
+  //  same-input calls in ctoprim (REY2P_liquid then REY2Cs_liquid on
+  //  the same phase-1 state at a face), and alternating phase-1 /
+  //  phase-2 lookups (ctoprim, ps_max_wave_speed, HLLC face solver).
+  // -----------------------------------------------------------------
+  AMREX_GPU_HOST_DEVICE
+  AMREX_FORCE_INLINE
+  hem::State
+  co2_state_from_rho_e_phase_cached(amrex::Real rho, amrex::Real e,
+                                     hem::Phase3 phase)
+  {
+      constexpr int NSLOTS = 4;
+      // Two independent ring buffers — one per phase — so a phase-2
+      // query never evicts a phase-1 entry we're about to reuse.
+      const int p = (phase == hem::Phase3::Liquid) ? 0 : 1;
+      static amrex::Real rho_cache[2][NSLOTS] =
+          {{amrex::Real(-1), amrex::Real(-1), amrex::Real(-1), amrex::Real(-1)},
+           {amrex::Real(-1), amrex::Real(-1), amrex::Real(-1), amrex::Real(-1)}};
+      static amrex::Real e_cache[2][NSLOTS] =
+          {{amrex::Real(0), amrex::Real(0), amrex::Real(0), amrex::Real(0)},
+           {amrex::Real(0), amrex::Real(0), amrex::Real(0), amrex::Real(0)}};
+      static hem::State  state_cache[2][NSLOTS];
+      static int         next_slot [2] = {0, 0};
+
+      for (int s = 0; s < NSLOTS; ++s) {
+          if (rho == rho_cache[p][s] && e == e_cache[p][s]
+              && rho_cache[p][s] > amrex::Real(0)) {
+              return state_cache[p][s];
+          }
+      }
+
+      // Warm-start on miss (task #191, follow-up to #190).  MRU
+      // (most-recently-written slot) from THIS phase's ring.  See
+      // co2_state_from_rho_e_cached above for the rationale — O(1)
+      // vs the 4×log nearest-search that added ~19% wall-clock
+      // overhead in #190.
+      //
+      // Task #198: runtime-disable via CAMR.eos_disable_warmstart=1
+      // so the Newton starts from the phase-default T (matches the
+      // standalone driver, enabling bit-exact validation).
+      static const bool s_disable_warmstart = []() {
+          int v = 0;
+          amrex::ParmParse pp("CAMR");
+          pp.query("eos_disable_warmstart", v);
+          return (v != 0);
+      }();
+      const int mru = (next_slot[p] + NSLOTS - 1) % NSLOTS;
+      const amrex::Real T_init = s_disable_warmstart
+                                  ? amrex::Real(-1.0)
+                                  : ((rho_cache[p][mru] > amrex::Real(0))
+                                       ? state_cache[p][mru].T
+                                       : amrex::Real(-1.0));
+      hem::State st = hem::state_from_rho_e_phase(co2_fluid(), rho, e,
+                                                    phase, T_init);
+      rho_cache  [p][next_slot[p]] = rho;
+      e_cache    [p][next_slot[p]] = e;
+      state_cache[p][next_slot[p]] = st;
+      next_slot  [p] = (next_slot[p] + 1) % NSLOTS;
       return st;
   }
 
@@ -302,6 +391,39 @@ namespace EOS {
       E = s.e;
   }
 
+  // Phase-selected (T, P) → (ρ, e).  Uses hem::state_from_T_P_metastable
+  // so that when the requested phase has no physical PR root at (T, P)
+  // — e.g., vapor branch at 270 K, 100 bar (deep in the compressed-
+  // liquid region) — the returned state is a well-defined metastable
+  // extrapolation of the single-phase PR continuation, matching the
+  // standalone driver's PR_PhaseBackend<Liquid|Vapor> behaviour.
+  //
+  // Required by cross-init Riemann setups (B4 and every other case in
+  // the A/B/C suite) where each side of the diaphragm is initialised
+  // with both phase states at that side's (T, P), and α_1 is the
+  // material tracer selecting which phase is dominant on each side.
+  AMREX_GPU_HOST_DEVICE
+  AMREX_FORCE_INLINE
+  void PYT2RE_liquid(amrex::Real P, amrex::Real* /*Y*/, amrex::Real T,
+                     amrex::Real& R, amrex::Real& E)
+  {
+      hem::State s = hem::state_from_T_P_metastable(
+          co2_fluid(), T, P, hem::Phase3::Liquid);
+      R = s.rho;
+      E = s.e;
+  }
+
+  AMREX_GPU_HOST_DEVICE
+  AMREX_FORCE_INLINE
+  void PYT2RE_vapor(amrex::Real P, amrex::Real* /*Y*/, amrex::Real T,
+                    amrex::Real& R, amrex::Real& E)
+  {
+      hem::State s = hem::state_from_T_P_metastable(
+          co2_fluid(), T, P, hem::Phase3::Vapor);
+      R = s.rho;
+      E = s.e;
+  }
+
   AMREX_GPU_HOST_DEVICE
   AMREX_FORCE_INLINE
   void PYT2R(amrex::Real P, amrex::Real* /*Y*/, amrex::Real T, amrex::Real& R)
@@ -316,6 +438,89 @@ namespace EOS {
   {
       hem::State s = hem::state_from_P_rho(co2_fluid(), P, R);
       E = s.e;
+  }
+
+  // ================================================================
+  //  Branch-locked per-phase EOS wrappers.
+  //
+  //  The stock REY2P / RPY2Cs above use auto-detect (state_from_rho_e
+  //  branches by dome / cubic-root logic).  For the P-S 6-eq module
+  //  where each phase has its own PR branch, auto-detect is wrong:
+  //  a "vapor" phase held at a state deep in the compressed-liquid
+  //  region (a metastable branch state) auto-detects as Liquid, and
+  //  its P at that (ρ, e) diverges from the metastable P used to
+  //  construct the state.  The result is per-phase P inconsistency
+  //  in PS_ctoprim → Pelanti relaxation drives the mixture off in
+  //  the wrong direction.
+  //
+  //  These branch-locked variants wrap hem::state_from_rho_e_phase
+  //  so each phase always sees its own PR branch (Phase3::Liquid or
+  //  Phase3::Vapor), including the metastable single-phase
+  //  extrapolation past the saturation dome.  Used throughout the
+  //  PS pipeline (ctoprim, umeth wave/flux helpers, mechanical
+  //  relaxation).  Phase 1 → Liquid, Phase 2 → Vapor by convention
+  //  (matches the standalone driver's PsPhaseAPI).
+  // ================================================================
+
+  AMREX_GPU_HOST_DEVICE
+  AMREX_FORCE_INLINE
+  void REY2P_phase(amrex::Real R, amrex::Real E, amrex::Real* /*Y*/,
+                    hem::Phase3 phase, amrex::Real& P)
+  {
+      hem::State s = co2_state_from_rho_e_phase_cached(R, E, phase);
+      P = s.P;
+  }
+
+  AMREX_GPU_HOST_DEVICE
+  AMREX_FORCE_INLINE
+  void REY2P_liquid(amrex::Real R, amrex::Real E, amrex::Real* Y,
+                    amrex::Real& P)
+  {
+      REY2P_phase(R, E, Y, hem::Phase3::Liquid, P);
+  }
+
+  AMREX_GPU_HOST_DEVICE
+  AMREX_FORCE_INLINE
+  void REY2P_vapor(amrex::Real R, amrex::Real E, amrex::Real* Y,
+                    amrex::Real& P)
+  {
+      REY2P_phase(R, E, Y, hem::Phase3::Vapor, P);
+  }
+
+  // Speed-of-sound at (ρ, P) — branch-locked variant.
+  //
+  //  The stock RPY2Cs (below) uses state_from_P_rho which is
+  //  branch-agnostic; for cross-critical mixtures where phase 1 is a
+  //  metastable liquid at supercritical (T, P), that inversion can
+  //  land on the wrong root or fail.  The branch-locked variant
+  //  first recovers e via state_from_rho_e_phase(ρ, e_guess, phase)
+  //  then reads c directly from that State — one Newton on T rather
+  //  than the P-inversion pair.  Since both PS_umeth call sites for
+  //  RPY2Cs already have per-phase e_k on hand, expose an overload
+  //  that takes (ρ, e, phase) → c directly.
+  AMREX_GPU_HOST_DEVICE
+  AMREX_FORCE_INLINE
+  void REY2Cs_phase(amrex::Real R, amrex::Real E, amrex::Real* /*Y*/,
+                     hem::Phase3 phase, amrex::Real& Cs)
+  {
+      hem::State s = co2_state_from_rho_e_phase_cached(R, E, phase);
+      Cs = s.c;
+  }
+
+  AMREX_GPU_HOST_DEVICE
+  AMREX_FORCE_INLINE
+  void REY2Cs_liquid(amrex::Real R, amrex::Real E, amrex::Real* Y,
+                      amrex::Real& Cs)
+  {
+      REY2Cs_phase(R, E, Y, hem::Phase3::Liquid, Cs);
+  }
+
+  AMREX_GPU_HOST_DEVICE
+  AMREX_FORCE_INLINE
+  void REY2Cs_vapor(amrex::Real R, amrex::Real E, amrex::Real* Y,
+                     amrex::Real& Cs)
+  {
+      REY2Cs_phase(R, E, Y, hem::Phase3::Vapor, Cs);
   }
 
   AMREX_GPU_HOST_DEVICE

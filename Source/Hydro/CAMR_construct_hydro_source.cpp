@@ -6,6 +6,8 @@
 #include "PS_ctoprim.H"
 #endif
 
+#include <atomic>
+
 using namespace amrex;
 
 void
@@ -106,8 +108,40 @@ CAMR::construct_hydro_source (const MultiFab& S,
 
             BL_PROFILE_VAR("ctoprim()", ctop);
             const Real small_num        = CAMRConstants::small_num;
-            const Real dual_energy_eta  = CAMR::dual_energy_eta1;
+            Real dual_energy_eta        = CAMR::dual_energy_eta1;
             int l_allow_negative_energy = CAMR::allow_negative_energy;
+            // Task #210: the Pelanti–Shyue 6-eq integrator disables
+            // the dual-energy formulation entirely and allows negative
+            // internal energy (physical for liquid CO2).  hydro_ctoprim
+            // uses `dual_energy_eta` (== dual_energy_eta1) to decide
+            // whether to derive e from (UEDEN − ke) or fall back to
+            // UEINT.  Forcing eta=0 selects the "e = (UEDEN − ke)/ρ"
+            // branch unconditionally (the "no dual energy" behavior).
+            // allow_negative_energy=0 would fire an AMREX_ALWAYS_ASSERT
+            // on the L-side liquid cells at line 56/68 of
+            // Hydro_ctoprim.H — must be 1.  Warn once, GPU-safe.
+#ifdef USE_PS_HYDRO
+            if (ps_hydro != 0) {
+                if (l_allow_negative_energy == 0 ||
+                    dual_energy_eta != Real(0.0)) {
+                    static std::atomic<bool> warned_ps_ctoprim{false};
+                    bool expected = false;
+                    if (warned_ps_ctoprim.compare_exchange_strong(expected, true)) {
+                        amrex::Warning(
+                          "CAMR::PS: forcing allow_negative_energy=1 and "
+                          "dual_energy_eta1=0 inside hydro_ctoprim for the "
+                          "Pelanti-Shyue integrator.  PS uses (UEDEN − ke)/ρ "
+                          "unconditionally as the mixture specific internal "
+                          "energy; the dual-energy fallback to UEINT would "
+                          "amplify FP noise between UEINT and UEDEN.  Also, "
+                          "physical liquid CO2 has e ≈ -130 kJ/kg — the "
+                          "positive-e assert must be disabled.  See task #210.");
+                    }
+                }
+                l_allow_negative_energy = 1;
+                dual_energy_eta         = Real(0.0);
+            }
+#endif
             ParallelFor(
               qbx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
 #ifdef AMREX_USE_EB

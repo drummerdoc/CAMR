@@ -693,13 +693,20 @@ inline State state_from_P_rho(const PRFluid& f, amrex::Real P, amrex::Real rho)
 //         Newton on T such that the lever-rule mixture energy matches.
 // =====================================================================
 AMREX_GPU_HOST_DEVICE
-inline State state_from_rho_e(const PRFluid& f, amrex::Real rho, amrex::Real e_target)
+inline State state_from_rho_e(const PRFluid& f, amrex::Real rho, amrex::Real e_target,
+                              amrex::Real T_init = amrex::Real(-1.0))
 {
     amrex::Real v_m = v_PR_from_rho(f, rho);   // PR-space volume
     amrex::Real e_mol_target = e_target * f.M;
 
     // -------- 1) single-phase Newton on T  -----------------------------
-    amrex::Real T = f.pr.Tc * amrex::Real(0.8);
+    // Initial guess: T_init if positive & finite (warm-start from a
+    // cached nearby state — see co2_state_from_rho_e_cached), else the
+    // 0.8·Tc default that centres the initial iterate midway between
+    // liquid- and vapor-branch typical temperatures.
+    amrex::Real T = (T_init > amrex::Real(0.0) && std::isfinite(T_init))
+                     ? T_init
+                     : f.pr.Tc * amrex::Real(0.8);
     for (int it = 0; it < 80; ++it) {
         amrex::Real e_dep, s_dep, cv_dep;
         departureFunctions(f, T, v_m, e_dep, s_dep, cv_dep);
@@ -791,17 +798,29 @@ inline State state_from_rho_e(const PRFluid& f, amrex::Real rho, amrex::Real e_t
 // =====================================================================
 AMREX_GPU_HOST_DEVICE
 inline State state_from_rho_e_phase(const PRFluid& f, amrex::Real rho,
-                                    amrex::Real e_target, Phase3 phase)
+                                    amrex::Real e_target, Phase3 phase,
+                                    amrex::Real T_init = amrex::Real(-1.0))
 {
     amrex::Real v_m = v_PR_from_rho(f, rho);
     amrex::Real e_mol_target = e_target * f.M;
 
     // Single-phase Newton on T to match the target internal energy.
-    // Initial guess is biased by phase: liquid starts cooler, vapor warmer.
-    // Helps convergence near the dome where the cubic has multiple roots.
-    amrex::Real T = (phase == Phase3::Liquid)
+    // Initial guess:
+    //   * If T_init > 0 and finite → use it (warm-start from a cached
+    //     nearby state; used by co2_state_from_rho_e_phase_cached to
+    //     bypass the fixed phase-default when a spatially or
+    //     temporally close state is on hand).
+    //   * Else → phase-biased default (liquid cooler, vapor warmer).
+    //     Helps convergence near the dome where the cubic has
+    //     multiple roots.
+    amrex::Real T;
+    if (T_init > amrex::Real(0.0) && std::isfinite(T_init)) {
+        T = T_init;
+    } else {
+        T = (phase == Phase3::Liquid)
                   ? amrex::Real(0.7) * f.pr.Tc
                   : amrex::Real(1.0) * f.pr.Tc;
+    }
 
     for (int it = 0; it < 80; ++it) {
         amrex::Real e_dep, s_dep, cv_dep;

@@ -21,3 +21,4 @@ CEXE_headers += PS_alpha_transport.H
 CEXE_headers += PS_nscbc.H
 CEXE_headers += PS_reconstruction.H
 CEXE_headers += PS_relaxation.H
+CEXE_headers += PS_hllc.H

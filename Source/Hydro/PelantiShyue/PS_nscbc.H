@@ -80,6 +80,14 @@ struct Params {
     amrex::Real L_ref   = amrex::Real(1.0);          // m, domain length (unused
                                                      // in this invariant form
                                                      // but kept for API stability)
+    // R+ extrapolation order:
+    //   1 = 0-th-order copy   (R+_ghost = R+_N).  Matches the standalone
+    //       ppm_1d_ps_wp driver's applyBCs NONREFLECTING behaviour.
+    //   2 = minmod-limited 2nd-order backward FD across three interior
+    //       cells (default).  Documented at the top of this file.
+    // Exposed as a runtime tunable so a bit-for-bit cross-check with the
+    // standalone can be performed without recompiling.
+    int         nscbc_order = 2;
 };
 
 
@@ -176,15 +184,20 @@ _wallis_c_at_cell(const amrex::Real s[NVAR],
     Real e_1 = (m1 > Real(1.0e-12)) ? E1_tot / m1 - ke_spec : e_mix;
     Real e_2 = (m2 > Real(1.0e-12)) ? E2_tot / m2 - ke_spec : e_mix;
 
+    // Per-phase (P, c) via branch-locked EOS (task #185): phase 1 →
+    // liquid branch, phase 2 → vapor/SC branch.  The NSCBC only reads
+    // these to build the Wallis frozen mixture c below, so any
+    // per-phase inconsistency here would corrupt the boundary
+    // impedance.
     Real P_1, P_2;
-    EOS::REY2P(rho_1, e_1, Y, P_1);
-    EOS::REY2P(rho_2, e_2, Y, P_2);
+    EOS::REY2P_liquid(rho_1, e_1, Y, P_1);
+    EOS::REY2P_vapor (rho_2, e_2, Y, P_2);
     if (!std::isfinite(P_1) || P_1 <= Real(0.0)) P_1 = P_mix;
     if (!std::isfinite(P_2) || P_2 <= Real(0.0)) P_2 = P_mix;
 
     Real c1, c2;
-    EOS::RPY2Cs(rho_1, P_1, Y, c1);
-    EOS::RPY2Cs(rho_2, P_2, Y, c2);
+    EOS::REY2Cs_liquid(rho_1, e_1, Y, c1);
+    EOS::REY2Cs_vapor (rho_2, e_2, Y, c2);
     if (!std::isfinite(c1) || c1 <= Real(0.0)) c1 = Real(1.0);
     if (!std::isfinite(c2) || c2 <= Real(0.0)) c2 = Real(1.0);
 
@@ -342,20 +355,28 @@ outflow_face(const amrex::Real s_N  [NVAR],
     const Real Rp_Nm1 = un_out_Nm1 + P_Nm1 / rho_c;
     const Real Rp_Nm2 = un_out_Nm2 + P_Nm2 / rho_c;
 
-    // Minmod-limited backward slope on R_+ (see design notes at top
-    // of file: the naive 2nd-order FD amplifies boundary oscillations
-    // catastrophically; minmod on the two consecutive backward slopes
-    // gives 2nd-order accuracy in smooth regions and collapses to 0
-    // in oscillatory regions).
-    const Real slope_hi = Rp_N   - Rp_Nm1;     // between cells N and N-1
-    const Real slope_lo = Rp_Nm1 - Rp_Nm2;     // between cells N-1 and N-2
+    // R_+ extrapolation.
+    //   order=2 (default): minmod-limited 2nd-order backward FD across
+    //     three interior cells (see design notes at top of file: the
+    //     naive 2nd-order FD amplifies boundary oscillations
+    //     catastrophically; minmod on the two consecutive backward
+    //     slopes gives 2nd-order accuracy in smooth regions and
+    //     collapses to 0 in oscillatory regions).
+    //   order=1: 0-th-order copy (dR+ = 0), matches the standalone
+    //     applyBCs NONREFLECTING behaviour.
     Real dRp_scaled;                            // dx · ∂R_+/∂x |_N
-    if (slope_hi * slope_lo <= Real(0.0)) {
+    if (p.nscbc_order <= 1) {
         dRp_scaled = Real(0.0);
-    } else if (std::abs(slope_hi) < std::abs(slope_lo)) {
-        dRp_scaled = slope_hi;
     } else {
-        dRp_scaled = slope_lo;
+        const Real slope_hi = Rp_N   - Rp_Nm1;  // between cells N and N-1
+        const Real slope_lo = Rp_Nm1 - Rp_Nm2;  // between cells N-1 and N-2
+        if (slope_hi * slope_lo <= Real(0.0)) {
+            dRp_scaled = Real(0.0);
+        } else if (std::abs(slope_hi) < std::abs(slope_lo)) {
+            dRp_scaled = slope_hi;
+        } else {
+            dRp_scaled = slope_lo;
+        }
     }
     const Real Rp_ghost = Rp_N
                         + static_cast<Real>(layer_offset) * dRp_scaled;

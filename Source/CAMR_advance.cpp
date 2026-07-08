@@ -30,6 +30,14 @@ CAMR::advance(
 
     if (do_mol) {
         amrex::Print() << "Doing MOL Advance" << std::endl;
+    } else if (ps_hydro != 0) {
+        // Pelanti-Shyue 6-equation branch.  Reconstruction order is
+        // controlled by CAMR.ps_recon (0 = Godunov, 1 = MUSCL PLM);
+        // spelled out in the banner so runlogs record which face-state
+        // reconstruction was actually used.
+        amrex::Print() << "Doing PS Advance ("
+                       << (ps_recon == 1 ? "MUSCL PLM" : "Godunov")
+                       << ")" << std::endl;
     } else {
         amrex::Print() << "Doing Godunov Advance" << std::endl;
     }
@@ -171,9 +179,36 @@ CAMR::CAMR_advance (Real time,
     // ps_correct_alpha_transport (PS_alpha_transport.H) is no
     // longer needed and would double-count if invoked.  Header
     // preserved in-tree for reference / documentation.
+    //
+    // Task #189: runtime toggle CAMR.ps_do_relax (default 1).  The
+    // standalone driver's winning B4 config uses --no-relax
+    // (relaxation disabled) so the cross-critical Riemann fan can
+    // propagate through the domain without the mechanical relaxation
+    // Newton trying to force per-phase P equality at cells whose
+    // per-phase states are legitimately far apart during the
+    // transient.  For T-Blowdown-class problems (α ≈ 1 everywhere)
+    // relaxation is nearly a no-op so the default = 1 is fine there.
+    static const int ps_do_relax_cached = []() -> int {
+        int v = 1;
+        amrex::ParmParse pp("CAMR");
+        pp.query("ps_do_relax", v);
+        return v;
+    }();
     if (ps_hydro != 0) {
-        ps_apply_relaxation(S_new);
+        // Task #189: vanish-phase fold BEFORE relaxation.  When a
+        // phase's α drops below CAMR.ps_alpha_vanish, its mass and
+        // energy are absorbed into the surviving phase — prevents
+        // phantom-density buildup that drives the R-star u hump on
+        // cross-critical Riemann problems (see the standalone driver's
+        // Lund flash pattern, hem_pelanti_shyue.H::ps_apply_vanish_fold).
+        // Default is 0 = disabled (matches pre-#189 behaviour); the
+        // standalone winning B4 config uses 1e-8.
+        ps_apply_vanish_fold(S_new);
         clean_state(S_new);
+        if (ps_do_relax_cached != 0) {
+            ps_apply_relaxation(S_new);
+            clean_state(S_new);
+        }
     }
 #endif
 

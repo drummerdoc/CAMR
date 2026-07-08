@@ -8,7 +8,25 @@
 
 #include "AMReX_MultiFab.H"
 
+#include <atomic>
+
 using namespace amrex;
+
+// GPU-safe first-once helper used by the PS "disallowed option" overrides
+// below (task #209 / #210).  All override sites run in host code inside
+// hydro_umdrv (which itself is invoked from a possibly-OpenMP MFIter
+// loop in CAMR_construct_hydro_source), so we need atomic exchange to
+// guarantee exactly-one warning emission across CPU threads.  Device
+// kernels never call this — the PS overrides are all applied to host-
+// side scalars before they enter any ParallelFor.
+namespace {
+inline bool
+ps_warn_once(std::atomic<bool>& flag) noexcept
+{
+    bool expected = false;
+    return flag.compare_exchange_strong(expected, true);
+}
+}  // namespace
 
 void
 hydro_umdrv (bool do_mol,
@@ -101,8 +119,43 @@ hydro_umdrv (bool do_mol,
         hydro_divu(i, j, k, q_arr, AMREX_D_DECL(dx0, dx1, dx2), divuarr, ldomlo, ldomhi, lbclo, lbchi);
     });
 
-    // Adjust the fluxes with artificial viscosity and area-weight them
-    adjust_fluxes(bx, uin_arr, flx, a, divuarr, dx, domlo, domhi, bclo, bchi, l_difmag);
+    // Adjust the fluxes with artificial viscosity and area-weight them.
+    //
+    // For the Pelanti–Shyue six-equation branch we HARDCODE difmag = 0.
+    // The artificial-viscosity kernel (hydro_artif_visc.H) loops over
+    // every NVAR slot (except UTEMP) and adds `dx * div * (u_R - u_L)`
+    // to each face flux — that corrupts the invariants the P-S wave-
+    // propagation form depends on:
+    //   • flx[UALPHA1] must stay exactly 0 (WP-α kernel writes
+    //     dsdt[UALPHA1] directly; any nonzero flux would double-count
+    //     into consup).
+    //   • flx[UE1], flx[UE2] must stay at their HLLC (Pelanti mixture-P
+    //     star-state) values, because the WP-vs-Godunov phase-energy
+    //     defect correction has been stashed based on those exact
+    //     values and re-adding artificial viscosity divergences on top
+    //     would double-adjust the phase-energy split.
+    // Standalone `ppm_1d_ps_wp.cpp` has no equivalent artificial-
+    // viscosity pass; forcing difmag = 0 here is what recovers the
+    // bit-exact single-level match, and is the correct choice for
+    // production too (PS has its own stabilization via HLLC star-state
+    // clamps and frozen-sound-speed wave-speed floors).
+    //
+    // See task #208 (root cause) and task #209 (this fix).  Warning is
+    // GPU-safe (host-side std::atomic; hydro_umdrv is called from a
+    // possibly-OpenMP MFIter loop in CAMR_construct_hydro_source).
+    Real l_difmag_effective = l_difmag;
+    if (do_ps_hydro && l_difmag_effective != Real(0.0)) {
+        static std::atomic<bool> warned_ps_difmag{false};
+        if (ps_warn_once(warned_ps_difmag)) {
+            amrex::Warning(
+              "CAMR::PS: overriding CAMR.difmag to 0 for the Pelanti-Shyue "
+              "6-eq integrator.  Artificial viscosity corrupts the WP-α "
+              "and WP phase-energy invariants; PS has its own stabilization. "
+              "See task #209.");
+        }
+        l_difmag_effective = Real(0.0);
+    }
+    adjust_fluxes(bx, uin_arr, flx, a, divuarr, dx, domlo, domhi, bclo, bchi, l_difmag_effective);
 
     hydro_consup  (bx, dsdt_arr, flx, vol, pdivuarr);
 

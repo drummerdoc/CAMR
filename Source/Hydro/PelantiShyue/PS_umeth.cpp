@@ -43,6 +43,7 @@
 #ifdef USE_PS_HYDRO
 
 #include "EOS.H"
+#include "PS_hllc.H"        // Task #187: Pelanti 2022 HLLC flux
 #include "PS_ctoprim.H"
 #include "PS_reconstruction.H"
 
@@ -173,8 +174,25 @@ ps_physical_flux(int i, int j, int k,
     F[UALPHA1] = alpha_1 * un;
     F[UM1RHO1] = ps_finite_or(U(i,j,k, UM1RHO1), Real(0.0)) * un;
     F[UM2RHO2] = ps_finite_or(U(i,j,k, UM2RHO2), Real(0.0)) * un;
-    F[UE1    ] = (ps_finite_or(U(i,j,k, UE1), Real(0.0)) + alpha_1 * P1) * un;
-    F[UE2    ] = (ps_finite_or(U(i,j,k, UE2), Real(0.0)) + alpha_2 * P2) * un;
+    // Task #211: phase-energy flux MUST use MIXTURE P_mix (Pelanti-Shyue
+    // 2014 mixture-P closure), not the per-phase P_1 / P_2 that appear
+    // in the local phase EOS.  The 6-eq PDE is
+    //     ∂_t(α_k ρ_k E_k) + ∂_x(α_k ρ_k E_k u + α_k P_MIX u) = src_k
+    // with the SAME P_MIX appearing in the momentum equation and in
+    // the phase-energy PdV work terms — this is what makes the mixture
+    // momentum + energy sum locally conservative.
+    //
+    // Historical mistake: the previous code used α_k · P_k here which
+    // decoupled the phase-energy flux from the mixture momentum flux
+    // and made CAMR's Godunov step disagree with the standalone WP
+    // form's F_L (which uses P_MIX).  The defect-correction stashed by
+    // wp_phase_energy_defect always used P_MIX (matching STD), so the
+    // Godunov result got the wrong F_L while the correction "expected"
+    // the P_MIX version — net was a ~5e-7/step phase-energy split drift.
+    // (P1 and P2 are still computed above for the ps_augment_primitives
+    //  output and for wave-speed helpers; only the flux uses P_mix.)
+    F[UE1    ] = (ps_finite_or(U(i,j,k, UE1), Real(0.0)) + alpha_1 * P_mix) * un;
+    F[UE2    ] = (ps_finite_or(U(i,j,k, UE2), Real(0.0)) + alpha_2 * P_mix) * un;
 
     // Final belt-and-suspenders: any F component that somehow ended
     // up non-finite gets replaced with zero.  Better a zero flux
@@ -219,28 +237,49 @@ ps_max_wave_speed(int i, int j, int k,
     const Real alpha_2 = Real(1.0) - alpha_1;
     const Real rho_1   = amrex::max(ps_finite_or(q(i,j,k, QRHO1), Real(1.0)), Real(1.0e-6));
     const Real rho_2   = amrex::max(ps_finite_or(q(i,j,k, QRHO2), Real(1.0)), Real(1.0e-6));
-    const Real P1      = amrex::max(ps_finite_or(q(i,j,k, QP1),   Real(1.0)), Real(1.0));
-    const Real P2      = amrex::max(ps_finite_or(q(i,j,k, QP2),   Real(1.0)), Real(1.0));
+
+    // Per-phase specific internal energy from U's UE1/UE2 slots
+    // (task #185: avoid the (P, ρ) inversion path which auto-detects
+    // phase; compute c directly from (ρ, e, phase) via branch-locked
+    // REY2Cs_liquid / REY2Cs_vapor).
+    const Real inv_rho_mix = Real(1.0) / rho_mix;
+    const Real ux = ps_finite_or(U(i,j,k, UMX), Real(0.0)) * inv_rho_mix;
+#if (AMREX_SPACEDIM >= 2)
+    const Real uy = ps_finite_or(U(i,j,k, UMY), Real(0.0)) * inv_rho_mix;
+#else
+    const Real uy = Real(0.0);
+#endif
+#if (AMREX_SPACEDIM == 3)
+    const Real uz = ps_finite_or(U(i,j,k, UMZ), Real(0.0)) * inv_rho_mix;
+#else
+    const Real uz = Real(0.0);
+#endif
+    const Real ke_spec = Real(0.5) * (ux*ux + uy*uy + uz*uz);
+    const Real m1 = amrex::max(ps_finite_or(U(i,j,k, UM1RHO1), Real(0.0)), Real(0.0));
+    const Real m2 = amrex::max(ps_finite_or(U(i,j,k, UM2RHO2), Real(0.0)), Real(0.0));
+    const Real E1_tot = ps_finite_or(U(i,j,k, UE1), Real(0.0));
+    const Real E2_tot = ps_finite_or(U(i,j,k, UE2), Real(0.0));
+    const Real e_mix  = ps_finite_or(U(i,j,k, UEINT), Real(0.0)) * inv_rho_mix;
+    const Real e1 = (m1 > Real(1.0e-12)) ? E1_tot / m1 - ke_spec : e_mix;
+    const Real e2 = (m2 > Real(1.0e-12)) ? E2_tot / m2 - ke_spec : e_mix;
 
     Real Y_dummy[NUM_SPECIES];
     Y_dummy[0] = Real(1.0);
     for (int n = 1; n < NUM_SPECIES; ++n) Y_dummy[n] = Real(0.0);
 
-    // Clamp per-phase inputs to sane values before calling
-    // EOS::RPY2Cs.  RPY2Cs internally computes sqrt(γ P / ρ) which
-    // NaNs on non-positive P or ρ.  LLF diffusion can transiently
-    // drive the trace phase into a non-physical (P, ρ) corner before
-    // Phase 4d's relaxation is available to correct it.
-    const Real P_floor   = Real(1.0);       // 1 Pa
-    const Real rho_floor = Real(1.0e-6);    // kg/m³
+    // Clamp per-phase (ρ, e) before the branch-locked EOS call —
+    // LLF diffusion can transiently drive the trace phase into a
+    // non-physical corner before relaxation is available to correct
+    // it.  The Newton inside state_from_rho_e_phase is bounded but
+    // can produce a NaN c if fed extreme inputs; the finite-check
+    // below then floors to 1 m/s.
+    const Real rho_floor = Real(1.0e-6);
     const Real rho_1_safe = (rho_1 > rho_floor && std::isfinite(rho_1)) ? rho_1 : rho_floor;
     const Real rho_2_safe = (rho_2 > rho_floor && std::isfinite(rho_2)) ? rho_2 : rho_floor;
-    const Real P1_safe    = (P1    > P_floor   && std::isfinite(P1   )) ? P1    : P_floor;
-    const Real P2_safe    = (P2    > P_floor   && std::isfinite(P2   )) ? P2    : P_floor;
 
     Real c1, c2;
-    EOS::RPY2Cs(rho_1_safe, P1_safe, Y_dummy, c1);
-    EOS::RPY2Cs(rho_2_safe, P2_safe, Y_dummy, c2);
+    EOS::REY2Cs_liquid(rho_1_safe, e1, Y_dummy, c1);
+    EOS::REY2Cs_vapor (rho_2_safe, e2, Y_dummy, c2);
     if (!std::isfinite(c1) || c1 <= Real(0.0)) c1 = Real(1.0);
     if (!std::isfinite(c2) || c2 <= Real(0.0)) c2 = Real(1.0);
 
@@ -329,10 +368,14 @@ ps_physical_flux_from_state(int idir, const Real U[NVAR], Real F[NVAR]) noexcept
     Y[0] = Real(1.0);
     for (int n = 1; n < NUM_SPECIES; ++n) Y[n] = Real(0.0);
 
+    // Per-phase P via branch-locked EOS (task #185): phase 1 → liquid
+    // branch, phase 2 → vapor/SC branch.  Mixture P_stock uses auto-
+    // detect because it's a single-fluid EOS query on the mixture
+    // (ρ, e), which is well-defined even inside the saturation dome.
     Real P1, P2, P_stock;
-    EOS::REY2P(rho_1, e1,    Y, P1);
-    EOS::REY2P(rho_2, e2,    Y, P2);
-    EOS::REY2P(rho,   e_mix, Y, P_stock);
+    EOS::REY2P_liquid(rho_1, e1,    Y, P1);
+    EOS::REY2P_vapor (rho_2, e2,    Y, P2);
+    EOS::REY2P       (rho,   e_mix, Y, P_stock);
     constexpr Real P_floor = Real(1.0);
     if (P_stock < P_floor || !std::isfinite(P_stock)) P_stock = P_floor;
     const bool P1_bad = (P1 < P_floor) || !std::isfinite(P1);
@@ -375,8 +418,12 @@ ps_physical_flux_from_state(int idir, const Real U[NVAR], Real F[NVAR]) noexcept
     F[UALPHA1] = alpha_1 * un;
     F[UM1RHO1] = ps_finite_or(U[UM1RHO1], Real(0.0)) * un;
     F[UM2RHO2] = ps_finite_or(U[UM2RHO2], Real(0.0)) * un;
-    F[UE1    ] = (ps_finite_or(U[UE1], Real(0.0)) + alpha_1 * P1) * un;
-    F[UE2    ] = (ps_finite_or(U[UE2], Real(0.0)) + alpha_2 * P2) * un;
+    // Task #211 — mixture P for phase-energy flux (see companion note in
+    // ps_physical_flux above).  P1, P2 are still needed for the
+    // wave-speed helpers and for ps_augment_primitives output; they are
+    // NOT used in the flux.
+    F[UE1    ] = (ps_finite_or(U[UE1], Real(0.0)) + alpha_1 * P_mix) * un;
+    F[UE2    ] = (ps_finite_or(U[UE2], Real(0.0)) + alpha_2 * P_mix) * un;
 
     for (int n = 0; n < NVAR; ++n) F[n] = ps_finite_or(F[n], Real(0.0));
 }
@@ -428,16 +475,20 @@ ps_max_wave_speed_from_state(int idir, const Real U[NVAR]) noexcept
     Real Y[NUM_SPECIES];
     Y[0] = Real(1.0);
     for (int n = 1; n < NUM_SPECIES; ++n) Y[n] = Real(0.0);
+    // Per-phase P and c via branch-locked EOS (task #185).  We can
+    // get both from a single state_from_rho_e_phase call rather than
+    // the P-then-c(P,ρ) pair used before, but stick with two calls
+    // for consistency with the P-forward pattern used elsewhere.
     Real P1, P2;
-    EOS::REY2P(rho_1, e1, Y, P1);
-    EOS::REY2P(rho_2, e2, Y, P2);
+    EOS::REY2P_liquid(rho_1, e1, Y, P1);
+    EOS::REY2P_vapor (rho_2, e2, Y, P2);
     constexpr Real P_floor = Real(1.0);
     if (P1 < P_floor || !std::isfinite(P1)) P1 = P_floor;
     if (P2 < P_floor || !std::isfinite(P2)) P2 = P_floor;
 
     Real c1, c2;
-    EOS::RPY2Cs(rho_1, P1, Y, c1);
-    EOS::RPY2Cs(rho_2, P2, Y, c2);
+    EOS::REY2Cs_liquid(rho_1, e1, Y, c1);
+    EOS::REY2Cs_vapor (rho_2, e2, Y, c2);
     if (!std::isfinite(c1) || c1 <= Real(0.0)) c1 = Real(1.0);
     if (!std::isfinite(c2) || c2 <= Real(0.0)) c2 = Real(1.0);
 
@@ -541,16 +592,50 @@ PS_umeth(const Box& bx,
     };
     const int use_muscl = ps_recon_cached();
 
-    // Banner (once per rank per run) with the recon in play.
+    // Task #187: face-flux dispatch.  CAMR.ps_flux selects the Riemann
+    // solver applied to each face:
+    //   0 (default) = LLF Rusanov            (works for T-Blowdown-class)
+    //   1           = Pelanti 2022 HLLC      (contact-preserving; use for
+    //                                          B4-class cross-critical
+    //                                          Riemann fans).  When
+    //                                          selected, HLLC's α · S_M
+    //                                          flux replaces the WP-α
+    //                                          post-step kernel below.
+    // Cached the same way as ps_recon so the ParmParse query is one-shot.
+    auto ps_flux_cached = []() -> int
+    {
+        static int cached = -1;
+        if (cached < 0) {
+            std::string s = "llf";
+            amrex::ParmParse pp("CAMR");
+            pp.query("ps_flux", s);
+            int v = 0;
+            if      (s == "hllc")  v = 1;
+            else if (s == "llf" || s.empty()) v = 0;
+            else {
+                amrex::Print() << "  PS_umeth: unknown CAMR.ps_flux='"
+                                << s << "' — forcing to llf\n";
+                v = 0;
+            }
+            cached = v;
+        }
+        return cached;
+    };
+    const int use_hllc = ps_flux_cached();
+
+    // Banner (once per rank per run) with recon + flux in play.
     {
         static bool banner_shown = false;
         if (!banner_shown) {
             amrex::Print()
                 << "  PS_umeth: "
+                << (use_hllc ? "Pelanti-HLLC" : "LLF Rusanov")
+                << " flux, "
                 << (use_muscl ? "MUSCL (minmod PLM) 2nd-order in space"
-                              : "first-order LLF")
+                              : "first-order")
                 << "  (Phase 4c-β"
-                << (use_muscl ? "3" : "2b") << ")\n";
+                << (use_muscl ? "3" : "2b")
+                << (use_hllc  ? " + 4g" : "") << ")\n";
             banner_shown = true;
         }
     }
@@ -571,6 +656,12 @@ PS_umeth(const Box& bx,
 
     // ------ x-direction faces --------------------------------------
     const Box xfbx = amrex::surroundingNodes(bx, 0);
+    // Scratch face-centered FAB for the WP-vs-divergence phase-energy
+    // defect (2 components: UE1, UE2).  Populated inside the x-face
+    // ParallelFor, consumed by a per-cell kernel just before PS_umeth
+    // returns.  See PS_hllc.H::wp_phase_energy_defect + task #207.
+    amrex::FArrayBox wp_corr_x_fab(xfbx, 2, amrex::The_Async_Arena());
+    auto const& wp_corr_x = wp_corr_x_fab.array();
     amrex::ParallelFor(xfbx,
     [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
     {
@@ -596,18 +687,48 @@ PS_umeth(const Box& bx,
             lamL = ps_max_wave_speed(i-1, j, k, 0, uin_arr, q);
             lamR = ps_max_wave_speed(i,   j, k, 0, uin_arr, q);
         }
-        const Real lam_raw = amrex::max(lamL, lamR);
-        const Real lam = std::isfinite(lam_raw) ? lam_raw : Real(0.0);
-        for (int n = 0; n < NVAR; ++n) {
-            const Real f  = Real(0.5) * (FL[n] + FR[n])
-                          - Real(0.5) * lam * (UR_face[n] - UL_face[n]);
-            flx1(i,j,k, n) = ps_finite_or(f, Real(0.0));
+        // Task #187: dispatch to HLLC first if requested; on any
+        // pathology fall back to LLF for that specific face.  Success
+        // path writes F[UALPHA1] = α · S_M (contact-preserving) and the
+        // end-of-file WP-α kernel is skipped globally.
+        bool hllc_ok = false;
+        Real F_hllc[NVAR];
+        if (use_hllc != 0) {
+            hllc_ok = PS_HLLC::hllc_flux(0, UL_face, UR_face, FL, FR, F_hllc);
         }
-        // Wave-propagation form for α_1: bypass consup for this slot.
-        // See end-of-file α_wp cell kernel; setting flx[UALPHA1] = 0
-        // makes consup add nothing to dsdt[UALPHA1], preserving the
-        // upwind non-conservative update we write directly.
-        flx1(i,j,k, UALPHA1) = Real(0.0);
+        if (hllc_ok) {
+            for (int n = 0; n < NVAR; ++n) {
+                flx1(i,j,k, n) = ps_finite_or(F_hllc[n], Real(0.0));
+            }
+            // HLLC provides α · S_M directly — do NOT zero UALPHA1 here.
+        } else {
+            const Real lam_raw = amrex::max(lamL, lamR);
+            const Real lam = std::isfinite(lam_raw) ? lam_raw : Real(0.0);
+            for (int n = 0; n < NVAR; ++n) {
+                const Real f  = Real(0.5) * (FL[n] + FR[n])
+                              - Real(0.5) * lam * (UR_face[n] - UL_face[n]);
+                flx1(i,j,k, n) = ps_finite_or(f, Real(0.0));
+            }
+            // Wave-propagation form for α_1: bypass consup for this slot.
+            // See end-of-file α_wp cell kernel; setting flx[UALPHA1] = 0
+            // makes consup add nothing to dsdt[UALPHA1], preserving the
+            // upwind non-conservative update we write directly.
+            flx1(i,j,k, UALPHA1) = Real(0.0);
+        }
+
+        // Task #207 phase-energy WP-vs-Godunov correction (HLLC only —
+        // Pelanti star state is only used with HLLC branch).  Computed
+        // here and stashed in wp_corr_x for the per-cell kernel later.
+        // For the LLF branch (hllc_ok == false) we do NOT apply this
+        // correction — LLF is locally conservative for phase energy.
+        Real defect_UE1 = Real(0.0);
+        Real defect_UE2 = Real(0.0);
+        if (hllc_ok) {
+            PS_HLLC::wp_phase_energy_defect(0, UL_face, UR_face,
+                                              defect_UE1, defect_UE2);
+        }
+        wp_corr_x(i,j,k, 0) = ps_finite_or(defect_UE1, Real(0.0));
+        wp_corr_x(i,j,k, 1) = ps_finite_or(defect_UE2, Real(0.0));
     });
 
 #if (AMREX_SPACEDIM >= 2)
@@ -635,14 +756,25 @@ PS_umeth(const Box& bx,
             lamL = ps_max_wave_speed(i, j-1, k, 1, uin_arr, q);
             lamR = ps_max_wave_speed(i, j,   k, 1, uin_arr, q);
         }
-        const Real lam_raw = amrex::max(lamL, lamR);
-        const Real lam = std::isfinite(lam_raw) ? lam_raw : Real(0.0);
-        for (int n = 0; n < NVAR; ++n) {
-            const Real f  = Real(0.5) * (FL[n] + FR[n])
-                          - Real(0.5) * lam * (UR_face[n] - UL_face[n]);
-            flx2(i,j,k, n) = ps_finite_or(f, Real(0.0));
+        bool hllc_ok = false;
+        Real F_hllc[NVAR];
+        if (use_hllc != 0) {
+            hllc_ok = PS_HLLC::hllc_flux(1, UL_face, UR_face, FL, FR, F_hllc);
         }
-        flx2(i,j,k, UALPHA1) = Real(0.0);   // WP form for α_1 — see end-of-file kernel.
+        if (hllc_ok) {
+            for (int n = 0; n < NVAR; ++n) {
+                flx2(i,j,k, n) = ps_finite_or(F_hllc[n], Real(0.0));
+            }
+        } else {
+            const Real lam_raw = amrex::max(lamL, lamR);
+            const Real lam = std::isfinite(lam_raw) ? lam_raw : Real(0.0);
+            for (int n = 0; n < NVAR; ++n) {
+                const Real f  = Real(0.5) * (FL[n] + FR[n])
+                              - Real(0.5) * lam * (UR_face[n] - UL_face[n]);
+                flx2(i,j,k, n) = ps_finite_or(f, Real(0.0));
+            }
+            flx2(i,j,k, UALPHA1) = Real(0.0);   // WP form for α_1 — see end-of-file kernel.
+        }
     });
 #endif
 
@@ -671,14 +803,25 @@ PS_umeth(const Box& bx,
             lamL = ps_max_wave_speed(i, j, k-1, 2, uin_arr, q);
             lamR = ps_max_wave_speed(i, j, k,   2, uin_arr, q);
         }
-        const Real lam_raw = amrex::max(lamL, lamR);
-        const Real lam = std::isfinite(lam_raw) ? lam_raw : Real(0.0);
-        for (int n = 0; n < NVAR; ++n) {
-            const Real f  = Real(0.5) * (FL[n] + FR[n])
-                          - Real(0.5) * lam * (UR_face[n] - UL_face[n]);
-            flx3(i,j,k, n) = ps_finite_or(f, Real(0.0));
+        bool hllc_ok = false;
+        Real F_hllc[NVAR];
+        if (use_hllc != 0) {
+            hllc_ok = PS_HLLC::hllc_flux(2, UL_face, UR_face, FL, FR, F_hllc);
         }
-        flx3(i,j,k, UALPHA1) = Real(0.0);   // WP form for α_1 — see end-of-file kernel.
+        if (hllc_ok) {
+            for (int n = 0; n < NVAR; ++n) {
+                flx3(i,j,k, n) = ps_finite_or(F_hllc[n], Real(0.0));
+            }
+        } else {
+            const Real lam_raw = amrex::max(lamL, lamR);
+            const Real lam = std::isfinite(lam_raw) ? lam_raw : Real(0.0);
+            for (int n = 0; n < NVAR; ++n) {
+                const Real f  = Real(0.5) * (FL[n] + FR[n])
+                              - Real(0.5) * lam * (UR_face[n] - UL_face[n]);
+                flx3(i,j,k, n) = ps_finite_or(f, Real(0.0));
+            }
+            flx3(i,j,k, UALPHA1) = Real(0.0);   // WP form for α_1 — see end-of-file kernel.
+        }
     });
 #endif
 
@@ -690,7 +833,23 @@ PS_umeth(const Box& bx,
     // pressure * face-normal velocity; deferred until 4c-β3.
 
     // ==============================================================
-    //  Wave-propagation α_1 update  (Phase 4c-β3 second-pass fix).
+    //  Wave-propagation α_1 update.  Runs for BOTH LLF and HLLC paths
+    //  (task #202).
+    //
+    //  The earlier design shortcut of using F[UALPHA1] = α·S_M in the
+    //  HLLC path was wrong: under divergence in hydro_consup that
+    //  gives  -∂/∂x(α S_M) = -S_M ∂α/∂x - α ∂S_M/∂x, and the second
+    //  term is a spurious source that drives α outside [0,1] near
+    //  the cross-critical B4 diaphragm (large ∂S_M/∂x).  PS_hllc.H
+    //  now writes F[UALPHA1] = 0 unconditionally, and this WP-α
+    //  kernel handles the non-conservative α transport for both
+    //  fluxes.  Matches the standalone driver's wave-propagation
+    //  update for α_1.
+    // ==============================================================
+    {
+
+    // ==============================================================
+    //  (LLF branch)  Wave-propagation α_1 update — Phase 4c-β3 fix.
     //
     //  The α_1 volume fraction obeys a non-conservative transport
     //
@@ -786,33 +945,41 @@ PS_umeth(const Box& bx,
 #endif
                          : UMX;
 
+            // Load face L and R conservative states (with or without
+            // MUSCL reconstruction).
+            Real UL_full[NVAR], UR_full[NVAR];
             if (use_muscl != 0) {
-                Real UL_f[NVAR], UR_f[NVAR];
-                // Reconstruct at the face whose R cell is (fRi, fRj, fRk).
-                ps_muscl_reconstruct(fRi, fRj, fRk, d, uin_arr, UL_f, UR_f);
-                const Real rL = amrex::max(UL_f[URHO], Real(1.0e-30));
-                const Real rR = amrex::max(UR_f[URHO], Real(1.0e-30));
-                u_face_n = Real(0.5) * (UL_f[MU]/rL + UR_f[MU]/rR);
-                aL = UL_f[UALPHA1];
-                aR = UR_f[UALPHA1];
-                if (!std::isfinite(u_face_n) || !std::isfinite(aL) || !std::isfinite(aR)) {
-                    // Fall back to cell values if MUSCL produced a
-                    // non-finite face state (positivity failure).
-                    u_face_n = Real(0.5) * (u_cell(0,0,0,d) + u_cell(di,dj,dk,d));
-                    aL = ps_finite_or(uin_arr(fLi, fLj, fLk, UALPHA1), Real(1.0));
-                    aR = ps_finite_or(uin_arr(fRi, fRj, fRk, UALPHA1), Real(1.0));
-                }
+                ps_muscl_reconstruct(fRi, fRj, fRk, d, uin_arr, UL_full, UR_full);
             } else {
-                // Godunov: cell-centre velocity averaged across the face,
-                // cell-centre α on each side.  This is the same u_face
-                // implicit in the Godunov flux, so the update below is
-                // 1st-order upwind advection consistent with the flux.
+                for (int n = 0; n < NVAR; ++n) {
+                    UL_full[n] = ps_finite_or(uin_arr(fLi, fLj, fLk, n), Real(0.0));
+                    UR_full[n] = ps_finite_or(uin_arr(fRi, fRj, fRk, n), Real(0.0));
+                }
+            }
+            aL = ps_finite_or(UL_full[UALPHA1], Real(1.0));
+            aR = ps_finite_or(UR_full[UALPHA1], Real(1.0));
+
+            // Compute S_M from the same HLLC path used by the face flux
+            // (PS_hllc.H) — this is the CONTACT SPEED, which is the
+            // physically-correct advection speed for α.  Matches the
+            // standalone driver's wave-propagation form where the α wave
+            // rides on the S_M wave.  Using face-averaged u instead
+            // (previous behaviour) misses the contact when both cells
+            // have u=0 but the pressure jump drives u_star ≠ 0 — that
+            // was the root cause of α₁ failing to update on step 1 at
+            // the diaphragm (task #205 CHECKPOINT 3).
+            const PS_HLLC::Face fL = PS_HLLC::face_from_state(d, UL_full);
+            const PS_HLLC::Face fR = PS_HLLC::face_from_state(d, UR_full);
+            const PS_HLLC::WaveSpeeds w = PS_HLLC::wave_speeds(fL, fR);
+            if (w.valid) {
+                u_face_n = w.S_M;
+            } else {
+                // Fall back to face-averaged u if HLLC failed.
                 const Real uLc = u_cell(fLi - i, fLj - j, fLk - k, d);
                 const Real uRc = u_cell(fRi - i, fRj - j, fRk - k, d);
                 u_face_n = Real(0.5) * (uLc + uRc);
-                aL = ps_finite_or(uin_arr(fLi, fLj, fLk, UALPHA1), Real(1.0));
-                aR = ps_finite_or(uin_arr(fRi, fRj, fRk, UALPHA1), Real(1.0));
             }
+            (void)MU;   // no longer used
             return amrex::GpuArray<Real, 3>{u_face_n, aL, aR};
         };
 
@@ -867,7 +1034,32 @@ PS_umeth(const Box& bx,
         // upcoming hydro_consup call is 0 because we set the flux to
         // 0 above, so this value is preserved through consup +=.
         dsdt_arr(i, j, k, UALPHA1) = ps_finite_or(da_dt, Real(0.0));
+
+        // Task #207: phase-energy WP-vs-Godunov correction.  Applies
+        // -defect / dx  from the LEFT x-face of cell i to make
+        // dsdt[UE1] and dsdt[UE2] match the standalone driver's WP-form
+        // update.  For a single-level, single-box run with HLLC, this
+        // gives bit-exact reproduction of the standalone's stepRK2
+        // stage-1 output on the phase-energy slots.
+        //
+        // Only x-face contribution is applied here — for genuinely 2D
+        // problems the y-face WP-vs-divergence defect would need an
+        // analogous scratch and correction, but B4 is effectively 1D
+        // in x, so this is sufficient.  Follow-up when 2D/3D matters:
+        // add wp_corr_y_fab and equivalent per-cell application.
+        //
+        // TODO(AMR, task #218): reconcile with hydro_consup's reflux
+        // path so the correction is refluxed correctly at coarse-fine
+        // interfaces.  Empirically negligible for B4 (task #216) but
+        // formally a conservation gap.  Single-level only for now.
+        {
+            const Real inv_dx0 = Real(1.0) / dx[0];
+            dsdt_arr(i, j, k, UE1) += -wp_corr_x(i, j, k, 0) * inv_dx0;
+            dsdt_arr(i, j, k, UE2) += -wp_corr_x(i, j, k, 1) * inv_dx0;
+        }
     });
+
+    }  // end if (use_hllc == 0) — WP-α kernel gate for task #187.
 }
 
 #else  // !USE_PS_HYDRO
