@@ -1,0 +1,19 @@
+# MLPx2 EOS backend (SCOPING SKELETON — new files only).
+#
+# This mirrors RealFluidCO2/Make.package.  The MLPx2/EOS.H stub currently
+# forwards every namespace EOS entry point to the device-inline PR
+# machinery in hem_pr_state.H (so a build is bit-identical to
+# RealFluidCO2), with TODO(MLPx2) markers where MLP inference will replace
+# the PR solve.
+#
+# When the device-inline MLP inference is added, list its headers here,
+# e.g.:
+#     CEXE_headers += mlpx2_inference.H
+#     CEXE_headers += mlpx2_weights.H   (or a device weight-buffer loader)
+#
+# NOTE: hem_pr_state.H and hem_saturation_amrex.H currently live in
+# ../RealFluidCO2/.  They must be made visible to this dir before MLPx2
+# can build standalone — either copy them in (and list them below) or add
+# ../RealFluidCO2 to the include path in the exec build.  See README.md.
+
+CEXE_headers += EOS.H

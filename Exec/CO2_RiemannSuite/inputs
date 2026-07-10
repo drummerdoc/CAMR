@@ -1,0 +1,83 @@
+# =====================================================================
+#  CO2_RiemannSuite — generalized CO2 Riemann problem (base inputs)
+#
+#  Defaults reproduce B4-Cross-critical.  The runner
+#  suite/run_camr_riemann_suite.py overrides prob.* + stop_time +
+#  amr.n_cell + CAMR.ps_flux/ps_wp_order on the command line per case.
+#
+#  1-D-in-x, square cells (dx==dy), thin y strip.  Cheap: set
+#  amr.n_cell = "N 2" and geometry.prob_hi y = 2/N so dy==dx, and
+#  amr.blocking_factor = 2.
+# =====================================================================
+
+amrex.fpe_trap_invalid = 0
+
+max_step  = 100000
+stop_time = 7.339590e-04
+
+geometry.is_periodic = 0 0 0
+geometry.coord_sys   = 0
+
+geometry.prob_lo     =   0.0    0.0      0.0
+geometry.prob_hi     =   1.0    0.0078125 0.0078125
+amr.n_cell           =   256    2        2
+
+CAMR.lo_bc = Inflow SlipWall SlipWall
+CAMR.hi_bc = Inflow SlipWall SlipWall
+
+CAMR.cfl = 0.25
+CAMR.fixed_dt = 0
+CAMR.allow_negative_energy = 1
+
+CAMR.do_mol = 0
+CAMR.ppm_type = 1
+
+CAMR.ps_hydro = 1
+CAMR.ps_recon = 1
+CAMR.ps_flux  = hllc
+CAMR.ps_wp_order = 1
+
+CAMR.ps_bc_use_nscbc = 0
+CAMR.ps_bc_nscbc_sigma = 0.25
+
+CAMR.v = 0
+amr.v = 0
+CAMR.sum_interval = -1
+CAMR.redistribution_type = StateRedist
+
+amr.loadbalance_with_workestimates = 0
+amr.max_level       = 0
+amr.ref_ratio       = 2 2 2 2
+amr.regrid_int      = 2 2 2 2
+amr.blocking_factor = 2
+amr.max_grid_size   = 128
+amr.n_error_buf     = 0 0 0 0
+amr.grid_eff        = 0.99
+
+DistributionMapping.strategy = ROUNDROBIN
+
+amr.checkpoint_files_output = 0
+amr.check_int               = -1
+
+amr.plot_files_output = 1
+amr.plot_file         = plt
+amr.plot_int          = -1
+amr.derive_plot_vars  = x_velocity y_velocity z_velocity vfrac pressure
+
+# --- Problem initial state (SI units) --- defaults = B4 -------------
+# phase codes: 0=VAPOR 1=LIQUID 2=SC 3=TWOPHASE
+prob.phase_L  = 1
+prob.p_L      = 1.0e7
+prob.T_L      = 270.0
+prob.u_L      = 0.0
+prob.x_qual_L = 1.0
+
+prob.phase_R  = 0
+prob.p_R      = 5.0e6
+prob.T_R      = 350.0
+prob.u_R      = 0.0
+prob.x_qual_R = 1.0
+
+prob.alpha_trace = 1.0e-6
+prob.x_diaph  = 0.5
+prob.p_amb    = 5.0e6

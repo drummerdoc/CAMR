@@ -763,6 +763,61 @@ ps_wp_face(int idir, int i, int j, int k, int iL, int jL, int kL,
     }
 }
 
+// ---------------------------------------------------------------------
+//  ps_wp_tvterm  (BL-3a/BL-4 contact-only transverse fluctuation term)
+//
+//  Accumulates into g[NVAR] the transverse correction to the direction-`d`
+//  flux at d-face (i,j,k), from the CONTACT wave of the transverse-`t`
+//  fluctuations advected in `d` at the d-material velocity (LeVeque rpt2,
+//  contact-only).  Direction-generic ⇒ one code path for 2D (x↔y) and 3D
+//  (all 6 (d,t) pairs).  Contact wave only (l=1): its transverse speed is
+//  the material velocity, so the term is an EXACT no-op for flow with no
+//  d-velocity component (e.g. 1-D-aligned B4) — the acoustic waves are NOT
+//  transported (that path is FP-unstable; see camr_ps_bl_wp_design.md
+//  BL-3a).  DOMAIN-boundary guard drops contributions whose perpendicular-d
+//  column/row is an out-of-domain (corner) ghost.
+AMREX_GPU_DEVICE
+AMREX_FORCE_INLINE
+void
+ps_wp_tvterm(int d, int t, int i, int j, int k,
+             amrex::Array4<const amrex::Real> const& uin,
+             amrex::Array4<amrex::Real> const& wv_t,
+             const int* domlo, const int* domhi,
+             amrex::Real dt, amrex::Real dxt, amrex::Real g[NVAR]) noexcept
+{
+    using amrex::Real;
+    const int di=(d==0), dj=(d==1), dk=(d==2);
+    const int ti=(t==0), tj=(t==1), tk=(t==2);
+#if (AMREX_SPACEDIM == 3)
+    const int UM_d = (d==0)?UMX : (d==1)?UMY : UMZ;
+#else
+    const int UM_d = (d==0)?UMX : UMY;
+#endif
+    // d-velocity at the t-face whose high-side cell is (a,b,c):
+    auto ud = [&](int a,int b,int c) noexcept -> Real {
+        Real r0=uin(a-ti,b-tj,c-tk,URHO); r0=(std::isfinite(r0)&&r0>Real(1e-30))?r0:Real(1e-30);
+        Real r1=uin(a,   b,   c,   URHO); r1=(std::isfinite(r1)&&r1>Real(1e-30))?r1:Real(1e-30);
+        return Real(0.5)*(ps_finite_or(uin(a-ti,b-tj,c-tk,UM_d),Real(0.0))/r0
+                        + ps_finite_or(uin(a,   b,   c,   UM_d),Real(0.0))/r1); };
+    // contact-wave (l=1) A± of the t-fluctuation at t-face (a,b,c):
+    auto Apm = [&](int a,int b,int c,int n,int sgn) noexcept -> Real {
+        const int l=1; const Real sl=wv_t(a,b,c,3*NVAR+l);
+        if((sgn>0&&sl>Real(0.0))||(sgn<0&&sl<Real(0.0))) return sl*wv_t(a,b,c,l*NVAR+n);
+        return Real(0.0); };
+    const int Id = (d==0)?i : (d==1)?j : k;                 // d-index of the d-face
+    const Real mCp = (Id   <= domhi[d] && Id   >= domlo[d]) ? Real(1.0):Real(0.0);
+    const Real mCm = (Id-1 <= domhi[d] && Id-1 >= domlo[d]) ? Real(1.0):Real(0.0);
+    const Real cP0 = mCp*amrex::min(ud(i,      j,      k     ),Real(0.0));   // Cp low-t
+    const Real cP1 = mCp*amrex::min(ud(i+ti,   j+tj,   k+tk  ),Real(0.0));   // Cp high-t
+    const Real cM0 = mCm*amrex::max(ud(i-di,   j-dj,   k-dk  ),Real(0.0));   // Cm low-t
+    const Real cM1 = mCm*amrex::max(ud(i-di+ti,j-dj+tj,k-dk+tk),Real(0.0));  // Cm high-t
+    const Real h = Real(0.5)*dt/dxt;
+    for(int n=0;n<NVAR;++n){
+        g[n] += -h*( cP0*Apm(i,      j,      k,      n,+1) + cP1*Apm(i+ti,   j+tj,   k+tk,   n,-1)
+                   + cM0*Apm(i-di,   j-dj,   k-dk,   n,+1) + cM1*Apm(i-di+ti,j-dj+tj,k-dk+tk,n,-1) );
+    }
+}
+
 void
 PS_umeth(const Box& bx,
          const int* /*bclo*/, const int* /*bchi*/,
@@ -947,10 +1002,10 @@ PS_umeth(const Box& bx,
         }
         return cached;
     };
-#if (AMREX_SPACEDIM == 2)
-    const int wp_transverse = ps_wp_transverse_cached();
+#if (AMREX_SPACEDIM >= 2)
+    const int wp_transverse = ps_wp_transverse_cached();   // BL-3a (2D) / BL-4 (3D)
 #else
-    const int wp_transverse = 0;   // BL-3a is 2D-only; 3D is BL-4
+    const int wp_transverse = 0;   // no transverse in 1D
     amrex::ignore_unused(ps_wp_transverse_cached);
 #endif
 
@@ -1185,6 +1240,12 @@ PS_umeth(const Box& bx,
         //  per-transverse-face gather (LeVeque/CLAWPACK rpt2 form, contact-
         //  only: B±(AΔQ)=v_t^± AΔQ).  gtv_{x,y} hold the {α,UE1,UE2} parts
         //  for the Pass-3 deposit; conserved parts are added to flx here.
+        //  Direction-generic (2D & 3D) via ps_wp_tvterm: each d-face gets the
+        //  contact-wave transverse contribution from every t≠d.  Conserved
+        //  slots → flx_d (refluxes via FluxRegister); {α,UE1,UE2} → gtv_d for
+        //  the Pass-3 deposit.  Contact-only ⇒ bit-exact no-op for 1-D-aligned
+        //  flow (BL-3a).  BL-4 = the 3D pairs (single-transverse; the double-
+        //  transverse 2nd-order corner term is deferred).
         const int gc = tv ? 3 : 1;   // {α,UE1,UE2} transverse deposit store
         amrex::FArrayBox gtv_x_fab(xfbx, gc, amrex::The_Async_Arena());
         auto const& gtv_x = gtv_x_fab.array();
@@ -1192,66 +1253,54 @@ PS_umeth(const Box& bx,
         amrex::FArrayBox gtv_y_fab(yfbx, gc, amrex::The_Async_Arena());
         auto const& gtv_y = gtv_y_fab.array();
 #endif
-#if (AMREX_SPACEDIM == 2)
+#if (AMREX_SPACEDIM == 3)
+        amrex::FArrayBox gtv_z_fab(zfbx, gc, amrex::The_Async_Arena());
+        auto const& gtv_z = gtv_z_fab.array();
+#endif
+#if (AMREX_SPACEDIM >= 2)
         if (tv) {
-            const Real hx = Real(0.5) * dt_l / dx[0];
-            const Real hy = Real(0.5) * dt_l / dx[1];
-            // DOMAIN-boundary guard: the gather must not read waves computed
-            // from out-of-domain (x-ghost×y-ghost) CORNER cells, which are not
-            // filled y-consistently → spurious O(1) waves.  Contributions
-            // whose perpendicular-face owning column/row is a physical DOMAIN
-            // ghost are dropped (1st-order transverse at the domain edge; a
-            // no-op for 1-D-aligned flow).  Interior box seams are NOT dropped
-            // (their ghosts are valid neighbour data), so box-independence holds.
-            const int dlo0=domlo[0], dhi0=domhi[0], dlo1=domlo[1], dhi1=domhi[1];
-            // gadd_y on y-faces: x-fluctuations (rows j, j-1) transported in y.
-            amrex::ParallelFor(yfbx, [=] AMREX_GPU_DEVICE (int i,int j,int k) noexcept {
-                auto vY = [&](int a,int b) noexcept {  // y-velocity at x-face (a,b)
-                    Real r0=uin_arr(a-1,b,k,URHO); r0=(std::isfinite(r0)&&r0>Real(1e-30))?r0:Real(1e-30);
-                    Real r1=uin_arr(a,  b,k,URHO); r1=(std::isfinite(r1)&&r1>Real(1e-30))?r1:Real(1e-30);
-                    return Real(0.5)*(ps_finite_or(uin_arr(a-1,b,k,UMY),Real(0.0))/r0
-                                    + ps_finite_or(uin_arr(a,  b,k,UMY),Real(0.0))/r1); };
-                auto Apm = [&](int a,int b,int n,int sgn) noexcept {  // contact wave only (l=1)
-                    const int l=1; const Real sl=wp_wave_x(a,b,k,3*NVAR+l);
-                    if((sgn>0&&sl>Real(0.0))||(sgn<0&&sl<Real(0.0))) return sl*wp_wave_x(a,b,k,l*NVAR+n);
-                    return Real(0.0); };
-                const Real mj  = (j   <= dhi1 && j   >= dlo1) ? Real(1.0) : Real(0.0);  // row j valid
-                const Real mjm = (j-1 <= dhi1 && j-1 >= dlo1) ? Real(1.0) : Real(0.0);  // row j-1 valid
-                const Real vm0=mj *amrex::min(vY(i,  j  ),Real(0.0)), vm1=mj *amrex::min(vY(i+1,j  ),Real(0.0));
-                const Real vp0=mjm*amrex::max(vY(i,  j-1),Real(0.0)), vp1=mjm*amrex::max(vY(i+1,j-1),Real(0.0));
-                for(int n=0;n<NVAR;++n){
-                    const Real g = -hx*( vm0*Apm(i,j,n,+1) + vm1*Apm(i+1,j,n,-1)
-                                       + vp0*Apm(i,j-1,n,+1) + vp1*Apm(i+1,j-1,n,-1) );
-                    if      (n==UALPHA1) gtv_y(i,j,0)=ps_finite_or(g,Real(0.0));
-                    else if (n==UE1)     gtv_y(i,j,1)=ps_finite_or(g,Real(0.0));
-                    else if (n==UE2)     gtv_y(i,j,2)=ps_finite_or(g,Real(0.0));
-                    else if (n!=UTEMP)   flx2(i,j,k,n)=ps_finite_or(flx2(i,j,k,n)+g,Real(0.0));
-                }
-            });
-            // gadd_x on x-faces: y-fluctuations (cols i, i-1) transported in x.
+            // x-faces: transverse from y (+ z in 3D).
             amrex::ParallelFor(xfbx, [=] AMREX_GPU_DEVICE (int i,int j,int k) noexcept {
-                auto uX = [&](int a,int b) noexcept {  // x-velocity at y-face (a,b)
-                    Real r0=uin_arr(a,b-1,k,URHO); r0=(std::isfinite(r0)&&r0>Real(1e-30))?r0:Real(1e-30);
-                    Real r1=uin_arr(a,b,  k,URHO); r1=(std::isfinite(r1)&&r1>Real(1e-30))?r1:Real(1e-30);
-                    return Real(0.5)*(ps_finite_or(uin_arr(a,b-1,k,UMX),Real(0.0))/r0
-                                    + ps_finite_or(uin_arr(a,b,  k,UMX),Real(0.0))/r1); };
-                auto Apm = [&](int a,int b,int n,int sgn) noexcept {  // contact wave only (l=1)
-                    const int l=1; const Real sl=wp_wave_y(a,b,k,3*NVAR+l);
-                    if((sgn>0&&sl>Real(0.0))||(sgn<0&&sl<Real(0.0))) return sl*wp_wave_y(a,b,k,l*NVAR+n);
-                    return Real(0.0); };
-                const Real mi  = (i   <= dhi0 && i   >= dlo0) ? Real(1.0) : Real(0.0);  // col i valid
-                const Real mim = (i-1 <= dhi0 && i-1 >= dlo0) ? Real(1.0) : Real(0.0);  // col i-1 valid
-                const Real um0=mi *amrex::min(uX(i,  j  ),Real(0.0)), um1=mi *amrex::min(uX(i,  j+1),Real(0.0));
-                const Real up0=mim*amrex::max(uX(i-1,j  ),Real(0.0)), up1=mim*amrex::max(uX(i-1,j+1),Real(0.0));
+                Real g[NVAR]; for(int n=0;n<NVAR;++n) g[n]=Real(0.0);
+                ps_wp_tvterm(0,1,i,j,k, uin_arr, wp_wave_y, domlo,domhi, dt_l, dx[1], g);
+#if (AMREX_SPACEDIM == 3)
+                ps_wp_tvterm(0,2,i,j,k, uin_arr, wp_wave_z, domlo,domhi, dt_l, dx[2], g);
+#endif
                 for(int n=0;n<NVAR;++n){
-                    const Real g = -hy*( um0*Apm(i,j,n,+1) + um1*Apm(i,j+1,n,-1)
-                                       + up0*Apm(i-1,j,n,+1) + up1*Apm(i-1,j+1,n,-1) );
-                    if      (n==UALPHA1) gtv_x(i,j,0)=ps_finite_or(g,Real(0.0));
-                    else if (n==UE1)     gtv_x(i,j,1)=ps_finite_or(g,Real(0.0));
-                    else if (n==UE2)     gtv_x(i,j,2)=ps_finite_or(g,Real(0.0));
-                    else if (n!=UTEMP)   flx1(i,j,k,n)=ps_finite_or(flx1(i,j,k,n)+g,Real(0.0));
+                    if      (n==UALPHA1) gtv_x(i,j,k,0)=ps_finite_or(g[n],Real(0.0));
+                    else if (n==UE1)     gtv_x(i,j,k,1)=ps_finite_or(g[n],Real(0.0));
+                    else if (n==UE2)     gtv_x(i,j,k,2)=ps_finite_or(g[n],Real(0.0));
+                    else if (n!=UTEMP)   flx1(i,j,k,n)=ps_finite_or(flx1(i,j,k,n)+g[n],Real(0.0));
                 }
             });
+            // y-faces: transverse from x (+ z in 3D).
+            amrex::ParallelFor(yfbx, [=] AMREX_GPU_DEVICE (int i,int j,int k) noexcept {
+                Real g[NVAR]; for(int n=0;n<NVAR;++n) g[n]=Real(0.0);
+                ps_wp_tvterm(1,0,i,j,k, uin_arr, wp_wave_x, domlo,domhi, dt_l, dx[0], g);
+#if (AMREX_SPACEDIM == 3)
+                ps_wp_tvterm(1,2,i,j,k, uin_arr, wp_wave_z, domlo,domhi, dt_l, dx[2], g);
+#endif
+                for(int n=0;n<NVAR;++n){
+                    if      (n==UALPHA1) gtv_y(i,j,k,0)=ps_finite_or(g[n],Real(0.0));
+                    else if (n==UE1)     gtv_y(i,j,k,1)=ps_finite_or(g[n],Real(0.0));
+                    else if (n==UE2)     gtv_y(i,j,k,2)=ps_finite_or(g[n],Real(0.0));
+                    else if (n!=UTEMP)   flx2(i,j,k,n)=ps_finite_or(flx2(i,j,k,n)+g[n],Real(0.0));
+                }
+            });
+#if (AMREX_SPACEDIM == 3)
+            // z-faces: transverse from x + y.
+            amrex::ParallelFor(zfbx, [=] AMREX_GPU_DEVICE (int i,int j,int k) noexcept {
+                Real g[NVAR]; for(int n=0;n<NVAR;++n) g[n]=Real(0.0);
+                ps_wp_tvterm(2,0,i,j,k, uin_arr, wp_wave_x, domlo,domhi, dt_l, dx[0], g);
+                ps_wp_tvterm(2,1,i,j,k, uin_arr, wp_wave_y, domlo,domhi, dt_l, dx[1], g);
+                for(int n=0;n<NVAR;++n){
+                    if      (n==UALPHA1) gtv_z(i,j,k,0)=ps_finite_or(g[n],Real(0.0));
+                    else if (n==UE1)     gtv_z(i,j,k,1)=ps_finite_or(g[n],Real(0.0));
+                    else if (n==UE2)     gtv_z(i,j,k,2)=ps_finite_or(g[n],Real(0.0));
+                    else if (n!=UTEMP)   flx3(i,j,k,n)=ps_finite_or(flx3(i,j,k,n)+g[n],Real(0.0));
+                }
+            });
+#endif
         }
 #endif
 
@@ -1308,6 +1357,11 @@ PS_umeth(const Box& bx,
                     da  -= (wp_ft_z(i,j,k+1,0) - wp_ft_z(i,j,k,0)) * inv;
                     de1 -= (wp_ft_z(i,j,k+1,1) - wp_ft_z(i,j,k,1)) * inv;
                     de2 -= (wp_ft_z(i,j,k+1,2) - wp_ft_z(i,j,k,2)) * inv;
+                }
+                if (tv) {   // BL-4 transverse (gadd_z on z-faces → z-divergence)
+                    da  -= (gtv_z(i,j,k+1,0) - gtv_z(i,j,k,0)) * inv;
+                    de1 -= (gtv_z(i,j,k+1,1) - gtv_z(i,j,k,1)) * inv;
+                    de2 -= (gtv_z(i,j,k+1,2) - gtv_z(i,j,k,2)) * inv;
                 }
             }
 #endif

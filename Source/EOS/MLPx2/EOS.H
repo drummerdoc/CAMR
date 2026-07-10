@@ -1,0 +1,451 @@
+#ifndef EOS_H
+#define EOS_H
+// =====================================================================
+//  MLPx2 EOS backend for CAMR  —  SCOPING SKELETON (new file only)
+//
+//  This is a PLACEHOLDER that provides the full `namespace EOS { … }`
+//  free-function contract CAMR expects (identical signatures to
+//  RealFluidCO2/EOS.H), but every entry point currently FORWARDS TO the
+//  device-inline Peng-Robinson machinery in hem_pr_state.H.  A build with
+//  `Eos_Model := MLPx2` is therefore bit-identical to RealFluidCO2 today.
+//
+//  The single hook where the machine-learned surrogate will replace the
+//  PR Newton solve is `mlpx2_state_from_rho_e[_phase]` below (marked
+//  TODO(MLPx2)).  Wiring MLP inference there — and NOWHERE else — turns
+//  this skeleton into the surrogate backend, because every hot function
+//  and every branch-locked per-phase wrapper routes through those two
+//  cache functions exactly as RealFluidCO2 does.
+//
+//  Design / rationale / landing plan:
+//      co2-eos-cfd/docs/design/camr_mlpx2_eos_backend.md
+//
+//  Device-inline reference for the MLP math (host-only; must be
+//  re-implemented without Eigen/heap for GPU):
+//      co2-eos-cfd/src/eos_backends/mlp/inference/hem_mlp_inference.H
+//      co2-eos-cfd/src/eos_backends/mlp/inference/hem_mlp_eos_backend.H
+//      co2-eos-cfd/src/eos_backends/mlp/inference/hem_sat_splines.H
+//
+//  Units: SI throughout.  ρ [kg/m³], P [Pa], e [J/kg], T [K].
+// =====================================================================
+
+#include <AMReX.H>
+#include <AMReX_REAL.H>
+#include <AMReX_Utility.H>
+#include <AMReX_Arena.H>
+#include <AMReX_ParmParse.H>
+
+#include "PhysicsConstants.H"
+
+// Device-inline PR state machinery — serves BOTH the interim
+// forward-to-PR placeholder AND, in the finished backend, the
+// out-of-dome / OOD / NaN-guard fallback path.
+//
+// NOTE (build): hem_pr_state.H currently lives in ../RealFluidCO2/.
+// See README.md — copy it into this dir or add ../RealFluidCO2 to the
+// include path before building MLPx2 standalone.
+#include "hem_pr_state.H"
+
+#define NUM_SPECIES 3
+
+namespace EOS {
+
+  // ----------------------------------------------------------------
+  //  CO2 PR fluid — identical parameters to RealFluidCO2/EOS.H.
+  //  Used by the PR fallback path (and by the interim placeholder).
+  // ----------------------------------------------------------------
+  AMREX_GPU_HOST_DEVICE
+  AMREX_FORCE_INLINE
+  hem::PRFluid co2_fluid()
+  {
+      return hem::PRFluid::make(
+          amrex::Real(304.13),          // Tc [K]
+          amrex::Real(7.3773e6),        // Pc [Pa]
+          amrex::Real(0.22394),         // acentric factor ω
+          amrex::Real(0.04401),         // molar mass [kg/mol]
+          amrex::Real( 2.35681300E+00), // a0
+          amrex::Real( 8.98412990E-03), // a1
+          amrex::Real(-7.12206320E-06), // a2
+          amrex::Real( 2.45730071E-09), // a3
+          amrex::Real(-1.42885166E-13), // a4
+          amrex::Real(0.0));            // Peneloux shift
+  }
+
+  // Legacy shim for prob.H files that still do  et = P/(γ-1).
+  static constexpr amrex::Real gamma = 1.4;
+
+  // ================================================================
+  //  THE MLPx2 HOOK.
+  //
+  //  TODO(MLPx2): replace the PR solve below with the device-inline
+  //  MLP forward pass + dome gate + sat-curve override, with PR as the
+  //  out-of-dome / OOD / NaN fallback.  This is the ONE place that
+  //  changes; everything else routes through here.
+  //
+  //  Reference pipeline (host-only): hem_mlp_eos_backend.H
+  //      state_from_rho_e(ρ,e):
+  //        U = e - u_offset;  x_std = whiten(ρ,U)
+  //        if |x_std| > 4σ:  return PR fallback           (OOD guard)
+  //        (T,s) = forward_MLP(x_std)
+  //        if in_dome_gated(T,s):
+  //            P = P_sat(T);  β = lever(s);  c = c_HE_full(β,T)
+  //        else:
+  //            (P,c) = PR at (ρ,T);  β = 0|1
+  //        return State{...}
+  // ----------------------------------------------------------------
+  AMREX_GPU_HOST_DEVICE
+  AMREX_FORCE_INLINE
+  hem::State
+  mlpx2_state_from_rho_e(amrex::Real rho, amrex::Real e)
+  {
+      // PLACEHOLDER: exact PR (phase-detecting).  Swap for MLP+gate+PR.
+      return hem::state_from_rho_e(co2_fluid(), rho, e);
+  }
+
+  AMREX_GPU_HOST_DEVICE
+  AMREX_FORCE_INLINE
+  hem::State
+  mlpx2_state_from_rho_e_phase(amrex::Real rho, amrex::Real e,
+                               hem::Phase3 phase)
+  {
+      // PLACEHOLDER: exact branch-locked PR (incl. metastable
+      // single-phase extrapolation past the dome).
+      //
+      // TODO(MLPx2): this is the branch-locked path the Pelanti-Shyue
+      // pipeline relies on (REY2*_liquid/_vapor, REY2PTS_phase).  The
+      // deployed forward net is phase-DETECTING, not phase-locked, so
+      // this needs either a phase-conditioned net (extra phase input)
+      // or a per-phase net.  See design doc §2.2.  Keep PR here until
+      // that net exists — correctness of PS relaxation/flash depends
+      // on the metastable branch being exact.
+      return hem::state_from_rho_e_phase(co2_fluid(), rho, e, phase,
+                                         amrex::Real(-1.0));
+  }
+
+  // ----------------------------------------------------------------
+  //  (ρ, e) → State caches — same 4-slot ring structure as
+  //  RealFluidCO2/EOS.H, but the miss-path solve routes through the
+  //  MLPx2 hook above.  (Warm-start T_init is a PR-Newton seed; it
+  //  becomes a no-op once the MLP path is wired, since the MLP needs
+  //  no seed.)  Function-local static: CPU-only / advisory on GPU.
+  // ----------------------------------------------------------------
+  AMREX_GPU_HOST_DEVICE
+  AMREX_FORCE_INLINE
+  hem::State
+  co2_state_from_rho_e_cached(amrex::Real rho, amrex::Real e)
+  {
+      constexpr int NSLOTS = 4;
+      static amrex::Real rho_cache[NSLOTS] = {amrex::Real(-1), amrex::Real(-1),
+                                              amrex::Real(-1), amrex::Real(-1)};
+      static amrex::Real e_cache  [NSLOTS] = {amrex::Real(0), amrex::Real(0),
+                                              amrex::Real(0), amrex::Real(0)};
+      static hem::State  state_cache[NSLOTS];
+      static int         next_slot = 0;
+
+      for (int s = 0; s < NSLOTS; ++s) {
+          if (rho == rho_cache[s] && e == e_cache[s] && rho_cache[s] > amrex::Real(0))
+              return state_cache[s];
+      }
+      hem::State st = mlpx2_state_from_rho_e(rho, e);   // TODO(MLPx2) hook
+      rho_cache  [next_slot] = rho;
+      e_cache    [next_slot] = e;
+      state_cache[next_slot] = st;
+      next_slot = (next_slot + 1) % NSLOTS;
+      return st;
+  }
+
+  AMREX_GPU_HOST_DEVICE
+  AMREX_FORCE_INLINE
+  hem::State
+  co2_state_from_rho_e_phase_cached(amrex::Real rho, amrex::Real e,
+                                     hem::Phase3 phase)
+  {
+      constexpr int NSLOTS = 4;
+      const int p = (phase == hem::Phase3::Liquid) ? 0 : 1;
+      static amrex::Real rho_cache[2][NSLOTS] =
+          {{amrex::Real(-1), amrex::Real(-1), amrex::Real(-1), amrex::Real(-1)},
+           {amrex::Real(-1), amrex::Real(-1), amrex::Real(-1), amrex::Real(-1)}};
+      static amrex::Real e_cache[2][NSLOTS] =
+          {{amrex::Real(0), amrex::Real(0), amrex::Real(0), amrex::Real(0)},
+           {amrex::Real(0), amrex::Real(0), amrex::Real(0), amrex::Real(0)}};
+      static hem::State  state_cache[2][NSLOTS];
+      static int         next_slot [2] = {0, 0};
+
+      for (int s = 0; s < NSLOTS; ++s) {
+          if (rho == rho_cache[p][s] && e == e_cache[p][s]
+              && rho_cache[p][s] > amrex::Real(0))
+              return state_cache[p][s];
+      }
+      hem::State st = mlpx2_state_from_rho_e_phase(rho, e, phase); // TODO(MLPx2)
+      rho_cache  [p][next_slot[p]] = rho;
+      e_cache    [p][next_slot[p]] = e;
+      state_cache[p][next_slot[p]] = st;
+      next_slot  [p] = (next_slot[p] + 1) % NSLOTS;
+      return st;
+  }
+
+  // ----------------------------------------------------------------
+  //  Composition helpers (pure CO2)
+  // ----------------------------------------------------------------
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void Y2WBAR(amrex::Real* /*Y*/, amrex::Real& WBAR) { WBAR = amrex::Real(0.04401); }
+
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void Y2X(const amrex::Real Y[], amrex::Real X[])
+  { for (int n = 0; n < NUM_SPECIES; n++) X[n] = Y[n]; }
+
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void X2Y(const amrex::Real X[], amrex::Real Y[])
+  { for (int n = 0; n < NUM_SPECIES; n++) Y[n] = X[n]; }
+
+  // ================================================================
+  //  Six hot functions — route through co2_state_from_rho_e_cached.
+  // ================================================================
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void REY2T(amrex::Real R, amrex::Real E, amrex::Real* /*Y*/, amrex::Real& T)
+  { T = co2_state_from_rho_e_cached(R, E).T; }
+
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void REY2P(amrex::Real R, amrex::Real E, amrex::Real* /*Y*/, amrex::Real& P)
+  { P = co2_state_from_rho_e_cached(R, E).P; }
+
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void REY2Gam(amrex::Real R, amrex::Real E, amrex::Real* /*Y*/, amrex::Real& gam1)
+  { hem::State s = co2_state_from_rho_e_cached(R, E); gam1 = (s.rho*s.c*s.c)/s.P; }
+
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void REY2dpde(amrex::Real R, amrex::Real E, amrex::Real* /*Y*/, amrex::Real& dpde)
+  { hem::State s = co2_state_from_rho_e_cached(R, E);
+    const amrex::Real gam1 = (s.rho*s.c*s.c)/s.P; dpde = (gam1 - amrex::Real(1.0))*R; }
+
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void REY2dpdr_e(amrex::Real R, amrex::Real E, amrex::Real* /*Y*/, amrex::Real& dpdr_e)
+  { hem::State s = co2_state_from_rho_e_cached(R, E); dpdr_e = s.P/s.rho; }
+
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void RTY2E(amrex::Real R, amrex::Real T, amrex::Real* /*Y*/, amrex::Real& E)
+  { const hem::PRFluid f = co2_fluid();
+    const amrex::Real v_m = hem::v_PR_from_rho(f, R);
+    E = hem::state_from_T_v(f, T, v_m, hem::Phase3::Vapor).e; }
+
+  // ================================================================
+  //  Branch-locked per-phase wrappers — route through the phase cache.
+  //  These are the PS-pipeline-critical calls (see design doc §2.2/§4.3).
+  // ================================================================
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void REY2P_phase(amrex::Real R, amrex::Real E, amrex::Real* /*Y*/,
+                   hem::Phase3 phase, amrex::Real& P)
+  { P = co2_state_from_rho_e_phase_cached(R, E, phase).P; }
+
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void REY2P_liquid(amrex::Real R, amrex::Real E, amrex::Real* Y, amrex::Real& P)
+  { REY2P_phase(R, E, Y, hem::Phase3::Liquid, P); }
+
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void REY2P_vapor(amrex::Real R, amrex::Real E, amrex::Real* Y, amrex::Real& P)
+  { REY2P_phase(R, E, Y, hem::Phase3::Vapor, P); }
+
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void REY2PTS_phase(amrex::Real R, amrex::Real E, amrex::Real* /*Y*/,
+                     hem::Phase3 phase,
+                     amrex::Real& P, amrex::Real& T, amrex::Real& S)
+  { hem::State s = co2_state_from_rho_e_phase_cached(R, E, phase);
+    P = s.P; T = s.T; S = s.s; }
+
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void REY2Cs_phase(amrex::Real R, amrex::Real E, amrex::Real* /*Y*/,
+                    hem::Phase3 phase, amrex::Real& Cs)
+  { Cs = co2_state_from_rho_e_phase_cached(R, E, phase).c; }
+
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void REY2Cs_liquid(amrex::Real R, amrex::Real E, amrex::Real* Y, amrex::Real& Cs)
+  { REY2Cs_phase(R, E, Y, hem::Phase3::Liquid, Cs); }
+
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void REY2Cs_vapor(amrex::Real R, amrex::Real E, amrex::Real* Y, amrex::Real& Cs)
+  { REY2Cs_phase(R, E, Y, hem::Phase3::Vapor, Cs); }
+
+  // ================================================================
+  //  Inversion / initial-condition entry points (PR — EOS-agnostic
+  //  reverse paths; the finished MLPx2 delegates these to PR too).
+  // ================================================================
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void EY2T(amrex::Real E, amrex::Real* Y, amrex::Real& T)
+  { const hem::PRFluid f = co2_fluid();
+    const amrex::Real rho_ref = f.pr.Pc*f.M/(f.pr.Tc*amrex::Real(8.314));
+    REY2T(rho_ref, E, Y, T); }
+
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void RYET2P(amrex::Real R, amrex::Real* Y, amrex::Real& E, amrex::Real& /*T*/, amrex::Real& P)
+  { REY2P(R, E, Y, P); }
+
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void PYT2RE(amrex::Real P, amrex::Real* /*Y*/, amrex::Real T, amrex::Real& R, amrex::Real& E)
+  { hem::State s = hem::state_from_T_P(co2_fluid(), T, P, hem::Phase3::Vapor);
+    R = s.rho; E = s.e; }
+
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void PYT2RE_liquid(amrex::Real P, amrex::Real* /*Y*/, amrex::Real T, amrex::Real& R, amrex::Real& E)
+  { hem::State s = hem::state_from_T_P_metastable(co2_fluid(), T, P, hem::Phase3::Liquid);
+    R = s.rho; E = s.e; }
+
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void PYT2RE_vapor(amrex::Real P, amrex::Real* /*Y*/, amrex::Real T, amrex::Real& R, amrex::Real& E)
+  { hem::State s = hem::state_from_T_P_metastable(co2_fluid(), T, P, hem::Phase3::Vapor);
+    R = s.rho; E = s.e; }
+
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void PYT2R(amrex::Real P, amrex::Real* /*Y*/, amrex::Real T, amrex::Real& R)
+  { R = hem::state_from_T_P(co2_fluid(), T, P, hem::Phase3::Vapor).rho; }
+
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void RYP2E(amrex::Real R, amrex::Real* /*Y*/, amrex::Real P, amrex::Real& E)
+  { E = hem::state_from_P_rho(co2_fluid(), P, R).e; }
+
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void RYP2T(amrex::Real R, amrex::Real* /*Y*/, amrex::Real P, amrex::Real& T)
+  { T = hem::state_from_P_rho(co2_fluid(), P, R).T; }
+
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void RTY2P(amrex::Real R, amrex::Real T, amrex::Real* /*Y*/, amrex::Real& P)
+  { const hem::PRFluid f = co2_fluid();
+    const amrex::Real v_m = hem::v_PR_from_rho(f, R);
+    P = hem::state_from_T_v(f, T, v_m, hem::Phase3::Vapor).P; }
+
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void RPY2Cs(amrex::Real R, amrex::Real P, amrex::Real* /*Y*/, amrex::Real& Cs)
+  { Cs = hem::state_from_P_rho(co2_fluid(), P, R).c; }
+
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void RTY2Cs(amrex::Real R, amrex::Real T, amrex::Real* /*Y*/, amrex::Real& Cs)
+  { const hem::PRFluid f = co2_fluid();
+    const amrex::Real v_m = hem::v_PR_from_rho(f, R);
+    Cs = hem::state_from_T_v(f, T, v_m, hem::Phase3::Vapor).c; }
+
+  // ================================================================
+  //  Specific heats / energies / enthalpies (ideal-gas c_p integrals;
+  //  EOS-implementation-independent — copied from RealFluidCO2).
+  // ================================================================
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void TY2Cv(amrex::Real T, amrex::Real* /*Y*/, amrex::Real& Cv)
+  { const hem::PRFluid f = co2_fluid();
+    const amrex::Real R_univ = amrex::Real(8.314);
+    const amrex::Real cv_ig_R = hem::cp_ig_over_R(f, T) - amrex::Real(1.0);
+    Cv = cv_ig_R * R_univ / f.M; }
+
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void RTY2Cv(amrex::Real /*R*/, amrex::Real T, amrex::Real* Y, amrex::Real& Cv)
+  { TY2Cv(T, Y, Cv); }
+
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void TY2Cp(amrex::Real T, amrex::Real* /*Y*/, amrex::Real& Cp)
+  { const hem::PRFluid f = co2_fluid();
+    Cp = hem::cp_ig_over_R(f, T) * amrex::Real(8.314) / f.M; }
+
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void RTY2Cp(amrex::Real /*R*/, amrex::Real T, amrex::Real* Y, amrex::Real& Cp)
+  { TY2Cp(T, Y, Cp); }
+
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void T2Cpi(amrex::Real T, amrex::Real Cpi[])
+  { amrex::Real Cp;
+    amrex::Real Yd[NUM_SPECIES] = {amrex::Real(1.0), amrex::Real(0.0), amrex::Real(0.0)};
+    TY2Cp(T, Yd, Cp);
+    for (int n = 0; n < NUM_SPECIES; n++) Cpi[n] = Cp; }
+
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void T2Ei(amrex::Real T, amrex::Real Ei[])
+  { const hem::PRFluid f = co2_fluid();
+    const amrex::Real Tref = amrex::Real(298.15);
+    const amrex::Real e_ig =
+        (hem::e_ig_per_mole(f, T) - hem::e_ig_per_mole(f, Tref)) / f.M;
+    for (int n = 0; n < NUM_SPECIES; n++) Ei[n] = e_ig; }
+
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void RTY2Ei(amrex::Real /*R*/, amrex::Real T, amrex::Real* /*Y*/, amrex::Real Ei[])
+  { T2Ei(T, Ei); }
+
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void TY2E(amrex::Real T, const amrex::Real Y[], amrex::Real& E)
+  { amrex::Real ei[NUM_SPECIES]; T2Ei(T, ei);
+    E = amrex::Real(0.0);
+    for (int n = 0; n < NUM_SPECIES; n++) E += Y[n] * ei[n]; }
+
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void T2Hi(amrex::Real T, amrex::Real Hi[])
+  { const hem::PRFluid f = co2_fluid();
+    const amrex::Real Tref = amrex::Real(298.15);
+    const amrex::Real h_ig =
+        (hem::h_ig_per_mole(f, T) - hem::h_ig_per_mole(f, Tref)) / f.M;
+    for (int n = 0; n < NUM_SPECIES; n++) Hi[n] = h_ig; }
+
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void RTY2Hi(amrex::Real /*R*/, amrex::Real T, amrex::Real* /*Y*/, amrex::Real Hi[])
+  { T2Hi(T, Hi); }
+
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void TY2H(amrex::Real T, const amrex::Real Y[NUM_SPECIES], amrex::Real& H)
+  { amrex::Real hi[NUM_SPECIES]; T2Hi(T, hi);
+    H = amrex::Real(0.0);
+    for (int n = 0; n < NUM_SPECIES; n++) H += Y[n] * hi[n]; }
+
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void HY2T(amrex::Real H, amrex::Real* /*Y*/, amrex::Real& T)
+  { const hem::PRFluid f = co2_fluid();
+    const amrex::Real R_univ = amrex::Real(8.314);
+    T = amrex::Real(300.0);
+    for (int it = 0; it < 20; ++it) {
+        const amrex::Real h_here =
+            (hem::h_ig_per_mole(f, T) - hem::h_ig_per_mole(f, amrex::Real(298.15))) / f.M;
+        const amrex::Real cp = hem::cp_ig_over_R(f, T) * R_univ / f.M;
+        const amrex::Real dT = (H - h_here) / cp; T += dT;
+        if (std::abs(dT) < amrex::Real(1.0e-6)) break;
+        if (T < amrex::Real(50.0))  T = amrex::Real(50.0);
+        if (T > amrex::Real(3000.0)) T = amrex::Real(3000.0);
+    } }
+
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void RHY2T(amrex::Real /*R*/, amrex::Real H, amrex::Real* Y, amrex::Real& T)
+  { HY2T(H, Y, T); }
+
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void TY2G(amrex::Real /*T*/, amrex::Real* /*Y*/, amrex::Real& G) { G = amrex::Real(1.29); }
+
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void RTY2G(amrex::Real /*R*/, amrex::Real T, amrex::Real* Y, amrex::Real& G) { TY2G(T, Y, G); }
+
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void RTY2dpde_dpdre(amrex::Real R, amrex::Real T, amrex::Real* /*Y*/,
+                      amrex::Real& dpde, amrex::Real& dpdr_e)
+  { const hem::PRFluid f = co2_fluid();
+    const amrex::Real v_m = hem::v_PR_from_rho(f, R);
+    hem::State s = hem::state_from_T_v(f, T, v_m, hem::Phase3::Vapor);
+    const amrex::Real gam1 = (s.rho*s.c*s.c)/s.P;
+    dpde = (gam1 - amrex::Real(1.0))*R; dpdr_e = s.P/s.rho; }
+
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void RPE2dpdr_e(amrex::Real /*R*/, amrex::Real /*P*/, amrex::Real E, amrex::Real& dpdr_e)
+  { dpdr_e = (gamma - amrex::Real(1.0)) * E; }
+
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void RG2dpde(amrex::Real R, amrex::Real /*G*/, amrex::Real& dpde)
+  { dpde = (gamma - amrex::Real(1.0)) * R; }
+
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void S(amrex::Real& s) { s = amrex::Real(1.0); }
+
+  // ---- Chemistry stubs (CO2 has no reactions) --------------------
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void RTY2WDOT(amrex::Real, amrex::Real, amrex::Real*, amrex::Real*)
+  { amrex::Error("RTY2WDOT not physically possible for MLPx2 EoS"); }
+
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void RTY2JAC(amrex::Real, amrex::Real, amrex::Real*, amrex::Real*, const int)
+  { amrex::Error("RTY2JAC not supported with MLPx2 EoS"); }
+
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void RTY2C(amrex::Real, amrex::Real, amrex::Real*, amrex::Real*)
+  { amrex::Error("RTY2C not supported with MLPx2 EoS"); }
+
+}
+
+#endif

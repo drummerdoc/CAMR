@@ -14,6 +14,20 @@ plt??????.slice.csv
 plt??????
 chk??????
 tmp_build_dir
+# scratch run data from custom plot_file / check_file prefixes (testing):
+# AMReX plotfile/checkpoint dirs end in a 5- or 6-digit step, or contain
+# _plt<step> / _chk<step>; slices and .old rewrites are ephemeral too.
+*_[0-9][0-9][0-9][0-9][0-9]
+*_[0-9][0-9][0-9][0-9][0-9][0-9]
+*_plt[0-9]*
+*_chk[0-9]*
+*.old.*
+*.slice.csv
+plt*
+.fuse_hidden*
+profiles/
+profiles_ps/
+riemann_suite/
 .ccls-cache
 Backtrace.*
 AMReX_buildInfo.cpp
