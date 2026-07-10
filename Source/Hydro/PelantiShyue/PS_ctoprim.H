@@ -161,5 +161,68 @@ ps_augment_primitives(int i, int j, int k,
     }
 }
 
+// ---------------------------------------------------------------------
+//  ps_mixture_pressure_from_cons  (task #21)
+//
+//  Volume-fraction mixture pressure  P_mix = α₁ P₁ + α₂ P₂  from a LOCAL
+//  conservative NVAR vector, using the same branch-locked per-phase EOS
+//  and floors/fallbacks as ps_augment_primitives above.  Used by
+//  CAMR_derpres so the plotted `pressure` is the physical mixture pressure
+//  (matching the standalone driver's P_mix), rather than the single-fluid
+//  EOS(ρ_mix, e_mix), which dips spuriously at numerically-smeared
+//  two-phase contacts.  `P_stock` is the single-fluid EOS(ρ,e) pressure,
+//  used as the fallback when a per-phase inversion is non-physical.
+// ---------------------------------------------------------------------
+AMREX_GPU_HOST_DEVICE
+AMREX_FORCE_INLINE
+amrex::Real
+ps_mixture_pressure_from_cons(const amrex::Real U[NVAR], amrex::Real P_stock)
+{
+    using amrex::Real;
+    constexpr Real alpha_floor = Real(1.0e-6);
+    constexpr Real rho_floor   = Real(1.0e-6);
+    constexpr Real P_floor     = Real(1.0);
+
+    Real a1 = U[UALPHA1];
+    if (a1 < alpha_floor)             a1 = alpha_floor;
+    if (a1 > Real(1.0) - alpha_floor) a1 = Real(1.0) - alpha_floor;
+    const Real a2 = Real(1.0) - a1;
+
+    const Real rho   = (std::isfinite(U[URHO]) && U[URHO] > rho_floor) ? U[URHO] : rho_floor;
+    const Real inv_r = Real(1.0) / rho;
+    const Real ux = U[UMX] * inv_r;
+#if (AMREX_SPACEDIM >= 2)
+    const Real uy = U[UMY] * inv_r;
+#else
+    const Real uy = Real(0.0);
+#endif
+#if (AMREX_SPACEDIM == 3)
+    const Real uz = U[UMZ] * inv_r;
+#else
+    const Real uz = Real(0.0);
+#endif
+    const Real ke_spec = Real(0.5) * (ux*ux + uy*uy + uz*uz);
+    const Real E_mix   = U[UEINT] * inv_r;
+
+    const Real m1 = U[UM1RHO1], m2 = U[UM2RHO2];
+    Real rho1 = m1 / a1, rho2 = m2 / a2;
+    if (rho1 < rho_floor || !std::isfinite(rho1)) rho1 = rho_floor;
+    if (rho2 < rho_floor || !std::isfinite(rho2)) rho2 = rho_floor;
+    const Real e1 = (m1 > Real(1.0e-12)) ? U[UE1] / m1 - ke_spec : E_mix;
+    const Real e2 = (m2 > Real(1.0e-12)) ? U[UE2] / m2 - ke_spec : E_mix;
+
+    Real Y[NUM_SPECIES];
+    Y[0] = Real(1.0);
+    for (int n = 1; n < NUM_SPECIES; ++n) Y[n] = Real(0.0);
+    Real P1, P2;
+    EOS::REY2P_liquid(rho1, e1, Y, P1);
+    EOS::REY2P_vapor (rho2, e2, Y, P2);
+
+    if (P_stock < P_floor || !std::isfinite(P_stock)) P_stock = P_floor;
+    const bool P1_bad = (P1 < P_floor) || !std::isfinite(P1);
+    const bool P2_bad = (P2 < P_floor) || !std::isfinite(P2);
+    return (!P1_bad && !P2_bad) ? (a1 * P1 + a2 * P2) : P_stock;
+}
+
 #endif // USE_PS_HYDRO
 #endif // PS_CTOPRIM_H

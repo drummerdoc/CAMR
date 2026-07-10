@@ -3,6 +3,9 @@
 #include "CAMR.H"
 #include "IndexDefines.H"
 #include "CAMR_Constants.H"
+#ifdef USE_PS_HYDRO
+#include "PS_ctoprim.H"   // ps_mixture_pressure_from_cons (task #21)
+#endif
 
 void
 CAMR_dervelx(
@@ -689,6 +692,20 @@ CAMR_derpres(
       massfrac[n] = dat(i, j, k, UFS + n) * rhoInv;
     }
     EOS::REY2P(rho, e, massfrac, p);
+#ifdef USE_PS_HYDRO
+    // Task #21: report the P-S 2014 volume-fraction mixture pressure
+    // P_mix = α₁P₁ + α₂P₂ (branch-locked per-phase EOS) instead of the
+    // single-fluid EOS(ρ_mix,e_mix), which dips spuriously at numerically-
+    // smeared two-phase contacts and disagrees with the standalone driver's
+    // P_mix.  Falls back to the single-fluid p if a per-phase inversion is
+    // non-physical.  `dat` carries the full NVAR conservative state (this
+    // derive registers URHO..URHO+NVAR).
+    {
+      amrex::Real Uloc[NVAR];
+      for (int n = 0; n < NVAR; ++n) Uloc[n] = dat(i, j, k, n);
+      p = ps_mixture_pressure_from_cons(Uloc, p);
+    }
+#endif
     pfab(i, j, k) = p;
     }
   });
