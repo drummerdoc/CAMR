@@ -52,6 +52,14 @@ void PS_umeth(
     const amrex::Real small_pres,
     const amrex::Real smallu,
     const int slope_order,
-    const PassMap* lpmap);
+    const PassMap* lpmap,
+    // Task #22 P2: when do_bl_fluct, copy the per-face phase-energy
+    // WP-vs-Godunov defect (UE1,UE2) into fcorr* (NUM_PS_FLUCT=2 comps)
+    // for the Berger-LeVeque fluctuation register.  Ignored otherwise.
+    const bool do_bl_fluct = false,
+    AMREX_D_DECL(
+        amrex::Array4<amrex::Real> const& fcorr1 = {},
+        amrex::Array4<amrex::Real> const& fcorr2 = {},
+        amrex::Array4<amrex::Real> const& fcorr3 = {}));
 
 #endif

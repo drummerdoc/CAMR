@@ -146,8 +146,19 @@ namespace EOS {
       // spatial-locality case.  If the MRU entry is somehow bad
       // (rho_cache < 0 at startup), pass T_init = -1 to fall back
       // to the phase-default.
+      // Cross-cell warm-start is OFF BY DEFAULT (task: box-independence).
+      // Seeding from the MRU slot makes the converged EOS state depend on
+      // cell-traversal order → box-layout dependent (breaks AMReX
+      // box-independence) and relies on mutable static state that is not
+      // valid on GPU.  Default T_init = -1 (deterministic phase-default
+      // seed).  The MRU warm-start is a CPU-only performance option,
+      // opt-in via CAMR.eos_warmstart=1.
+      static const bool s_warmstart = []() {
+          int w = 0; amrex::ParmParse pp("CAMR");
+          pp.query("eos_warmstart", w); return (w != 0);
+      }();
       const int mru = (next_slot + NSLOTS - 1) % NSLOTS;
-      const amrex::Real T_init = (rho_cache[mru] > amrex::Real(0))
+      const amrex::Real T_init = (s_warmstart && rho_cache[mru] > amrex::Real(0))
                                   ? state_cache[mru].T
                                   : amrex::Real(-1.0);
       hem::State st = hem::state_from_rho_e(co2_fluid(), rho, e, T_init);
@@ -206,21 +217,19 @@ namespace EOS {
       // vs the 4×log nearest-search that added ~19% wall-clock
       // overhead in #190.
       //
-      // Task #198: runtime-disable via CAMR.eos_disable_warmstart=1
-      // so the Newton starts from the phase-default T (matches the
-      // standalone driver, enabling bit-exact validation).
-      static const bool s_disable_warmstart = []() {
-          int v = 0;
-          amrex::ParmParse pp("CAMR");
-          pp.query("eos_disable_warmstart", v);
-          return (v != 0);
+      // Cross-cell warm-start OFF BY DEFAULT (box-independence + GPU
+      // safety); opt-in CPU-only optimization via CAMR.eos_warmstart=1.
+      // See co2_state_from_rho_e_cached above for the rationale.  (The
+      // old CAMR.eos_disable_warmstart flag is superseded — warm-start is
+      // now off unless eos_warmstart is set.)
+      static const bool s_warmstart = []() {
+          int w = 0; amrex::ParmParse pp("CAMR");
+          pp.query("eos_warmstart", w); return (w != 0);
       }();
       const int mru = (next_slot[p] + NSLOTS - 1) % NSLOTS;
-      const amrex::Real T_init = s_disable_warmstart
-                                  ? amrex::Real(-1.0)
-                                  : ((rho_cache[p][mru] > amrex::Real(0))
-                                       ? state_cache[p][mru].T
-                                       : amrex::Real(-1.0));
+      const amrex::Real T_init = (s_warmstart && rho_cache[p][mru] > amrex::Real(0))
+                                  ? state_cache[p][mru].T
+                                  : amrex::Real(-1.0);
       hem::State st = hem::state_from_rho_e_phase(co2_fluid(), rho, e,
                                                     phase, T_init);
       rho_cache  [p][next_slot[p]] = rho;
@@ -485,6 +494,34 @@ namespace EOS {
                     amrex::Real& P)
   {
       REY2P_phase(R, E, Y, hem::Phase3::Vapor, P);
+  }
+
+  // Branch-locked full-state recovery from (rho, e): a SINGLE
+  // one-Newton-on-T PR state solve that returns P, T and s together.
+  //
+  //  Rationale (task #28 review): the PR solve
+  //  (co2_state_from_rho_e_phase_cached) is the expensive step, and it
+  //  already computes the whole State (P, T, s, h, c) as byproducts.
+  //  Recovering P/T/s via three separate REY2{P,T,S}_phase calls re-enters
+  //  that solve three times — deduped only by the MRU warm-start cache on
+  //  CPU, and NOT at all on GPU (see #23), where it would be a genuine 3x.
+  //  This combined entry point solves once and hands back every field the
+  //  Phase-4g sources need (flash reads T; finite-rate MT reads s for the
+  //  Gibbs driving force g = h - T*s).  Callers that only need P (e.g. the
+  //  pressure-relaxation Newton loop) simply ignore the extra outputs —
+  //  they are free once the solve has run, so no per-field flag is needed.
+  //  The PR entropy satisfies Clausius-Clapeyron across saturation, so
+  //  g_liquid = g_vapor at equilibrium.
+  AMREX_GPU_HOST_DEVICE
+  AMREX_FORCE_INLINE
+  void REY2PTS_phase(amrex::Real R, amrex::Real E, amrex::Real* /*Y*/,
+                     hem::Phase3 phase,
+                     amrex::Real& P, amrex::Real& T, amrex::Real& S)
+  {
+      hem::State s = co2_state_from_rho_e_phase_cached(R, E, phase);
+      P = s.P;
+      T = s.T;
+      S = s.s;
   }
 
   // Speed-of-sound at (ρ, P) — branch-locked variant.

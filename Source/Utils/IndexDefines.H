@@ -123,6 +123,17 @@
 #define UE1     (UPS + 3)   // α₁ ρ₁ E₁ (per-phase total energy) [J/m³]
 #define UE2     (UPS + 4)   // α₂ ρ₂ E₂                          [J/m³]
 
+// Berger-LeVeque fluctuation register width (task #22): the phase-energy
+// WP-vs-Godunov defect, one flux-form component per phase.  Its two
+// components map to state slots UE1, UE2 (contiguous, so a single
+// destcomp=UE1 offset applies the whole register).
+// Per-face scratch (fcorr) width for the defect fluctuation register:
+//   [0] = UE1 defect,  [1] = UE2 defect   (one-sided, flux-form; #22 P3).
+// (The non-conservative alpha C-F correction is handled by the
+// capacity-form reflux in CAMR::reflux() — task #36 — which moves alpha1
+// with its own conservatively-refluxed mass and needs no fcorr slots.)
+#define NUM_PS_FLUCT 2
+
 // PS primitive slots (populated by PS_ctoprim in Phase 4c)
 #define QALPHA1 (QPS + 0)   // α₁
 #define QRHO1   (QPS + 1)   // ρ₁ per-phase density

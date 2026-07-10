@@ -328,6 +328,21 @@ CAMR::init_stuff(amrex::Amr& papa,
         bl, papa.boxArray(level - 1), dm, papa.DistributionMap(level - 1),
         level_geom, papa.Geom(level - 1), papa.refRatio(level - 1), level, 1);
     }
+
+    // Berger-LeVeque fluctuation register (task #22).  Holds the PS
+    // phase-energy WP-vs-Godunov defect, which is flux-form (B&L §4a):
+    // NUM_PS_FLUCT = 2 components (defect on UE1, UE2).  Applied in
+    // reflux() to state slots UE1/UE2 via a destcomp offset.  The
+    // non-flux-form α transport fix-up is handled separately (P2b).
+    // Gated so default (ps_bl_reflux=0) builds carry no extra storage.
+#if defined(USE_PS_HYDRO) && !defined(AMREX_USE_EB)
+    if (ps_bl_reflux != 0) {
+      fluct_reg.define(
+        bl, papa.boxArray(level - 1), dm, papa.DistributionMap(level - 1),
+        level_geom, papa.Geom(level - 1), papa.refRatio(level - 1), level,
+        NUM_PS_FLUCT);
+    }
+#endif
   }
 }
 
@@ -845,6 +860,19 @@ CAMR::reflux()
   CAMR& fine_level = getLevel(level + 1);
   amrex::MultiFab& S_crse = get_new_data(State_Type);
 
+#if defined(USE_PS_HYDRO) && !defined(AMREX_USE_EB)
+  // Task #36 (capacity-form α reflux): snapshot the per-phase mass
+  // α₁ρ₁ (=UM1RHO1) BEFORE flux_reg refluxes it, so we can move the
+  // capacity α₁ with its own mass afterwards (Δα₁ = Δ(α₁ρ₁)/ρ₁),
+  // preserving ρ₁=α₁ρ₁/α₁.  flux_reg does NOT touch UALPHA1 (its α flux
+  // is 0), so the current UALPHA1 is the pre-reflux value we key ρ₁ on.
+  amrex::MultiFab a1r1_pre;
+  if (ps_bl_reflux > 1) {
+    a1r1_pre.define(S_crse.boxArray(), S_crse.DistributionMap(), 1, 0);
+    amrex::MultiFab::Copy(a1r1_pre, S_crse, UM1RHO1, 0, 1, 0);
+  }
+#endif
+
 #ifdef AMREX_USE_EB
   amrex::MultiFab& S_fine = fine_level.get_new_data(State_Type);
 
@@ -864,6 +892,73 @@ CAMR::reflux()
       amrex::MFInfo(), amrex::FArrayBoxFactory());
     dr.setVal(geom.CellSizeArray()[0]);
     amrex::Abort("CAMR reflux not yet ready for r-z");
+  }
+#endif
+
+#if defined(USE_PS_HYDRO) && !defined(AMREX_USE_EB)
+  // Task #22 P3: Berger-LeVeque fluctuation-form reflux for the PS
+  // phase-energy WP-vs-Godunov defect.  The one-sided deposit
+  // (CAMRPSFluctReg::CrseAddOneSided/FineAddOneSided) has already put the
+  // correction (wp_corr_crse - Σfine) into the register for exactly the
+  // low-branch coarse cells; the inherited Reflux applies it to the
+  // contiguous UE1/UE2 slots.  Gated by CAMR.ps_bl_reflux.
+  if (ps_bl_reflux != 0) {
+    // Diagnostic (task #22): monitor the coarse vs fine fluctuation
+    // contributions SEPARATELY before they are merged by Reflux, so we
+    // can tell (a) whether the fine deposit is cancelling the coarse
+    // (getFineData large & comparable) vs a cancellation bug (fine ~0),
+    // and (b) pin the time when BOTH sides carry nontrivial signal.
+    if (verbose) {
+      amrex::MultiFab& cd = fine_level.fluct_reg.getCrseData();
+      amrex::MultiFab& fd = fine_level.fluct_reg.getFineData();
+      amrex::Real cmax = 0.0, fmax = 0.0;
+      for (int n = 0; n < NUM_PS_FLUCT; ++n) {
+        cmax = amrex::max(cmax, cd.norm0(n));
+        fmax = amrex::max(fmax, fd.norm0(n));
+      }
+      amrex::Print() << "[ps_fluct] lev " << level
+                     << " t=" << get_state_data(State_Type).curTime()
+                     << "  defect |crse|=" << cmax << " |fine|=" << fmax << "\n";
+    }
+
+    fine_level.fluct_reg.Reflux(S_crse, 0, UE1, NUM_PS_FLUCT);
+
+    // Task #36: CAPACITY-FORM α reflux.  Rather than reflux α₁ with a
+    // separate (uncoordinated) fluctuation operator — which shifts
+    // ρ₁=α₁ρ₁/α₁ and spikes P₁ (the §3f artifact) — move the capacity α₁
+    // WITH its own already-conservatively-refluxed mass α₁ρ₁:
+    //     Δ(α₁ρ₁) = (α₁ρ₁)_after_fluxreg − (α₁ρ₁)_before      [= flux_reg's
+    //                                                            mass reflux]
+    //     ρ₁      = (α₁ρ₁)_before / α₁_before                 [pre-reflux]
+    //     α₁     += Δ(α₁ρ₁) / ρ₁
+    // Then ρ₁_after = (α₁ρ₁+Δ)/(α₁+Δ/ρ₁) = ρ₁ EXACTLY — no P₁ spike, and
+    // no separate α register is needed.  Only flux_reg (conservative)
+    // touches the conserved slots; α₁ is co-moved with its mass.  A small
+    // positivity clamp guards the recovered α₁.
+    if (ps_bl_reflux > 1) {
+        const amrex::Real amin = amrex::Real(1.0e-8);
+        const amrex::Real rho_floor = amrex::Real(1.0e-10);
+        for (amrex::MFIter mfi(S_crse); mfi.isValid(); ++mfi) {
+            const amrex::Box& bx = mfi.validbox();
+            auto s   = S_crse.array(mfi);
+            auto pre = a1r1_pre.const_array(mfi);
+            amrex::ParallelFor(bx,
+            [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
+                const amrex::Real a1_old = s(i,j,k,UALPHA1);
+                const amrex::Real m_old  = pre(i,j,k,0);            // (α₁ρ₁)_before
+                const amrex::Real d_m    = s(i,j,k,UM1RHO1) - m_old; // Δ(α₁ρ₁)
+                if (d_m != amrex::Real(0.0) && a1_old > amin) {
+                    const amrex::Real rho1 = m_old / a1_old;         // pre-reflux ρ₁
+                    if (rho1 > rho_floor) {
+                        amrex::Real a1_new = a1_old + d_m / rho1;
+                        a1_new = amrex::min(amrex::max(a1_new, amin),
+                                            amrex::Real(1.0) - amin);
+                        s(i,j,k,UALPHA1) = a1_new;
+                    }
+                }
+            });
+        }
+    }
   }
 #endif
 

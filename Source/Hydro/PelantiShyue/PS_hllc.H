@@ -392,6 +392,120 @@ bool hllc_flux(int idir,
 }
 
 
+// ===================================================================
+//  Wave-propagation (Berger-LeVeque) fluctuation form — task #40 (BL-1)
+//  ---------------------------------------------------------------------
+//  Port of hem_pelanti_shyue.H::ps_hllc_fluctuations to the CAMR NVAR
+//  layout.  Produces the two fluctuations A^-ΔQ (left-going) and A^+ΔQ
+//  (right-going) plus the 3 waves W[l]/speeds s[l] (for the BL-2 limited
+//  correction fluxes).  For a NON-conservative slot (α, and the phase
+//  energies with their mixture-P star state) A^+ ≠ -A^- and the
+//  non-conservative contribution is embedded at the face automatically;
+//  for a conservative slot A^+ + A^- = ΔF and the recovered interface
+//  flux F* = F_L + A^-ΔQ feeds the standard FluxRegister.
+//
+//  ps_star_state builds one side's HLLC star vector in NVAR layout
+//  (mirrors the star construction inside hllc_flux; kept separate so the
+//  validated Godunov-flux path is untouched).
+// ===================================================================
+AMREX_GPU_HOST_DEVICE
+AMREX_FORCE_INLINE
+bool ps_star_state(int idir, const Face& fK, const amrex::Real UK[NVAR],
+                   amrex::Real S_K, amrex::Real S_M,
+                   amrex::Real U_star[NVAR]) noexcept
+{
+    using amrex::Real;
+    const Real denom = S_K - S_M;
+    if (!std::isfinite(denom) || std::abs(denom) < Real(1.0e-30)) return false;
+    const Real r_K = (S_K - fK.u_n) / denom;
+    const Real m1s = fK.m_1 * r_K;
+    const Real m2s = fK.m_2 * r_K;
+    if (m1s < Real(0.0) || m2s < Real(0.0)) return false;
+    const Real rhos = m1s + m2s;
+    if (rhos <= Real(0.0)) return false;
+    const Real q1 = fK.rho_1 * (S_K - fK.u_n);
+    const Real q2 = fK.rho_2 * (S_K - fK.u_n);
+    if (std::abs(q1) < Real(1.0e-30) || std::abs(q2) < Real(1.0e-30)) return false;
+    const Real E1s = fK.E_1 + (S_M - fK.u_n) * (S_M + fK.P_mix / q1);
+    const Real E2s = fK.E_2 + (S_M - fK.u_n) * (S_M + fK.P_mix / q2);
+    if (!std::isfinite(E1s) || !std::isfinite(E2s)) return false;
+
+    Real ux = fK.ux, uy = fK.uy, uz = fK.uz;   // transverse advected; normal → S_M
+    if      (idir == 0) ux = S_M;
+    else if (idir == 1) uy = S_M;
+    else                uz = S_M;
+    const Real ke = Real(0.5) * (ux*ux + uy*uy + uz*uz);
+    const Real e_mix_s = (m1s * (E1s - ke) + m2s * (E2s - ke)) / rhos;
+
+    for (int n = 0; n < NVAR; ++n) U_star[n] = UK[n];
+    U_star[URHO]    = rhos;
+    U_star[UMX]     = rhos * ux;
+#if (AMREX_SPACEDIM >= 2)
+    U_star[UMY]     = rhos * uy;
+#endif
+#if (AMREX_SPACEDIM == 3)
+    U_star[UMZ]     = rhos * uz;
+#endif
+    U_star[UEINT]   = rhos * e_mix_s;
+    U_star[UEDEN]   = rhos * (e_mix_s + ke);   // = m1s·E1s + m2s·E2s
+    U_star[UALPHA1] = fK.alpha_1;              // α advected at the contact
+    U_star[UM1RHO1] = m1s;
+    U_star[UM2RHO2] = m2s;
+    U_star[UE1]     = m1s * E1s;
+    U_star[UE2]     = m2s * E2s;
+    const Real rr = rhos / fK.rho_mix;
+    for (int n = 0; n < NUM_SPECIES; ++n)
+        U_star[UFS + n] = _finite_or(UK[UFS + n], Real(0.0)) * rr;
+    return true;
+}
+
+struct Fluctuations {
+    amrex::Real Am[NVAR];   // A^-ΔQ  (left-going;  updates the L cell)
+    amrex::Real Ap[NVAR];   // A^+ΔQ  (right-going; updates the R cell)
+    amrex::Real W[3][NVAR]; // waves  (S_L, S_M, S_R)
+    amrex::Real s[3];       // wave speeds
+    bool        valid;
+};
+
+AMREX_GPU_HOST_DEVICE
+AMREX_FORCE_INLINE
+bool fluctuations(int idir, const amrex::Real UL[NVAR], const amrex::Real UR[NVAR],
+                  Fluctuations& f) noexcept
+{
+    using amrex::Real;
+    f.valid = false;
+    for (int n = 0; n < NVAR; ++n) { f.Am[n] = Real(0.0); f.Ap[n] = Real(0.0); }
+
+    const Face fL = face_from_state(idir, UL);
+    const Face fR = face_from_state(idir, UR);
+    if (!fL.valid || !fR.valid) return false;
+    const WaveSpeeds w = wave_speeds(fL, fR);
+    if (!w.valid) return false;
+
+    Real UsL[NVAR], UsR[NVAR];
+    if (!ps_star_state(idir, fL, UL, w.S_L, w.S_M, UsL)) return false;
+    if (!ps_star_state(idir, fR, UR, w.S_R, w.S_M, UsR)) return false;
+
+    f.s[0] = w.S_L; f.s[1] = w.S_M; f.s[2] = w.S_R;
+    for (int n = 0; n < NVAR; ++n) {
+        f.W[0][n] = UsL[n] - UL[n];    // S_L wave
+        f.W[1][n] = UsR[n] - UsL[n];   // contact (S_M) wave
+        f.W[2][n] = UR[n]  - UsR[n];   // S_R wave
+    }
+    for (int l = 0; l < 3; ++l) {
+        const Real sl = f.s[l];
+        if      (sl < Real(0.0)) for (int n = 0; n < NVAR; ++n) f.Am[n] += sl * f.W[l][n];
+        else if (sl > Real(0.0)) for (int n = 0; n < NVAR; ++n) f.Ap[n] += sl * f.W[l][n];
+    }
+    for (int n = 0; n < NVAR; ++n) {
+        f.Am[n] = _finite_or(f.Am[n], Real(0.0));
+        f.Ap[n] = _finite_or(f.Ap[n], Real(0.0));
+    }
+    f.valid = true;
+    return true;
+}
+
+
 // -------------------------------------------------------------------
 //  WP-form vs divergence-form defect for the phase-energy slots.
 //

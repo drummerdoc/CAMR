@@ -1,0 +1,73 @@
+# =====================================================================
+#  CO2_ADV2D — smooth 2D diagonal two-phase advection (order-of-accuracy)
+#
+#  Uniform P and uniform diagonal velocity; a smooth periodic alpha_1
+#  field is advected.  Exact solution is a pure translation, so the L1
+#  error at t_end vs the analytic translated IC gives a clean
+#  convergence rate.  Compare split (CAMR.ps_ctu=0) vs CTU (=1).
+#
+#  Sweep (single level):
+#     amr.n_cell = 32 32 ; 64 64 ; 128 128   at fixed stop_time.
+# =====================================================================
+
+amrex.fpe_trap_invalid = 0
+
+max_step  = 100000
+stop_time = 1.0e-3
+
+geometry.is_periodic = 1 1 0
+geometry.coord_sys   = 0
+geometry.prob_lo     =   0.0   0.0
+geometry.prob_hi     =   1.0   1.0
+amr.n_cell           =   64    64
+
+# Periodic in x,y -> interior BCs.
+CAMR.lo_bc = Interior Interior
+CAMR.hi_bc = Interior Interior
+
+CAMR.cfl = 0.4
+CAMR.fixed_dt = 0
+CAMR.allow_negative_energy = 1
+
+CAMR.do_mol   = 0
+CAMR.ppm_type = 1
+
+# PS hydro, HLLC, MUSCL reconstruction (2nd-order base so CTU's cross-
+# term coupling can lift the scheme toward 2nd order), relaxation OFF
+# (pressure is already uniform, so relaxation is a no-op; disable to
+# keep the test a pure hydro advection).
+CAMR.ps_hydro    = 1
+CAMR.ps_flux     = hllc
+CAMR.ps_recon    = 1
+CAMR.ps_do_relax = 0
+CAMR.ps_ctu      = 0
+
+CAMR.v = 0
+amr.v  = 0
+CAMR.sum_interval = -1
+CAMR.redistribution_type = StateRedist
+
+# Single level for the order-of-accuracy sweep.
+amr.max_level       = 0
+amr.ref_ratio       = 2 2 2 2
+amr.blocking_factor = 8
+amr.max_grid_size   = 32
+
+DistributionMapping.strategy = ROUNDROBIN
+
+amr.checkpoint_files_output = 0
+amr.plot_files_output = 1
+amr.plot_file         = plt
+amr.plot_int          = 100000
+amr.derive_plot_vars  = x_velocity y_velocity pressure vfrac
+
+# --- Smooth advection initial state (SI units) ------------------------
+prob.P0 = 8.0e6
+prob.T1 = 270.0
+prob.T2 = 330.0
+prob.u0 = 100.0
+prob.v0 = 100.0
+prob.alpha_mean = 0.5
+prob.alpha_amp  = 0.25
+prob.k_x = 1.0
+prob.k_y = 1.0

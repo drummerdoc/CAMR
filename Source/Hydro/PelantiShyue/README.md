@@ -434,11 +434,18 @@ total WP−Godunov correction reduces to `-defect(LEFT face) / dx`
 (the RIGHT-face contribution telescopes with the LEFT face's
 physical flux jump).  So a single per-cell add is sufficient.
 
-Currently only the x-face defect is applied.  For genuinely 2D/3D
-problems where the WP-vs-Godunov mismatch also lives on the y/z
-faces, `wp_corr_y_fab` / `wp_corr_z_fab` analogues would be needed
-— filed as followup.  Empirically B4 is 1-D in x so the current
-implementation gives bit-exact reproduction of the standalone.
+The y- and z-face analogues (`wp_corr_y_fab` / `wp_corr_z_fab`) are
+now implemented (task #4): each direction's WP-vs-Godunov phase-energy
+defect is computed from the direction-generic
+`PS_HLLC::wp_phase_energy_defect(idir, ...)` and applied per-cell from
+that direction's LOW face as `-defect/dx_dir`, exactly mirroring the
+x-face path.  On B4 (uniform in y, effectively 1-D in x) the y/z
+face L/R states are identical, so the y/z defects are identically
+zero and B4's bit-exact reproduction of the standalone is preserved
+(verified: rebuild + run reaches t_final at step 410 with zero NaN,
+unchanged).  A genuinely multi-dimensional two-phase reference case
+to quantitatively exercise the y/z terms does not exist yet; the
+implementation is a faithful mirror of the validated x-face code.
 
 ### 3. Mixture-P in phase-energy flux (task #211 — critical bugfix)
 
@@ -496,19 +503,65 @@ returns the pure Euler flux F(U_interior).  Matches the standalone
 driver's `applyBCs` exactly.  Legacy behavior still available via
 env `CAMR_BC_COPY_INTERIOR=0`.  Non-PS builds unchanged.
 
-### 6. AMR coarse-fine sync — known gap
+### 6. AMR coarse-fine sync — investigated; small, deferred (task #218/#2)
 
 The WP-α per-cell source and the WP phase-energy defect correction
-are per-cell source terms.  They are NOT captured by CAMR's flux
-register (which sees `flx[UALPHA1]=0` and only the HLLC part of
-`flx[UE1]/UE2`).  Empirically for B4 with box-refinement around
-the diaphragm this produces no measurable error (max rel diff
-between single-level and 2-level AMR = 8e-7 on α₁ at the contact),
-but formally it's a conservation gap.  Task #218 tracks the
-followup: either (a) push a virtual α-flux to the flux register,
-(b) track a separate defect flux register for UE1/UE2, or (c)
-enforce averaged-fine-to-coarse consistency post-regrid.  Waiting
-for a test case with measurable AMR error before implementing.
+are per-cell source terms NOT captured by CAMR's flux register (which
+sees `flx[UALPHA1]=0` and only the HLLC part of `flx[UE1]/UE2`).
+
+**What it is NOT.**  This is a C-F *consistency/accuracy* gap, not a
+conservation violation.  The mixture-conserved slots (URHO, UM1RHO1,
+UM2RHO2, momentum, UEDEN) reflux correctly; the phase-energy defect is
+a zero-sum split correction (`defect_UE1 + defect_UE2 = 0`) so UEDEN
+and UE1+UE2 stay consistent through reflux; `avgDown` re-syncs every
+slot UNDER the fine grid.  The un-synchronized part lives only in the
+NON-conserved α₁ field and the phase-energy SPLIT (UE1 vs UE2
+individually) at the one coarse-cell layer at the C-F boundary.
+
+**Quantified (2026-07 session).**  A purpose-built 2D case that
+activates the y-face terms — `Exec/CO2_XC2D` (diagonal cross-critical
+Riemann) — gives, for 2-level AMR vs a uniform-256 reference along a
+ray through the contact: `|Δα₁|` = 0 interior / 8.5e-8 at the contact;
+rel `|ΔUE1|` ~1e-7 interior / ~1.9e-4 localized at the C-F band edge.
+Measurable and C-F-localized, but small even with the y-face terms
+fully active, and it does not grow.  See `Exec/CO2_XC2D/README.md`.
+
+**Why no fix landed.**  A standard AMReX `FluxRegister` reflux is
+ill-posed for these terms: the WP update is provably non-conservative
+(per cell `−div(F_hllc) − wp_corr(low)/dx`, which is not `−div(G)` for
+any local face flux `G`; α is non-conservative by construction).  The
+options are (A) a custom wave-propagation reflux that registers the
+WP fluctuations for α and the phase-energy defect and applies the
+fine/coarse mismatch in `CAMR::reflux()` — rigorous but invasive and a
+real regression risk to the bit-exact-validated B4 AMR result; or
+(B) reconstruct the UE1/UE2 split at C-F cells post-reflux — but this
+is UNSOUND, because the per-phase energies are independent dynamical
+variables (the whole point of the 6-eq model) and cannot be recovered
+from the mixture without imposing a lossy T₁=T₂/P₁=P₂ equilibrium that
+destroys the non-equilibrium information the model tracks.  Given the
+measured magnitude (~1e-7 α / ~1e-4 split, C-F-localized, non-growing),
+A's regression risk is not justified and B is not correct, so the fix
+is deferred.  `Exec/CO2_XC2D` + its ray-diff is the regression target
+if a future case ever makes this matter (a correct fix must drive the
+C-F-localized error down to the interior roundoff floor while keeping
+B4 bit-exact).
+
+**Reference for option A (not custom):** Berger & LeVeque, "Adaptive
+Mesh Refinement Using Wave-Propagation Algorithms for Hyperbolic
+Systems," SIAM J. Numer. Anal. 35(6), 2298-2316 (1998) extend
+Berger-Colella AMR to exactly this setting — problems "not in
+conservation form, for which there is still a well-defined wave
+structure but no flux function" (their example is variable-coefficient
+advection, i.e. the α₁ contact).  Their coarse-fine "conservation
+fix-up" is in FLUCTUATION form (re-solve the interface Riemann for
+A±Δq and apply to the coarse cell), not a conservative-flux
+difference.  Option A = adapt that (as in amrclaw): a parallel
+fluctuation register for the α-wave + phase-energy defect alongside
+AMReX's conservative FluxRegister.  Caveat: amrclaw is pure
+wave-propagation end-to-end; CAMR is hybrid (conservative AMReX
+Godunov + WP-α/defect as per-cell sources), so applying B&L here means
+either reformulating PS fully in WP form or running a second
+fluctuation register for just those slots.
 
 ## File inventory (current)
 

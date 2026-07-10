@@ -111,16 +111,23 @@ ps_make_camr_eos_api()
         amrex::Real Y[NUM_SPECIES];
         Y[0] = amrex::Real(1.0);
         for (int n = 1; n < NUM_SPECIES; ++n) Y[n] = amrex::Real(0.0);
-        amrex::Real P;
-        if (phase == 1) {
-            EOS::REY2P_liquid(amrex::Real(rho), amrex::Real(e), Y, P);
-        } else {
-            EOS::REY2P_vapor (amrex::Real(rho), amrex::Real(e), Y, P);
-        }
+        // Single PR state solve -> P, T, s together (see EOS::REY2PTS_phase).
+        // Avoids re-entering the Newton solve once per field; the extra
+        // outputs are free byproducts of the one solve that P already needs,
+        // so callers needing only P (the relaxation Newton loop) pay nothing.
+        amrex::Real P, T, S;
+        const hem::Phase3 ph3 = (phase == 1) ? hem::Phase3::Liquid
+                                             : hem::Phase3::Vapor;
+        EOS::REY2PTS_phase(amrex::Real(rho), amrex::Real(e), Y, ph3, P, T, S);
         ph.rho   = rho;
         ph.e     = e;
         ph.P     = double(P);
-        ph.valid = std::isfinite(P) && P > 0.0;
+        ph.T     = double(T);                 // task #26: flash reads ph.T
+        ph.h     = e + double(P) / rho;        // task #26: flash reads ph.h
+                                               // (CAMR EOS reference, = e+P/ρ)
+        ph.s     = double(S);                  // task #28: MT reads ph.s / ph.g
+        ph.g     = ph.h - double(T) * double(S);   // Gibbs = h - T·s
+        ph.valid = std::isfinite(P) && P > 0.0 && std::isfinite(T) && T > 0.0;
     };
     return api;
 }

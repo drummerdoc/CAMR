@@ -692,6 +692,60 @@ inline State state_from_P_rho(const PRFluid& f, amrex::Real P, amrex::Real rho)
 //         AND e between e_L_sat(T) and e_V_sat(T)), redo as two-phase:
 //         Newton on T such that the lever-rule mixture energy matches.
 // =====================================================================
+
+// ---------------------------------------------------------------------
+//  ps_newton_solve_T  — robust Newton on T solving e_PR(T, v_m)=e_target.
+//
+//  Convergence is measured on TEMPERATURE, which is always positive and
+//  O(1e2-1e3) K — a dependable scale.  Internal energy is a poor scale:
+//  liquid CO2 has e < 0 and it can pass through zero, so a tolerance
+//  relative to |e| is unsafe (that loose e-relative stop let the
+//  accepted T depend on the initial guess / warm-start seed, breaking
+//  box-layout independence — see docs P2).  Two seed-independent
+//  criteria, BOTH required to declare convergence:
+//    (1) step size : |dT| < T_rtol*T + T_atol  (the incremented state is
+//        no longer meaningfully different from the previous one);
+//    (2) residual  : |e_mol - e_mol_target| < e_rtol * (R_gas*T), i.e.
+//        the residual scaled by the ideal-gas thermal energy R_gas*T
+//        (always positive, ~thermal-energy magnitude) — NEVER by |e|.
+//  Requiring both prevents a spuriously small step (where cv is huge,
+//  near the critical point) from being mistaken for convergence.
+//  Capped at max_iter; RETURNS false if the cap is hit (never expected —
+//  a hook for a future non-convergence diagnostic/counter).
+//  Deterministic and initial-guess-independent given (v_m, e_target).
+// ---------------------------------------------------------------------
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+bool ps_newton_solve_T(const PRFluid& f, amrex::Real v_m,
+                       amrex::Real e_mol_target, amrex::Real& T)
+{
+    constexpr int         max_iter = 100;
+    constexpr amrex::Real T_rtol   = amrex::Real(1e-12);
+    constexpr amrex::Real T_atol   = amrex::Real(1e-10);   // K
+    constexpr amrex::Real e_rtol   = amrex::Real(1e-12);
+    for (int it = 0; it < max_iter; ++it) {
+        amrex::Real e_dep, s_dep, cv_dep;
+        departureFunctions(f, T, v_m, e_dep, s_dep, cv_dep);
+        const amrex::Real e_mol        = e_ig_per_mole(f, T) + e_dep;
+        const amrex::Real cv_mol_total = R_gas * cv_ig_over_R(f, T) + cv_dep;
+        const amrex::Real r            = e_mol - e_mol_target;
+
+        amrex::Real dT = -r / cv_mol_total;
+        // Damp to 30% of current T to avoid overshooting the cubic's
+        // valid range near the spinodals.
+        if (amrex::Math::abs(dT) > amrex::Real(0.3)*T)
+            dT = (dT > amrex::Real(0) ? amrex::Real(1) : amrex::Real(-1))
+               * amrex::Real(0.3)*T;
+
+        const bool res_ok  = amrex::Math::abs(r)  < e_rtol * (R_gas * T);
+        const bool step_ok = amrex::Math::abs(dT) < T_rtol * T + T_atol;
+        if (res_ok && step_ok) return true;   // converged (both criteria)
+
+        T += dT;
+        if (T < amrex::Real(1)) T = amrex::Real(1);
+    }
+    return false;   // max_iter reached — should not happen (diagnostic hook)
+}
+
 AMREX_GPU_HOST_DEVICE
 inline State state_from_rho_e(const PRFluid& f, amrex::Real rho, amrex::Real e_target,
                               amrex::Real T_init = amrex::Real(-1.0))
@@ -707,23 +761,10 @@ inline State state_from_rho_e(const PRFluid& f, amrex::Real rho, amrex::Real e_t
     amrex::Real T = (T_init > amrex::Real(0.0) && std::isfinite(T_init))
                      ? T_init
                      : f.pr.Tc * amrex::Real(0.8);
-    for (int it = 0; it < 80; ++it) {
-        amrex::Real e_dep, s_dep, cv_dep;
-        departureFunctions(f, T, v_m, e_dep, s_dep, cv_dep);
-        amrex::Real e_ig  = e_ig_per_mole(f, T);
-        amrex::Real cv_ig = R_gas * cv_ig_over_R(f, T);
-        amrex::Real e_mol = e_ig + e_dep;
-        amrex::Real cv_mol_total = cv_ig + cv_dep;   // de/dT|_v
-        amrex::Real r = e_mol - e_mol_target;
-        if (amrex::Math::abs(r) < amrex::Real(1e-6)*amrex::Math::abs(e_mol_target) + amrex::Real(1e-3))
-            break;
-        amrex::Real dT = -r/cv_mol_total;
-        if (amrex::Math::abs(dT) > amrex::Real(0.3)*T)
-            dT = (dT > amrex::Real(0) ? amrex::Real(1) : amrex::Real(-1))
-               * amrex::Real(0.3)*T;
-        T += dT;
-        if (T < amrex::Real(1)) T = amrex::Real(1);
-    }
+    // Robust, seed-independent Newton on T (temperature-scaled stop;
+    // see ps_newton_solve_T).  Return value (converged) is a future
+    // non-convergence diagnostic hook.
+    ps_newton_solve_T(f, v_m, e_mol_target, T);
 
     // -------- 2) phase check : are we inside the dome at this T? ------
     if (T < f.pr.Tc) {
@@ -822,26 +863,13 @@ inline State state_from_rho_e_phase(const PRFluid& f, amrex::Real rho,
                   : amrex::Real(1.0) * f.pr.Tc;
     }
 
-    for (int it = 0; it < 80; ++it) {
-        amrex::Real e_dep, s_dep, cv_dep;
-        departureFunctions(f, T, v_m, e_dep, s_dep, cv_dep);
-        amrex::Real e_ig  = e_ig_per_mole(f, T);
-        amrex::Real cv_ig = R_gas * cv_ig_over_R(f, T);
-        amrex::Real e_mol = e_ig + e_dep;
-        amrex::Real cv_mol_total = cv_ig + cv_dep;
-        amrex::Real r = e_mol - e_mol_target;
-        if (amrex::Math::abs(r) <
-            amrex::Real(1e-6)*amrex::Math::abs(e_mol_target) + amrex::Real(1e-3))
-            break;
-        amrex::Real dT = -r / cv_mol_total;
-        // Damp to 30% of current T to avoid blowing past the cubic's
-        // valid range near the spinodals.
-        if (amrex::Math::abs(dT) > amrex::Real(0.3)*T)
-            dT = (dT > amrex::Real(0) ? amrex::Real(1) : amrex::Real(-1))
-               * amrex::Real(0.3)*T;
-        T += dT;
-        if (T < amrex::Real(1)) T = amrex::Real(1);
-    }
+    // Robust Newton stop (see docs P2).  A loose residual-only tolerance
+    // let the accepted T depend on the initial guess (warm-start seed),
+    // which broke box-layout independence.  We now converge on a TIGHT
+    // residual, and also stop if the state increment becomes negligible
+    // (Newton stalled at the round-off floor / ill-conditioned point),
+    // capped at max_iter.  All three criteria are seed-independent.
+    ps_newton_solve_T(f, v_m, e_mol_target, T);
 
     // No dome check -- return the requested phase regardless.  Inside the
     // dome this is the metastable extrapolation of the PR cubic; the

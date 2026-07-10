@@ -1,0 +1,90 @@
+# =====================================================================
+#  CO2_XC2D — 2D diagonal cross-critical CO2 Riemann problem
+#
+#  Purpose: make the AMR coarse-fine conservation gap (task #2/#218)
+#  MEASURABLE.  The α-contact lies on the anti-diagonal, so the y-face
+#  WP-α transport and y-face phase-energy defect are active (nonzero),
+#  unlike the 1-D-in-x B4.  Compare single-level (amr.max_level=0)
+#  against 2-level AMR (amr.max_level=1); the un-refluxed WP-α source
+#  and phase-energy defect show up as C-F-boundary conservation drift
+#  in the AMR run only.
+#
+#  Runs:
+#    single-level reference : amr.max_level=0  (override on cmdline)
+#    2-level AMR            : amr.max_level=1  (this file's default)
+# =====================================================================
+
+amrex.fpe_trap_invalid = 0
+
+max_step  = 2000
+stop_time = 2.0e-4
+
+geometry.is_periodic = 0 0 0
+geometry.coord_sys   = 0
+geometry.prob_lo     =   0.0   0.0
+geometry.prob_hi     =   1.0   1.0
+amr.n_cell           =   128   128
+
+# All faces non-reflecting outflow (bcnormal interior-copy default).
+CAMR.lo_bc = Inflow Inflow
+CAMR.hi_bc = Inflow Inflow
+
+CAMR.cfl = 0.25
+CAMR.fixed_dt = 0
+CAMR.allow_negative_energy = 1
+
+CAMR.do_mol   = 0
+CAMR.ppm_type = 1
+
+# PS hydro, HLLC (phase-energy defect only active with HLLC), Godunov
+# reconstruction (cleaner than MUSCL for a conservation audit), and
+# relaxation OFF to isolate the hydro/flux C-F gap from relaxation
+# source terms (which are local and don't interact with reflux).
+CAMR.ps_hydro        = 1
+CAMR.ps_flux         = hllc
+CAMR.ps_recon        = 0
+CAMR.ps_do_relax     = 0
+CAMR.ps_alpha_vanish = 1e-8
+CAMR.ps_bc_use_nscbc = 0
+
+CAMR.v = 1
+amr.v  = 1
+
+# Conserved-quantity sums every step — the C-F gap diagnostic reads
+# these (MASS, RHO*E must be conserved to roundoff by a correct AMR
+# scheme; the PS extended-slot sums expose the gap).
+CAMR.sum_interval = 1
+
+CAMR.redistribution_type = StateRedist
+
+amr.loadbalance_with_workestimates = 0
+amr.max_level       = 1
+amr.ref_ratio       = 2 2 2 2
+amr.regrid_int      = 2 2 2 2
+amr.blocking_factor = 8
+amr.max_grid_size   = 64
+amr.n_error_buf     = 2 2 2 2
+amr.grid_eff        = 0.9
+
+# Refine on the pressure jump across the diagonal contact/wave.
+amr.refinement_indicators = ptag
+amr.ptag.field_name = pressure
+amr.ptag.adjacent_difference_greater = 5.0e5
+amr.ptag.max_level = 1
+
+DistributionMapping.strategy = ROUNDROBIN
+
+amr.checkpoint_files_output = 0
+amr.plot_files_output = 1
+amr.plot_file         = plt
+amr.plot_int          = 1000
+amr.derive_plot_vars  = x_velocity y_velocity pressure vfrac
+
+# --- Problem initial state (SI units) ---------------------------------
+prob.p_L  = 1.0e7    # Pa  (100 bar)  below-diagonal (liquid)
+prob.T_L  = 270.0
+prob.u_L  = 0.0
+prob.p_R  = 5.0e6    # Pa  (50 bar)   above-diagonal (SC vapor)
+prob.T_R  = 350.0
+prob.u_R  = 0.0
+prob.x_diaph = 0.5   # contact on the main anti-diagonal

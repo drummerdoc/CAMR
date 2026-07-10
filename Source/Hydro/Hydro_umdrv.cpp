@@ -54,7 +54,9 @@ hydro_umdrv (bool do_mol,
              const amrex::GpuArray<const Array4<Real>, AMREX_SPACEDIM> flx,
              const amrex::GpuArray<const Array4<const Real>, AMREX_SPACEDIM> a,
              Array4<Real> const& vol,
-             const PassMap* lpmap)
+             const PassMap* lpmap,
+             const bool do_bl_fluct,
+             const amrex::GpuArray<const Array4<Real>, AMREX_SPACEDIM> fcorr)
 {
     BL_PROFILE_VAR("umdrv()", umdrv);
 
@@ -85,7 +87,9 @@ hydro_umdrv (bool do_mol,
                  AMREX_D_DECL(flx[0], flx[1], flx[2]),
                  AMREX_D_DECL(qec_arr[0], qec_arr[1], qec_arr[2]),
                  AMREX_D_DECL(a[0], a[1], a[2]), pdivuarr, vol, dx, dt,
-                 small, small_dens, small_pres, smallu, plm_iorder, lpmap);
+                 small, small_dens, small_pres, smallu, plm_iorder, lpmap,
+                 do_bl_fluct,
+                 AMREX_D_DECL(fcorr[0], fcorr[1], fcorr[2]));
 
     } else
 #endif

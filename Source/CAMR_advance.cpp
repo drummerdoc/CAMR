@@ -2,6 +2,7 @@
 #include "IndexDefines.H"
 #ifdef USE_PS_HYDRO
 #include "PS_relaxation.H"
+#include "PS_sources.H"
 // PS_alpha_transport.H — preserved in-tree but no longer used; the
 // wave-propagation form inside PS_umeth (Phase 4c-β3 second pass)
 // obsoletes the conservative-flux + post-consup cancellation.
@@ -79,6 +80,11 @@ CAMR::CAMR_advance (Real time,
     if (level < finest_level && do_reflux) {
 
         getFluxReg(level + 1).reset();
+#if defined(USE_PS_HYDRO) && !defined(AMREX_USE_EB)
+        if (ps_bl_reflux != 0) {
+            getFluctReg(level + 1).reset();       // task #22 P1 (defect)
+        }
+#endif
 
     }
 
@@ -209,6 +215,11 @@ CAMR::CAMR_advance (Real time,
             ps_apply_relaxation(S_new);
             clean_state(S_new);
         }
+        // Phase 4g: optional two-phase per-cell sources (flash, finite-
+        // rate MT, triple-point).  All dials default OFF → early-return
+        // no-op (bit-exact); each wired source clean_state's its own
+        // output internally.
+        ps_apply_sources(S_new, dt);
     }
 #endif
 

@@ -537,6 +537,130 @@ ps_max_wave_speed_from_state(int idir, const Real U[NVAR]) noexcept
 //      as it should be for a single-phase evolution.
 //    * Pelanti / MT / flash relaxation (Phase 4d, source-term MFs).
 // =====================================================================
+
+// ---------------------------------------------------------------------
+//  CTU helpers (landing phase P1.2–P1.3), device-inline (GPU-safe).
+//
+//  ps_ctu_recon         — reconstruct the conservative L/R edge states at
+//                         face (i,j,k) in direction idir (MUSCL or 1st).
+//  ps_ctu_flux_from_states — HLLC/LLF flux (+ optional phase-energy
+//                         defect) from GIVEN L/R states.  Used from
+//                         stored/transverse-corrected states, so it works
+//                         entirely in state form (ps_*_from_state); this
+//                         is why the CTU path agrees with the split path
+//                         only to floating-point-restructuring level
+//                         (~1e-6), not bit-for-bit.
+// ---------------------------------------------------------------------
+AMREX_GPU_DEVICE
+AMREX_FORCE_INLINE
+void
+ps_ctu_recon(int idir, int i, int j, int k,
+             amrex::Array4<const amrex::Real> const& uin_arr,
+             int use_muscl,
+             amrex::Real UL[NVAR], amrex::Real UR[NVAR]) noexcept
+{
+    using amrex::Real;
+    if (use_muscl == 2) {
+        ps_ppm_reconstruct(i, j, k, idir, uin_arr, UL, UR);
+    } else if (use_muscl != 0) {
+        ps_muscl_reconstruct(i, j, k, idir, uin_arr, UL, UR);
+    } else {
+        const int io = (idir == 0), jo = (idir == 1), ko = (idir == 2);
+        for (int n = 0; n < NVAR; ++n) {
+            UL[n] = ps_finite_or(uin_arr(i-io, j-jo, k-ko, n), Real(0.0));
+            UR[n] = ps_finite_or(uin_arr(i,    j,    k,    n), Real(0.0));
+        }
+    }
+}
+
+AMREX_GPU_DEVICE
+AMREX_FORCE_INLINE
+void
+ps_ctu_flux_from_states(int idir, int i, int j, int k,
+                        const amrex::Real UL[NVAR], const amrex::Real UR[NVAR],
+                        int use_hllc,
+                        amrex::Array4<amrex::Real> const& flx_out,
+                        bool want_defect,
+                        amrex::Array4<amrex::Real> const& wp_out) noexcept
+{
+    using amrex::Real;
+    Real FL[NVAR], FR[NVAR];
+    ps_physical_flux_from_state(idir, UL, FL);
+    ps_physical_flux_from_state(idir, UR, FR);
+    const Real lamL = ps_max_wave_speed_from_state(idir, UL);
+    const Real lamR = ps_max_wave_speed_from_state(idir, UR);
+    bool hllc_ok = false;
+    Real F_hllc[NVAR];
+    if (use_hllc != 0) {
+        hllc_ok = PS_HLLC::hllc_flux(idir, UL, UR, FL, FR, F_hllc);
+    }
+    if (hllc_ok) {
+        for (int n = 0; n < NVAR; ++n) {
+            flx_out(i,j,k, n) = ps_finite_or(F_hllc[n], Real(0.0));
+        }
+    } else {
+        const Real lam_raw = amrex::max(lamL, lamR);
+        const Real lam = std::isfinite(lam_raw) ? lam_raw : Real(0.0);
+        for (int n = 0; n < NVAR; ++n) {
+            const Real f = Real(0.5) * (FL[n] + FR[n])
+                         - Real(0.5) * lam * (UR[n] - UL[n]);
+            flx_out(i,j,k, n) = ps_finite_or(f, Real(0.0));
+        }
+        flx_out(i,j,k, UALPHA1) = Real(0.0);
+    }
+    if (want_defect) {
+        Real d1 = Real(0.0), d2 = Real(0.0);
+        if (hllc_ok) {
+            PS_HLLC::wp_phase_energy_defect(idir, UL, UR, d1, d2);
+        }
+        wp_out(i,j,k, 0) = ps_finite_or(d1, Real(0.0));
+        wp_out(i,j,k, 1) = ps_finite_or(d2, Real(0.0));
+    }
+}
+
+// ---------------------------------------------------------------------
+//  ps_ctu_transverse_correct  (CTU landing phase P1.3)
+//
+//  Correct a normal-direction edge state U in place by the transverse
+//  flux divergence of its OWNING cell (ci,cj,ck) over a half step:
+//      U[n] -= (dt/2/dx_t) * ( fT(cell + e_t) - fT(cell) )   for n conserved
+//  fT is the preliminary flux in the transverse direction tdir.  The
+//  volume fraction UALPHA1 is FROZEN (P1: non-conservative α transverse
+//  coupling is deferred to P2).  transverse_reset: if the corrected
+//  mixture density or either partial mass is non-positive, the edge
+//  state is left UNCHANGED (revert to the normal reconstruction) — the
+//  analogue of CAMR Godunov's transverse_reset_density.  No GDPRES pdV
+//  term is needed (conservative form; the pdV work is already inside the
+//  momentum/energy fluxes).
+// ---------------------------------------------------------------------
+AMREX_GPU_DEVICE
+AMREX_FORCE_INLINE
+void
+ps_ctu_transverse_correct(amrex::Real U[NVAR],
+                          amrex::Array4<const amrex::Real> const& fT,
+                          int ci, int cj, int ck,
+                          amrex::Real cdt, int tdir) noexcept
+{
+    using amrex::Real;
+    const int io = (tdir == 0), jo = (tdir == 1), ko = (tdir == 2);
+    Real Ucorr[NVAR];
+    for (int n = 0; n < NVAR; ++n) {
+        const Real dF = cdt * (fT(ci+io, cj+jo, ck+ko, n) - fT(ci, cj, ck, n));
+        Ucorr[n] = U[n] - dF;
+    }
+    Ucorr[UALPHA1] = U[UALPHA1];   // α frozen through transverse (P1)
+    // Positivity reset (transverse_reset): accept the correction only if
+    // it keeps mixture density and both partial masses positive.
+    // (P2: verified NOT the box-dependence source — disabling it leaves
+    // the multi-grid asymmetry unchanged.)
+    if (std::isfinite(Ucorr[URHO])    && Ucorr[URHO]    > Real(1.0e-30) &&
+        std::isfinite(Ucorr[UM1RHO1]) && Ucorr[UM1RHO1] > Real(0.0)     &&
+        std::isfinite(Ucorr[UM2RHO2]) && Ucorr[UM2RHO2] > Real(0.0))
+    {
+        for (int n = 0; n < NVAR; ++n) U[n] = Ucorr[n];
+    }
+}
+
 void
 PS_umeth(const Box& bx,
          const int* /*bclo*/, const int* /*bchi*/,
@@ -557,13 +681,17 @@ PS_umeth(const Box& bx,
          Array4<Real> const& pdivu,
          Array4<const Real> const& /*vol*/,
          const GpuArray<Real, AMREX_SPACEDIM> dx,
-         const Real /*dt*/,
+         const Real dt,   // used by the CTU transverse predictor (ps_ctu=1)
          const Real /*small*/,
          const Real /*small_dens*/,
          const Real /*small_pres*/,
          const Real /*smallu*/,
          const int /*slope_order*/,
-         const PassMap* /*lpmap*/)
+         const PassMap* /*lpmap*/,
+         const bool do_bl_fluct,
+         AMREX_D_DECL(Array4<Real> const& fcorr1,
+                      Array4<Real> const& fcorr2,
+                      Array4<Real> const& fcorr3))
 {
     BL_PROFILE("PS_umeth()");
 
@@ -572,6 +700,10 @@ PS_umeth(const Box& bx,
     //   CAMR.ps_recon = 1  →  MUSCL slope-limited PLM (minmod) on
     //                         conservative slots with contact-jump
     //                         fallback.  See PS_reconstruction.H.
+    //   CAMR.ps_recon = 2  →  PPM (Colella-Woodward, van Leer) on
+    //                         PRIMITIVE slots, faithful to the standalone
+    //                         ppm_1d_ps_wp.cpp (no contact guard; relies
+    //                         on monotonisation + positivity clip).
     //
     // CAMR::ps_recon is a protected static member (matches ps_hydro,
     // do_mol, etc.) so it can't be read directly from this free
@@ -611,6 +743,7 @@ PS_umeth(const Box& bx,
             pp.query("ps_flux", s);
             int v = 0;
             if      (s == "hllc")  v = 1;
+            else if (s == "wp")    v = 2;   // Berger-LeVeque fluctuation interior (BL-1)
             else if (s == "llf" || s.empty()) v = 0;
             else {
                 amrex::Print() << "  PS_umeth: unknown CAMR.ps_flux='"
@@ -622,6 +755,59 @@ PS_umeth(const Box& bx,
         return cached;
     };
     const int use_hllc = ps_flux_cached();
+
+    // ps_flux=wp (Berger-LeVeque fluctuation interior, mode 2) is scaffolded
+    // (PS_HLLC::fluctuations ported, BL-1a) but the cell-deposit wiring for
+    // the non-conservative slots (α, UE1, UE2) is not landed yet (BL-1b).
+    // Abort with a clear message rather than silently running the split path
+    // — mirrors how ps_ctu=1 was gated during its P1.1 scaffold.
+    // See docs/design/camr_ps_bl_wp_design.md.
+    if (use_hllc == 2) {
+        amrex::Abort("CAMR.ps_flux=wp: BL wave-propagation interior is "
+                     "scaffolded (PS_HLLC::fluctuations available) but the "
+                     "BL-1b cell-deposit wiring is not yet landed. Use "
+                     "ps_flux=hllc or llf until BL-1b is complete.");
+    }
+
+    // Limiter for the high-resolution WP-α₁ transport correction.
+    // CAMR.ps_alpha_limiter = "vanleer" (default, validated) or "minmod".
+    // Cached one-shot like ps_recon / ps_flux (free function can't read the
+    // CAMR:: static member directly).  Returns 1 for minmod, 0 for vanleer.
+    auto ps_alpha_minmod_cached = []() -> int
+    {
+        static int cached = -1;
+        if (cached < 0) {
+            std::string s = "vanleer";
+            amrex::ParmParse pp("CAMR");
+            pp.query("ps_alpha_limiter", s);
+            cached = (s == "minmod") ? 1 : 0;
+        }
+        return cached;
+    };
+    const int use_alpha_minmod = ps_alpha_minmod_cached();
+
+    // CTU (Corner-Transport-Upwind) multidimensional coupling.
+    // CAMR.ps_ctu = 0 (default) → current directionally-uncoupled split
+    //                              (face-by-face Riemann + WP-α kernel).
+    //             = 1           → 3-stage unsplit CTU (preliminary flux →
+    //                              transverse correction → final Riemann).
+    // Cached one-shot like ps_recon / ps_flux.  See
+    // docs/design/camr_ps_ctu_design.md and camr_ps_ctu_P1_plan.md.
+    // NOTE (P1.1): the CTU path itself is not wired yet — it lands
+    // incrementally in P1.2+.  Until then ps_ctu=1 aborts with a clear
+    // message rather than silently running the split path.
+    auto ps_ctu_cached = []() -> int
+    {
+        static int cached = -1;
+        if (cached < 0) {
+            int v = 0;
+            amrex::ParmParse pp("CAMR");
+            pp.query("ps_ctu", v);
+            cached = v;
+        }
+        return cached;
+    };
+    const int use_ctu = ps_ctu_cached();
 
     // Banner (once per rank per run) with recon + flux in play.
     {
@@ -635,10 +821,17 @@ PS_umeth(const Box& bx,
                               : "first-order")
                 << "  (Phase 4c-β"
                 << (use_muscl ? "3" : "2b")
-                << (use_hllc  ? " + 4g" : "") << ")\n";
+                << (use_hllc  ? " + 4g" : "") << ")"
+                << (use_ctu ? ",  CTU=on" : ",  CTU=off") << "\n";
             banner_shown = true;
         }
     }
+
+    // CTU (use_ctu=1) is dispatched at the flux block below: split path
+    // in the `if (use_ctu==0)` branch, CTU 3-stage plumbing in the
+    // `else` branch (P1.2).  P1.2 uses a ZERO transverse correction, so
+    // the CTU final stage reproduces the split result.  3D CTU aborts
+    // inside the branch (2D-only in landing phase P1).
 
     // hydro_umdrv creates pdivu as an uninitialised FArrayBox and
     // relies on the solver body to write into it.  Godunov / MOL do
@@ -656,12 +849,37 @@ PS_umeth(const Box& bx,
 
     // ------ x-direction faces --------------------------------------
     const Box xfbx = amrex::surroundingNodes(bx, 0);
+#if (AMREX_SPACEDIM >= 2)
+    const Box yfbx = amrex::surroundingNodes(bx, 1);   // shared by split + CTU
+#endif
+#if (AMREX_SPACEDIM == 3)
+    const Box zfbx = amrex::surroundingNodes(bx, 2);
+#endif
     // Scratch face-centered FAB for the WP-vs-divergence phase-energy
     // defect (2 components: UE1, UE2).  Populated inside the x-face
     // ParallelFor, consumed by a per-cell kernel just before PS_umeth
     // returns.  See PS_hllc.H::wp_phase_energy_defect + task #207.
     amrex::FArrayBox wp_corr_x_fab(xfbx, 2, amrex::The_Async_Arena());
     auto const& wp_corr_x = wp_corr_x_fab.array();
+#if (AMREX_SPACEDIM >= 2)
+    // Task #4: y-face analogue of the WP phase-energy defect scratch.
+    // Declared at function scope (not inside the #if y-face block) so the
+    // end-of-file per-cell kernel can capture it.
+    amrex::FArrayBox wp_corr_y_fab(amrex::surroundingNodes(bx, 1), 2,
+                                   amrex::The_Async_Arena());
+    auto const& wp_corr_y = wp_corr_y_fab.array();
+#endif
+#if (AMREX_SPACEDIM == 3)
+    // Task #4: z-face analogue.
+    amrex::FArrayBox wp_corr_z_fab(amrex::surroundingNodes(bx, 2), 2,
+                                   amrex::The_Async_Arena());
+    auto const& wp_corr_z = wp_corr_z_fab.array();
+#endif
+
+    // ================= Split path (CAMR.ps_ctu = 0) =================
+    // Directionally-uncoupled: reconstruct + face Riemann per direction,
+    // writing final fluxes directly.  Unchanged from pre-CTU.
+    if (use_ctu == 0) {
     amrex::ParallelFor(xfbx,
     [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
     {
@@ -669,9 +887,12 @@ PS_umeth(const Box& bx,
         Real FL[NVAR], FR[NVAR];
         Real lamL, lamR;
         if (use_muscl != 0) {
-            // MUSCL reconstruction on U (all NVAR slots), contact-jump
-            // fallback + positivity clamps applied inside.
-            ps_muscl_reconstruct(i, j, k, 0, uin_arr, UL_face, UR_face);
+            // MUSCL (ps_recon=1) or PPM (ps_recon=2) reconstruction; both
+            // apply their own positivity sanitisation inside.
+            if (use_muscl == 2)
+                ps_ppm_reconstruct(i, j, k, 0, uin_arr, UL_face, UR_face);
+            else
+                ps_muscl_reconstruct(i, j, k, 0, uin_arr, UL_face, UR_face);
             ps_physical_flux_from_state(0, UL_face, FL);
             ps_physical_flux_from_state(0, UR_face, FR);
             lamL = ps_max_wave_speed_from_state(0, UL_face);
@@ -688,9 +909,18 @@ PS_umeth(const Box& bx,
             lamR = ps_max_wave_speed(i,   j, k, 0, uin_arr, q);
         }
         // Task #187: dispatch to HLLC first if requested; on any
-        // pathology fall back to LLF for that specific face.  Success
-        // path writes F[UALPHA1] = α · S_M (contact-preserving) and the
-        // end-of-file WP-α kernel is skipped globally.
+        // pathology fall back to LLF for that specific face.
+        //
+        // α₁ (UALPHA1): PS_HLLC::hllc_flux ALREADY sets F[UALPHA1]=0 in the
+        // subsonic star region (task #202 — see PS_hllc.H:377), so for the
+        // normal case the α flux is 0 under BOTH HLLC and LLF and α₁ is
+        // advected solely by the end-of-file WP-α cell kernel (which runs
+        // unconditionally, NOT skipped for HLLC).  Only the rare supersonic
+        // HLLC branches emit F[UALPHA1]=α·u_n; that is a latent double-count
+        // with the kernel but is essentially never hit for these cases.
+        // (Historical note: earlier comments here claimed "HLLC provides
+        // α·S_M directly, do NOT zero" and "kernel skipped globally" — both
+        // FALSE since task #202.  See docs/design/camr_ps_alpha_transport_map.md.)
         bool hllc_ok = false;
         Real F_hllc[NVAR];
         if (use_hllc != 0) {
@@ -700,7 +930,6 @@ PS_umeth(const Box& bx,
             for (int n = 0; n < NVAR; ++n) {
                 flx1(i,j,k, n) = ps_finite_or(F_hllc[n], Real(0.0));
             }
-            // HLLC provides α · S_M directly — do NOT zero UALPHA1 here.
         } else {
             const Real lam_raw = amrex::max(lamL, lamR);
             const Real lam = std::isfinite(lam_raw) ? lam_raw : Real(0.0);
@@ -733,7 +962,6 @@ PS_umeth(const Box& bx,
 
 #if (AMREX_SPACEDIM >= 2)
     // ------ y-direction faces --------------------------------------
-    const Box yfbx = amrex::surroundingNodes(bx, 1);
     amrex::ParallelFor(yfbx,
     [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
     {
@@ -741,7 +969,10 @@ PS_umeth(const Box& bx,
         Real FL[NVAR], FR[NVAR];
         Real lamL, lamR;
         if (use_muscl != 0) {
-            ps_muscl_reconstruct(i, j, k, 1, uin_arr, UL_face, UR_face);
+            if (use_muscl == 2)
+                ps_ppm_reconstruct(i, j, k, 1, uin_arr, UL_face, UR_face);
+            else
+                ps_muscl_reconstruct(i, j, k, 1, uin_arr, UL_face, UR_face);
             ps_physical_flux_from_state(1, UL_face, FL);
             ps_physical_flux_from_state(1, UR_face, FR);
             lamL = ps_max_wave_speed_from_state(1, UL_face);
@@ -775,12 +1006,23 @@ PS_umeth(const Box& bx,
             }
             flx2(i,j,k, UALPHA1) = Real(0.0);   // WP form for α_1 — see end-of-file kernel.
         }
+
+        // Task #4: y-face phase-energy WP-vs-Godunov defect (HLLC only;
+        // LLF is locally conservative for phase energy so defect = 0).
+        // Direction-generic wp_phase_energy_defect uses the idir=1 normal.
+        Real defect_UE1 = Real(0.0);
+        Real defect_UE2 = Real(0.0);
+        if (hllc_ok) {
+            PS_HLLC::wp_phase_energy_defect(1, UL_face, UR_face,
+                                              defect_UE1, defect_UE2);
+        }
+        wp_corr_y(i,j,k, 0) = ps_finite_or(defect_UE1, Real(0.0));
+        wp_corr_y(i,j,k, 1) = ps_finite_or(defect_UE2, Real(0.0));
     });
 #endif
 
 #if (AMREX_SPACEDIM == 3)
     // ------ z-direction faces --------------------------------------
-    const Box zfbx = amrex::surroundingNodes(bx, 2);
     amrex::ParallelFor(zfbx,
     [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
     {
@@ -788,7 +1030,10 @@ PS_umeth(const Box& bx,
         Real FL[NVAR], FR[NVAR];
         Real lamL, lamR;
         if (use_muscl != 0) {
-            ps_muscl_reconstruct(i, j, k, 2, uin_arr, UL_face, UR_face);
+            if (use_muscl == 2)
+                ps_ppm_reconstruct(i, j, k, 2, uin_arr, UL_face, UR_face);
+            else
+                ps_muscl_reconstruct(i, j, k, 2, uin_arr, UL_face, UR_face);
             ps_physical_flux_from_state(2, UL_face, FL);
             ps_physical_flux_from_state(2, UR_face, FR);
             lamL = ps_max_wave_speed_from_state(2, UL_face);
@@ -822,8 +1067,88 @@ PS_umeth(const Box& bx,
             }
             flx3(i,j,k, UALPHA1) = Real(0.0);   // WP form for α_1 — see end-of-file kernel.
         }
+
+        // Task #4: z-face phase-energy WP-vs-Godunov defect (HLLC only).
+        Real defect_UE1 = Real(0.0);
+        Real defect_UE2 = Real(0.0);
+        if (hllc_ok) {
+            PS_HLLC::wp_phase_energy_defect(2, UL_face, UR_face,
+                                              defect_UE1, defect_UE2);
+        }
+        wp_corr_z(i,j,k, 0) = ps_finite_or(defect_UE1, Real(0.0));
+        wp_corr_z(i,j,k, 1) = ps_finite_or(defect_UE2, Real(0.0));
     });
 #endif
+    } // ===== end split path (use_ctu == 0) =====
+    else {
+    // ================= CTU path (CAMR.ps_ctu = 1) ==================
+    // Corner-Transport-Upwind, landing phase P1.3.  Four stages:
+    //   S1/S2  reconstruct + preliminary fluxes fx_pre / fy_pre.
+    //   S3     transverse correction of each normal edge state by the
+    //          OTHER direction's preliminary flux over a half step,
+    //          on the CONSERVED slots (α₁ frozen in P1), with a
+    //          positivity reset.
+    //   S4     final Riemann from the corrected states → flx1/flx2
+    //          (+ phase-energy defect).
+    // For transverse-uniform flow all transverse flux differences are 0,
+    // so CTU reduces to the split path (to FP-restructuring level; the
+    // B4 1-D-in-x run is the no-op gate).  The shared WP-α cell kernel +
+    // defect tail below runs unchanged for both paths.
+#if (AMREX_SPACEDIM == 3)
+        amrex::Abort("PS-CTU is 2D-only in landing phase P1; use "
+                     "CAMR.ps_ctu=0 for 3D.");
+#else
+        const Real cdtdx = Real(0.5) * dt / dx[0];
+        const Real cdtdy = Real(0.5) * dt / dx[1];
+
+        // --- S1/S2: preliminary fluxes.  fy_pre needs x grown by 1 (for
+        //     the x-face transverse stencil); fx_pre needs y grown by 1.
+        //     NOTE (P2): enlarging these to grow(bx,2) was tested and does
+        //     NOT fix the multi-grid x<->y asymmetry — the tile-boundary
+        //     issue is a value-inconsistency in the per-grid transverse
+        //     correction at SHARED faces, not box coverage.  Kept minimal. ---
+        const Box fy_pre_box = amrex::surroundingNodes(amrex::grow(bx, 0, 1), 1);
+        const Box fx_pre_box = amrex::surroundingNodes(amrex::grow(bx, 1, 1), 0);
+        amrex::FArrayBox fx_pre_fab(fx_pre_box, NVAR, amrex::The_Async_Arena());
+        amrex::FArrayBox fy_pre_fab(fy_pre_box, NVAR, amrex::The_Async_Arena());
+        auto const& fx_pre = fx_pre_fab.array();
+        auto const& fy_pre = fy_pre_fab.array();
+        amrex::ParallelFor(fx_pre_box, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
+            Real UL[NVAR], UR[NVAR];
+            ps_ctu_recon(0, i, j, k, uin_arr, use_muscl, UL, UR);
+            ps_ctu_flux_from_states(0, i, j, k, UL, UR, use_hllc,
+                                    fx_pre, /*want_defect=*/false, fx_pre);
+        });
+        amrex::ParallelFor(fy_pre_box, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
+            Real UL[NVAR], UR[NVAR];
+            ps_ctu_recon(1, i, j, k, uin_arr, use_muscl, UL, UR);
+            ps_ctu_flux_from_states(1, i, j, k, UL, UR, use_hllc,
+                                    fy_pre, /*want_defect=*/false, fy_pre);
+        });
+
+        // --- S3/S4 x-faces: transverse-y correct, then final Riemann. ---
+        amrex::ParallelFor(xfbx, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
+            Real UL[NVAR], UR[NVAR];
+            ps_ctu_recon(0, i, j, k, uin_arr, use_muscl, UL, UR);
+            // UL owned by cell (i-1,j,k); UR by cell (i,j,k).
+            ps_ctu_transverse_correct(UL, fy_pre, i-1, j, k, cdtdy, /*tdir=*/1);
+            ps_ctu_transverse_correct(UR, fy_pre, i,   j, k, cdtdy, /*tdir=*/1);
+            ps_ctu_flux_from_states(0, i, j, k, UL, UR, use_hllc,
+                                    flx1, /*want_defect=*/true, wp_corr_x);
+        });
+
+        // --- S3/S4 y-faces: transverse-x correct, then final Riemann. ---
+        amrex::ParallelFor(yfbx, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
+            Real UL[NVAR], UR[NVAR];
+            ps_ctu_recon(1, i, j, k, uin_arr, use_muscl, UL, UR);
+            // UL owned by cell (i,j-1,k); UR by cell (i,j,k).
+            ps_ctu_transverse_correct(UL, fx_pre, i, j-1, k, cdtdx, /*tdir=*/0);
+            ps_ctu_transverse_correct(UR, fx_pre, i, j,   k, cdtdx, /*tdir=*/0);
+            ps_ctu_flux_from_states(1, i, j, k, UL, UR, use_hllc,
+                                    flx2, /*want_defect=*/true, wp_corr_y);
+        });
+#endif
+    } // ===== end CTU path (use_ctu == 1) =====
 
     // pdivu is used by hydro_consup for the ∫ P ∇·u dt term.  For our
     // first-order LLF that term is already encoded implicitly in the
@@ -900,6 +1225,7 @@ PS_umeth(const Box& bx,
     //  unused (documentation of the Godunov-era cancellation
     //  approach for reference).
     // ==============================================================
+
     amrex::ParallelFor(bx,
     [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
     {
@@ -924,29 +1250,19 @@ PS_umeth(const Box& bx,
             return m / r;
         };
 
-        // Face-normal velocity + face-adjacent α values at the face
-        // that has cell (fi, fj, fk) = (i + fL_di, ...) on its low
-        // (L) side and (fi + di, ...) on its high (R) side, in
-        // direction d.  Returns (u_face_n, α_L, α_R).
-        auto face_state = [&] (int fLi, int fLj, int fLk, int d)
+        // Face-normal advection speed S_M at the face whose LOW-side cell
+        // is (fLi,fLj,fLk) in direction d.  Uses the reconstructed L/R
+        // states for an accurate contact speed (matches the face flux);
+        // falls back to face-averaged u if the HLLC wave-speed solve
+        // fails.  α itself is taken from CELL CENTRES in the fluctuation
+        // below — the reconstructed face jump is a curvature (2nd
+        // difference), not the gradient, and froze smooth α (task #21).
+        auto face_SM = [&] (int fLi, int fLj, int fLk, int d) -> Real
         {
             const int di = (d == 0) ? 1 : 0;
             const int dj = (d == 1) ? 1 : 0;
             const int dk = (d == 2) ? 1 : 0;
             const int fRi = fLi + di, fRj = fLj + dj, fRk = fLk + dk;
-
-            Real u_face_n = Real(0.0), aL = Real(0.0), aR = Real(0.0);
-            const int MU = (d == 0) ? UMX
-#if (AMREX_SPACEDIM >= 2)
-                         : (d == 1) ? UMY
-#endif
-#if (AMREX_SPACEDIM == 3)
-                         : (d == 2) ? UMZ
-#endif
-                         : UMX;
-
-            // Load face L and R conservative states (with or without
-            // MUSCL reconstruction).
             Real UL_full[NVAR], UR_full[NVAR];
             if (use_muscl != 0) {
                 ps_muscl_reconstruct(fRi, fRj, fRk, d, uin_arr, UL_full, UR_full);
@@ -956,78 +1272,76 @@ PS_umeth(const Box& bx,
                     UR_full[n] = ps_finite_or(uin_arr(fRi, fRj, fRk, n), Real(0.0));
                 }
             }
-            aL = ps_finite_or(UL_full[UALPHA1], Real(1.0));
-            aR = ps_finite_or(UR_full[UALPHA1], Real(1.0));
-
-            // Compute S_M from the same HLLC path used by the face flux
-            // (PS_hllc.H) — this is the CONTACT SPEED, which is the
-            // physically-correct advection speed for α.  Matches the
-            // standalone driver's wave-propagation form where the α wave
-            // rides on the S_M wave.  Using face-averaged u instead
-            // (previous behaviour) misses the contact when both cells
-            // have u=0 but the pressure jump drives u_star ≠ 0 — that
-            // was the root cause of α₁ failing to update on step 1 at
-            // the diaphragm (task #205 CHECKPOINT 3).
             const PS_HLLC::Face fL = PS_HLLC::face_from_state(d, UL_full);
             const PS_HLLC::Face fR = PS_HLLC::face_from_state(d, UR_full);
             const PS_HLLC::WaveSpeeds w = PS_HLLC::wave_speeds(fL, fR);
-            if (w.valid) {
-                u_face_n = w.S_M;
-            } else {
-                // Fall back to face-averaged u if HLLC failed.
-                const Real uLc = u_cell(fLi - i, fLj - j, fLk - k, d);
-                const Real uRc = u_cell(fRi - i, fRj - j, fRk - k, d);
-                u_face_n = Real(0.5) * (uLc + uRc);
-            }
-            (void)MU;   // no longer used
-            return amrex::GpuArray<Real, 3>{u_face_n, aL, aR};
+            if (w.valid) return w.S_M;
+            const Real uLc = u_cell(fLi - i, fLj - j, fLk - k, d);
+            const Real uRc = u_cell(fRi - i, fRj - j, fRk - k, d);
+            return Real(0.5) * (uLc + uRc);
+        };
+
+        // α₁ at cell offset `off` (in cells) along direction d.
+        auto acell = [&] (int off, int d) -> Real
+        {
+            const int di = (d == 0) ? 1 : 0;
+            const int dj = (d == 1) ? 1 : 0;
+            const int dk = (d == 2) ? 1 : 0;
+            return ps_finite_or(
+                uin_arr(i + off*di, j + off*dj, k + off*dk, UALPHA1), Real(1.0));
+        };
+
+        // High-resolution non-conservative α₁ advection (task #38/#39).
+        //   ∂ₜα₁ = −u·∂ₓα₁  discretized as a LeVeque wave-propagation
+        //   fluctuation: 1st-order upwind on the CELL-to-CELL α jump (the
+        //   true gradient — the reconstructed face jump used previously is
+        //   curvature and froze smooth α, task #21), PLUS a van-Leer-
+        //   limited 2nd-order correction flux.  The correction lifts α to
+        //   2nd order in smooth flow so it stays CONSISTENT with the
+        //   2nd-order mass slots α_kρ_k; at a contact the limiter → 0 and
+        //   α and the mass slots reduce to 1st order together (no α-vs-α·ρ
+        //   decoupling — the failure mode of a bare 1st-order cell jump).
+        //   No conservative α flux is formed, so there is no spurious
+        //   α·∂ₓS_M term (that was the task #187 / #202 failure).  The
+        //   van-Leer flux-limited wave equals ps_vanleer(W,W_up).
+        //   See docs/design/camr_ps_alpha_transport_map.md.
+        auto add_dir = [&] (int d, Real dxd, Real& da) noexcept
+        {
+            const Real uL = face_SM(i - (d==0 ? 1:0), j - (d==1 ? 1:0),
+                                    k - (d==2 ? 1:0), d);   // face i-1/2
+            const Real uR = face_SM(i, j, k, d);            // face i+1/2
+            const Real am2 = acell(-2,d), am1 = acell(-1,d), a0 = acell(0,d),
+                       ap1 = acell( 1,d), ap2 = acell( 2,d);
+            const Real dm = a0 - am1, dp = ap1 - a0;
+            const Real dmm = am1 - am2, dpp = ap2 - ap1;
+            // 1st-order upwind fluctuations entering cell i.
+            da -= (amrex::max(uL, Real(0.0)) * dm
+                 + amrex::min(uR, Real(0.0)) * dp) / dxd;
+            // van-Leer-limited 2nd-order correction fluxes at each face.
+            const Real nuL = amrex::min(Real(1.0), std::abs(uL) * dt / dxd);
+            const Real nuR = amrex::min(Real(1.0), std::abs(uR) * dt / dxd);
+            const Real WupL = (uL > Real(0.0)) ? dmm : dp;   // upwind wave
+            const Real WupR = (uR > Real(0.0)) ? dm  : dpp;
+            // Flux-limited wave: van Leer (default) or minmod, selected by
+            // CAMR.ps_alpha_limiter (cached in use_alpha_minmod at the top of
+            // PS_umeth).  For the flux-limiter form the limited wave equals
+            // ps_vanleer(W,Wup) or ps_minmod(W,Wup) respectively.  NOTE:
+            // minmod DIVERGES on B4 (see camr_ps_alpha_transport_map.md);
+            // van Leer is the validated default.
+            const Real limL = use_alpha_minmod ? ps_minmod(dm, WupL) : ps_vanleer(dm, WupL);
+            const Real limR = use_alpha_minmod ? ps_minmod(dp, WupR) : ps_vanleer(dp, WupR);
+            const Real FtL = Real(0.5) * std::abs(uL) * (Real(1.0) - nuL) * limL;
+            const Real FtR = Real(0.5) * std::abs(uR) * (Real(1.0) - nuR) * limR;
+            da -= (FtR - FtL) / dxd;
         };
 
         Real da_dt = Real(0.0);
-
-        // --- x-direction faces of cell (i,j,k) ------------------------
-        {
-            // Left face: between (i-1, j, k) [L] and (i, j, k) [R].
-            const auto s = face_state(i-1, j, k, 0);
-            const Real u = s[0], aL = s[1], aR = s[2];
-            if (u > Real(0.0)) {
-                da_dt -= u * (aR - aL) / dx[0];
-            }
-        }
-        {
-            // Right face: between (i, j, k) [L] and (i+1, j, k) [R].
-            const auto s = face_state(i, j, k, 0);
-            const Real u = s[0], aL = s[1], aR = s[2];
-            if (u < Real(0.0)) {
-                da_dt -= u * (aR - aL) / dx[0];
-            }
-        }
-
+        add_dir(0, dx[0], da_dt);
 #if (AMREX_SPACEDIM >= 2)
-        // --- y-direction faces ----------------------------------------
-        {
-            const auto s = face_state(i, j-1, k, 1);
-            const Real u = s[0], aL = s[1], aR = s[2];
-            if (u > Real(0.0)) da_dt -= u * (aR - aL) / dx[1];
-        }
-        {
-            const auto s = face_state(i, j, k, 1);
-            const Real u = s[0], aL = s[1], aR = s[2];
-            if (u < Real(0.0)) da_dt -= u * (aR - aL) / dx[1];
-        }
+        add_dir(1, dx[1], da_dt);
 #endif
 #if (AMREX_SPACEDIM == 3)
-        // --- z-direction faces ----------------------------------------
-        {
-            const auto s = face_state(i, j, k-1, 2);
-            const Real u = s[0], aL = s[1], aR = s[2];
-            if (u > Real(0.0)) da_dt -= u * (aR - aL) / dx[2];
-        }
-        {
-            const auto s = face_state(i, j, k, 2);
-            const Real u = s[0], aL = s[1], aR = s[2];
-            if (u < Real(0.0)) da_dt -= u * (aR - aL) / dx[2];
-        }
+        add_dir(2, dx[2], da_dt);
 #endif
 
         // Write into dsdt_arr — this slot's contribution from the
@@ -1042,11 +1356,13 @@ PS_umeth(const Box& bx,
         // gives bit-exact reproduction of the standalone's stepRK2
         // stage-1 output on the phase-energy slots.
         //
-        // Only x-face contribution is applied here — for genuinely 2D
-        // problems the y-face WP-vs-divergence defect would need an
-        // analogous scratch and correction, but B4 is effectively 1D
-        // in x, so this is sufficient.  Follow-up when 2D/3D matters:
-        // add wp_corr_y_fab and equivalent per-cell application.
+        // Task #4: the defect is applied per direction from the LOW face
+        // of cell (i,j,k).  The per-cell reduction to -defect(low face)/dx
+        // is independent per direction (the fluxes are directionally
+        // split), so the y- and z-face contributions add analogously to
+        // the x-face one.  B4 is effectively 1D in x (y/z defects are 0
+        // there), so this is a no-op on B4 and preserves its bit-exact
+        // reproduction, while making genuinely 2D/3D problems correct.
         //
         // TODO(AMR, task #218): reconcile with hydro_consup's reflux
         // path so the correction is refluxed correctly at coarse-fine
@@ -1057,9 +1373,55 @@ PS_umeth(const Box& bx,
             dsdt_arr(i, j, k, UE1) += -wp_corr_x(i, j, k, 0) * inv_dx0;
             dsdt_arr(i, j, k, UE2) += -wp_corr_x(i, j, k, 1) * inv_dx0;
         }
+#if (AMREX_SPACEDIM >= 2)
+        {
+            const Real inv_dx1 = Real(1.0) / dx[1];
+            dsdt_arr(i, j, k, UE1) += -wp_corr_y(i, j, k, 0) * inv_dx1;
+            dsdt_arr(i, j, k, UE2) += -wp_corr_y(i, j, k, 1) * inv_dx1;
+        }
+#endif
+#if (AMREX_SPACEDIM == 3)
+        {
+            const Real inv_dx2 = Real(1.0) / dx[2];
+            dsdt_arr(i, j, k, UE1) += -wp_corr_z(i, j, k, 0) * inv_dx2;
+            dsdt_arr(i, j, k, UE2) += -wp_corr_z(i, j, k, 1) * inv_dx2;
+        }
+#endif
     });
 
     }  // end if (use_hllc == 0) — WP-α kernel gate for task #187.
+
+    // Task #22 P2: expose the per-face phase-energy WP-vs-Godunov defect
+    // for the Berger-LeVeque fluctuation register.  wp_corr_{x,y,z} hold
+    // (defect_UE1, defect_UE2) per face; copy them into the caller's
+    // fcorr* face FABs (component 0 = UE1 defect, 1 = UE2 defect) so
+    // construct_hydro_source can CrseAdd/FineAdd them into fluct_reg.
+    // The defect is flux-form (units of an energy flux), so it composes
+    // with the standard flux-register semantics.  Gated: no-op by default.
+    if (do_bl_fluct) {
+        // Deposit the RAW per-face defect; the one-sided register kernels
+        // (CAMRPSFluctReg::CrseAddOneSided/FineAddOneSided) carry the
+        // sign and low-branch/hi-side selection.
+        amrex::ParallelFor(xfbx,
+        [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
+            fcorr1(i,j,k,0) = wp_corr_x(i,j,k,0);
+            fcorr1(i,j,k,1) = wp_corr_x(i,j,k,1);
+        });
+#if (AMREX_SPACEDIM >= 2)
+        amrex::ParallelFor(yfbx,
+        [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
+            fcorr2(i,j,k,0) = wp_corr_y(i,j,k,0);
+            fcorr2(i,j,k,1) = wp_corr_y(i,j,k,1);
+        });
+#endif
+#if (AMREX_SPACEDIM == 3)
+        amrex::ParallelFor(zfbx,
+        [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
+            fcorr3(i,j,k,0) = wp_corr_z(i,j,k,0);
+            fcorr3(i,j,k,1) = wp_corr_z(i,j,k,1);
+        });
+#endif
+    }
 }
 
 #else  // !USE_PS_HYDRO
@@ -1090,7 +1452,11 @@ PS_umeth(const amrex::Box& /*bx*/,
          const amrex::Real /*small_pres*/,
          const amrex::Real /*smallu*/,
          const int /*slope_order*/,
-         const PassMap* /*lpmap*/)
+         const PassMap* /*lpmap*/,
+         const bool /*do_bl_fluct*/,
+         AMREX_D_DECL(amrex::Array4<amrex::Real> const& /*fcorr1*/,
+                      amrex::Array4<amrex::Real> const& /*fcorr2*/,
+                      amrex::Array4<amrex::Real> const& /*fcorr3*/))
 {
     amrex::Abort("PS_umeth called without USE_PS_HYDRO — bug in build system.");
 }
