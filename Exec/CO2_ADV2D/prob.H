@@ -41,10 +41,16 @@ CAMR_initdata( int i, int j, int k,
     constexpr amrex::Real twopi = amrex::Real(6.283185307179586);
 
     // Smooth periodic volume-fraction field (kept safely inside (0,1)).
+    // alpha_pow (default 1) applies a sign-preserving exponent to each sin
+    // factor: pow=3 gives sin³·sin³, a C^∞ but steeper profile.
+    amrex::Real sx = std::sin(twopi * prob_parm.k_x * (x - prob_lo[0]) / Lx);
+    amrex::Real sy = std::sin(twopi * prob_parm.k_y * (y - prob_lo[1]) / Ly);
+    if (prob_parm.alpha_pow != amrex::Real(1.0)) {
+        sx = std::copysign(std::pow(std::abs(sx), prob_parm.alpha_pow), sx);
+        sy = std::copysign(std::pow(std::abs(sy), prob_parm.alpha_pow), sy);
+    }
     amrex::Real alpha_1 = prob_parm.alpha_mean
-        + prob_parm.alpha_amp
-          * std::sin(twopi * prob_parm.k_x * (x - prob_lo[0]) / Lx)
-          * std::sin(twopi * prob_parm.k_y * (y - prob_lo[1]) / Ly);
+        + prob_parm.alpha_amp * sx * sy;
     constexpr amrex::Real afloor = amrex::Real(1.0e-6);
     if (alpha_1 < afloor)                    alpha_1 = afloor;
     if (alpha_1 > amrex::Real(1.0) - afloor) alpha_1 = amrex::Real(1.0) - afloor;

@@ -23,6 +23,7 @@ extern "C" {
         pp.query("alpha_amp",  CAMR::h_prob_parm->alpha_amp);
         pp.query("k_x",        CAMR::h_prob_parm->k_x);
         pp.query("k_y",        CAMR::h_prob_parm->k_y);
+        pp.query("alpha_pow",  CAMR::h_prob_parm->alpha_pow);
 
         CAMR::h_prob_parm->p_amb = CAMR::h_prob_parm->P0;
 

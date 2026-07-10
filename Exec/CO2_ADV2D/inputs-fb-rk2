@@ -1,0 +1,72 @@
+# =====================================================================
+#  CO2_ADV2D — 2-level fixed-box C-F REFLUX conservation probe (task #26)
+#
+#  Periodic smooth diagonal two-phase advection with a STATIC level-1
+#  box in [0.375,0.625]^2.  The smooth alpha/rho profile continuously
+#  advects diagonally through the coarse-fine interface, exercising the
+#  reflux every step.  Periodic BCs => total MASS and RHO*E must be
+#  conserved to round-off IF the FluxRegister reflux (fac_for_reflux=0.5
+#  for do_mol=1) accumulates correctly across the two SSP-RK2 stages.
+# =====================================================================
+
+amrex.fpe_trap_invalid = 0
+
+max_step  = 1000000
+stop_time = 5.0e-4
+
+geometry.is_periodic = 1 1 0
+geometry.coord_sys   = 0
+geometry.prob_lo     =   0.0   0.0
+geometry.prob_hi     =   1.0   1.0
+amr.n_cell           =   32    32
+
+CAMR.lo_bc = Interior Interior
+CAMR.hi_bc = Interior Interior
+
+CAMR.cfl = 0.25
+CAMR.fixed_dt = 0
+CAMR.allow_negative_energy = 1
+
+CAMR.do_mol   = 0
+CAMR.ppm_type = 1
+
+CAMR.ps_hydro    = 1
+CAMR.ps_flux     = wp
+CAMR.ps_wp_order = 2
+CAMR.ps_recon    = 1
+CAMR.ps_do_relax = 0
+CAMR.ps_bl_reflux = 1
+
+CAMR.v = 0
+amr.v  = 0
+CAMR.sum_interval = 20
+CAMR.redistribution_type = StateRedist
+
+# --- 2-level AMR with a STATIC refine box [0.375,0.625]^2 ------------
+amr.max_level       = 1
+amr.ref_ratio       = 2 2 2 2
+amr.regrid_int      = 2 2 2 2
+amr.blocking_factor = 8
+amr.max_grid_size   = 32
+amr.n_error_buf     = 0 0 0 0
+amr.grid_eff        = 0.99
+DistributionMapping.strategy = ROUNDROBIN
+
+amr.refinement_indicators = fbox
+amr.fbox.in_box_lo = 0.375 0.375
+amr.fbox.in_box_hi = 0.625 0.625
+amr.fbox.max_level = 1
+
+amr.checkpoint_files_output = 0
+amr.plot_files_output = 0
+
+# --- Smooth advection initial state (SI units) ------------------------
+prob.P0 = 8.0e6
+prob.T1 = 270.0
+prob.T2 = 330.0
+prob.u0 = 100.0
+prob.v0 = 100.0
+prob.alpha_mean = 0.5
+prob.alpha_amp  = 0.25
+prob.k_x = 1.0
+prob.k_y = 1.0

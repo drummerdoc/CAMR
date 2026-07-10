@@ -41,6 +41,11 @@ struct ProbParmDevice
     amrex::Real alpha_amp  = 0.25;  // amplitude (α ∈ mean ± amp, in (0,1))
     amrex::Real k_x        = 1.0;   // wavenumbers (periods across domain)
     amrex::Real k_y        = 1.0;
+    // Shape exponent applied (sign-preserving) to each sin factor:
+    //   1 (default) → plain sin·sin (smooth, gentle gradients — OOA harness);
+    //   3 → sin³·sin³, a C^∞ but steeper profile that concentrates gradients
+    //       and stresses the coarse-fine correction-flux reflux far more.
+    amrex::Real alpha_pow  = 1.0;
 
     // Unused by this case but referenced by the shared bcnormal signature.
     amrex::Real p_amb = 8.0e6;
