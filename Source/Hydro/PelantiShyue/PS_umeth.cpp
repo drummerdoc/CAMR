@@ -661,6 +661,108 @@ ps_ctu_transverse_correct(amrex::Real U[NVAR],
     }
 }
 
+// ---------------------------------------------------------------------
+//  ps_wp_face  (Berger-LeVeque wave-propagation interior, BL-1b)
+//
+//  Compute the A±ΔQ fluctuation at ONE face (index (i,j,k) in the
+//  direction-`idir` nodal FAB; left cell (iL,jL,kL), right cell
+//  (i,j,k)) from RAW CELL-AVERAGED states, and write:
+//    * CONSERVED slots -> the recovered single-valued interface flux
+//      F* = F(U_Lcell) + A⁻ΔQ  into flx.  With cell-averaged states,
+//      A⁺+A⁻ = ΔF = F(U_R)-F(U_L), so consup's -div(F*) telescopes
+//      EXACTLY to the fluctuation update -(A⁺_{i-1/2}+A⁻_{i+1/2})/dx.
+//    * NON-CONSERVED slots {UALPHA1,UE1,UE2} -> flx = 0 and A⁻/A⁺
+//      stashed into `wpf` (comp 0/1 = A⁻/A⁺ UALPHA1, 2/3 = UE1,
+//      4/5 = UE2) for the per-cell deposit.
+//
+//  Reconstruction is deliberately NOT used: MUSCL/PPM face states
+//  destabilise R-star on cross-critical B4 in the WP form and turn the
+//  α contact jump into curvature (smooth-α freeze).  See
+//  camr_ps_alpha_transport_map.md and ppm_1d_ps_wp.cpp:488.  2nd-order
+//  accuracy is BL-2's limited correction fluxes, not reconstruction.
+//
+//  Invalid face -> locally-conservative LLF flux for the conserved
+//  slots + symmetric ∓½λΔU fluctuation split for the non-conserved
+//  slots (mirrors the standalone's ps_llf_fallback path).
+// ---------------------------------------------------------------------
+AMREX_GPU_DEVICE
+AMREX_FORCE_INLINE
+void
+ps_wp_face(int idir, int i, int j, int k, int iL, int jL, int kL,
+           amrex::Array4<const amrex::Real> const& uin,
+           amrex::Array4<amrex::Real> const& flx,
+           amrex::Array4<amrex::Real> const& wpf,
+           amrex::Array4<amrex::Real> const& wv,   // wave/speed store (BL-2); unused if store_waves=false
+           bool store_waves,
+           amrex::Box vbox) noexcept       // flx/wpf written only here; waves may extend into ghost faces
+{
+    using amrex::Real;
+    const bool in_valid = vbox.contains(amrex::IntVect(AMREX_D_DECL(i,j,k)));
+    Real UL[NVAR], UR[NVAR];
+    for (int n = 0; n < NVAR; ++n) {
+        UL[n] = ps_finite_or(uin(iL, jL, kL, n), Real(0.0));
+        UR[n] = ps_finite_or(uin(i,  j,  k,  n), Real(0.0));
+    }
+    Real FL[NVAR];
+    ps_physical_flux_from_state(idir, UL, FL);
+
+    PS_HLLC::Fluctuations flu;
+    const bool ok = PS_HLLC::fluctuations(idir, UL, UR, flu);
+
+    Real Am[NVAR], Ap[NVAR], flx_loc[NVAR];
+    if (ok) {
+        for (int n = 0; n < NVAR; ++n) {
+            Am[n]      = flu.Am[n];
+            Ap[n]      = flu.Ap[n];
+            flx_loc[n] = FL[n] + Am[n];           // recovered F* = F_L + A⁻
+        }
+    } else {
+        Real FR[NVAR];
+        ps_physical_flux_from_state(idir, UR, FR);
+        const Real lamL    = ps_max_wave_speed_from_state(idir, UL);
+        const Real lamR    = ps_max_wave_speed_from_state(idir, UR);
+        const Real lam_raw = amrex::max(lamL, lamR);
+        const Real lam     = std::isfinite(lam_raw) ? lam_raw : Real(0.0);
+        for (int n = 0; n < NVAR; ++n) {
+            const Real half = Real(0.5) * lam * (UR[n] - UL[n]);
+            Am[n]      = -half;                    // symmetric fluct split
+            Ap[n]      =  half;
+            flx_loc[n] = Real(0.5) * (FL[n] + FR[n]) - half;   // LLF flux
+        }
+    }
+
+    // Conserved slots via consup; non-conserved via the per-cell deposit.
+    // flx/wpf live on the valid face box only; ghost faces (grown box, BL-2)
+    // contribute waves for the correction stencil but must not write flx.
+    if (in_valid) {
+        for (int n = 0; n < NVAR; ++n) flx(i,j,k,n) = ps_finite_or(flx_loc[n], Real(0.0));
+        flx(i,j,k, UTEMP)   = Real(0.0);   // T recomputed at ctoprim
+        flx(i,j,k, UALPHA1) = Real(0.0);
+        flx(i,j,k, UE1)     = Real(0.0);
+        flx(i,j,k, UE2)     = Real(0.0);
+
+        wpf(i,j,k, 0) = ps_finite_or(Am[UALPHA1], Real(0.0));
+        wpf(i,j,k, 1) = ps_finite_or(Ap[UALPHA1], Real(0.0));
+        wpf(i,j,k, 2) = ps_finite_or(Am[UE1],     Real(0.0));
+        wpf(i,j,k, 3) = ps_finite_or(Ap[UE1],     Real(0.0));
+        wpf(i,j,k, 4) = ps_finite_or(Am[UE2],     Real(0.0));
+        wpf(i,j,k, 5) = ps_finite_or(Ap[UE2],     Real(0.0));
+    }
+
+    // BL-2: stash the raw waves W[l][n] and speeds s[l] for the limited
+    // correction-flux pass.  On an invalid (LLF-fallback) face the waves
+    // are set to zero → the correction skips it (1st-order there), exactly
+    // like the standalone's ps_llf_fallback path.
+    if (store_waves) {
+        for (int l = 0; l < 3; ++l) {
+            const Real sl = ok ? flu.s[l] : Real(0.0);
+            wv(i,j,k, 3*NVAR + l) = sl;
+            for (int n = 0; n < NVAR; ++n)
+                wv(i,j,k, l*NVAR + n) = ok ? ps_finite_or(flu.W[l][n], Real(0.0)) : Real(0.0);
+        }
+    }
+}
+
 void
 PS_umeth(const Box& bx,
          const int* /*bclo*/, const int* /*bchi*/,
@@ -756,18 +858,12 @@ PS_umeth(const Box& bx,
     };
     const int use_hllc = ps_flux_cached();
 
-    // ps_flux=wp (Berger-LeVeque fluctuation interior, mode 2) is scaffolded
-    // (PS_HLLC::fluctuations ported, BL-1a) but the cell-deposit wiring for
-    // the non-conservative slots (α, UE1, UE2) is not landed yet (BL-1b).
-    // Abort with a clear message rather than silently running the split path
-    // — mirrors how ps_ctu=1 was gated during its P1.1 scaffold.
-    // See docs/design/camr_ps_bl_wp_design.md.
-    if (use_hllc == 2) {
-        amrex::Abort("CAMR.ps_flux=wp: BL wave-propagation interior is "
-                     "scaffolded (PS_HLLC::fluctuations available) but the "
-                     "BL-1b cell-deposit wiring is not yet landed. Use "
-                     "ps_flux=hllc or llf until BL-1b is complete.");
-    }
+    // ps_flux=wp (Berger-LeVeque fluctuation interior, mode 2) is handled by
+    // the self-contained block after the scratch-FAB declarations below: it
+    // fills flx (recovered F* on the conserved slots) + a per-cell deposit
+    // for the non-conservative slots {α, UE1, UE2}, then returns — the
+    // hllc/llf split & CTU paths and the end-of-file WP-α + defect tail are
+    // skipped in wp mode.  BL-1b; see docs/design/camr_ps_bl_wp_design.md §9.
 
     // Limiter for the high-resolution WP-α₁ transport correction.
     // CAMR.ps_alpha_limiter = "vanleer" (default, validated) or "minmod".
@@ -785,6 +881,48 @@ PS_umeth(const Box& bx,
         return cached;
     };
     const int use_alpha_minmod = ps_alpha_minmod_cached();
+
+    // BL-2: wave-propagation order for ps_flux=wp.
+    //   CAMR.ps_wp_order = 1 (default) → 1st-order fluctuations (BL-1).
+    //                    = 2           → + LeVeque van-Leer-limited
+    //                                     correction fluxes (2nd order in
+    //                                     smooth flow; limiter → 1st order
+    //                                     at discontinuities).  Applied to
+    //                                     ALL three waves incl. the contact
+    //                                     (α); the limiter keeps B4's sharp
+    //                                     contact 1st-order-safe while
+    //                                     lifting smooth α (ADV2D) to 2nd
+    //                                     order — see camr_ps_alpha_transport_map.md.
+    auto ps_wp_order_cached = []() -> int
+    {
+        static int cached = -1;
+        if (cached < 0) {
+            int v = 1;
+            amrex::ParmParse pp("CAMR");
+            pp.query("ps_wp_order", v);
+            cached = (v == 2) ? 2 : 1;
+        }
+        return cached;
+    };
+    const int wp_order = ps_wp_order_cached();
+
+    // BL-2 diagnostic: CAMR.ps_wp_limiter = "vanleer" (default, TVD) or
+    // "none" (UNLIMITED φ=1 → pure Lax-Wendroff correction).  Unlimited is
+    // NOT monotone (oscillates at discontinuities like B4) and is intended
+    // only for smooth order-of-accuracy verification (ADV2D), where the van
+    // Leer limiter clips smooth extrema and masks the design 2nd-order rate.
+    auto ps_wp_unlimited_cached = []() -> int
+    {
+        static int cached = -1;
+        if (cached < 0) {
+            std::string s = "vanleer";
+            amrex::ParmParse pp("CAMR");
+            pp.query("ps_wp_limiter", s);
+            cached = (s == "none" || s == "unlimited") ? 1 : 0;
+        }
+        return cached;
+    };
+    const int wp_unlimited = ps_wp_unlimited_cached();
 
     // CTU (Corner-Transport-Upwind) multidimensional coupling.
     // CAMR.ps_ctu = 0 (default) → current directionally-uncoupled split
@@ -815,10 +953,13 @@ PS_umeth(const Box& bx,
         if (!banner_shown) {
             amrex::Print()
                 << "  PS_umeth: "
-                << (use_hllc ? "Pelanti-HLLC" : "LLF Rusanov")
+                << (use_hllc == 2 ? "Berger-LeVeque WP (fluctuation)"
+                                  : use_hllc == 1 ? "Pelanti-HLLC" : "LLF Rusanov")
                 << " flux, "
-                << (use_muscl ? "MUSCL (minmod PLM) 2nd-order in space"
-                              : "first-order")
+                << (use_hllc == 2
+                        ? "1st-order fluctuations (ps_recon ignored; BL-2 adds 2nd order)"
+                        : use_muscl ? "MUSCL (minmod PLM) 2nd-order in space"
+                                    : "first-order")
                 << "  (Phase 4c-β"
                 << (use_muscl ? "3" : "2b")
                 << (use_hllc  ? " + 4g" : "") << ")"
@@ -875,6 +1016,207 @@ PS_umeth(const Box& bx,
                                    amrex::The_Async_Arena());
     auto const& wp_corr_z = wp_corr_z_fab.array();
 #endif
+
+    // ========== Berger-LeVeque wave-propagation interior (BL-1b) =======
+    //  CAMR.ps_flux=wp (use_hllc==2).  Self-contained A±ΔQ fluctuation
+    //  step ported from the standalone ppm_1d_ps_wp.cpp (task #40).  Fills
+    //  flx (recovered F* on conserved slots) and a per-cell deposit for the
+    //  non-conservative slots {UALPHA1, UE1, UE2}, then RETURNS: the
+    //  hllc/llf split & CTU paths and the end-of-file WP-α + defect tail
+    //  below are all skipped in wp mode.  Independent of CAMR.ps_recon (see
+    //  ps_wp_face for why reconstruction is not used).  2nd-order accuracy
+    //  is BL-2's limited correction fluxes.
+    if (use_hllc == 2) {
+        const bool o2 = (wp_order == 2);            // BL-2 correction fluxes
+        const bool unlim = (wp_unlimited != 0);     // bypass van Leer (diag)
+        const int  wc = o2 ? (3*NVAR + 3) : 1;      // wave/speed store width
+        const int  fc = o2 ? 3 : 1;                 // Ftilde store {α,UE1,UE2}
+        const Real dt_l = dt;
+
+        // Per-face store of the non-conservative fluctuations A⁻/A⁺:
+        //   comp 0/1 = UALPHA1, 2/3 = UE1, 4/5 = UE2.  The wave store (BL-2)
+        //   is GROWN by 1 in the face-normal direction so the correction
+        //   stencil has a valid upwind neighbour even at box seams (the
+        //   ghost faces are computed from uin_arr's ghost cells — this is
+        //   what makes BL-2 box-decomposition-independent).
+        const amrex::Box wxbx = o2 ? amrex::grow(xfbx, 0, 1) : xfbx;
+        amrex::FArrayBox wp_fluct_x_fab(xfbx, 6, amrex::The_Async_Arena());
+        amrex::FArrayBox wp_wave_x_fab (wxbx, wc, amrex::The_Async_Arena());
+        amrex::FArrayBox wp_ft_x_fab   (xfbx, fc, amrex::The_Async_Arena());
+        auto const& wp_fluct_x = wp_fluct_x_fab.array();
+        auto const& wp_wave_x  = wp_wave_x_fab.array();
+        auto const& wp_ft_x    = wp_ft_x_fab.array();
+#if (AMREX_SPACEDIM >= 2)
+        const amrex::Box wybx = o2 ? amrex::grow(yfbx, 1, 1) : yfbx;
+        amrex::FArrayBox wp_fluct_y_fab(yfbx, 6, amrex::The_Async_Arena());
+        amrex::FArrayBox wp_wave_y_fab (wybx, wc, amrex::The_Async_Arena());
+        amrex::FArrayBox wp_ft_y_fab   (yfbx, fc, amrex::The_Async_Arena());
+        auto const& wp_fluct_y = wp_fluct_y_fab.array();
+        auto const& wp_wave_y  = wp_wave_y_fab.array();
+        auto const& wp_ft_y    = wp_ft_y_fab.array();
+#endif
+#if (AMREX_SPACEDIM == 3)
+        const amrex::Box wzbx = o2 ? amrex::grow(zfbx, 2, 1) : zfbx;
+        amrex::FArrayBox wp_fluct_z_fab(zfbx, 6, amrex::The_Async_Arena());
+        amrex::FArrayBox wp_wave_z_fab (wzbx, wc, amrex::The_Async_Arena());
+        amrex::FArrayBox wp_ft_z_fab   (zfbx, fc, amrex::The_Async_Arena());
+        auto const& wp_fluct_z = wp_fluct_z_fab.array();
+        auto const& wp_wave_z  = wp_wave_z_fab.array();
+        auto const& wp_ft_z    = wp_ft_z_fab.array();
+#endif
+
+        // ---- Pass 1: 1st-order fluctuations → F* (conserved flx),
+        //      A⁻/A⁺ (non-conserved store), and (BL-2) raw waves/speeds.
+        //      Loops over the grown wave box (o2) but writes flx/wpf only on
+        //      the valid face box (guarded inside ps_wp_face). ----
+        amrex::ParallelFor(wxbx,
+        [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
+            ps_wp_face(0, i, j, k, i-1, j, k, uin_arr, flx1, wp_fluct_x, wp_wave_x, o2, xfbx);
+        });
+#if (AMREX_SPACEDIM >= 2)
+        amrex::ParallelFor(wybx,
+        [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
+            ps_wp_face(1, i, j, k, i, j-1, k, uin_arr, flx2, wp_fluct_y, wp_wave_y, o2, yfbx);
+        });
+#endif
+#if (AMREX_SPACEDIM == 3)
+        amrex::ParallelFor(wzbx,
+        [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
+            ps_wp_face(2, i, j, k, i, j, k-1, uin_arr, flx3, wp_fluct_z, wp_wave_z, o2, zfbx);
+        });
+#endif
+
+        // ---- Pass 2 (BL-2): LeVeque van-Leer-limited correction fluxes. ----
+        //  F̃_f = Σ_l ½|s_l|(1−|s_l|Δt/Δx) φ(θ_l) W_l   (per-component van
+        //  Leer, robust for the non-orthogonal 6-eq waves).  Added to the
+        //  conserved-slot flux (telescopes through consup) and stored for
+        //  the {α,UE1,UE2} deposit.  Upwind neighbour taken per wave sign;
+        //  at a face with no in-box upwind neighbour the correction is
+        //  dropped (1st-order at the boundary — matches the standalone).
+        if (o2) {
+            auto correct = [=] AMREX_GPU_DEVICE
+                (int idir, int i, int j, int k, const amrex::Box fbox,
+                 amrex::Array4<amrex::Real> const& flx,
+                 amrex::Array4<amrex::Real> const& wv,
+                 amrex::Array4<amrex::Real> const& ft, Real dxd) noexcept
+            {
+                const Real dtdx = dt_l / dxd;
+                Real Ft[NVAR];
+                for (int n = 0; n < NVAR; ++n) Ft[n] = Real(0.0);
+                for (int l = 0; l < 3; ++l) {
+                    const Real sl = wv(i,j,k, 3*NVAR + l);
+                    if (std::abs(sl) < Real(1.0e-30)) continue;
+                    const int ni = i - ((idir==0) ? ((sl>Real(0.0))?1:-1) : 0);
+                    const int nj = j - ((idir==1) ? ((sl>Real(0.0))?1:-1) : 0);
+                    const int nk = k - ((idir==2) ? ((sl>Real(0.0))?1:-1) : 0);
+                    if (!fbox.contains(amrex::IntVect(AMREX_D_DECL(ni,nj,nk)))) continue;
+                    const Real asl   = std::abs(sl);
+                    const Real coef0 = Real(0.5) * asl * (Real(1.0) - asl * dtdx);
+                    for (int n = 0; n < NVAR; ++n) {
+                        const Real Wf  = wv(i, j, k,  l*NVAR + n);
+                        const Real Wup = wv(ni,nj,nk, l*NVAR + n);
+                        Ft[n] += coef0 * (unlim ? Wf : ps_vanleer(Wf, Wup));
+                    }
+                }
+                // Conserved slots: add F̃ to the recovered flux.
+                for (int n = 0; n < NVAR; ++n) {
+                    if (n==UTEMP || n==UALPHA1 || n==UE1 || n==UE2) continue;
+                    flx(i,j,k,n) = ps_finite_or(flx(i,j,k,n) + Ft[n], Real(0.0));
+                }
+                // Non-conserved slots: stash F̃ for the deposit.
+                ft(i,j,k,0) = ps_finite_or(Ft[UALPHA1], Real(0.0));
+                ft(i,j,k,1) = ps_finite_or(Ft[UE1],     Real(0.0));
+                ft(i,j,k,2) = ps_finite_or(Ft[UE2],     Real(0.0));
+            };
+            amrex::ParallelFor(xfbx, [=] AMREX_GPU_DEVICE (int i,int j,int k) noexcept {
+                correct(0, i,j,k, wxbx, flx1, wp_wave_x, wp_ft_x, dx[0]); });
+#if (AMREX_SPACEDIM >= 2)
+            amrex::ParallelFor(yfbx, [=] AMREX_GPU_DEVICE (int i,int j,int k) noexcept {
+                correct(1, i,j,k, wybx, flx2, wp_wave_y, wp_ft_y, dx[1]); });
+#endif
+#if (AMREX_SPACEDIM == 3)
+            amrex::ParallelFor(zfbx, [=] AMREX_GPU_DEVICE (int i,int j,int k) noexcept {
+                correct(2, i,j,k, wzbx, flx3, wp_wave_z, wp_ft_z, dx[2]); });
+#endif
+        }
+
+        // ---- Pass 3: per-cell deposit of the non-conservative fluctuations.
+        //  dsdt(n) = -(A⁺_lowface + A⁻_highface)/dx  [ - (F̃_high - F̃_low)/dx
+        //  if BL-2 ]  summed over directions, for n ∈ {UALPHA1, UE1, UE2}.
+        //  Low face of cell i = face index i (right cell i → A⁺); high face =
+        //  index i+1 (left cell i → A⁻).  Conserved slots go through consup's
+        //  -div(flx); flx is 0 on these three slots so consup adds nothing.
+        amrex::ParallelFor(bx,
+        [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
+            Real da = Real(0.0), de1 = Real(0.0), de2 = Real(0.0);
+            {
+                const Real inv = Real(1.0) / dx[0];
+                da  -= (wp_fluct_x(i,j,k,1) + wp_fluct_x(i+1,j,k,0)) * inv;
+                de1 -= (wp_fluct_x(i,j,k,3) + wp_fluct_x(i+1,j,k,2)) * inv;
+                de2 -= (wp_fluct_x(i,j,k,5) + wp_fluct_x(i+1,j,k,4)) * inv;
+                if (o2) {
+                    da  -= (wp_ft_x(i+1,j,k,0) - wp_ft_x(i,j,k,0)) * inv;
+                    de1 -= (wp_ft_x(i+1,j,k,1) - wp_ft_x(i,j,k,1)) * inv;
+                    de2 -= (wp_ft_x(i+1,j,k,2) - wp_ft_x(i,j,k,2)) * inv;
+                }
+            }
+#if (AMREX_SPACEDIM >= 2)
+            {
+                const Real inv = Real(1.0) / dx[1];
+                da  -= (wp_fluct_y(i,j,k,1) + wp_fluct_y(i,j+1,k,0)) * inv;
+                de1 -= (wp_fluct_y(i,j,k,3) + wp_fluct_y(i,j+1,k,2)) * inv;
+                de2 -= (wp_fluct_y(i,j,k,5) + wp_fluct_y(i,j+1,k,4)) * inv;
+                if (o2) {
+                    da  -= (wp_ft_y(i,j+1,k,0) - wp_ft_y(i,j,k,0)) * inv;
+                    de1 -= (wp_ft_y(i,j+1,k,1) - wp_ft_y(i,j,k,1)) * inv;
+                    de2 -= (wp_ft_y(i,j+1,k,2) - wp_ft_y(i,j,k,2)) * inv;
+                }
+            }
+#endif
+#if (AMREX_SPACEDIM == 3)
+            {
+                const Real inv = Real(1.0) / dx[2];
+                da  -= (wp_fluct_z(i,j,k,1) + wp_fluct_z(i,j,k+1,0)) * inv;
+                de1 -= (wp_fluct_z(i,j,k,3) + wp_fluct_z(i,j,k+1,2)) * inv;
+                de2 -= (wp_fluct_z(i,j,k,5) + wp_fluct_z(i,j,k+1,4)) * inv;
+                if (o2) {
+                    da  -= (wp_ft_z(i,j,k+1,0) - wp_ft_z(i,j,k,0)) * inv;
+                    de1 -= (wp_ft_z(i,j,k+1,1) - wp_ft_z(i,j,k,1)) * inv;
+                    de2 -= (wp_ft_z(i,j,k+1,2) - wp_ft_z(i,j,k,2)) * inv;
+                }
+            }
+#endif
+            dsdt_arr(i,j,k, UALPHA1) = ps_finite_or(da,  Real(0.0));
+            dsdt_arr(i,j,k, UE1)     = ps_finite_or(de1, Real(0.0));
+            dsdt_arr(i,j,k, UE2)     = ps_finite_or(de2, Real(0.0));
+        });
+
+        // ---- Coarse-fine (AMR) treatment for wp mode (task #5) ----
+        //  * CONSERVED slots (URHO, momenta, UEDEN, UEINT, UM1RHO1, UM2RHO2,
+        //    species) reflux through the standard AMReX FluxRegister via flx
+        //    (recovered F* + the flux-form F̃ correction — B&L 1998 §4a notes
+        //    the 2nd-order correction is flux-differencing form even for
+        //    non-conservative systems, so it refluxes conservatively).  This
+        //    is automatic and unchanged from the hllc path.
+        //  * α (UALPHA1) is C-F-corrected by the capacity-form co-move in
+        //    CAMR::reflux() (CAMR.ps_bl_reflux>1): α is moved with its
+        //    already-refluxed mass α₁ρ₁, which preserves ρ₁/P₁ (no §3f
+        //    artifact) and is independent of the flux mode — so it works for
+        //    wp with no wp-specific data.
+        //  * The phase-energy DEFECT register (CAMRPSFluctReg, ps_bl_reflux=1)
+        //    has NO wp analogue: wp embeds the WP-vs-Godunov defect INSIDE the
+        //    fluctuations rather than as the one-sided `wp_corr` source that
+        //    register was built for.  So wp leaves `fcorr` at its zero init
+        //    (the defect Reflux is then a harmless no-op).  The residual
+        //    1st-order UE1/UE2 phase-split C-F fix-up (a two-sided A±ΔQ
+        //    register) is deferred — low-payoff per camr_ps_bl_reflux_design.md
+        //    §3e (C-F fluctuation gaps are ~1e-4, resolution-dominated).
+        //  wp + AMR is validated at ps_bl_reflux=0 (conserved reflux) and =2
+        //  (adds the capacity-form α co-move): stable, conservative, no C-F
+        //  pressure/velocity artifact (inputs-cf-contact to t_final).
+        amrex::ignore_unused(do_bl_fluct);
+        return;
+    } // ===== end BL wave-propagation interior (use_hllc==2) =====
 
     // ================= Split path (CAMR.ps_ctu = 0) =================
     // Directionally-uncoupled: reconstruct + face Riemann per direction,
