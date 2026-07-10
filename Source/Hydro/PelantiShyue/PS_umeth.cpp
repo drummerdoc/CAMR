@@ -766,7 +766,7 @@ ps_wp_face(int idir, int i, int j, int k, int iL, int jL, int kL,
 void
 PS_umeth(const Box& bx,
          const int* /*bclo*/, const int* /*bchi*/,
-         const int* /*domlo*/, const int* /*domhi*/,
+         const int* domlo, const int* domhi,   // used by BL-3a transverse guard
          Array4<const Real> const& uin_arr,
          Array4<const Real> const& q,
          Array4<const Real> const& /*qa*/,
@@ -924,6 +924,36 @@ PS_umeth(const Box& bx,
     };
     const int wp_unlimited = ps_wp_unlimited_cached();
 
+    // BL-3a: contact-only transverse fluctuation coupling (2D).
+    //   CAMR.ps_wp_transverse = 0 (default) → directionally split (BL-1/2).
+    //                         = 1           → add the LeVeque transverse
+    //                                          correction: each normal
+    //                                          fluctuation A±ΔQ is advected
+    //                                          at the TRANSVERSE material
+    //                                          (contact) velocity and folded
+    //                                          into the transverse flux
+    //                                          (conserved slots) / deposit
+    //                                          ({α,UE1,UE2}).  ∝ v_t ⇒ exact
+    //                                          no-op for 1-D-aligned flow
+    //                                          (v_t=0, e.g. B4).  2D only.
+    auto ps_wp_transverse_cached = []() -> int
+    {
+        static int cached = -1;
+        if (cached < 0) {
+            int v = 0;
+            amrex::ParmParse pp("CAMR");
+            pp.query("ps_wp_transverse", v);
+            cached = (v != 0) ? 1 : 0;
+        }
+        return cached;
+    };
+#if (AMREX_SPACEDIM == 2)
+    const int wp_transverse = ps_wp_transverse_cached();
+#else
+    const int wp_transverse = 0;   // BL-3a is 2D-only; 3D is BL-4
+    amrex::ignore_unused(ps_wp_transverse_cached);
+#endif
+
     // CTU (Corner-Transport-Upwind) multidimensional coupling.
     // CAMR.ps_ctu = 0 (default) → current directionally-uncoupled split
     //                              (face-by-face Riemann + WP-α kernel).
@@ -1028,18 +1058,25 @@ PS_umeth(const Box& bx,
     //  is BL-2's limited correction fluxes.
     if (use_hllc == 2) {
         const bool o2 = (wp_order == 2);            // BL-2 correction fluxes
+        const bool tv = (wp_transverse != 0);       // BL-3a transverse (2D)
         const bool unlim = (wp_unlimited != 0);     // bypass van Leer (diag)
-        const int  wc = o2 ? (3*NVAR + 3) : 1;      // wave/speed store width
+        const bool store_w = o2 || tv;              // need the raw waves?
+        const int  wc = store_w ? (3*NVAR + 3) : 1; // wave/speed store width
         const int  fc = o2 ? 3 : 1;                 // Ftilde store {α,UE1,UE2}
         const Real dt_l = dt;
 
         // Per-face store of the non-conservative fluctuations A⁻/A⁺:
-        //   comp 0/1 = UALPHA1, 2/3 = UE1, 4/5 = UE2.  The wave store (BL-2)
-        //   is GROWN by 1 in the face-normal direction so the correction
-        //   stencil has a valid upwind neighbour even at box seams (the
-        //   ghost faces are computed from uin_arr's ghost cells — this is
-        //   what makes BL-2 box-decomposition-independent).
-        const amrex::Box wxbx = o2 ? amrex::grow(xfbx, 0, 1) : xfbx;
+        //   comp 0/1 = UALPHA1, 2/3 = UE1, 4/5 = UE2.  The wave store is
+        //   GROWN by 1: in the face-normal direction for the BL-2 upwind
+        //   stencil (box-seam safety), and ISOTROPICALLY (all dirs) when the
+        //   BL-3a transverse gather is on (it reads the perpendicular
+        //   neighbour faces).  Ghost faces come from uin_arr's ghost cells.
+        auto wbox = [&](const amrex::Box& fb, int nrm) {
+            if (tv)  return amrex::grow(fb, 1);        // all dirs (transverse gather)
+            if (o2)  return amrex::grow(fb, nrm, 1);   // normal dir (BL-2 upwind)
+            return fb;
+        };
+        const amrex::Box wxbx = wbox(xfbx, 0);
         amrex::FArrayBox wp_fluct_x_fab(xfbx, 6, amrex::The_Async_Arena());
         amrex::FArrayBox wp_wave_x_fab (wxbx, wc, amrex::The_Async_Arena());
         amrex::FArrayBox wp_ft_x_fab   (xfbx, fc, amrex::The_Async_Arena());
@@ -1047,7 +1084,7 @@ PS_umeth(const Box& bx,
         auto const& wp_wave_x  = wp_wave_x_fab.array();
         auto const& wp_ft_x    = wp_ft_x_fab.array();
 #if (AMREX_SPACEDIM >= 2)
-        const amrex::Box wybx = o2 ? amrex::grow(yfbx, 1, 1) : yfbx;
+        const amrex::Box wybx = wbox(yfbx, 1);
         amrex::FArrayBox wp_fluct_y_fab(yfbx, 6, amrex::The_Async_Arena());
         amrex::FArrayBox wp_wave_y_fab (wybx, wc, amrex::The_Async_Arena());
         amrex::FArrayBox wp_ft_y_fab   (yfbx, fc, amrex::The_Async_Arena());
@@ -1056,7 +1093,7 @@ PS_umeth(const Box& bx,
         auto const& wp_ft_y    = wp_ft_y_fab.array();
 #endif
 #if (AMREX_SPACEDIM == 3)
-        const amrex::Box wzbx = o2 ? amrex::grow(zfbx, 2, 1) : zfbx;
+        const amrex::Box wzbx = wbox(zfbx, 2);
         amrex::FArrayBox wp_fluct_z_fab(zfbx, 6, amrex::The_Async_Arena());
         amrex::FArrayBox wp_wave_z_fab (wzbx, wc, amrex::The_Async_Arena());
         amrex::FArrayBox wp_ft_z_fab   (zfbx, fc, amrex::The_Async_Arena());
@@ -1066,23 +1103,23 @@ PS_umeth(const Box& bx,
 #endif
 
         // ---- Pass 1: 1st-order fluctuations → F* (conserved flx),
-        //      A⁻/A⁺ (non-conserved store), and (BL-2) raw waves/speeds.
-        //      Loops over the grown wave box (o2) but writes flx/wpf only on
+        //      A⁻/A⁺ (non-conserved store), and (BL-2/BL-3a) raw waves/speeds.
+        //      Loops over the grown wave box but writes flx/wpf only on
         //      the valid face box (guarded inside ps_wp_face). ----
         amrex::ParallelFor(wxbx,
         [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
-            ps_wp_face(0, i, j, k, i-1, j, k, uin_arr, flx1, wp_fluct_x, wp_wave_x, o2, xfbx);
+            ps_wp_face(0, i, j, k, i-1, j, k, uin_arr, flx1, wp_fluct_x, wp_wave_x, store_w, xfbx);
         });
 #if (AMREX_SPACEDIM >= 2)
         amrex::ParallelFor(wybx,
         [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
-            ps_wp_face(1, i, j, k, i, j-1, k, uin_arr, flx2, wp_fluct_y, wp_wave_y, o2, yfbx);
+            ps_wp_face(1, i, j, k, i, j-1, k, uin_arr, flx2, wp_fluct_y, wp_wave_y, store_w, yfbx);
         });
 #endif
 #if (AMREX_SPACEDIM == 3)
         amrex::ParallelFor(wzbx,
         [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
-            ps_wp_face(2, i, j, k, i, j, k-1, uin_arr, flx3, wp_fluct_z, wp_wave_z, o2, zfbx);
+            ps_wp_face(2, i, j, k, i, j, k-1, uin_arr, flx3, wp_fluct_z, wp_wave_z, store_w, zfbx);
         });
 #endif
 
@@ -1140,6 +1177,84 @@ PS_umeth(const Box& bx,
 #endif
         }
 
+        // ---- BL-3a: contact-only transverse fluctuation coupling (2D). ----
+        //  Each normal fluctuation A±ΔQ is advected at the TRANSVERSE material
+        //  velocity and folded into the transverse flux (conserved slots) /
+        //  the {α,UE1,UE2} deposit store.  Since the correction ∝ v_t, it is
+        //  an exact no-op for 1-D-aligned flow (v_t=0, e.g. B4).  Race-free
+        //  per-transverse-face gather (LeVeque/CLAWPACK rpt2 form, contact-
+        //  only: B±(AΔQ)=v_t^± AΔQ).  gtv_{x,y} hold the {α,UE1,UE2} parts
+        //  for the Pass-3 deposit; conserved parts are added to flx here.
+        const int gc = tv ? 3 : 1;   // {α,UE1,UE2} transverse deposit store
+        amrex::FArrayBox gtv_x_fab(xfbx, gc, amrex::The_Async_Arena());
+        auto const& gtv_x = gtv_x_fab.array();
+#if (AMREX_SPACEDIM >= 2)
+        amrex::FArrayBox gtv_y_fab(yfbx, gc, amrex::The_Async_Arena());
+        auto const& gtv_y = gtv_y_fab.array();
+#endif
+#if (AMREX_SPACEDIM == 2)
+        if (tv) {
+            const Real hx = Real(0.5) * dt_l / dx[0];
+            const Real hy = Real(0.5) * dt_l / dx[1];
+            // DOMAIN-boundary guard: the gather must not read waves computed
+            // from out-of-domain (x-ghost×y-ghost) CORNER cells, which are not
+            // filled y-consistently → spurious O(1) waves.  Contributions
+            // whose perpendicular-face owning column/row is a physical DOMAIN
+            // ghost are dropped (1st-order transverse at the domain edge; a
+            // no-op for 1-D-aligned flow).  Interior box seams are NOT dropped
+            // (their ghosts are valid neighbour data), so box-independence holds.
+            const int dlo0=domlo[0], dhi0=domhi[0], dlo1=domlo[1], dhi1=domhi[1];
+            // gadd_y on y-faces: x-fluctuations (rows j, j-1) transported in y.
+            amrex::ParallelFor(yfbx, [=] AMREX_GPU_DEVICE (int i,int j,int k) noexcept {
+                auto vY = [&](int a,int b) noexcept {  // y-velocity at x-face (a,b)
+                    Real r0=uin_arr(a-1,b,k,URHO); r0=(std::isfinite(r0)&&r0>Real(1e-30))?r0:Real(1e-30);
+                    Real r1=uin_arr(a,  b,k,URHO); r1=(std::isfinite(r1)&&r1>Real(1e-30))?r1:Real(1e-30);
+                    return Real(0.5)*(ps_finite_or(uin_arr(a-1,b,k,UMY),Real(0.0))/r0
+                                    + ps_finite_or(uin_arr(a,  b,k,UMY),Real(0.0))/r1); };
+                auto Apm = [&](int a,int b,int n,int sgn) noexcept {  // contact wave only (l=1)
+                    const int l=1; const Real sl=wp_wave_x(a,b,k,3*NVAR+l);
+                    if((sgn>0&&sl>Real(0.0))||(sgn<0&&sl<Real(0.0))) return sl*wp_wave_x(a,b,k,l*NVAR+n);
+                    return Real(0.0); };
+                const Real mj  = (j   <= dhi1 && j   >= dlo1) ? Real(1.0) : Real(0.0);  // row j valid
+                const Real mjm = (j-1 <= dhi1 && j-1 >= dlo1) ? Real(1.0) : Real(0.0);  // row j-1 valid
+                const Real vm0=mj *amrex::min(vY(i,  j  ),Real(0.0)), vm1=mj *amrex::min(vY(i+1,j  ),Real(0.0));
+                const Real vp0=mjm*amrex::max(vY(i,  j-1),Real(0.0)), vp1=mjm*amrex::max(vY(i+1,j-1),Real(0.0));
+                for(int n=0;n<NVAR;++n){
+                    const Real g = -hx*( vm0*Apm(i,j,n,+1) + vm1*Apm(i+1,j,n,-1)
+                                       + vp0*Apm(i,j-1,n,+1) + vp1*Apm(i+1,j-1,n,-1) );
+                    if      (n==UALPHA1) gtv_y(i,j,0)=ps_finite_or(g,Real(0.0));
+                    else if (n==UE1)     gtv_y(i,j,1)=ps_finite_or(g,Real(0.0));
+                    else if (n==UE2)     gtv_y(i,j,2)=ps_finite_or(g,Real(0.0));
+                    else if (n!=UTEMP)   flx2(i,j,k,n)=ps_finite_or(flx2(i,j,k,n)+g,Real(0.0));
+                }
+            });
+            // gadd_x on x-faces: y-fluctuations (cols i, i-1) transported in x.
+            amrex::ParallelFor(xfbx, [=] AMREX_GPU_DEVICE (int i,int j,int k) noexcept {
+                auto uX = [&](int a,int b) noexcept {  // x-velocity at y-face (a,b)
+                    Real r0=uin_arr(a,b-1,k,URHO); r0=(std::isfinite(r0)&&r0>Real(1e-30))?r0:Real(1e-30);
+                    Real r1=uin_arr(a,b,  k,URHO); r1=(std::isfinite(r1)&&r1>Real(1e-30))?r1:Real(1e-30);
+                    return Real(0.5)*(ps_finite_or(uin_arr(a,b-1,k,UMX),Real(0.0))/r0
+                                    + ps_finite_or(uin_arr(a,b,  k,UMX),Real(0.0))/r1); };
+                auto Apm = [&](int a,int b,int n,int sgn) noexcept {  // contact wave only (l=1)
+                    const int l=1; const Real sl=wp_wave_y(a,b,k,3*NVAR+l);
+                    if((sgn>0&&sl>Real(0.0))||(sgn<0&&sl<Real(0.0))) return sl*wp_wave_y(a,b,k,l*NVAR+n);
+                    return Real(0.0); };
+                const Real mi  = (i   <= dhi0 && i   >= dlo0) ? Real(1.0) : Real(0.0);  // col i valid
+                const Real mim = (i-1 <= dhi0 && i-1 >= dlo0) ? Real(1.0) : Real(0.0);  // col i-1 valid
+                const Real um0=mi *amrex::min(uX(i,  j  ),Real(0.0)), um1=mi *amrex::min(uX(i,  j+1),Real(0.0));
+                const Real up0=mim*amrex::max(uX(i-1,j  ),Real(0.0)), up1=mim*amrex::max(uX(i-1,j+1),Real(0.0));
+                for(int n=0;n<NVAR;++n){
+                    const Real g = -hy*( um0*Apm(i,j,n,+1) + um1*Apm(i,j+1,n,-1)
+                                       + up0*Apm(i-1,j,n,+1) + up1*Apm(i-1,j+1,n,-1) );
+                    if      (n==UALPHA1) gtv_x(i,j,0)=ps_finite_or(g,Real(0.0));
+                    else if (n==UE1)     gtv_x(i,j,1)=ps_finite_or(g,Real(0.0));
+                    else if (n==UE2)     gtv_x(i,j,2)=ps_finite_or(g,Real(0.0));
+                    else if (n!=UTEMP)   flx1(i,j,k,n)=ps_finite_or(flx1(i,j,k,n)+g,Real(0.0));
+                }
+            });
+        }
+#endif
+
         // ---- Pass 3: per-cell deposit of the non-conservative fluctuations.
         //  dsdt(n) = -(A⁺_lowface + A⁻_highface)/dx  [ - (F̃_high - F̃_low)/dx
         //  if BL-2 ]  summed over directions, for n ∈ {UALPHA1, UE1, UE2}.
@@ -1159,6 +1274,11 @@ PS_umeth(const Box& bx,
                     de1 -= (wp_ft_x(i+1,j,k,1) - wp_ft_x(i,j,k,1)) * inv;
                     de2 -= (wp_ft_x(i+1,j,k,2) - wp_ft_x(i,j,k,2)) * inv;
                 }
+                if (tv) {   // BL-3a transverse (gadd_x on x-faces → x-divergence)
+                    da  -= (gtv_x(i+1,j,k,0) - gtv_x(i,j,k,0)) * inv;
+                    de1 -= (gtv_x(i+1,j,k,1) - gtv_x(i,j,k,1)) * inv;
+                    de2 -= (gtv_x(i+1,j,k,2) - gtv_x(i,j,k,2)) * inv;
+                }
             }
 #if (AMREX_SPACEDIM >= 2)
             {
@@ -1170,6 +1290,11 @@ PS_umeth(const Box& bx,
                     da  -= (wp_ft_y(i,j+1,k,0) - wp_ft_y(i,j,k,0)) * inv;
                     de1 -= (wp_ft_y(i,j+1,k,1) - wp_ft_y(i,j,k,1)) * inv;
                     de2 -= (wp_ft_y(i,j+1,k,2) - wp_ft_y(i,j,k,2)) * inv;
+                }
+                if (tv) {   // BL-3a transverse (gadd_y on y-faces → y-divergence)
+                    da  -= (gtv_y(i,j+1,k,0) - gtv_y(i,j,k,0)) * inv;
+                    de1 -= (gtv_y(i,j+1,k,1) - gtv_y(i,j,k,1)) * inv;
+                    de2 -= (gtv_y(i,j+1,k,2) - gtv_y(i,j,k,2)) * inv;
                 }
             }
 #endif
