@@ -70,7 +70,7 @@ inline const PsSourceDials& ps_source_dials()
 //  flash / mass-transfer sources integrate over it).
 // -----------------------------------------------------------------
 inline void
-ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt)
+ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
 {
     const PsSourceDials& dials = ps_source_dials();
 
@@ -99,7 +99,7 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt)
     if (dials.flash_tau > amrex::Real(0.0)) {
         const amrex::Real tau = dials.flash_tau;
         for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
-            const amrex::Box& bx = mfi.tilebox();
+            const amrex::Box bx = mfi.growntilebox(nghost);
             amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
             amrex::LoopOnCpu(bx, [=] (int i, int j, int k) noexcept
             {
@@ -160,7 +160,7 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt)
     if (dials.mt_tau > amrex::Real(0.0)) {
         const amrex::Real tau = dials.mt_tau;
         for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
-            const amrex::Box& bx = mfi.tilebox();
+            const amrex::Box bx = mfi.growntilebox(nghost);
             amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
             amrex::LoopOnCpu(bx, [=] (int i, int j, int k) noexcept
             {
@@ -221,7 +221,7 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt)
         const int action = dials.triple_point_action;
         constexpr amrex::Real T_triple = amrex::Real(216.592);
         for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
-            const amrex::Box& bx = mfi.tilebox();
+            const amrex::Box bx = mfi.growntilebox(nghost);
             amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
             amrex::LoopOnCpu(bx, [=] (int i, int j, int k) noexcept
             {

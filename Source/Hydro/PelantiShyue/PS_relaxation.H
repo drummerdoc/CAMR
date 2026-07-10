@@ -251,6 +251,91 @@ ps_mechanical_relax_cell(int i, int j, int k,
 
 
 // -----------------------------------------------------------------
+//  ps_pt_equilibrium_relax_cell  —  P+T equilibrium relaxation (task #27).
+//
+//  Isochoric (α-fixed) JOINT pressure+temperature equilibration by
+//  per-phase internal-energy redistribution, mirroring the standalone
+//  `ps_iso_full_relax_grid` (env PS_ISO_RELAX=full): a short Picard
+//  alternation of ps_iso_pressure_relax_cell (drives P₁→P₂) and
+//  ps_iso_thermal_relax_cell (drives T₁→T₂), each conserving the mixture
+//  internal energy m₁e₁+m₂e₂.  This pushes the 6-equation model toward the
+//  5-eq KMS / HEM full-equilibrium limit — the operator that moved the
+//  strong-flash cases (B2/B9) toward the HEM analytic in the standalone
+//  (co2-eos-cfd diagnostics, tasks #25/#27).
+//
+//  Footprint: writes ONLY the per-phase energies UE1/UE2.  α, per-phase
+//  masses, momentum and the mixture UEINT/UEDEN are all preserved (the
+//  redistribution conserves m₁e₁+m₂e₂), so the conserved state is
+//  untouched — even lighter than the mechanical relax (no α write).
+//
+//  This is the INSTANTANEOUS (full-equilibrium) limit — an idempotent
+//  projection, like the mechanical relax.  A finite-rate thermal variant
+//  (which would engage the Strang split, task #29) is a follow-on.
+// -----------------------------------------------------------------
+inline void
+ps_pt_equilibrium_relax_cell(int i, int j, int k,
+                             amrex::Array4<amrex::Real> const& U,
+                             hem::PsPhaseAPI const& eos,
+                             int outer_iters = 3)
+{
+    using amrex::Real;
+    constexpr Real alpha_floor = Real(1.0e-6);
+    const Real alpha1_in = U(i,j,k, UALPHA1);
+    if (!std::isfinite(alpha1_in)) return;
+    // Skip essentially single-phase cells (the iso cell fns skip too).
+    if (alpha1_in < alpha_floor || alpha1_in > Real(1.0) - alpha_floor) return;
+
+    const Real m1 = U(i,j,k, UM1RHO1);
+    const Real m2 = U(i,j,k, UM2RHO2);
+    if (m1 <= Real(0.0) || m2 <= Real(0.0)) return;
+
+    const Real px = U(i,j,k, UMX);
+#if (AMREX_SPACEDIM >= 2)
+    const Real py = U(i,j,k, UMY);
+#else
+    const Real py = Real(0.0);
+#endif
+#if (AMREX_SPACEDIM == 3)
+    const Real pz = U(i,j,k, UMZ);
+#else
+    const Real pz = Real(0.0);
+#endif
+    hem::V6 Uv;
+    Uv[0] = alpha1_in;
+    Uv[1] = m1;
+    Uv[2] = m2;
+    Uv[3] = std::sqrt(px*px + py*py + pz*pz);   // |ρu| (only ½(V6[3]/ρ)² used)
+    Uv[4] = U(i,j,k, UE1);
+    Uv[5] = U(i,j,k, UE2);
+
+    // Picard alternation P-relax ↔ T-relax (matches ps_iso_full_relax_grid).
+    bool ok = true;
+    for (int it = 0; it < outer_iters; ++it) {
+        if (!hem::ps_iso_pressure_relax_cell(Uv, eos)) { ok = false; break; }
+        if (!hem::ps_iso_thermal_relax_cell (Uv, eos)) { ok = false; break; }
+    }
+    if (!ok) return;   // failure → leave cell unchanged
+
+    U(i,j,k, UE1) = Uv[4];
+    U(i,j,k, UE2) = Uv[5];
+}
+
+
+// Cached CAMR.ps_relax_mode: 0 = mechanical pressure relaxation (default,
+// historical); 1 = P+T equilibrium (ps_pt_equilibrium_relax_cell above).
+inline int ps_relax_mode()
+{
+    static const int m = []() -> int {
+        int v = 0;
+        amrex::ParmParse pp("CAMR");
+        pp.query("ps_relax_mode", v);
+        return v;
+    }();
+    return m;
+}
+
+
+// -----------------------------------------------------------------
 //  ps_apply_vanish_fold  —  grid-level wrapper for the standalone's
 //  hem::ps_apply_vanish_fold.  When a cell's α_1 drops below
 //  alpha_vanish (or rises above 1 - alpha_vanish), the vanishing
@@ -268,7 +353,7 @@ ps_mechanical_relax_cell(int i, int j, int k,
 //  uses 1e-8.
 // -----------------------------------------------------------------
 inline void
-ps_apply_vanish_fold(amrex::MultiFab& S_new)
+ps_apply_vanish_fold(amrex::MultiFab& S_new, int nghost = 0)
 {
     static const amrex::Real alpha_vanish_cached = []() -> amrex::Real {
         amrex::Real v = amrex::Real(0.0);
@@ -280,7 +365,7 @@ ps_apply_vanish_fold(amrex::MultiFab& S_new)
     const double alpha_vanish = double(alpha_vanish_cached);
 
     for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
-        const amrex::Box& bx = mfi.tilebox();
+        const amrex::Box bx = mfi.growntilebox(nghost);
         amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
         amrex::LoopOnCpu(bx, [=] (int i, int j, int k) noexcept
         {
@@ -318,24 +403,36 @@ ps_apply_vanish_fold(amrex::MultiFab& S_new)
 //  hydro step, under `if (ps_hydro != 0)`.
 // -----------------------------------------------------------------
 inline void
-ps_apply_relaxation(amrex::MultiFab& S_new)
+ps_apply_relaxation(amrex::MultiFab& S_new, int nghost = 0, bool do_print = true)
 {
     const hem::PsPhaseAPI eos = ps_make_camr_eos_api();
 
     // Reset diagnostic counters for this sweep.
     ps_relax_diag() = PsRelaxDiag{};
 
+    // Relaxation strategy: 0 = mechanical (pressure, adjusts α); 1 = P+T
+    // equilibrium (isochoric, redistributes per-phase energy).  task #27.
+    const int relax_mode = ps_relax_mode();
+
     for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
-        const amrex::Box& bx = mfi.tilebox();
+        const amrex::Box bx = mfi.growntilebox(nghost);
         amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
         // The lambda captures `eos` by copy so the std::function
         // is available inside each cell call.  This is CPU-only
         // (device kernels can't call std::function).
         amrex::LoopOnCpu(bx, [=] (int i, int j, int k) noexcept
         {
-            ps_mechanical_relax_cell(i, j, k, U, eos);
+            if (relax_mode == 1) {
+                ps_pt_equilibrium_relax_cell(i, j, k, U, eos);
+            } else {
+                ps_mechanical_relax_cell(i, j, k, U, eos);
+            }
         });
     }
+
+    // Strang pre-half-step calls pass do_print=false to skip the global
+    // reductions/prints (avoids double diagnostics + reduction cost).
+    if (!do_print) return;
 
     // Per-rank summary — report only when an anomaly appears.  With the
     // refined counters we also flag n_skip_hi_bad (α_in > 1 from the

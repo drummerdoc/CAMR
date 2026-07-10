@@ -112,6 +112,55 @@ CAMR::CAMR_advance (Real time,
     const Real prev_time = state[State_Type].prevTime();
     const Real  cur_time = state[State_Type].curTime();
 
+#ifdef USE_PS_HYDRO
+    // Pelanti-Shyue reaction operator (vanish-fold + mechanical relaxation
+    // + optional finite-rate sources) and its Strang-splitting controls.
+    //   CAMR.ps_do_relax (default 1): mechanical (pressure) relaxation on.
+    //   CAMR.ps_strang   (default 0): time-integration coupling of the
+    //     reaction with the hydro.  0 = Lie/Godunov (full-step reaction
+    //     AFTER hydro; 1st-order-in-time coupling).  1 = Strang (symmetric
+    //     half-step reaction BEFORE and AFTER hydro; 2nd-order-in-time,
+    //     needed to keep do_mol=1 2nd-order when relaxation/sources are on).
+    static const int ps_do_relax_cached = []() -> int {
+        int v = 1;
+        amrex::ParmParse pp("CAMR");
+        pp.query("ps_do_relax", v);
+        return v;
+    }();
+    static const int ps_strang_cached = []() -> int {
+        int v = 0;
+        amrex::ParmParse pp("CAMR");
+        pp.query("ps_strang", v);
+        return v;
+    }();
+    // R(dt_r): vanish-fold, mechanical relaxation (instantaneous projection,
+    // dt-independent), then finite-rate sources (integrated over dt_r).
+    // `ng` grows the loop over ghost cells; `do_print` gates the relaxation
+    // diagnostics (off for the pre-step to avoid double reductions/prints).
+    auto apply_ps_reaction = [&](amrex::MultiFab& S, amrex::Real dt_r,
+                                 int ng, bool do_print) {
+        ps_apply_vanish_fold(S, ng);
+        clean_state(S);
+        if (ps_do_relax_cached != 0) {
+            ps_apply_relaxation(S, ng, do_print);
+            clean_state(S);
+        }
+        ps_apply_sources(S, dt_r, ng);
+    };
+    // Strang pre-hydro HALF step.  Applied to the OLD-time data in place so
+    // that (a) the subsequent expand_state FillPatch propagates it to the
+    // Sborder ghost cells the flux stencil reads, and (b) the do_mol=1 Heun
+    // update — which references S_old explicitly — sees the relaxed old
+    // state.  (The old state is already post-relaxed from the previous
+    // step, so for the instantaneous projection this half-step is nearly
+    // idempotent; for finite-rate sources the two adjacent half-steps
+    // combine to a full dt between hydro solves — standard Strang.)
+    if (ps_strang_cached != 0 && ps_hydro != 0) {
+        apply_ps_reaction(get_old_data(State_Type), amrex::Real(0.5) * dt,
+                          0, false);
+    }
+#endif
+
     // For the hydrodynamics update we need to have numGrow() ghost zones available,
     // but the state data does not carry ghost zones. So we use a FillPatch
     // using the state data to give us Sborder, which does have ghost zones.
@@ -186,40 +235,18 @@ CAMR::CAMR_advance (Real time,
     // longer needed and would double-count if invoked.  Header
     // preserved in-tree for reference / documentation.
     //
-    // Task #189: runtime toggle CAMR.ps_do_relax (default 1).  The
-    // standalone driver's winning B4 config uses --no-relax
-    // (relaxation disabled) so the cross-critical Riemann fan can
-    // propagate through the domain without the mechanical relaxation
-    // Newton trying to force per-phase P equality at cells whose
-    // per-phase states are legitimately far apart during the
-    // transient.  For T-Blowdown-class problems (α ≈ 1 everywhere)
-    // relaxation is nearly a no-op so the default = 1 is fine there.
-    static const int ps_do_relax_cached = []() -> int {
-        int v = 1;
-        amrex::ParmParse pp("CAMR");
-        pp.query("ps_do_relax", v);
-        return v;
-    }();
+    // Reaction operator applied to the post-hydro state.  In Lie mode
+    // (ps_strang=0, default) this is the full-step reaction after hydro —
+    // the historical behaviour, bit-identical to before.  In Strang mode
+    // (ps_strang=1) this is the second HALF step (dt/2), completing the
+    // symmetric R(dt/2)·H(dt)·R(dt/2) split begun before the hydro solve.
+    // The reaction is: vanish-phase fold → mechanical (pressure)
+    // relaxation → optional finite-rate sources (flash / MT / triple
+    // point, all dials default OFF).  See apply_ps_reaction above.
     if (ps_hydro != 0) {
-        // Task #189: vanish-phase fold BEFORE relaxation.  When a
-        // phase's α drops below CAMR.ps_alpha_vanish, its mass and
-        // energy are absorbed into the surviving phase — prevents
-        // phantom-density buildup that drives the R-star u hump on
-        // cross-critical Riemann problems (see the standalone driver's
-        // Lund flash pattern, hem_pelanti_shyue.H::ps_apply_vanish_fold).
-        // Default is 0 = disabled (matches pre-#189 behaviour); the
-        // standalone winning B4 config uses 1e-8.
-        ps_apply_vanish_fold(S_new);
-        clean_state(S_new);
-        if (ps_do_relax_cached != 0) {
-            ps_apply_relaxation(S_new);
-            clean_state(S_new);
-        }
-        // Phase 4g: optional two-phase per-cell sources (flash, finite-
-        // rate MT, triple-point).  All dials default OFF → early-return
-        // no-op (bit-exact); each wired source clean_state's its own
-        // output internally.
-        ps_apply_sources(S_new, dt);
+        const amrex::Real dt_react =
+            (ps_strang_cached != 0) ? amrex::Real(0.5) * dt : dt;
+        apply_ps_reaction(S_new, dt_react, 0, true);
     }
 #endif
 
