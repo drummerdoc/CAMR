@@ -41,6 +41,11 @@
 struct PsSourceDials {
     amrex::Real flash_tau          = amrex::Real(0.0);
     amrex::Real mt_tau             = amrex::Real(0.0);
+    // Reference Gibbs scale for the finite-rate MT driving force
+    // (task #32).  0 = legacy (mis-scaled, unstable at physical tau);
+    // >0 non-dimensionalises g_diff so tau is a true physical time.
+    // ~R_specific*T ~ 5e4 J/kg for CO2.
+    amrex::Real mt_gref            = amrex::Real(0.0);
     int         triple_point_action = 0;
 
     bool any_enabled() const {
@@ -57,6 +62,7 @@ inline const PsSourceDials& ps_source_dials()
         amrex::ParmParse pp("CAMR");
         pp.query("ps_flash_tau",           v.flash_tau);
         pp.query("ps_mt_tau",              v.mt_tau);
+        pp.query("ps_mt_gref",             v.mt_gref);
         pp.query("ps_triple_point_action", v.triple_point_action);
         return v;
     }();
@@ -158,7 +164,8 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
     //      was reverted; the ported cell fn has the sign fix + caps.
     // -------------------------------------------------------------
     if (dials.mt_tau > amrex::Real(0.0)) {
-        const amrex::Real tau = dials.mt_tau;
+        const amrex::Real tau  = dials.mt_tau;
+        const amrex::Real gref = dials.mt_gref;
         for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
             const amrex::Box bx = mfi.growntilebox(nghost);
             amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
@@ -187,7 +194,8 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                 Uv[3] = std::sqrt(px*px + py*py + pz*pz);   // |ρu|
                 Uv[4] = U(i,j,k, UE1);
                 Uv[5] = U(i,j,k, UE2);
-                if (hem::ps_mass_transfer_finite_cell(Uv, eos, double(dt), double(tau))) {
+                if (hem::ps_mass_transfer_finite_cell(Uv, eos, double(dt), double(tau),
+                                                      1.0e-6, double(gref))) {
                     U(i,j,k, UALPHA1) = Uv[0];
                     U(i,j,k, UM1RHO1) = Uv[1];
                     U(i,j,k, UM2RHO2) = Uv[2];

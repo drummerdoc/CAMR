@@ -2665,7 +2665,8 @@ inline double ps_mt_tau_default()
 
 inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
                                           double dt, double tau_g,
-                                          double alpha_floor = 1.0e-6)
+                                          double alpha_floor = 1.0e-6,
+                                          double g_ref = 0.0)
 {
     if (tau_g <= 0.0 || dt <= 0.0) return false;
     if (!eos.valid()) return false;
@@ -2727,8 +2728,21 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
     // downstream (visible as a single "wave-blocking" NaN cell that
     // froze the entire simulation's velocity field at ~1 m/s).
     const double g_diff = p1.g - p2.g;
-    const double k_rate = rho_mix / tau_g;
-    double dm = k_rate * g_diff * dt;
+    double dm;
+    if (g_ref > 0.0) {
+        // NON-DIMENSIONALISED driving force (task #32 fix).  The legacy
+        // form dm = (rho_mix/tau)*g_diff*dt has ENERGY-density units
+        // (g_diff ~ 1e4 J/kg), so dm saturates the 0.9*m mass cap for any
+        // physically-meaningful tau and dumps ~all of a phase in one step
+        // (0-D bench: phase-2 collapse).  Scaling by a reference Gibbs
+        // g_ref (~R_specific*T ~ 5e4 J/kg for CO2) makes dm a proper mass
+        // density and tau_g a TRUE physical relaxation time.
+        const double m_ref = (m1 < m2) ? m1 : m2;
+        dm = (m_ref / tau_g) * (g_diff / g_ref) * dt;
+    } else {
+        const double k_rate = rho_mix / tau_g;   // legacy (mis-scaled)
+        dm = k_rate * g_diff * dt;
+    }
 
     // Under-relax slightly to avoid overshoot in stiff regions.
     dm *= 0.5;

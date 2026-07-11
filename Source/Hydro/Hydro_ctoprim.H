@@ -27,11 +27,8 @@ hydro_ctoprim(
         AMREX_D_TERM(const amrex::Real vx = u(i, j, k, UMX) * rhoinv;,
                      const amrex::Real vy = u(i, j, k, UMY) * rhoinv;,
                      const amrex::Real vz = u(i, j, k, UMZ) * rhoinv;);
-#if (AMREX_SPACEDIM == 2)
-        const amrex::Real kineng = 0.5 * rho * (vx * vx + vy * vy);
-#else
-        const amrex::Real kineng = 0.5 * rho * (vx * vx + vy * vy + vz * vz);
-#endif
+        const amrex::Real kineng =
+            0.5 * rho * (AMREX_D_TERM(vx * vx, + vy * vy, + vz * vz));
 
         q(i, j, k, QRHO) = rho;
         AMREX_D_TERM(q(i, j, k, QU) = vx;,

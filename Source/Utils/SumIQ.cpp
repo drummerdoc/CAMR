@@ -16,11 +16,7 @@ CAMR::sum_integrated_quantities()
   int finest_level = parent->finestLevel();
   amrex::Real time = state[State_Type].curTime();
   amrex::Real mass = 0.0;
-#if (AMREX_SPACEDIM == 2)
-  amrex::Real mom[2] = {0.0};
-#elif (AMREX_SPACEDIM == 3)
-  amrex::Real mom[3] = {0.0};
-#endif
+  amrex::Real mom[AMREX_SPACEDIM] = {0.0};
   amrex::Real rho_e = 0.0;
   amrex::Real rho_K = 0.0;
   amrex::Real rho_E = 0.0;
@@ -30,11 +26,9 @@ CAMR::sum_integrated_quantities()
     CAMR& CAMR_lev = getLevel(lev);
 
     mass += CAMR_lev.volWgtSum("density", time, local_flag);
-    mom[0] += CAMR_lev.volWgtSum("xmom", time, local_flag);
-    mom[1] += CAMR_lev.volWgtSum("ymom", time, local_flag);
-#if (AMREX_SPACEDIM == 3)
-    mom[2] += CAMR_lev.volWgtSum("zmom", time, local_flag);
-#endif
+    AMREX_D_TERM(mom[0] += CAMR_lev.volWgtSum("xmom", time, local_flag);,
+                 mom[1] += CAMR_lev.volWgtSum("ymom", time, local_flag);,
+                 mom[2] += CAMR_lev.volWgtSum("zmom", time, local_flag););
     rho_e += CAMR_lev.volWgtSum("rho_e", time, local_flag);
     rho_K += CAMR_lev.volWgtSum("kineng", time, local_flag);
     rho_E += CAMR_lev.volWgtSum("rho_E", time, local_flag);
@@ -43,13 +37,10 @@ CAMR::sum_integrated_quantities()
   }
 
   if (verbose > 0) {
-#if (AMREX_SPACEDIM == 2)
-    const int nfoo = 7;
-    amrex::Real foo[nfoo] = {mass, mom[0], mom[1],         rho_e, rho_K, rho_E, temp};
-#elif (AMREX_SPACEDIM == 3)
-    const int nfoo = 8;
-    amrex::Real foo[nfoo] = {mass, mom[0], mom[1], mom[2], rho_e, rho_K, rho_E, temp};
-#endif
+    const int nfoo = 5 + AMREX_SPACEDIM;
+    amrex::Real foo[nfoo] = {mass,
+                             AMREX_D_DECL(mom[0], mom[1], mom[2]),
+                             rho_e, rho_K, rho_E, temp};
 
 #ifdef AMREX_LAZY
     Lazy::QueueReduction([=]() mutable {
@@ -59,11 +50,9 @@ CAMR::sum_integrated_quantities()
       if (amrex::ParallelDescriptor::IOProcessor()) {
         int i = 0;
         mass = foo[i++];
-        mom[0] = foo[i++];
-        mom[1] = foo[i++];
-#if (AMREX_SPACEDIM == 3)
-        mom[2] = foo[i++];
-#endif
+        AMREX_D_TERM(mom[0] = foo[i++];,
+                     mom[1] = foo[i++];,
+                     mom[2] = foo[i++];);
         rho_e = foo[i++];
         rho_K = foo[i++];
         rho_E = foo[i++];
@@ -74,8 +63,10 @@ CAMR::sum_integrated_quantities()
                        << '\n';
         amrex::Print() << "TIME = " << time << " XMOM        = " << mom[0]
                        << '\n';
+#if (AMREX_SPACEDIM >= 2)
         amrex::Print() << "TIME = " << time << " YMOM        = " << mom[1]
                        << '\n';
+#endif
 #if (AMREX_SPACEDIM == 3)
         amrex::Print() << "TIME = " << time << " ZMOM        = " << mom[2]
                        << '\n';
@@ -96,7 +87,9 @@ CAMR::sum_integrated_quantities()
               data_log1 << std::setw(datwidth) << "          time";
               data_log1 << std::setw(datwidth) << "          mass";
               data_log1 << std::setw(datwidth) << "          xmom";
+#if (AMREX_SPACEDIM >= 2)
               data_log1 << std::setw(datwidth) << "          ymom";
+#endif
 #if (AMREX_SPACEDIM == 3)
               data_log1 << std::setw(datwidth) << "          zmom";
 #endif
@@ -114,8 +107,10 @@ CAMR::sum_integrated_quantities()
                       << mass;
             data_log1 << std::setw(datwidth) << std::setprecision(datprecision)
                       << mom[0];
+#if (AMREX_SPACEDIM >= 2)
             data_log1 << std::setw(datwidth) << std::setprecision(datprecision)
                       << mom[1];
+#endif
 #if (AMREX_SPACEDIM == 3)
             data_log1 << std::setw(datwidth) << std::setprecision(datprecision)
                       << mom[2];

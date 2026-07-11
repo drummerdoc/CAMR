@@ -48,7 +48,9 @@ hydro_artif_visc(
 
     for (int n = 0; n < NVAR; ++n) {
       if (n != UTEMP) {
-#if (AMREX_SPACEDIM == 2)
+#if (AMREX_SPACEDIM == 1)
+          bool is_tang_vel = false;   // no tangential velocity in 1D
+#elif (AMREX_SPACEDIM == 2)
           bool is_tang_vel = (dir == 0 && n == UMY) || (dir == 1 && n == UMX);
 #elif (AMREX_SPACEDIM == 3)
           bool is_tang_vel = (dir == 0 && (n == UMY || n == UMZ) ) ||

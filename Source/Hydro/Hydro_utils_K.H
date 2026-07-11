@@ -24,11 +24,19 @@ hydro_divu (
   amrex::GpuArray<int,AMREX_SPACEDIM> const& bchi)
 {
     int bclo_x = bclo[0]; int domlo_x = domlo[0];
-    int bclo_y = bclo[1]; int domlo_y = domlo[1];
     int bchi_x = bchi[0]; int domhi_x = domhi[0];
+#if (AMREX_SPACEDIM >= 2)
+    int bclo_y = bclo[1]; int domlo_y = domlo[1];
     int bchi_y = bchi[1]; int domhi_y = domhi[1];
+#endif
 
-#if (AMREX_SPACEDIM == 2)
+#if (AMREX_SPACEDIM == 1)
+    // 1D divergence = du/dx.  (This path feeds the artificial-viscosity /
+    // Godunov machinery, which is unused under USE_PS_HYDRO; provided so a
+    // DIM=1 build compiles.)
+    amrex::Real ux = ( q(i, j, k, QU) - q(i-1, j, k, QU) ) / dx;
+    amrex::ignore_unused(bclo_x, domlo_x, bchi_x, domhi_x);
+#elif (AMREX_SPACEDIM == 2)
     amrex::Real ux, vy;
 
     if (j == domlo_y && bclo_y == NoSlipWall) {

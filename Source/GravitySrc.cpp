@@ -66,7 +66,10 @@ CAMR::fill_grav_source (const amrex::MultiFab& S,
     // Evaluate gravity-related source terms (assuming gravity only in z-direction)
     amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
 
-#if (AMREX_SPACEDIM == 2)
+#if (AMREX_SPACEDIM == 1)
+      src(i, j, k, UMX  ) = l_const_grav * s(i,j,k,URHO);  // rho g (1D: along x)
+      src(i, j, k, UEDEN) = l_const_grav * s(i,j,k,UMX);   // rho u g
+#elif (AMREX_SPACEDIM == 2)
       src(i, j, k, UMY  ) = l_const_grav * s(i,j,k,URHO);  // rho g
       src(i, j, k, UEDEN) = l_const_grav * s(i,j,k,UMY);   // rho u g
 #else
@@ -113,7 +116,10 @@ CAMR::fill_gravcorr_source(
     // Evaluate the correction to the gravity source term, i.e. return 1/2(Src_new - Src_old)
     amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
 
-#if (AMREX_SPACEDIM == 2)
+#if (AMREX_SPACEDIM == 1)
+      src(i, j, k, UMX  ) = 0.5 * l_const_grav * (snew(i,j,k,URHO) - sold(i,j,k,URHO));  // rho g (1D: along x)
+      src(i, j, k, UEDEN) = 0.5 * l_const_grav * (snew(i,j,k,UMX ) - sold(i,j,k,UMX ));  // rho u g
+#elif (AMREX_SPACEDIM == 2)
       src(i, j, k, UMY  ) = 0.5 * l_const_grav * (snew(i,j,k,URHO) - sold(i,j,k,URHO));  // rho g
       src(i, j, k, UEDEN) = 0.5 * l_const_grav * (snew(i,j,k,UMY ) - sold(i,j,k,UMY ));  // rho u g
 #else

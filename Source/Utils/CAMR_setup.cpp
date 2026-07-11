@@ -158,7 +158,9 @@ CAMR::variableSetUp()
    amrex::Vector<std::string> name(NVAR);
    set_scalar_bc(bc, phys_bc); bcs[URHO]  = bc; name[URHO] = "density";
    set_x_vel_bc (bc, phys_bc); bcs[UMX]   = bc; name[UMX] = "xmom";
+#if (AMREX_SPACEDIM >= 2)
    set_y_vel_bc (bc, phys_bc); bcs[UMY]   = bc; name[UMY] = "ymom";
+#endif
 #if (AMREX_SPACEDIM == 3)
    set_z_vel_bc (bc, phys_bc); bcs[UMZ]   = bc; name[UMZ] = "zmom";
 #endif
@@ -294,8 +296,10 @@ CAMR::variableSetUp()
   derive_lst.add("x_velocity", amrex::IndexType::TheCellType(), 1, CAMR_dervelx, the_same_box);
   derive_lst.addComponent("x_velocity", desc_lst, State_Type, URHO, NVAR);
 
+#if (AMREX_SPACEDIM >= 2)
   derive_lst.add("y_velocity", amrex::IndexType::TheCellType(), 1, CAMR_dervely, the_same_box);
   derive_lst.addComponent("y_velocity", desc_lst, State_Type, URHO, NVAR);
+#endif
 
 #if (AMREX_SPACEDIM == 3)
   derive_lst.add("z_velocity", amrex::IndexType::TheCellType(), 1, CAMR_dervelz, the_same_box);

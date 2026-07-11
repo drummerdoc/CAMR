@@ -41,11 +41,8 @@ CAMR_reset_internal_e(
     AMREX_D_TERM( const amrex::Real Up = S(i, j, k, UMX) * rhoInv;,
                   const amrex::Real Vp = S(i, j, k, UMY) * rhoInv;,
                   const amrex::Real Wp = S(i, j, k, UMZ) * rhoInv;);
-#if (AMREX_SPACEDIM == 2)
-    const amrex::Real ke = 0.5 * (Up * Up + Vp * Vp);
-#elif (AMREX_SPACEDIM == 3)
-    const amrex::Real ke = 0.5 * (Up * Up + Vp * Vp + Wp * Wp);
-#endif
+    const amrex::Real ke =
+        0.5 * (AMREX_D_TERM(Up * Up, + Vp * Vp, + Wp * Wp));
     const amrex::Real eden = S(i, j, k, UEDEN) * rhoInv;
 
     amrex::Real massfrac[NUM_SPECIES];

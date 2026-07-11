@@ -1,12 +1,22 @@
+#include "IndexDefines.H"
+#include "AMReX_MultiFabUtil.H"
+#include <AMReX_Print.H>
+
+// The MOL (method-of-lines) hydro path is not implemented in 1D.  Its
+// reconstruction/Riemann kernels (MOL_hydro_K.H, MOL_riemann_K.H and the
+// base Hydro_riemann.H they pull in) carry 2D/3D-only assumptions, so they
+// are only included for AMREX_SPACEDIM>=2; the DIM=1 build gets an
+// abort-stub body (a 1D build is only supported under USE_PS_HYDRO, where
+// PS_umeth replaces this path — see Hydro_umdrv.cpp dispatch).
+#if (AMREX_SPACEDIM >= 2)
 #include "MOL_hydro_K.H"
 #include "MOL_riemann_K.H"
 #include "Hydro_utils_K.H"
-#include "IndexDefines.H"
-#include "AMReX_MultiFabUtil.H"
 
 #ifdef AMREX_USE_EB
 #include <AMReX_EBFArrayBox.H>
 #include <AMReX_MultiCutFab.H>
+#endif
 #endif
 
 using namespace amrex;
@@ -39,6 +49,14 @@ MOL_umeth (const Box& bx,
 {
     BL_PROFILE("MOL_umeth()");
 
+#if (AMREX_SPACEDIM == 1)
+    amrex::ignore_unused(bx, bclo, bchi, domlo, domhi, q, qa, fx, q1, a1,
+                         pdivu, vol, small, small_dens, small_pres, smallu,
+                         iorder, lpmap);
+    amrex::Abort("MOL_umeth: the MOL hydro path is not implemented in 1D "
+                 "(AMREX_SPACEDIM==1). A DIM=1 build is only supported under "
+                 "USE_PS_HYDRO, which uses PS_umeth instead.");
+#else
     AMREX_D_TERM(const int bclx = bclo[0];,
                  const int bcly = bclo[1];,
                  const int bclz = bclo[2];);
@@ -139,4 +157,5 @@ MOL_umeth (const Box& bx,
    });
 
    Gpu::streamSynchronize();
+#endif  // AMREX_SPACEDIM >= 2 (MOL body; 1D aborts above)
 }

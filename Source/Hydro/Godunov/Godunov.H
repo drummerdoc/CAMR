@@ -135,6 +135,36 @@ void Godunov_umeth_eb (
   const PassMap* lpmap,
   const int transverse_reset_density);
 #endif
+
+#elif AMREX_SPACEDIM == 1
+
+// 1D STUB declaration — see Godunov_1D.cpp.  The Godunov path is not
+// implemented in 1D; this exists so a DIM=1 build (USE_PS_HYDRO) links.
+void Godunov_umeth (
+  amrex::Box const& bx,
+  const int* bclo, const int* bchi,
+  const int* domlo, const int* domhi,
+  amrex::Array4<const amrex::Real> const& q,
+  amrex::Array4<const amrex::Real> const& qaux,
+  amrex::Array4<const amrex::Real> const& srcQ,
+  amrex::Array4<amrex::Real> const& flx1,
+  amrex::Array4<amrex::Real> const& q1,
+  amrex::Array4<const amrex::Real> const& ax,
+  amrex::Array4<amrex::Real> const& pdivu,
+  amrex::Array4<const amrex::Real> const& vol,
+  const amrex::GpuArray<amrex::Real, AMREX_SPACEDIM> del,
+  const amrex::Real dt,
+  const amrex::Real small,
+  const amrex::Real small_dens,
+  const amrex::Real small_pres,
+  const amrex::Real smallu,
+  const int ppm_type,
+  const int use_pslope,
+  const int use_flattening,
+  const int iorder,
+  const PassMap* lpmap,
+  const int transverse_reset_density);
+
 #endif
 
 #endif

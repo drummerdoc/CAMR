@@ -157,11 +157,10 @@ CAMR_initdata( int i, int j, int k,
     const amrex::Real ke    = amrex::Real(0.5) * rho * u0 * u0;
 
     state(i,j,k, URHO) = rho;
+    for (int n=1; n<AMREX_SPACEDIM; ++n) {
+        state(i,j,k, UMX+n)  = rho * u0;
+    }
     state(i,j,k, UMX)  = rho * u0;
-    state(i,j,k, UMY)  = amrex::Real(0.0);
-#if (AMREX_SPACEDIM == 3)
-    state(i,j,k, UMZ)  = amrex::Real(0.0);
-#endif
     state(i,j,k, UEINT) = rho * e_mix;
     state(i,j,k, UEDEN) = rho * e_mix + ke;
     // Mixture T = dominant-phase T (standalone convention; used only
@@ -286,17 +285,17 @@ bcnormal(
     // ---- 1. Interior primitives ----
     const amrex::Real rho_int  = s_int[URHO];
     const amrex::Real inv_rho  = amrex::Real(1.0) / rho_int;
-    const amrex::Real ux_int   = s_int[UMX] * inv_rho;
-    const amrex::Real uy_int   = s_int[UMY] * inv_rho;
-#if (AMREX_SPACEDIM == 3)
-    const amrex::Real uz_int   = s_int[UMZ] * inv_rho;
-#endif
+    AMREX_D_TERM(const amrex::Real ux_int = s_int[UMX] * inv_rho;,
+                 const amrex::Real uy_int = s_int[UMY] * inv_rho;,
+                 const amrex::Real uz_int = s_int[UMZ] * inv_rho;);
     const amrex::Real e_int    = s_int[UEINT] * inv_rho;
 
     amrex::Real un_int = ux_int;
+#if (AMREX_SPACEDIM > 1)
     if (idir == 1) un_int = uy_int;
-#if (AMREX_SPACEDIM == 3)
+#if (AMREX_SPACEDIM > 2)
     if (idir == 2) un_int = uz_int;
+#endif
 #endif
 
     amrex::Real Y[NUM_SPECIES];
@@ -342,30 +341,29 @@ bcnormal(
 
     s_ext[URHO] = rho_ghost;
 
-    amrex::Real ux_ghost = ux_int;
-    amrex::Real uy_ghost = uy_int;
-#if (AMREX_SPACEDIM == 3)
-    amrex::Real uz_ghost = uz_int;
-#endif
+    AMREX_D_TERM(amrex::Real ux_ghost = ux_int;,
+                 amrex::Real uy_ghost = uy_int;,
+                 amrex::Real uz_ghost = uz_int;);
+
     if      (idir == 0) ux_ghost = un_ghost;
+#if (AMREX_SPACEDIM > 1)
     else if (idir == 1) uy_ghost = un_ghost;
-#if (AMREX_SPACEDIM == 3)
+#if (AMREX_SPACEDIM > 2)
     else if (idir == 2) uz_ghost = un_ghost;
+#endif
 #endif
 
     s_ext[UMX] = rho_ghost * ux_ghost;
+#if (AMREX_SPACEDIM > 1)
     s_ext[UMY] = rho_ghost * uy_ghost;
-#if (AMREX_SPACEDIM == 3)
+#if (AMREX_SPACEDIM > 2)
     s_ext[UMZ] = rho_ghost * uz_ghost;
+#endif
 #endif
 
     const amrex::Real ke_ghost =
         amrex::Real(0.5) * rho_ghost *
-        (ux_ghost*ux_ghost + uy_ghost*uy_ghost
-#if (AMREX_SPACEDIM == 3)
-         + uz_ghost*uz_ghost
-#endif
-        );
+        (AMREX_D_TERM(ux_ghost*ux_ghost, +uy_ghost*uy_ghost, +uz_ghost*uz_ghost));
     s_ext[UEINT] = rho_ghost * e_ghost;
     s_ext[UEDEN] = rho_ghost * e_ghost + ke_ghost;
     s_ext[UTEMP] = T_ghost;
@@ -382,12 +380,7 @@ bcnormal(
     const amrex::Real rho2_int = (alpha_2 > amrex::Real(1.0e-12))
         ? s_int[UM2RHO2] / alpha_2 : rho_int;
     const amrex::Real E_ghost = e_ghost
-                              + amrex::Real(0.5) *
-                                (ux_ghost*ux_ghost + uy_ghost*uy_ghost
-#if (AMREX_SPACEDIM == 3)
-                                 + uz_ghost*uz_ghost
-#endif
-                                );
+        + amrex::Real(0.5) * (AMREX_D_TERM(ux_ghost*ux_ghost, +uy_ghost*uy_ghost, +uz_ghost*uz_ghost));
     s_ext[UALPHA1] = alpha_1;
     s_ext[UM1RHO1] = alpha_1 * rho1_int;
     s_ext[UM2RHO2] = alpha_2 * rho2_int;

@@ -35,6 +35,7 @@ amrex::Real local_small_den = 1.e-20;
   });
 }
 
+#if (AMREX_SPACEDIM >= 2)
 void
 CAMR_dervely(
   const amrex::Box& bx,
@@ -62,6 +63,7 @@ amrex::Real local_small_den = 1.e-20;
 #endif
   });
 }
+#endif // AMREX_SPACEDIM >= 2
 
 #if (AMREX_SPACEDIM == 3)
 void
@@ -118,14 +120,11 @@ amrex::Real local_small_den = 1.e-20;
 #else
     const amrex::Real rhoInv = 1.0 / dat(i, j, k, URHO);
 #endif
-    const amrex::Real dat1 = (dat(i, j, k, UMX) * rhoInv);
-    const amrex::Real dat2 = (dat(i, j, k, UMY) * rhoInv);
-#if (AMREX_SPACEDIM == 2)
-    magvel(i, j, k) = sqrt((dat1 * dat1) + (dat2 * dat2));
-#else
-    const amrex::Real dat3 = (dat(i, j, k, UMZ) * rhoInv);
-    magvel(i, j, k) = sqrt((dat1 * dat1) + (dat2 * dat2) + (dat3 * dat3));
-#endif
+    AMREX_D_TERM(const amrex::Real dat1 = (dat(i, j, k, UMX) * rhoInv);,
+                 const amrex::Real dat2 = (dat(i, j, k, UMY) * rhoInv);,
+                 const amrex::Real dat3 = (dat(i, j, k, UMZ) * rhoInv););
+    magvel(i, j, k) =
+      std::sqrt(AMREX_D_TERM(dat1 * dat1, + dat2 * dat2, + dat3 * dat3));
   });
 }
 
@@ -145,14 +144,10 @@ CAMR_dermagmom(
   auto magmom = derfab.array();
 
   amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-    magmom(i, j, k) = sqrt(
-      dat(i, j, k, UMX) * dat(i, j, k, UMX) +
-#if (AMREX_SPACEDIM == 2)
-      dat(i, j, k, UMY) * dat(i, j, k, UMY));
-#else
-      dat(i, j, k, UMY) * dat(i, j, k, UMY) +
-      dat(i, j, k, UMZ) * dat(i, j, k, UMZ));
-#endif
+    magmom(i, j, k) = sqrt(AMREX_D_TERM(
+      dat(i, j, k, UMX) * dat(i, j, k, UMX),
+      + dat(i, j, k, UMY) * dat(i, j, k, UMY),
+      + dat(i, j, k, UMZ) * dat(i, j, k, UMZ)));
   });
 }
 
@@ -176,21 +171,14 @@ amrex::Real local_small_den = 1.e-20;
 #endif
 
   amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-      const amrex::Real datxsq = dat(i, j, k, UMX) * dat(i, j, k, UMX);
-      const amrex::Real datysq = dat(i, j, k, UMY) * dat(i, j, k, UMY);
-#if (AMREX_SPACEDIM == 2)
+      AMREX_D_TERM(const amrex::Real datxsq = dat(i, j, k, UMX) * dat(i, j, k, UMX);,
+                   const amrex::Real datysq = dat(i, j, k, UMY) * dat(i, j, k, UMY);,
+                   const amrex::Real datzsq = dat(i, j, k, UMZ) * dat(i, j, k, UMZ););
+      const amrex::Real ke_sum = AMREX_D_TERM(datxsq, + datysq, + datzsq);
 #ifdef AMREX_USE_EB
-      kineng(i, j, k) = 0.5 * (datxsq + datysq) / std::max(dat(i, j, k, URHO), local_small_den);
+      kineng(i, j, k) = 0.5 * ke_sum / std::max(dat(i, j, k, URHO), local_small_den);
 #else
-      kineng(i, j, k) = 0.5 * (datxsq + datysq) / dat(i,j,k,URHO);
-#endif
-#else
-      const amrex::Real datzsq = dat(i, j, k, UMZ) * dat(i, j, k, UMZ);
-#ifdef AMREX_USE_EB
-      kineng(i, j, k) = 0.5 * (datxsq + datysq + datzsq) / std::max(dat(i, j, k, URHO), local_small_den);
-#else
-      kineng(i, j, k) = 0.5 * (datxsq + datysq + datzsq) / dat(i,j,k,URHO);
-#endif
+      kineng(i, j, k) = 0.5 * ke_sum / dat(i,j,k,URHO);
 #endif
   });
 }
@@ -213,16 +201,11 @@ CAMR_dereint1(
 
   amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
     const amrex::Real rhoInv = 1.0 / dat(i, j, k, URHO);
-    const amrex::Real ux = dat(i, j, k, UMX) * rhoInv;
-    const amrex::Real uy = dat(i, j, k, UMY) * rhoInv;
-#if (AMREX_SPACEDIM == 2)
-    e(i, j, k) =
-      dat(i, j, k, UEDEN) * rhoInv - 0.5 * (ux * ux + uy * uy);
-#else
-    const amrex::Real uz = dat(i, j, k, UMZ) * rhoInv;
-    e(i, j, k) =
-      dat(i, j, k, UEDEN) * rhoInv - 0.5 * (ux * ux + uy * uy + uz * uz);
-#endif
+    AMREX_D_TERM(const amrex::Real ux = dat(i, j, k, UMX) * rhoInv;,
+                 const amrex::Real uy = dat(i, j, k, UMY) * rhoInv;,
+                 const amrex::Real uz = dat(i, j, k, UMZ) * rhoInv;);
+    e(i, j, k) = dat(i, j, k, UEDEN) * rhoInv
+               - 0.5 * (AMREX_D_TERM(ux * ux, + uy * uy, + uz * uz));
   });
 }
 
@@ -649,14 +632,11 @@ CAMR_dermachnumber(
     EOS::REY2Gam(rho,eint,massfrac,gam);
     c = std::sqrt(gam*pres/rho);
     //EOS::RTY2Cs(rho, T, massfrac, c);
-    const amrex::Real datxsq = dat(i, j, k, UMX) * dat(i, j, k, UMX);
-    const amrex::Real datysq = dat(i, j, k, UMY) * dat(i, j, k, UMY);
-#if (AMREX_SPACEDIM == 2)
-    mach(i, j, k) = sqrt(datxsq + datysq) / dat(i, j, k, URHO) / c;
-#else
-    const amrex::Real datzsq = dat(i, j, k, UMZ) * dat(i, j, k, UMZ);
-    mach(i, j, k) = sqrt(datxsq + datysq + datzsq) / dat(i, j, k, URHO) / c;
-#endif
+    AMREX_D_TERM(const amrex::Real datxsq = dat(i, j, k, UMX) * dat(i, j, k, UMX);,
+                 const amrex::Real datysq = dat(i, j, k, UMY) * dat(i, j, k, UMY);,
+                 const amrex::Real datzsq = dat(i, j, k, UMZ) * dat(i, j, k, UMZ););
+    mach(i, j, k) =
+      sqrt(AMREX_D_TERM(datxsq, + datysq, + datzsq)) / dat(i, j, k, URHO) / c;
     }
   });
 }

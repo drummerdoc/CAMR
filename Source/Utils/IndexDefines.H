@@ -16,16 +16,41 @@
 
 #define URHO 0
 #define UMX 1
+#if (AMREX_SPACEDIM >= 2)
 #define UMY 2
+#endif
 
 #define QRHO 0
 #define QU 1
+#if (AMREX_SPACEDIM >= 2)
 #define QV 2
+#endif
 
 #define GDU 1
+#if (AMREX_SPACEDIM >= 2)
 #define GDV 2
+#endif
 
-#if (AMREX_SPACEDIM == 2)
+#if (AMREX_SPACEDIM == 1)
+#define UEDEN 2
+#define UEINT 3
+#define UTEMP 4
+#define UFA 5
+
+#define QGAME 2
+#define QPRES 3
+#define QREINT 4
+#define QTEMP 5
+#define QFA 6
+
+#define GDPRES 2
+#define GDGAME 3
+#define NGDNV 4
+
+#define NTHERM 5
+#define QTHERM 6
+
+#elif (AMREX_SPACEDIM == 2)
 #define UEDEN 3
 #define UEINT 4
 #define UTEMP 5

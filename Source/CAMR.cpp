@@ -430,9 +430,12 @@ CAMR::initData()
 
   // Make sure dx = dy = dz -- that's all we guarantee to support
   const amrex::GpuArray<amrex::Real, AMREX_SPACEDIM> dx = geom.CellSizeArray();
+  amrex::ignore_unused(dx);
+#if (AMREX_SPACEDIM >= 2)
   if (std::abs(dx[0] - dx[1]) > CAMRConstants::small * dx[0]) {
     amrex::Abort("dx != dy not supported");
   }
+#endif
 #if (AMREX_SPACEDIM == 3)
   if (std::abs(dx[0] - dx[2]) > CAMRConstants::small * dx[0]) {
     amrex::Abort("dx != dy != dz not supported");
@@ -1055,12 +1058,8 @@ CAMR::enforce_consistent_e(amrex::MultiFab& S)
             AMREX_D_TERM( const amrex::Real u = Sfab(i, j, k, UMX) * rhoInv;,
                           const amrex::Real v = Sfab(i, j, k, UMY) * rhoInv;,
                           const amrex::Real w = Sfab(i, j, k, UMZ) * rhoInv;);
-            Sfab(i, j, k, UEDEN) = Sfab(i, j, k, UEINT) + 0.5 *
-#if (AMREX_SPACEDIM == 2)
-                                   Sfab(i, j, k, URHO) * (u * u + v * v);
-#elif (AMREX_SPACEDIM == 3)
-                                   Sfab(i, j, k, URHO) * (u * u + v * v + w * w);
-#endif
+            Sfab(i, j, k, UEDEN) = Sfab(i, j, k, UEINT)
+                + 0.5 * Sfab(i, j, k, URHO) * (AMREX_D_TERM(u*u, +v*v, +w*w));
          }
       });
   }

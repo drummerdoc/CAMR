@@ -790,8 +790,10 @@ ps_wp_tvterm(int d, int t, int i, int j, int k,
     const int ti=(t==0), tj=(t==1), tk=(t==2);
 #if (AMREX_SPACEDIM == 3)
     const int UM_d = (d==0)?UMX : (d==1)?UMY : UMZ;
-#else
+#elif (AMREX_SPACEDIM == 2)
     const int UM_d = (d==0)?UMX : UMY;
+#else
+    const int UM_d = UMX;   // 1D: transverse term is never invoked
 #endif
     // d-velocity at the t-face whose high-side cell is (a,b,c):
     auto ud = [&](int a,int b,int c) noexcept -> Real {
@@ -1618,7 +1620,7 @@ PS_umeth(const Box& bx,
 #if (AMREX_SPACEDIM == 3)
         amrex::Abort("PS-CTU is 2D-only in landing phase P1; use "
                      "CAMR.ps_ctu=0 for 3D.");
-#else
+#elif (AMREX_SPACEDIM == 2)
         const Real cdtdx = Real(0.5) * dt / dx[0];
         const Real cdtdy = Real(0.5) * dt / dx[1];
 
@@ -1668,6 +1670,9 @@ PS_umeth(const Box& bx,
             ps_ctu_flux_from_states(1, i, j, k, UL, UR, use_hllc,
                                     flx2, /*want_defect=*/true, wp_corr_y);
         });
+#else
+        amrex::Abort("PS-CTU (CAMR.ps_ctu=1) is not available in 1D; "
+                     "use CAMR.ps_ctu=0.");
 #endif
     } // ===== end CTU path (use_ctu == 1) =====
 
