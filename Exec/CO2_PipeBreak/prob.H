@@ -102,7 +102,7 @@ bcnormal(
   amrex::Real s_ext[NVAR],
   const int idir,
   const int sgn,
-  const amrex::Real /*time*/,
+  const amrex::Real time,
   amrex::GeometryData const& /*geomdata*/,
   ProbParmDevice const& prob_parm)
 {
@@ -118,11 +118,23 @@ bcnormal(
 #endif
         if (in_gap) {
             // ---- Dense-CO2 reservoir pressure inlet (stagnation) ----
+            //  Soft-start (task #48): ramp the imposed reservoir pressure
+            //  from ambient (p0) to p_res over prob_parm.ramp_time so the
+            //  inlet is not an impulsive discontinuity at t=0 (that startup
+            //  is what drives the growing inlet oscillation).  ramp_time<=0
+            //  => instantaneous full reservoir.
             amrex::Real Y[NUM_SPECIES];
             Y[0] = amrex::Real(1.0);
             for (int n = 1; n < NUM_SPECIES; ++n) Y[n] = amrex::Real(0.0);
+
+            amrex::Real P_res_t = prob_parm.p_res;
+            if (prob_parm.ramp_time > amrex::Real(0.0)) {
+                amrex::Real f = time / prob_parm.ramp_time;
+                if (f > amrex::Real(1.0)) f = amrex::Real(1.0);
+                P_res_t = prob_parm.p0 + (prob_parm.p_res - prob_parm.p0) * f;
+            }
             amrex::Real rho_r, e_r;
-            EOS::PYT2RE(prob_parm.p_res, Y, prob_parm.T_res, rho_r, e_r);
+            EOS::PYT2RE(P_res_t, Y, prob_parm.T_res, rho_r, e_r);
             s_ext[URHO] = rho_r;
             s_ext[UMX]  = amrex::Real(0.0);   // stagnation: u=0, ΔP drives flow
             s_ext[UMY]  = amrex::Real(0.0);

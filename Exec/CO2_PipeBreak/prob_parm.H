@@ -40,6 +40,13 @@ struct ProbParmDevice
     // Break-gap geometry on the x-lo rupture plane.
     amrex::Real gap_yc   = 0.5;   // m    gap centre (y)
     amrex::Real gap_half = 0.05;  // m    gap half-width
+
+    // Reservoir soft-start (task #48): ramp the imposed reservoir pressure
+    // linearly from ambient (p0) to p_res over ramp_time, so the inlet is
+    // not an impulsive p_res|p0 discontinuity at t=0 — that impulsive
+    // startup is what drives the growing inlet pressure oscillation.
+    // ramp_time <= 0 gives the instantaneous full reservoir (original).
+    amrex::Real ramp_time = 5.0e-4;   // s   (0 disables the ramp)
 };
 
 struct ProbParmHost
