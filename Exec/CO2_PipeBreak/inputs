@@ -1,0 +1,109 @@
+# =====================================================================
+#  CO2_PipeBreak — Phase 0: 2-D flashing CO2 pipe-break jet (CPU, PR EOS)
+#
+#  x-lo is the rupture plane: dense-CO2 reservoir over the break gap,
+#  slip wall elsewhere (both realised in prob.H bcnormal).  x-hi, y-lo,
+#  y-hi are non-reflecting outflow.  Legacy bcnormal path (ps_bc_use_nscbc
+#  = 0) so the rupture-plane logic is what fills the boundary.
+# =====================================================================
+
+amrex.fpe_trap_invalid = 0
+
+max_step  = 20000
+stop_time = 2.0e-3
+
+geometry.is_periodic = 0 0 0
+geometry.coord_sys   = 0
+geometry.prob_lo     = 0.0  0.0
+geometry.prob_hi     = 2.0  1.0
+amr.n_cell           = 256  128
+
+# All four faces dispatch to prob.H bcnormal:
+#   x-lo -> rupture plane (reservoir gap / slip wall)
+#   x-hi, y-lo, y-hi -> linear-acoustic non-reflecting outflow
+CAMR.lo_bc = Inflow Inflow
+CAMR.hi_bc = Inflow Inflow
+
+# --- Physics + numerics ---------------------------------------------
+CAMR.cfl = 0.25
+CAMR.fixed_dt = 0
+CAMR.allow_negative_energy = 1
+CAMR.do_mol = 0
+CAMR.ppm_type = 1
+
+CAMR.ps_hydro   = 1
+# wp (Berger-LeVeque wave propagation) is the production flux: cleaner,
+# limited (non-oscillatory) contacts vs HLLC.  It DOES drive the reservoir
+# inlet, but only via the Godunov path — ps_recon MUST be 0 (ps_recon=1 =
+# MUSCL-PLM reconstructs interior-only at the boundary and ignores the
+# Dirichlet reservoir ghost, so the jet never fires; task #43).  For a
+# quick diffusive-but-robust fallback, set ps_flux=hllc ps_recon=0.
+CAMR.ps_flux    = wp
+CAMR.ps_wp_order = 2            # 2nd order via BL-2 limited correction fluxes
+CAMR.ps_recon   = 0            # REQUIRED for wp reservoir-inlet injection
+CAMR.ps_bc_use_nscbc = 0        # legacy bcnormal path (rupture-plane BC)
+CAMR.ps_alpha_vanish = 1.0e-8   # fold vanishing trace phase (2-D robustness)
+
+# Relaxation + stabilized finite-rate mass transfer (option 2 default).
+CAMR.ps_do_relax = 1
+CAMR.ps_mt_tau   = 1.0e-6
+CAMR.ps_mt_gref  = 5.0e4
+# Nucleation source: under the sharp wp scheme the flash must be seeded
+# physically (unlike HLLC, whose numerical mixing at the contact spuriously
+# seeded two-phase cells).  Subcritical-gated (216.6..304.13 K).
+CAMR.ps_flash_tau = 1.0e-5
+
+CAMR.v = 1
+amr.v = 1
+CAMR.sum_interval = -1
+CAMR.redistribution_type = StateRedist
+amr.loadbalance_with_workestimates = 0
+
+# --- AMR: refine the flash front / shocks near the break ------------
+amr.max_level       = 2
+# ref_ratio: 2 per level.  In 2-D a single factor-of-4 level (ref_ratio=4,
+# max_level=1) is often more efficient than two factor-of-2 levels for the
+# same effective resolution — runs (advances + regrids, no crash) but the
+# rr=4 PS reflux/regrid still needs a full-length validation run.
+amr.ref_ratio       = 2 2 2 2
+amr.regrid_int      = 2 2 2 2
+amr.blocking_factor = 16
+amr.max_grid_size   = 64
+amr.n_error_buf     = 2 2 2 2
+amr.grid_eff        = 0.9
+
+# Refine on (a) the pressure jump — shock cells + jet front — and (b) the
+# PS phase-1 volume fraction vfrac1, which tracks the flashing two-phase
+# front.  vfrac1 is a registered derive (= alpha_1); tagging the raw alpha_1
+# STATE variable segfaults the adjacent-difference tagger.  NOTE: vfrac1 is
+# the PS phase fraction, NOT the EB fluid volume fraction "vfrac".
+amr.refinement_indicators = ptag atag
+amr.ptag.field_name = pressure
+# Threshold well above the ambient (5 bar) so refinement tracks the jet /
+# shock cells, not acoustic-outflow boundary noise (2 MPa ~ jet-core scale).
+amr.ptag.adjacent_difference_greater = 2.0e6
+amr.ptag.max_level = 2
+amr.atag.field_name = vfrac1
+amr.atag.value_less = 0.95      # tag genuine two-phase cells (alpha_1 < 0.95)
+amr.atag.max_level = 2
+
+DistributionMapping.strategy = ROUNDROBIN
+
+amr.checkpoint_files_output = 0
+amr.check_file              = chk
+amr.check_int               = -1
+
+amr.plot_files_output = 1
+amr.plot_file         = plt
+amr.plot_int          = 100
+amr.derive_plot_vars  = x_velocity y_velocity pressure
+
+# --- Problem state ---------------------------------------------------
+prob.p0       = 5.0e5     # Pa   ambient (5 bar)
+prob.T0       = 260.0     # K    ambient
+prob.u0       = 0.0
+prob.p_amb    = 5.0e5     # Pa   outflow far-field target
+prob.p_res    = 9.0e6     # Pa   reservoir (90 bar dense CO2)
+prob.T_res    = 290.0     # K    reservoir
+prob.gap_yc   = 0.5       # m    break-gap centre
+prob.gap_half = 0.05      # m    break-gap half-width (gap = 0.1 m)

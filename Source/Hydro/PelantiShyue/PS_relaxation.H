@@ -70,6 +70,11 @@ struct PsRelaxDiag {
     int n_skip_mk      = 0;   // m_1 or m_2 non-positive
     // -----------------------------------------------------------------
     int n_failed       = 0;   // ps_pressure_relax_cell returned false
+    // --- failure taxonomy (task #41) ---
+    int n_fail_eos     = 0;   //   of which: metastable/out-of-domain EOS state
+    int n_fail_slope   = 0;   //   singular dP/dα (even 1-sided + step-shrink)
+    int n_fail_maxiter = 0;   //   did not converge within max_iter
+    int n_fail_input   = 0;   //   bad input on entry
     int n_alpha_low    = 0;   // α_1 written < α_floor
     int n_alpha_high   = 0;   // α_1 written > 1 − α_floor
     int n_alpha_gt_one = 0;   // α_1 written > 1  (impossible physically)
@@ -225,9 +230,18 @@ ps_mechanical_relax_cell(int i, int j, int k,
     // (max_iter=20, tol_P_rel=1e-4, alpha_min=1e-6, ...).  On
     // return, Uv[0], Uv[4], Uv[5] are updated in place; Uv[1..3]
     // are invariants.
-    const bool ok = hem::ps_pressure_relax_cell(Uv, eos);
+    int reason = hem::PSR_OK;
+    const bool ok = hem::ps_pressure_relax_cell(Uv, eos,
+                                                hem::PsPressureRelaxParams{},
+                                                &reason);
     if (!ok) {
         ++diag.n_failed;
+        switch (reason) {
+            case hem::PSR_BAD_EOS:   ++diag.n_fail_eos;     break;
+            case hem::PSR_SLOPE:     ++diag.n_fail_slope;   break;
+            case hem::PSR_MAXITER:   ++diag.n_fail_maxiter; break;
+            default:                 ++diag.n_fail_input;   break;
+        }
         return;   // failure → leave cell unchanged
     }
 
@@ -473,6 +487,10 @@ ps_apply_relaxation(amrex::MultiFab& S_new, int nghost = 0, bool do_print = true
             <<    ",hi_BAD="  << d.n_skip_hi_bad
             <<    ",mk="      << d.n_skip_mk << ")"
             << " failed=" << d.n_failed
+            << " (eos=" << d.n_fail_eos
+            <<  ",slope=" << d.n_fail_slope
+            <<  ",maxit=" << d.n_fail_maxiter
+            <<  ",input=" << d.n_fail_input << ")"
             << " α<0="   << d.n_alpha_lt_zero
             << " α>1="   << d.n_alpha_gt_one
             << " α<floor=" << d.n_alpha_low

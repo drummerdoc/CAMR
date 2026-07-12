@@ -266,6 +266,28 @@ amrex::Real local_small_den = 1.e-20;
   });
 }
 
+#ifdef USE_PS_HYDRO
+void
+CAMR_dervfrac1(
+  const amrex::Box& bx,
+  amrex::FArrayBox& derfab,
+  int /*dcomp*/,
+  int /*ncomp*/,
+  const amrex::FArrayBox& datfab,
+  const amrex::Geometry& /*geomdata*/,
+  amrex::Real /*time*/,
+  const int* /*bcrec*/,
+  const int /*level*/)
+{
+  // datfab component 0 is UALPHA1 (see addComponent in CAMR_setup.cpp).
+  auto const dat = datfab.const_array();
+  auto vf = derfab.array();
+  amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
+    vf(i, j, k) = dat(i, j, k, 0);
+  });
+}
+#endif
+
 void
 CAMR_derspec(
   const amrex::Box& bx,

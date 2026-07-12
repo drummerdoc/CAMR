@@ -1789,15 +1789,30 @@ struct PsPressureRelaxParams {
 // Returns true on convergence, false on failure (in which case U is
 // left unchanged and the caller may choose to accept the disequilibrium
 // state or fall back to LLF).
+//
+// Optional out_reason (task #41 diagnostics): when non-null it receives a
+// PsRelaxFail code categorising *why* the call returned — so the driver can
+// distinguish a genuine metastable/out-of-domain EOS state (PSR_BAD_EOS,
+// the interface-cell case) from a singular Newton slope (PSR_SLOPE) or a
+// max-iteration miss (PSR_MAXITER).  It is set to PSR_OK on success.
+enum PsRelaxFail {
+    PSR_OK = 0,         // converged
+    PSR_BAD_INPUT = 1,  // eos/alpha/m_k/rho invalid on entry
+    PSR_BAD_EOS = 2,    // per-phase EOS state invalid at an iterate (metastable)
+    PSR_SLOPE = 3,      // no usable dP/dalpha even with one-sided + shrink
+    PSR_MAXITER = 4     // did not converge within max_iter
+};
 inline bool ps_pressure_relax_cell(V6& U, const PsPhaseAPI& eos,
                                     const PsPressureRelaxParams& p =
-                                        PsPressureRelaxParams{})
+                                        PsPressureRelaxParams{},
+                                    int* out_reason = nullptr)
 {
-    if (!eos.valid()) return false;
+    if (out_reason) *out_reason = PSR_OK;
+    if (!eos.valid()) { if (out_reason) *out_reason = PSR_BAD_INPUT; return false; }
 
     // Extract primitives.
     double alpha1 = U[0];
-    if (!std::isfinite(alpha1)) return false;
+    if (!std::isfinite(alpha1)) { if (out_reason) *out_reason = PSR_BAD_INPUT; return false; }
     alpha1 = std::max(p.alpha_min, std::min(1.0 - p.alpha_min, alpha1));
 
     // Single-phase-dominated skip.  See PsPressureRelaxParams docstring.
@@ -1814,9 +1829,9 @@ inline bool ps_pressure_relax_cell(V6& U, const PsPhaseAPI& eos,
     // Total per-phase masses (invariants of relaxation).
     const double m1 = U[1];   // alpha_1 * rho_1
     const double m2 = U[2];   // alpha_2 * rho_2
-    if (m1 <= 0.0 || m2 <= 0.0) return false;
+    if (m1 <= 0.0 || m2 <= 0.0) { if (out_reason) *out_reason = PSR_BAD_INPUT; return false; }
     const double rho_mix = m1 + m2;
-    if (rho_mix <= 0.0) return false;
+    if (rho_mix <= 0.0) { if (out_reason) *out_reason = PSR_BAD_INPUT; return false; }
     const double u = U[3] / rho_mix;
     // Per-phase total energies E_k (invariant except for the work
     // redistribution term below).
@@ -1845,13 +1860,13 @@ inline bool ps_pressure_relax_cell(V6& U, const PsPhaseAPI& eos,
         ph1.alpha = alpha; ph2.alpha = 1.0 - alpha;
         eos.state_from_rho_e_phase(1, rho_1, e_1, ph1);
         eos.state_from_rho_e_phase(2, rho_2, e_2, ph2);
-        if (!ph1.valid || !ph2.valid) return false;
+        if (!ph1.valid || !ph2.valid) { if (out_reason) *out_reason = PSR_BAD_EOS; return false; }
         const double P1 = ph1.P;
         const double P2 = ph2.P;
-        if (!std::isfinite(P1) || !std::isfinite(P2)) return false;
+        if (!std::isfinite(P1) || !std::isfinite(P2)) { if (out_reason) *out_reason = PSR_BAD_EOS; return false; }
 
         const double P_max = std::max(std::abs(P1), std::abs(P2));
-        if (P_max < 1.0) return false;
+        if (P_max < 1.0) { if (out_reason) *out_reason = PSR_BAD_EOS; return false; }
         const double P_diff = P1 - P2;
         if (std::abs(P_diff) < p.tol_P_rel * P_max) {
             // Converged.  Write back to U.
@@ -1869,10 +1884,16 @@ inline bool ps_pressure_relax_cell(V6& U, const PsPhaseAPI& eos,
         // if convergence is slow.
         const double P_I = 0.5 * (P1 + P2);
 
-        // Numerical derivative dP_diff/dalpha via central FD.
+        // Numerical derivative dP_diff/dalpha.  Preferred: central FD.
+        // Intelligent one-sided fallback (task #41): when a perturbed alpha
+        // lands in an invalid EOS region (compute_P_diff -> NaN, the
+        // metastable interface-cell case), use a one-sided difference against
+        // the centre value P_diff (which we already have and equals
+        // compute_P_diff(alpha)); if BOTH sides are bad, shrink the probe
+        // step and retry a few times before giving up.  This keeps the Newton
+        // making progress at trace/near-single-phase interface cells instead
+        // of bailing (which left the cell in pressure disequilibrium).
         const double a_min = p.alpha_min;
-        const double da = 1.0e-4 * std::min(alpha, 1.0 - alpha);
-        if (da < 1.0e-14) return false;
         auto compute_P_diff = [&](double a_test) -> double {
             const double r1t = m1 / a_test;
             const double r2t = m2 / (1.0 - a_test);
@@ -1888,14 +1909,34 @@ inline bool ps_pressure_relax_cell(V6& U, const PsPhaseAPI& eos,
                 return std::numeric_limits<double>::quiet_NaN();
             return p1t.P - p2t.P;
         };
-        const double alpha_p = std::min(alpha + da, 1.0 - a_min);
-        const double alpha_m = std::max(alpha - da, a_min);
-        if (alpha_p <= alpha || alpha_m >= alpha) return false;
-        const double dPd_p = compute_P_diff(alpha_p);
-        const double dPd_m = compute_P_diff(alpha_m);
-        if (!std::isfinite(dPd_p) || !std::isfinite(dPd_m)) return false;
-        const double slope = (dPd_p - dPd_m) / (alpha_p - alpha_m);
-        if (!std::isfinite(slope) || std::abs(slope) < 1.0e-30) return false;
+        double slope = 0.0;
+        bool have_slope = false;
+        double da = 1.0e-4 * std::min(alpha, 1.0 - alpha);
+        for (int trial = 0; trial < 4 && !have_slope; ++trial, da *= 0.25) {
+            if (da < 1.0e-14) break;
+            const double alpha_p = std::min(alpha + da, 1.0 - a_min);
+            const double alpha_m = std::max(alpha - da, a_min);
+            const double dPd_p = (alpha_p > alpha)
+                ? compute_P_diff(alpha_p)
+                : std::numeric_limits<double>::quiet_NaN();
+            const double dPd_m = (alpha_m < alpha)
+                ? compute_P_diff(alpha_m)
+                : std::numeric_limits<double>::quiet_NaN();
+            const bool okp = std::isfinite(dPd_p);
+            const bool okm = std::isfinite(dPd_m);
+            if (okp && okm) {
+                slope = (dPd_p - dPd_m) / (alpha_p - alpha_m);   // central
+            } else if (okp) {
+                slope = (dPd_p - P_diff) / (alpha_p - alpha);    // forward
+            } else if (okm) {
+                slope = (P_diff - dPd_m) / (alpha - alpha_m);    // backward
+            } else {
+                continue;   // both probes bad → shrink da and retry
+            }
+            if (std::isfinite(slope) && std::abs(slope) > 1.0e-30)
+                have_slope = true;
+        }
+        if (!have_slope) { if (out_reason) *out_reason = PSR_SLOPE; return false; }
 
         // Damped Newton step.
         double step = -P_diff / slope;
@@ -1913,9 +1954,12 @@ inline bool ps_pressure_relax_cell(V6& U, const PsPhaseAPI& eos,
         rho_1 = m1 / alpha;
         rho_2 = m2 / (1.0 - alpha);
         // Sanity: internal energy shouldn't go NaN.
-        if (!std::isfinite(e_1) || !std::isfinite(e_2)) return false;
+        if (!std::isfinite(e_1) || !std::isfinite(e_2)) {
+            if (out_reason) *out_reason = PSR_BAD_EOS; return false;
+        }
     }
-    // Failed to converge; leave U unchanged.
+    // Failed to converge within max_iter; leave U unchanged.
+    if (out_reason) *out_reason = PSR_MAXITER;
     return false;
 }
 

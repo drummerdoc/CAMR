@@ -276,6 +276,16 @@ CAMR::variableSetUp()
     "logden", amrex::IndexType::TheCellType(), 1, CAMR_derlogden, the_same_box);
   derive_lst.addComponent("logden", desc_lst, State_Type, URHO, NVAR);
 
+#ifdef USE_PS_HYDRO
+  // Pelanti-Shyue phase-1 volume fraction as a proper derive, so AMR can
+  // refine on the phase/flash front (tagging the raw alpha_1 STATE variable
+  // segfaults; the derive path does the required ghost FillPatch).  Named
+  // vfrac1 to distinguish it from the EB fluid volume fraction "vfrac".
+  derive_lst.add(
+    "vfrac1", amrex::IndexType::TheCellType(), 1, CAMR_dervfrac1, the_same_box);
+  derive_lst.addComponent("vfrac1", desc_lst, State_Type, UALPHA1, 1);
+#endif
+
   //
   // X from rhoX
   //

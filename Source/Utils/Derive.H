@@ -175,6 +175,23 @@ void CAMR_derspec(
   const int* bcrec,
   const int level);
 
+#ifdef USE_PS_HYDRO
+// Pelanti-Shyue phase-1 volume fraction alpha_1, exposed as a proper derive
+// (with the standard ghost FillPatch) so AMR can refine on the phase/flash
+// front.  This is NOT the EB fluid volume fraction "vfrac"; it is the PS
+// six-equation alpha_1 (datfab component 0 = UALPHA1).
+void CAMR_dervfrac1(
+  const amrex::Box& bx,
+  amrex::FArrayBox& derfab,
+  int dcomp,
+  int ncomp,
+  const amrex::FArrayBox& datfab,
+  const amrex::Geometry& geomdata,
+  amrex::Real time,
+  const int* bcrec,
+  const int level);
+#endif
+
 void CAMR_dermagvort(
   const amrex::Box& bx,
   amrex::FArrayBox& derfab,
