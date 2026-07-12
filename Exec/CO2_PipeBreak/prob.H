@@ -110,19 +110,38 @@ bcnormal(
     //  x-lo rupture plane (idir==0, sgn==+1): reservoir gap vs slip wall.
     // -----------------------------------------------------------------
     if (idir == 0 && sgn == 1) {
+        // Reservoir window swin(y): 1 in the gap core, smoothstep to 0 over
+        // gap_taper OUTSIDE the gap edge (task #49 — soft orifice lip).
 #if (AMREX_SPACEDIM >= 2)
-        const bool in_gap =
-            std::abs(x[1] - prob_parm.gap_yc) <= prob_parm.gap_half;
+        const amrex::Real dgap = std::abs(x[1] - prob_parm.gap_yc);
+        amrex::Real swin;
+        const amrex::Real tp = prob_parm.gap_taper;
+        if (dgap <= prob_parm.gap_half) {
+            swin = amrex::Real(1.0);
+        } else if (tp > amrex::Real(0.0) && dgap < prob_parm.gap_half + tp) {
+            const amrex::Real xi = (prob_parm.gap_half + tp - dgap) / tp;
+            swin = xi * xi * (amrex::Real(3.0) - amrex::Real(2.0) * xi);
+        } else {
+            swin = amrex::Real(0.0);
+        }
+        const bool in_gap = (swin > amrex::Real(1.0e-6));
 #else
         const bool in_gap = true;   // 1-D: whole face is the gap (slot)
+        const amrex::Real swin = amrex::Real(1.0);
 #endif
+        // Slip-wall ghost W: reflect normal momentum, extrapolate the rest.
+        amrex::Real W[NVAR];
+        for (int n = 0; n < NVAR; ++n) W[n] = s_int[n];
+        W[UMX] = -s_int[UMX];
+
         if (in_gap) {
-            // ---- Dense-CO2 reservoir pressure inlet (stagnation) ----
-            //  Soft-start (task #48): ramp the imposed reservoir pressure
-            //  from ambient (p0) to p_res over prob_parm.ramp_time so the
-            //  inlet is not an impulsive discontinuity at t=0 (that startup
-            //  is what drives the growing inlet oscillation).  ramp_time<=0
-            //  => instantaneous full reservoir.
+            // ---- Dense-CO2 reservoir stagnation ghost R, BLENDED into the
+            //      wall ghost W by the smooth window swin (task #49).  A hard
+            //      reservoir|wall switch is an infinite-shear lip that
+            //      separates and craters the corner pressure to vacuum;
+            //      blending the STATE (not just P) across the taper removes
+            //      the velocity/type discontinuity.  Soft-start ramp of the
+            //      reservoir pressure (task #48) is applied first.
             amrex::Real Y[NUM_SPECIES];
             Y[0] = amrex::Real(1.0);
             for (int n = 1; n < NUM_SPECIES; ++n) Y[n] = amrex::Real(0.0);
@@ -135,25 +154,29 @@ bcnormal(
             }
             amrex::Real rho_r, e_r;
             EOS::PYT2RE(P_res_t, Y, prob_parm.T_res, rho_r, e_r);
-            s_ext[URHO] = rho_r;
-            s_ext[UMX]  = amrex::Real(0.0);   // stagnation: u=0, ΔP drives flow
-            s_ext[UMY]  = amrex::Real(0.0);
+
+            amrex::Real R[NVAR];
+            for (int n = 0; n < NVAR; ++n) R[n] = amrex::Real(0.0);
+            R[URHO]  = rho_r;
+            R[UMX]   = amrex::Real(0.0);   // stagnation: u=0, ΔP drives flow
+            R[UMY]   = amrex::Real(0.0);
 #if (AMREX_SPACEDIM == 3)
-            s_ext[UMZ]  = amrex::Real(0.0);
+            R[UMZ]   = amrex::Real(0.0);
 #endif
-            s_ext[UEINT] = rho_r * e_r;
-            s_ext[UEDEN] = rho_r * e_r;
-            s_ext[UTEMP] = prob_parm.T_res;
-            s_ext[UFS  ] = Y[0] * rho_r;
-            s_ext[UFS+1] = Y[1] * rho_r;
-            s_ext[UFS+2] = Y[2] * rho_r;
+            R[UEINT] = rho_r * e_r;
+            R[UEDEN] = rho_r * e_r;
+            R[UTEMP] = prob_parm.T_res;
+            R[UFS  ] = Y[0] * rho_r;
+            R[UFS+1] = Y[1] * rho_r;
+            R[UFS+2] = Y[2] * rho_r;
 #ifdef USE_PS_HYDRO
-            CAMR_ps_fill_single_phase(s_ext, rho_r, e_r);
+            CAMR_ps_fill_single_phase(R, rho_r, e_r);
 #endif
+            const amrex::Real w = swin;
+            for (int n = 0; n < NVAR; ++n)
+                s_ext[n] = w * R[n] + (amrex::Real(1.0) - w) * W[n];
         } else {
-            // ---- Slip wall: reflect normal momentum, extrapolate rest ----
-            for (int n = 0; n < NVAR; ++n) s_ext[n] = s_int[n];
-            s_ext[UMX] = -s_int[UMX];
+            for (int n = 0; n < NVAR; ++n) s_ext[n] = W[n];
         }
         return;
     }

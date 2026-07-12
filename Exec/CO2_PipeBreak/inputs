@@ -107,5 +107,10 @@ prob.p_res    = 9.0e6     # Pa   reservoir (90 bar dense CO2)
 prob.T_res    = 290.0     # K    reservoir
 prob.gap_yc   = 0.5       # m    break-gap centre
 prob.gap_half = 0.05      # m    break-gap half-width (gap = 0.1 m)
+prob.gap_taper = 0.02     # m    lip taper: smoothstep-blend the reservoir
+                          #      ghost into the slip-wall ghost over this
+                          #      width outside the gap edge, so the inlet is
+                          #      a soft orifice (no infinite-shear lip that
+                          #      craters to vacuum). 0 = hard top-hat (task #49)
 prob.ramp_time = 5.0e-4   # s    soft-start: ramp p0->p_res over this time
                           #      (0 = instantaneous full reservoir; task #48)

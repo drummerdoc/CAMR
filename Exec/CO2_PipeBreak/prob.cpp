@@ -18,9 +18,10 @@ extern "C" {
         pp.query("p_amb",    CAMR::h_prob_parm->p_amb);
         pp.query("p_res",    CAMR::h_prob_parm->p_res);
         pp.query("T_res",    CAMR::h_prob_parm->T_res);
-        pp.query("gap_yc",   CAMR::h_prob_parm->gap_yc);
-        pp.query("gap_half", CAMR::h_prob_parm->gap_half);
-        pp.query("ramp_time",    CAMR::h_prob_parm->ramp_time);
+        pp.query("gap_yc",    CAMR::h_prob_parm->gap_yc);
+        pp.query("gap_half",  CAMR::h_prob_parm->gap_half);
+        pp.query("gap_taper", CAMR::h_prob_parm->gap_taper);
+        pp.query("ramp_time", CAMR::h_prob_parm->ramp_time);
 
         amrex::Gpu::copy(amrex::Gpu::hostToDevice,
                          CAMR::h_prob_parm, CAMR::h_prob_parm+1,

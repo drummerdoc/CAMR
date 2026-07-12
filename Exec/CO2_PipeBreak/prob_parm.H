@@ -40,6 +40,12 @@ struct ProbParmDevice
     // Break-gap geometry on the x-lo rupture plane.
     amrex::Real gap_yc   = 0.5;   // m    gap centre (y)
     amrex::Real gap_half = 0.05;  // m    gap half-width
+    // Lip taper (task #49): smoothly ramp the reservoir inflow strength from
+    // full (in the gap) to ambient over gap_taper OUTSIDE the gap edge, so
+    // the inlet is a soft orifice profile rather than a hard top-hat.  A hard
+    // reservoir|slip-wall jump is an infinite-shear lip that separates and
+    // craters the corner pressure to vacuum (dt collapse).  0 = hard top-hat.
+    amrex::Real gap_taper = 0.02; // m
 
     // Reservoir soft-start (task #48): ramp the imposed reservoir pressure
     // linearly from ambient (p0) to p_res over ramp_time, so the inlet is
