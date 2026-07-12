@@ -2408,6 +2408,15 @@ struct PsMassTransferParams {
     // and NaN propagation on the L side of cross-critical Riemann
     // problems (B4 debugging, task #114).
     double single_phase_threshold = ps_single_phase_threshold_default();
+    // Two-phase-coexistence gate (task #37): only transfer mass where BOTH
+    // phase temperatures lie in the saturable range [dome_T_lo, dome_T_hi]
+    // (CO2 triple point .. Tc).  Prevents spurious Gibbs-driven transfer at
+    // cross-critical material contacts (liquid | supercritical vapor — the
+    // B10 over-flash).  Set dome_gate=false for a non-CO2 / mock EOS.  The
+    // env var PS_MT_NO_DOME_GATE=1 also disables it globally.
+    bool   dome_gate = true;
+    double dome_T_lo = 216.6;    // CO2 triple point [K]
+    double dome_T_hi = 304.13;   // CO2 critical T  [K]
 };
 
 
@@ -2455,6 +2464,25 @@ inline bool ps_mass_transfer_relax_cell(
     // equal, nothing to do.
     PsState s0 = ps_state_from_cons(U, eos);
     if (!s0.valid) return false;
+
+    // Two-phase-coexistence gate (task #37).  Only transfer mass where BOTH
+    // phases are in the saturable range (triple point .. Tc) — a genuine
+    // liquid-vapor coexistence.  At a cross-critical material contact
+    // (compressed liquid | supercritical vapor) g1 != g2 is not a
+    // phase-change driving force and Gibbs-driven transfer is spurious
+    // (the B10 over-development).  Mirrors ps_mass_transfer_finite_cell and
+    // ps_flash_source_cell.  Controlled by mt_p.dome_gate (default on, CO2
+    // bounds); env PS_MT_NO_DOME_GATE=1 disables globally (non-CO2 / mock EOS).
+    static const bool mt_no_dome_gate_env = []{
+        const char* v = std::getenv("PS_MT_NO_DOME_GATE");
+        return v && std::strcmp(v, "1") == 0;
+    }();
+    if (mt_p.dome_gate && !mt_no_dome_gate_env) {
+        if (s0.p1.T <= mt_p.dome_T_lo || s0.p1.T >= mt_p.dome_T_hi ||
+            s0.p2.T <= mt_p.dome_T_lo || s0.p2.T >= mt_p.dome_T_hi)
+            return true;   // not a two-phase cell → no mass transfer
+    }
+
     const double g_scale0 = std::max({std::abs(s0.p1.g),
                                        std::abs(s0.p2.g), 1.0});
     if (std::abs(s0.p1.g - s0.p2.g) < mt_p.tol_g_rel * g_scale0) {
@@ -2715,6 +2743,30 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
         !std::isfinite(p1.h) || !std::isfinite(p2.h))
         return false;
 
+    // Two-phase-coexistence gate (task #35).  Mass transfer is only
+    // physical where the two phases form a genuine liquid-vapor
+    // coexistence — i.e. BOTH phase temperatures lie in the saturable
+    // range (triple point .. Tc).  At a *cross-critical material contact*
+    // (e.g. compressed liquid against SUPERCRITICAL vapor, B10 with
+    // T_R=400 K > Tc), the phases are two different single-phase fluids,
+    // not coexisting phases; g1 != g2 there is not a phase-change driving
+    // force, and transferring mass produces spurious, grid-erratic
+    // over-development (B10: peak|u| 93/135/30 at N=64/128/256 vs analytic
+    // ~13).  Mirrors the flash-source subcritical gate
+    // (ps_flash_source_cell) so the two operators are consistent.  A
+    // no-op return leaves the cell to pressure relaxation only.  Env
+    // escape hatch PS_MT_NO_DOME_GATE=1 restores the ungated behaviour.
+    static const bool mt_no_dome_gate = []{
+        const char* v = std::getenv("PS_MT_NO_DOME_GATE");
+        return v && std::strcmp(v, "1") == 0;
+    }();
+    if (!mt_no_dome_gate) {
+        constexpr double T_trip = 216.6, T_crit = 304.13;   // CO2 [K]
+        if (p1.T <= T_trip || p1.T >= T_crit ||
+            p2.T <= T_trip || p2.T >= T_crit)
+            return true;   // not a two-phase cell → no mass transfer
+    }
+
     // Finite-rate dm/dt = +k (g_1 - g_2) with k = rho_mix / tau_g.
     // Sign convention: dm > 0 means U[1] shrinks (m_1 → m_2, evaporation
     // when phase 1 is liquid and g_1 > g_2).  This matches Pelanti 2022
@@ -2729,23 +2781,45 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
     // froze the entire simulation's velocity field at ~1 m/s).
     const double g_diff = p1.g - p2.g;
     double dm;
-    if (g_ref > 0.0) {
-        // NON-DIMENSIONALISED driving force (task #32 fix).  The legacy
-        // form dm = (rho_mix/tau)*g_diff*dt has ENERGY-density units
-        // (g_diff ~ 1e4 J/kg), so dm saturates the 0.9*m mass cap for any
-        // physically-meaningful tau and dumps ~all of a phase in one step
-        // (0-D bench: phase-2 collapse).  Scaling by a reference Gibbs
-        // g_ref (~R_specific*T ~ 5e4 J/kg for CO2) makes dm a proper mass
-        // density and tau_g a TRUE physical relaxation time.
+
+    // ---- finite-rate mass-transfer amount dm ----------------------------
+    // OPTION 2 (default, task #39): EXACT RELAXATION toward the
+    // instantaneous MT equilibrium.  The transferred mass relaxes toward
+    // dm_eq -- the amount that reaches Gibbs equilibrium g1 == g2, computed
+    // by the validated implicit solver ps_mass_transfer_relax_cell -- with
+    // the analytic factor
+    //     frac = 1 - exp(-dt / tau_g)   in [0, 1).
+    // This is the exact solution of d(dm)/dt = (dm_eq - dm)/tau_g, so it is
+    // unconditionally stable and strictly NON-OVERSHOOTING: dm can never
+    // exceed dm_eq (where g_diff = 0), which removes the sharp-front
+    // forward-Euler runaway that blew up B2/B9 at N >= 256 (peak|u| ran
+    // 148 -> 285 -> NaN at the flash front).  tau_g is now a true physical
+    // relaxation time: tau_g -> 0 recovers instantaneous MT, tau_g -> inf
+    // gives no transfer.  g_ref is unused on this path (magnitude comes
+    // from dm_eq).  The legacy explicit forward-Euler forms are retained
+    // behind PS_MT_EXPLICIT=1 for A/B comparison.
+    static const bool mt_explicit = []{
+        const char* v = std::getenv("PS_MT_EXPLICIT");
+        return v && std::strcmp(v, "1") == 0;
+    }();
+    if (!mt_explicit) {
+        V6 Ueq = U;
+        PsMassTransferParams mt_eq;
+        mt_eq.dome_gate = false;   // dome gate already enforced above
+        ps_mass_transfer_relax_cell(Ueq, eos, mt_eq);
+        const double dm_eq = m1 - Ueq[1];               // mass leaving phase 1
+        const double frac  = -std::expm1(-dt / tau_g);  // 1 - exp(-dt/tau)
+        dm = frac * dm_eq;
+    } else if (g_ref > 0.0) {
+        // NON-DIMENSIONALISED explicit driving force (legacy task #32 fix).
         const double m_ref = (m1 < m2) ? m1 : m2;
         dm = (m_ref / tau_g) * (g_diff / g_ref) * dt;
+        dm *= 0.5;   // under-relax to blunt (not cure) FE overshoot
     } else {
         const double k_rate = rho_mix / tau_g;   // legacy (mis-scaled)
         dm = k_rate * g_diff * dt;
+        dm *= 0.5;
     }
-
-    // Under-relax slightly to avoid overshoot in stiff regions.
-    dm *= 0.5;
 
     // Sign-aware caps to prevent m_k going non-positive.  Convention:
     // dm > 0 → m_1 shrinks; dm < 0 → m_2 shrinks.

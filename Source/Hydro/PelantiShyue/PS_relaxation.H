@@ -334,6 +334,20 @@ inline int ps_relax_mode()
     return m;
 }
 
+// Cached CAMR.ps_relax_verbose (default 0 = silent).  When 0, ps_apply_relaxation
+// emits NO per-step stdout and skips the global α min/max MPI reduction — cheap.
+// Set to 1 to restore the [ps_relax] anomaly + post-relax-range diagnostics.
+inline int ps_relax_verbose()
+{
+    static const int v = []() -> int {
+        int val = 0;
+        amrex::ParmParse pp("CAMR");
+        pp.query("ps_relax_verbose", val);
+        return val;
+    }();
+    return v;
+}
+
 
 // -----------------------------------------------------------------
 //  ps_apply_vanish_fold  —  grid-level wrapper for the standalone's
@@ -433,6 +447,10 @@ ps_apply_relaxation(amrex::MultiFab& S_new, int nghost = 0, bool do_print = true
     // Strang pre-half-step calls pass do_print=false to skip the global
     // reductions/prints (avoids double diagnostics + reduction cost).
     if (!do_print) return;
+
+    // Diagnostics are opt-in (CAMR.ps_relax_verbose=1).  Default: silent and
+    // cheap — no per-step stdout, and we skip the global α min/max reduction.
+    if (ps_relax_verbose() == 0) return;
 
     // Per-rank summary — report only when an anomaly appears.  With the
     // refined counters we also flag n_skip_hi_bad (α_in > 1 from the
