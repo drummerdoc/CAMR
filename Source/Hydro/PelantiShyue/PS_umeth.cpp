@@ -703,8 +703,9 @@ ps_wp_face(int idir, int i, int j, int k, int iL, int jL, int kL,
         UL[n] = ps_finite_or(uin(iL, jL, kL, n), Real(0.0));
         UR[n] = ps_finite_or(uin(i,  j,  k,  n), Real(0.0));
     }
-    Real FL[NVAR];
+    Real FL[NVAR], FR[NVAR];
     ps_physical_flux_from_state(idir, UL, FL);
+    ps_physical_flux_from_state(idir, UR, FR);
 
     PS_HLLC::Fluctuations flu;
     const bool ok = PS_HLLC::fluctuations(idir, UL, UR, flu);
@@ -714,11 +715,17 @@ ps_wp_face(int idir, int i, int j, int k, int iL, int jL, int kL,
         for (int n = 0; n < NVAR; ++n) {
             Am[n]      = flu.Am[n];
             Ap[n]      = flu.Ap[n];
-            flx_loc[n] = FL[n] + Am[n];           // recovered F* = F_L + A⁻
+            // Symmetrized recovered flux (task #47):
+            //   F* = ½[(F_L + A⁻) + (F_R − A⁺)].
+            // Identically F_L + A⁻ when the consistency identity
+            // A⁻ + A⁺ = F_R − F_L holds; where it does NOT (the PS
+            // non-conservative α / star-pressure split), the plain
+            // F_L + A⁻ form is left-biased and breaks y-reflection
+            // symmetry at mirror faces (pipe-break gap-edge asymmetry).
+            // The symmetric average removes the bias.
+            flx_loc[n] = Real(0.5) * ((FL[n] + Am[n]) + (FR[n] - Ap[n]));
         }
     } else {
-        Real FR[NVAR];
-        ps_physical_flux_from_state(idir, UR, FR);
         const Real lamL    = ps_max_wave_speed_from_state(idir, UL);
         const Real lamR    = ps_max_wave_speed_from_state(idir, UR);
         const Real lam_raw = amrex::max(lamL, lamR);
