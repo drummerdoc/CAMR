@@ -100,6 +100,21 @@ namespace EOS {
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   amrex::Real P_triple() { return amrex::Real(5.1795e5); }    // triple-point P [Pa]
 
+  // Saturated liquid/vapor (rho, e) at temperature T on the PR coexistence
+  // curve.  Used to build a genuine two-phase (saturated) inlet/IC without
+  // relying on flash nucleation.  Iterative (Psat solve) -- call once and
+  // cache, not per cell.
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void co2_sat_LV(amrex::Real T, amrex::Real& rhoL, amrex::Real& eL,
+                  amrex::Real& rhoV, amrex::Real& eV)
+  {
+      const hem::PRFluid f = co2_fluid();
+      const hem::State sL = hem::satStateL(f, T);
+      const hem::State sV = hem::satStateV(f, T);
+      rhoL = sL.rho; eL = sL.e;
+      rhoV = sV.rho; eV = sV.e;
+  }
+
   // Legacy shim for prob.H files that still do  et = P/(γ-1).  With
   // the real PR EOS, initial conditions should be constructed via
   // PYT2RE below; this constant only prevents header-name breakage.

@@ -2,6 +2,7 @@
 #include "AMReX_ParmParse.H"
 #include "CAMR.H"
 #include "prob.H"
+#include "EOS.H"
 
 extern "C" {
     void amrex_probinit(const int* /*init*/,
@@ -22,6 +23,24 @@ extern "C" {
         pp.query("gap_half",  CAMR::h_prob_parm->gap_half);
         pp.query("gap_taper", CAMR::h_prob_parm->gap_taper);
         pp.query("ramp_time", CAMR::h_prob_parm->ramp_time);
+        pp.query("res_alpha1", CAMR::h_prob_parm->res_alpha1);
+
+        // Two-phase saturated reservoir (rung 4): precompute the saturated
+        // liquid/vapor per-phase (rho,e) at T_res once, so the per-cell
+        // bcnormal fill is cheap.
+        if (CAMR::h_prob_parm->res_alpha1 < amrex::Real(1.0)) {
+            amrex::Real rhoL, eL, rhoV, eV;
+            EOS::co2_sat_LV(CAMR::h_prob_parm->T_res, rhoL, eL, rhoV, eV);
+            CAMR::h_prob_parm->res_rhoL = rhoL;
+            CAMR::h_prob_parm->res_eL   = eL;
+            CAMR::h_prob_parm->res_rhoV = rhoV;
+            CAMR::h_prob_parm->res_eV   = eV;
+            amrex::Print() << "  CO2_PipeBreak: saturated two-phase reservoir @ T_res="
+                           << CAMR::h_prob_parm->T_res << " K, alpha1_liq="
+                           << CAMR::h_prob_parm->res_alpha1
+                           << "  rhoL=" << rhoL << " rhoV=" << rhoV
+                           << " eL=" << eL << " eV=" << eV << std::endl;
+        }
 
         amrex::Gpu::copy(amrex::Gpu::hostToDevice,
                          CAMR::h_prob_parm, CAMR::h_prob_parm+1,

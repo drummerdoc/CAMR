@@ -37,6 +37,20 @@ struct ProbParmDevice
     amrex::Real p_res = 9.0e6;    // Pa   reservoir stagnation pressure
     amrex::Real T_res = 290.0;    // K    reservoir stagnation temperature
 
+    // Two-phase (saturated) reservoir option (rung 4 — saturated CO2 blowdown).
+    // res_alpha1 = 1 (default): single-phase reservoir at (p_res, T_res) via
+    //   PYT2RE (the original behaviour).
+    // res_alpha1 in (0,1): inject a SATURATED two-phase mixture at T_res, with
+    //   liquid volume fraction res_alpha1 (reservoir P = Psat(T_res), NOT
+    //   p_res).  Exercises MT + relaxation on genuine two-phase cells without
+    //   flash nucleation.  The per-phase saturated (rho,e) below are filled
+    //   once in amrex_probinit (co2_sat_LV) so bcnormal reads them cheaply.
+    amrex::Real res_alpha1 = 1.0; //      liquid volume fraction (1 = single-phase)
+    amrex::Real res_rhoL = 0.0;   // kg/m3 saturated-liquid density  @ T_res
+    amrex::Real res_eL   = 0.0;   // J/kg  saturated-liquid internal energy
+    amrex::Real res_rhoV = 0.0;   // kg/m3 saturated-vapor  density  @ T_res
+    amrex::Real res_eV   = 0.0;   // J/kg  saturated-vapor  internal energy
+
     // Break-gap geometry on the x-lo rupture plane.
     amrex::Real gap_yc   = 0.5;   // m    gap centre (y)
     amrex::Real gap_half = 0.05;  // m    gap half-width

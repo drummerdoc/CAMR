@@ -1,0 +1,102 @@
+# =====================================================================
+#  CO2_PipeBreak — SIMPLE single-phase warm-up case (task #56 baseline).
+#
+#  Same rupture-plane geometry as the flashing pipe-break, but deliberately
+#  FAR from every tricky boundary so we can verify that the multi-D wp
+#  machinery (2-D fluctuations, transverse coupling, AMR C-F, BCs) evolves a
+#  clean, symmetric, long-time solution BEFORE any phase-change physics is
+#  turned on.
+#
+#  Key simplification: everything is SUPERCRITICAL CO2 (T = 400 K > T_crit =
+#  304.13 K), so the fluid is single-phase for ALL pressures — no saturation
+#  dome, no two-phase cells, no flash, no near-vacuum.  Gentle 2:1 vent so an
+#  expansion cannot cool below T_crit either.  MT/flash never trigger (no
+#  coexistence); mechanical relaxation + floors are harmless no-ops here.
+#
+#  Ladder from here (turn ONE knob per rung, re-validate symmetry+stability):
+#    1. this case, single level                     <- START
+#    2. add AMR (amr.max_level = 1, then 2)
+#    3. raise vent ratio (p_res up) toward under-expanded
+#    4. lower T toward the dome (introduce genuine two-phase)
+#    5. enable flash (ps_flash_tau = 1e-5), behind symmetry BC first
+# =====================================================================
+
+amrex.fpe_trap_invalid = 0
+
+max_step  = 20000
+stop_time = 4.0e-3
+
+geometry.is_periodic = 0 0 0
+geometry.coord_sys   = 0
+geometry.prob_lo     = 0.0  0.0
+geometry.prob_hi     = 2.0  1.0
+amr.n_cell           = 256  128
+
+CAMR.lo_bc = Inflow Inflow
+CAMR.hi_bc = Inflow Inflow
+
+# --- Physics + numerics ---------------------------------------------
+CAMR.cfl = 0.3
+CAMR.fixed_dt = 0
+CAMR.allow_negative_energy = 1
+CAMR.do_mol = 0
+CAMR.ppm_type = 1
+
+CAMR.ps_hydro    = 1
+CAMR.ps_flux     = wp
+CAMR.ps_wp_order = 2
+CAMR.ps_recon    = 0            # piecewise-constant (required for wp inlet)
+CAMR.ps_bc_use_nscbc = 0
+CAMR.ps_alpha_vanish = 1.0e-8
+
+# Relaxation on (no-op single-phase); flash OFF; MT stays gated off (no
+# two-phase coexistence in this supercritical case).
+CAMR.ps_do_relax  = 1
+CAMR.ps_mt_tau    = 1.0e-6
+CAMR.ps_mt_gref   = 5.0e4
+CAMR.ps_flash_tau = 0.0         # flash OFF
+CAMR.ps_pres_floor = 1.0e5      # far below operating P (~10-20 bar); won't engage
+CAMR.ps_temp_floor = 216.6      # far below operating T (400 K); won't engage
+
+CAMR.v = 1
+amr.v = 1
+CAMR.sum_interval = -1
+CAMR.redistribution_type = StateRedist
+amr.loadbalance_with_workestimates = 0
+
+# --- AMR: start single-level (rung 1); bump max_level to add rungs ---
+amr.max_level       = 0
+amr.ref_ratio       = 2 2 2 2
+amr.regrid_int      = 2 2 2 2
+amr.blocking_factor = 16
+amr.max_grid_size   = 64
+amr.n_error_buf     = 2 2 2 2
+amr.grid_eff        = 0.9
+
+amr.refinement_indicators = ldtag
+amr.ldtag.field_name = logden
+amr.ldtag.adjacent_difference_greater = 0.15
+amr.ldtag.max_level = 2
+
+DistributionMapping.strategy = ROUNDROBIN
+
+amr.checkpoint_files_output = 0
+amr.check_file              = chk_sc
+amr.check_int               = -1
+
+amr.plot_files_output = 1
+amr.plot_file         = plt_sc
+amr.plot_int          = 25
+amr.derive_plot_vars  = x_velocity y_velocity pressure
+
+# --- Problem state: supercritical CO2, gentle 2:1 vent ---------------
+prob.p0       = 1.0e6     # Pa   ambient (10 bar)
+prob.T0       = 400.0     # K    ambient  (> T_crit = 304 K -> supercritical)
+prob.u0       = 0.0
+prob.p_amb    = 1.0e6     # Pa   outflow far-field target
+prob.p_res    = 2.0e6     # Pa   reservoir (20 bar; 2:1 vent)
+prob.T_res    = 400.0     # K    reservoir (supercritical)
+prob.gap_yc   = 0.5       # m    break-gap centre
+prob.gap_half = 0.05      # m    break-gap half-width
+prob.gap_taper = 0.02     # m    lip taper
+prob.ramp_time = 5.0e-4   # s    soft-start

@@ -142,36 +142,62 @@ bcnormal(
             //      blending the STATE (not just P) across the taper removes
             //      the velocity/type discontinuity.  Soft-start ramp of the
             //      reservoir pressure (task #48) is applied first.
-            amrex::Real Y[NUM_SPECIES];
-            Y[0] = amrex::Real(1.0);
-            for (int n = 1; n < NUM_SPECIES; ++n) Y[n] = amrex::Real(0.0);
-
-            amrex::Real P_res_t = prob_parm.p_res;
-            if (prob_parm.ramp_time > amrex::Real(0.0)) {
-                amrex::Real f = time / prob_parm.ramp_time;
-                if (f > amrex::Real(1.0)) f = amrex::Real(1.0);
-                P_res_t = prob_parm.p0 + (prob_parm.p_res - prob_parm.p0) * f;
-            }
-            amrex::Real rho_r, e_r;
-            EOS::PYT2RE(P_res_t, Y, prob_parm.T_res, rho_r, e_r);
-
             amrex::Real R[NVAR];
             for (int n = 0; n < NVAR; ++n) R[n] = amrex::Real(0.0);
-            R[URHO]  = rho_r;
-            R[UMX]   = amrex::Real(0.0);   // stagnation: u=0, ΔP drives flow
-            R[UMY]   = amrex::Real(0.0);
+            R[UMX] = amrex::Real(0.0);     // stagnation: u=0, ΔP drives flow
+            R[UMY] = amrex::Real(0.0);
 #if (AMREX_SPACEDIM == 3)
-            R[UMZ]   = amrex::Real(0.0);
+            R[UMZ] = amrex::Real(0.0);
 #endif
-            R[UEINT] = rho_r * e_r;
-            R[UEDEN] = rho_r * e_r;
             R[UTEMP] = prob_parm.T_res;
-            R[UFS  ] = Y[0] * rho_r;
-            R[UFS+1] = Y[1] * rho_r;
-            R[UFS+2] = Y[2] * rho_r;
+
 #ifdef USE_PS_HYDRO
-            CAMR_ps_fill_single_phase(R, rho_r, e_r);
+            if (prob_parm.res_alpha1 < amrex::Real(1.0)) {
+                // ---- SATURATED TWO-PHASE reservoir (rung 4): fixed saturated
+                //      mixture at T_res (P = Psat(T_res)); per-phase sat (rho,e)
+                //      precomputed in probinit.  No pressure ramp (the state is
+                //      fixed); the swin taper still softens the spatial edge.
+                const amrex::Real a1 = prob_parm.res_alpha1;
+                const amrex::Real a2 = amrex::Real(1.0) - a1;
+                const amrex::Real m1 = a1 * prob_parm.res_rhoL;
+                const amrex::Real m2 = a2 * prob_parm.res_rhoV;
+                const amrex::Real rho_mix = m1 + m2;
+                const amrex::Real rhoe = m1 * prob_parm.res_eL
+                                       + m2 * prob_parm.res_eV;
+                R[URHO]    = rho_mix;
+                R[UEINT]   = rhoe;
+                R[UEDEN]   = rhoe;
+                R[UFS  ]   = rho_mix;   // Y=CO2
+                R[UALPHA1] = a1;
+                R[UM1RHO1] = m1;
+                R[UM2RHO2] = m2;
+                R[UE1    ] = m1 * prob_parm.res_eL;
+                R[UE2    ] = m2 * prob_parm.res_eV;
+            } else
 #endif
+            {
+                // ---- SINGLE-PHASE reservoir (original) with soft-start ramp.
+                amrex::Real Y[NUM_SPECIES];
+                Y[0] = amrex::Real(1.0);
+                for (int n = 1; n < NUM_SPECIES; ++n) Y[n] = amrex::Real(0.0);
+                amrex::Real P_res_t = prob_parm.p_res;
+                if (prob_parm.ramp_time > amrex::Real(0.0)) {
+                    amrex::Real f = time / prob_parm.ramp_time;
+                    if (f > amrex::Real(1.0)) f = amrex::Real(1.0);
+                    P_res_t = prob_parm.p0 + (prob_parm.p_res - prob_parm.p0) * f;
+                }
+                amrex::Real rho_r, e_r;
+                EOS::PYT2RE(P_res_t, Y, prob_parm.T_res, rho_r, e_r);
+                R[URHO]  = rho_r;
+                R[UEINT] = rho_r * e_r;
+                R[UEDEN] = rho_r * e_r;
+                R[UFS  ] = Y[0] * rho_r;
+                R[UFS+1] = Y[1] * rho_r;
+                R[UFS+2] = Y[2] * rho_r;
+#ifdef USE_PS_HYDRO
+                CAMR_ps_fill_single_phase(R, rho_r, e_r);
+#endif
+            }
             const amrex::Real w = swin;
             for (int n = 0; n < NVAR; ++n)
                 s_ext[n] = w * R[n] + (amrex::Real(1.0) - w) * W[n];
