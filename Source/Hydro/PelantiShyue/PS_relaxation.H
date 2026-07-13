@@ -458,38 +458,69 @@ ps_apply_floor(amrex::MultiFab& S_new, int nghost = 0)
                 const int  ue  = (ph == 1) ? UE1 : UE2;
                 const Real rhok = mk / alk;
                 const Real ek   = U(i,j,k, ue) / mk - kesp;   // phase internal e
-                const hem::Phase3 p3 = (ph == 1) ? hem::Phase3::Liquid
-                                                 : hem::Phase3::Vapor;
-                // A phase energy e is acceptable iff its branch-locked EOS
-                // (P,T) are finite AND above the pressure/temperature floors.
-                // Both P and T increase with e at fixed rho, so raising e to
-                // the smallest acceptable value floors both simultaneously.
-                auto ok = [&](Real e) -> bool {
-                    Real Pq, Tq, Sq;
-                    EOS::REY2PTS_phase(Real(rhok), Real(e), Y, p3, Pq, Tq, Sq);
-                    return std::isfinite(Pq) && std::isfinite(Tq)
-                           && Pq >= pfloor && Tq >= tfloor;
-                };
-                if (ok(ek)) continue;   // healthy
-                // Seed e_hi from the base-PR inverses (max of P- and T-floor
-                // energies), expand until the branch EOS agrees, then bisect.
-                Real e_pf = ek, e_tf = ek;
-                if (pfloor > Real(0.0)) EOS::RYP2E(Real(rhok), Y, Real(pfloor), e_pf);
-                if (tfloor > Real(0.0)) EOS::RTY2E(Real(rhok), Real(tfloor), Y, e_tf);
-                Real e_hi = std::max(std::isfinite(e_pf) ? e_pf : ek,
-                                     std::isfinite(e_tf) ? e_tf : ek);
-                if (!std::isfinite(e_hi)) e_hi = std::abs(ek) + Real(1.0);
-                int guard = 0;
-                while (!ok(e_hi) && guard++ < 50)
-                    e_hi += std::abs(e_hi) + Real(1.0);
-                if (ok(e_hi)) {
-                    Real e_lo = (std::isfinite(ek) && ek < e_hi)
-                                ? ek : (e_hi - std::abs(e_hi) - Real(1.0));
-                    for (int it = 0; it < 40; ++it) {
-                        const Real em = Real(0.5) * (e_lo + e_hi);
-                        if (ok(em)) e_hi = em; else e_lo = em;
+
+                // Continuous, symmetry-preserving floor (task #54).  The
+                // correction is a pure clamp
+                //     e_new = max(ek, e_pf, e_tf)
+                // where e_pf / e_tf are the BRANCHLESS base-PR inverse
+                // energies that put this phase at P = pfloor (RYP2E,
+                // state_from_P_rho) and T = tfloor (RTY2E, Vapor-branch
+                // state_from_T_v).  RYP2E / RTY2E are smooth, always-finite
+                // functions of rho_k, and max() is continuous, so two mirror
+                // cells whose states differ by round-off receive corrections
+                // differing only by round-off: the floor cannot manufacture a
+                // finite y-reflection asymmetry.
+                //
+                // The previous design keyed a boolean predicate off the
+                // BRANCH-LOCKED per-phase EOS (REY2PTS_phase, Liquid for
+                // phase 1).  At the venting orifice lip phase 1 expands to
+                // vapor-like density, where the Liquid branch goes non-finite
+                // / non-monotone; the resulting isfinite cliff flipped between
+                // mirror cells and injected a finite, non-conservative
+                // asymmetry that grew every step.
+                Real e_floor = ek;
+                if (pfloor > Real(0.0)) {
+                    // Pressure floor: state_from_P_rho is phase-DETECTED and
+                    // smooth in rho_k, so RYP2E gives a symmetry-safe target.
+                    Real e_pf;
+                    EOS::RYP2E(rhok, Y, pfloor, e_pf);
+                    if (std::isfinite(e_pf) && e_pf > e_floor) e_floor = e_pf;
+                }
+                if (tfloor > Real(0.0)) {
+                    // Temperature floor: find the smallest e whose PHASE-
+                    // DETECTED temperature T(rho_k,e) reaches tfloor, by a
+                    // bounded monotone bisection on the auto-detect REY2T.
+                    // T increases monotonically with e at fixed rho, so the
+                    // crossing energy is a continuous function of rho_k.
+                    //
+                    // The branch-locked RTY2E (Vapor branch) must NOT be used
+                    // here: for the dense phase 1 expanded toward vapor
+                    // density at the orifice lip, the Vapor branch is the
+                    // wrong branch and returns non-finite; the resulting
+                    // isfinite cliff flips between mirror cells and reseeds
+                    // the y-asymmetry (task #54).
+                    auto Tof = [&](Real e) -> Real {
+                        Real Tq; EOS::REY2T(rhok, e, Y, Tq);
+                        return std::isfinite(Tq) ? Tq : Real(-1.0);  // cold
+                    };
+                    if (Tof(ek) < tfloor) {
+                        Real e_lo = ek, e_hi = ek;
+                        Real step = std::max(std::abs(ek), Real(1.0e3));
+                        int g = 0;
+                        while (Tof(e_hi) < tfloor && g++ < 80) {
+                            e_lo = e_hi; e_hi += step; step *= Real(2.0);
+                        }
+                        if (Tof(e_hi) >= tfloor) {
+                            for (int it = 0; it < 60; ++it) {
+                                const Real em = Real(0.5) * (e_lo + e_hi);
+                                if (Tof(em) < tfloor) e_lo = em; else e_hi = em;
+                            }
+                            if (e_hi > e_floor) e_floor = e_hi;
+                        }
                     }
-                    U(i,j,k, ue) = mk * (e_hi + kesp);
+                }
+                if (e_floor > ek) {
+                    U(i,j,k, ue) = mk * (e_floor + kesp);
                     floored = true;
                 }
             }
