@@ -227,7 +227,7 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
     // -------------------------------------------------------------
     if (dials.triple_point_action != 0) {
         const int action = dials.triple_point_action;
-        constexpr amrex::Real T_triple = amrex::Real(216.592);
+        const amrex::Real T_triple = EOS::T_triple();   // fluid triple point (EOS)
         for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
             const amrex::Box bx = mfi.growntilebox(nghost);
             amrex::Array4<amrex::Real> const& U = S_new.array(mfi);

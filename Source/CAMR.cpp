@@ -1310,6 +1310,8 @@ void
 CAMR::computeTemp(amrex::MultiFab& S, int ng)
 {
   reset_internal_energy(S, ng);
+  const int l_ps_hydro = ps_hydro;              // task #52: per-phase T for PS state
+  const amrex::Real l_T_trip = EOS::T_triple(); // fluid triple point (EOS, not hardcoded)
 
 #ifdef AMREX_USE_EB
   auto const& fact =
@@ -1348,6 +1350,72 @@ CAMR::computeTemp(amrex::MultiFab& S, int ng)
        amrex::Real rho = Sarr(i, j, k, URHO);
        EOS::REY2T(rho, e, massfrac, T);
        Sarr(i, j, k, UTEMP) = T;
+
+#ifdef USE_PS_HYDRO
+       // Task #52: for the Pelanti-Shyue 6-eq state, the single-phase
+       // mixture inversion REY2T(rho_mix,e_mix) is non-monotone near the
+       // saturation dome and produces a wiggly Temp DIAGNOSTIC even when the
+       // conserved state is smooth.  Recompute T from the per-phase state
+       // (branch-locked EOS), which is thermodynamically correct and smooth:
+       // dominant phase in near-single-phase cells, alpha-weighted in genuine
+       // two-phase cells.  Diagnostic only — does not touch the conserved
+       // evolution.  Falls back to the mixture T above if the per-phase
+       // result is non-finite.
+       if (l_ps_hydro != 0) {
+         amrex::Real a1 = Sarr(i, j, k, UALPHA1);
+         a1 = amrex::max(amrex::Real(1.0e-6),
+                         amrex::min(amrex::Real(1.0) - amrex::Real(1.0e-6), a1));
+         const amrex::Real m1 = Sarr(i, j, k, UM1RHO1);
+         const amrex::Real m2 = Sarr(i, j, k, UM2RHO2);
+         if (m1 > amrex::Real(0.0) && m2 > amrex::Real(0.0)) {
+           const amrex::Real a2 = amrex::Real(1.0) - a1;
+           const amrex::Real px = Sarr(i, j, k, UMX);
+#if (AMREX_SPACEDIM >= 2)
+           const amrex::Real py = Sarr(i, j, k, UMY);
+#else
+           const amrex::Real py = amrex::Real(0.0);
+#endif
+#if (AMREX_SPACEDIM == 3)
+           const amrex::Real pz = Sarr(i, j, k, UMZ);
+#else
+           const amrex::Real pz = amrex::Real(0.0);
+#endif
+           const amrex::Real ke =
+             amrex::Real(0.5) * (px*px + py*py + pz*pz) * rhoInv * rhoInv;
+           auto Tph = [&](int ph, amrex::Real rk, amrex::Real ek) -> amrex::Real {
+             amrex::Real Pq, Tq, Sq;
+             EOS::REY2PTS_phase(rk, ek, massfrac,
+                                (ph == 1) ? hem::Phase3::Liquid
+                                          : hem::Phase3::Vapor, Pq, Tq, Sq);
+             return Tq;
+           };
+           // Use the per-phase T only in GENUINE two-phase cells; in
+           // near-single-phase cells the fixed phase1=Liquid / phase2=Vapor
+           // branch labelling can be wrong (e.g. dense supercritical phase-1
+           // at vapor density -> the liquid branch extrapolates to a cold
+           // metastable garbage T), so there the single-phase mixture REY2T
+           // (already in UTEMP) is the right value.  Also require the result
+           // to be in the physical CO2 range; otherwise keep the mixture T.
+           constexpr amrex::Real eps  = amrex::Real(1.0e-3);
+           const amrex::Real T_lo = l_T_trip;                 // fluid triple point (EOS)
+           constexpr amrex::Real T_hi = amrex::Real(1.0e4);
+           if (a1 > eps && a1 < amrex::Real(1.0) - eps) {
+             const amrex::Real T1 = Tph(1, m1 / a1, Sarr(i,j,k,UE1) / m1 - ke);
+             const amrex::Real T2 = Tph(2, m2 / a2, Sarr(i,j,k,UE2) / m2 - ke);
+             const amrex::Real Tps = a1 * T1 + a2 * T2;
+             if (std::isfinite(Tps) && Tps > T_lo && Tps < T_hi)
+               Sarr(i, j, k, UTEMP) = Tps;
+           }
+         }
+         // Display floor: the single-phase mixture REY2T can return
+         // sub-triple-point T at dense inlet cells, which is outside the CO2
+         // EOS validity range (dry-ice territory the PR EOS cannot model).
+         // Clamp the reported T to the triple point so the diagnostic stays
+         // physical & monotone (matches ps_temp_floor on the energy side).
+         if (Sarr(i, j, k, UTEMP) < l_T_trip)
+           Sarr(i, j, k, UTEMP) = l_T_trip;
+       }
+#endif
        }
     });
   }

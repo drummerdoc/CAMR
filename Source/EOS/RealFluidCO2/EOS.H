@@ -85,6 +85,21 @@ namespace EOS {
           amrex::Real(0.0));            // Peneloux shift
   }
 
+  // ----------------------------------------------------------------
+  //  Fluid-property accessors (single source of truth).  Use these
+  //  instead of hardcoding fluid constants at call sites, so the code
+  //  stays agnostic to the specific fluid.  T_crit comes straight from
+  //  the PR fluid definition; the triple point is not used by PR itself
+  //  but is a genuine fluid property (EOS validity bound / gate), so it
+  //  lives here with Tc/Pc rather than scattered as literals.
+  // ----------------------------------------------------------------
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  amrex::Real T_crit()   { return co2_fluid().pr.Tc; }        // critical T [K]
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  amrex::Real T_triple() { return amrex::Real(216.592); }     // triple-point T [K]
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  amrex::Real P_triple() { return amrex::Real(5.1795e5); }    // triple-point P [Pa]
+
   // Legacy shim for prob.H files that still do  et = P/(γ-1).  With
   // the real PR EOS, initial conditions should be constructed via
   // PYT2RE below; this constant only prevents header-name breakage.

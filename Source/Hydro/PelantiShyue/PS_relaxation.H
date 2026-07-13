@@ -110,6 +110,11 @@ inline hem::PsPhaseAPI
 ps_make_camr_eos_api()
 {
     hem::PsPhaseAPI api;
+    // Fluid properties from the EOS (single source of truth) so the hem
+    // two-phase gates stay agnostic to the specific fluid — no hardcoded
+    // triple point / critical temperature in the gate code.
+    api.T_crit_K   = double(EOS::T_crit());
+    api.T_triple_K = double(EOS::T_triple());
     api.state_from_rho_e_phase =
         [](int phase, double rho, double e, hem::PsPhase& ph)
     {

@@ -133,6 +133,15 @@ struct PsPhaseAPI {
     RfEosAPI rf1;   // phase 1 (liquid branch)
     RfEosAPI rf2;   // phase 2 (vapor/supercritical branch)
 
+    // Fluid critical & triple-point temperatures [K].  Set by the API
+    // constructor from the EOS (single source of truth) so the two-phase
+    // gates below stay agnostic to the specific fluid.  <= 0 means "unset";
+    // the accessors then fall back to the CO2 values as a safety default.
+    double T_crit_K   = 0.0;
+    double T_triple_K = 0.0;
+    double t_crit()   const { return (T_crit_K   > 0.0) ? T_crit_K   : 304.13; }
+    double t_triple() const { return (T_triple_K > 0.0) ? T_triple_K : 216.6; }
+
     bool valid() const {
         return static_cast<bool>(state_from_rho_e_phase);
     }
@@ -2453,14 +2462,14 @@ struct PsMassTransferParams {
     // problems (B4 debugging, task #114).
     double single_phase_threshold = ps_single_phase_threshold_default();
     // Two-phase-coexistence gate (task #37): only transfer mass where BOTH
-    // phase temperatures lie in the saturable range [dome_T_lo, dome_T_hi]
-    // (CO2 triple point .. Tc).  Prevents spurious Gibbs-driven transfer at
-    // cross-critical material contacts (liquid | supercritical vapor — the
-    // B10 over-flash).  Set dome_gate=false for a non-CO2 / mock EOS.  The
-    // env var PS_MT_NO_DOME_GATE=1 also disables it globally.
+    // phase temperatures lie in the saturable range (triple point .. Tc).
+    // The bounds come from the EOS (eos.t_triple()/eos.t_crit()) so the gate
+    // is fluid-agnostic; this flag just enables/disables it.  Prevents
+    // spurious Gibbs-driven transfer at cross-critical material contacts
+    // (liquid | supercritical vapor — the B10 over-flash).  Set
+    // dome_gate=false for a non-CO2 / mock EOS.  Env PS_MT_NO_DOME_GATE=1
+    // also disables it globally.
     bool   dome_gate = true;
-    double dome_T_lo = 216.6;    // CO2 triple point [K]
-    double dome_T_hi = 304.13;   // CO2 critical T  [K]
 };
 
 
@@ -2522,8 +2531,9 @@ inline bool ps_mass_transfer_relax_cell(
         return v && std::strcmp(v, "1") == 0;
     }();
     if (mt_p.dome_gate && !mt_no_dome_gate_env) {
-        if (s0.p1.T <= mt_p.dome_T_lo || s0.p1.T >= mt_p.dome_T_hi ||
-            s0.p2.T <= mt_p.dome_T_lo || s0.p2.T >= mt_p.dome_T_hi)
+        const double T_lo = eos.t_triple(), T_hi = eos.t_crit();  // fluid props from EOS
+        if (s0.p1.T <= T_lo || s0.p1.T >= T_hi ||
+            s0.p2.T <= T_lo || s0.p2.T >= T_hi)
             return true;   // not a two-phase cell → no mass transfer
     }
 
@@ -2805,7 +2815,7 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
         return v && std::strcmp(v, "1") == 0;
     }();
     if (!mt_no_dome_gate) {
-        constexpr double T_trip = 216.6, T_crit = 304.13;   // CO2 [K]
+        const double T_trip = eos.t_triple(), T_crit = eos.t_crit();  // fluid props from EOS
         if (p1.T <= T_trip || p1.T >= T_crit ||
             p2.T <= T_trip || p2.T >= T_crit)
             return true;   // not a two-phase cell → no mass transfer
@@ -3167,7 +3177,7 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
     else              eos.state_from_rho_e_phase(2, rho_2, e_2, p_dom);
     if (!p_dom.valid || !std::isfinite(p_dom.T) || !std::isfinite(p_dom.P))
         return false;
-    if (p_dom.T <= 216.6 || p_dom.T >= 304.13) return false;   // outside sat curve
+    if (p_dom.T <= eos.t_triple() || p_dom.T >= eos.t_crit()) return false;   // outside sat curve (fluid props from EOS)
 
     const double P_sat_here = co2_P_sat_wagner(p_dom.T);
     // Metastability triggers:
@@ -3327,9 +3337,9 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
         h_transfer = h_dom;
     } else {
         // auto: blend based on T_dom relative to critical
-        constexpr double T_c = 304.13;
-        constexpr double T_lo = T_c - 30.0;   // pure h_avg below
-        constexpr double T_hi = T_c + 30.0;   // pure h_dom above
+        const double T_c = eos.t_crit();      // fluid critical T from EOS
+        const double T_lo = T_c - 30.0;   // pure h_avg below (const: T_c is runtime)
+        const double T_hi = T_c + 30.0;   // pure h_dom above
         double f_dom;
         if      (p_dom.T >= T_hi) f_dom = 1.0;
         else if (p_dom.T <= T_lo) f_dom = 0.0;
