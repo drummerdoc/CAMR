@@ -1,0 +1,85 @@
+# =====================================================================
+#  CO2_PipeBreak — developed flashing jet (rung 5 figure case).
+#
+#  Jet-scale domain (0.4 x 0.2 m; half-domain 0.4 x 0.1 with centerline
+#  symmetry at y-lo) so the slow dense jet fills the frame, PLUS a
+#  near-critical liquid reservoir (T_res=300 K, near T_crit=304 K) that is
+#  ~30% less dense and flashes vigorously, so the flash expansion accelerates
+#  the jet.  Flash ON; amb gas on the vapor branch; centerline symmetry.
+#  Finer grid (dx=dy~1.6 mm) resolves the flash front.
+# =====================================================================
+
+amrex.fpe_trap_invalid = 0
+max_step  = 20000
+stop_time = 3.0e-3
+
+geometry.is_periodic = 0 0 0
+geometry.coord_sys   = 0
+geometry.prob_lo     = 0.0  0.0
+geometry.prob_hi     = 0.4  0.1
+amr.n_cell           = 256  64
+
+CAMR.lo_bc = Inflow Inflow            # y-lo -> bcnormal sym mirror (sym_ylo=1)
+CAMR.hi_bc = Inflow Inflow
+
+CAMR.cfl = 0.3
+CAMR.fixed_dt = 0
+CAMR.allow_negative_energy = 1
+CAMR.do_mol = 0
+CAMR.ppm_type = 1
+
+CAMR.ps_hydro    = 1
+CAMR.ps_flux     = wp
+CAMR.ps_wp_order = 2
+CAMR.ps_recon    = 0
+CAMR.ps_bc_use_nscbc = 0
+CAMR.ps_alpha_vanish = 1.0e-8
+
+CAMR.ps_do_relax  = 1
+CAMR.ps_mt_tau    = 1.0e-6
+CAMR.ps_mt_gref   = 5.0e4
+CAMR.ps_flash_tau = 1.0e-5      # FLASH ON
+CAMR.ps_pres_floor = 1.0e5
+CAMR.ps_temp_floor = 216.6
+
+CAMR.v = 1
+amr.v = 1
+CAMR.sum_interval = -1
+CAMR.redistribution_type = StateRedist
+amr.loadbalance_with_workestimates = 0
+
+amr.max_level       = 0
+amr.ref_ratio       = 2 2 2 2
+amr.regrid_int      = 2 2 2 2
+amr.blocking_factor = 16
+amr.max_grid_size   = 64
+amr.n_error_buf     = 2 2 2 2
+amr.grid_eff        = 0.9
+amr.refinement_indicators = ldtag
+amr.ldtag.field_name = logden
+amr.ldtag.adjacent_difference_greater = 0.15
+amr.ldtag.max_level = 2
+
+DistributionMapping.strategy = ROUNDROBIN
+amr.checkpoint_files_output = 0
+amr.check_file              = chk_fd
+amr.check_int               = -1
+amr.plot_files_output = 1
+amr.plot_file         = plt_fd
+amr.plot_int          = 25
+amr.derive_plot_vars  = x_velocity y_velocity pressure
+
+# --- Problem state: near-critical liquid -> gas, jet-scale geometry ----
+prob.p0       = 1.0e6     # Pa   ambient (10 bar; gas at 300 K, Psat~67 bar)
+prob.T0       = 300.0     # K    ambient
+prob.u0       = 0.0
+prob.p_amb    = 1.0e6     # Pa   outflow far-field target
+prob.p_res    = 1.0e7     # Pa   reservoir (100 bar > Psat -> near-critical liquid)
+prob.T_res    = 300.0     # K    reservoir (near T_crit=304 K -> less dense, flashes hard)
+prob.res_alpha1 = 1.0     #      single-phase (liquid, phase-1) reservoir
+prob.amb_vapor = 1        #      gas ambient on the VAPOR branch (phase 2)
+prob.sym_ylo  = 1         #      y-lo = centerline symmetry mirror
+prob.gap_yc   = 0.0       # m    gap centre AT the y-lo symmetry plane
+prob.gap_half = 0.02      # m    orifice half-width (full orifice 0.04 m)
+prob.gap_taper = 0.008    # m    lip taper (scaled to the smaller orifice)
+prob.ramp_time = 1.0e-4   # s    soft-start (scaled to the smaller/faster case)
