@@ -433,6 +433,16 @@ ps_apply_floor(amrex::MultiFab& S_new, int nghost = 0)
             if (m1 <= Real(0.0) || m2 <= Real(0.0)) return;
             const Real rho_mix = m1 + m2;
 
+            // Perf pre-filter (task #45): the temperature floor only matters
+            // for cells at/near tfloor.  UTEMP (already stored, ~the dominant-
+            // phase T) changes < CFL per step, so if it is comfortably above
+            // tfloor the per-phase T-floor cannot trigger this step -- skip its
+            // (iterative) EOS work.  Generous 25 K margin; only skip when UTEMP
+            // is finite and clearly warm, otherwise fall through and floor.
+            const Real Tmix = U(i,j,k, UTEMP);
+            const bool skip_tfloor =
+                std::isfinite(Tmix) && (Tmix > tfloor + Real(25.0));
+
             const Real px = U(i,j,k, UMX);
 #if (AMREX_SPACEDIM >= 2)
             const Real py = U(i,j,k, UMY);
@@ -497,7 +507,7 @@ ps_apply_floor(amrex::MultiFab& S_new, int nghost = 0)
                     EOS::RYP2E(rhok, Y, pfloor, e_pf);
                     if (std::isfinite(e_pf) && e_pf > e_floor) e_floor = e_pf;
                 }
-                if (tfloor > Real(0.0)) {
+                if (tfloor > Real(0.0) && !skip_tfloor) {
                     // Temperature floor: find the smallest e whose PHASE-
                     // DETECTED temperature T(rho_k,e) reaches tfloor, by a
                     // bounded monotone bisection on the auto-detect REY2T.
@@ -518,11 +528,13 @@ ps_apply_floor(amrex::MultiFab& S_new, int nghost = 0)
                         Real e_lo = ek, e_hi = ek;
                         Real step = std::max(std::abs(ek), Real(1.0e3));
                         int g = 0;
-                        while (Tof(e_hi) < tfloor && g++ < 80) {
+                        while (Tof(e_hi) < tfloor && g++ < 50) {
                             e_lo = e_hi; e_hi += step; step *= Real(2.0);
                         }
                         if (Tof(e_hi) >= tfloor) {
-                            for (int it = 0; it < 60; ++it) {
+                            // 30 bisections -> ~1e-9 relative in energy, far
+                            // below round-off; more was pure cost (perf).
+                            for (int it = 0; it < 30; ++it) {
                                 const Real em = Real(0.5) * (e_lo + e_hi);
                                 if (Tof(em) < tfloor) e_lo = em; else e_hi = em;
                             }

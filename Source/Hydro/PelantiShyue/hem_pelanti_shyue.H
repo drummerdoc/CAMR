@@ -3441,9 +3441,11 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
         s_star = 1.0;                       // full flash admissible
     } else {
         // Largest valid s in [0,1] by bisection (s=0 is the valid current
-        // cell).  ~40 iters -> s to ~1e-12.
+        // cell).  24 iters -> s to ~6e-8, far below round-off relative to the
+        // committed dm = s*.dm; more iters were pure cost (perf: the flash
+        // bisection dominates runtime once the two-phase region is large).
         double s_lo = 0.0, s_hi = 1.0;
-        for (int it = 0; it < 40; ++it) {
+        for (int it = 0; it < 24; ++it) {
             const double sm = 0.5 * (s_lo + s_hi);
             if (valid_at(sm)) s_lo = sm; else s_hi = sm;
         }

@@ -61,6 +61,19 @@ struct ProbParmDevice
     // craters the corner pressure to vacuum (dt collapse).  0 = hard top-hat.
     amrex::Real gap_taper = 0.02; // m
 
+    // Half-domain centerline symmetry (rung 5).  When nonzero, the y-lo face
+    // is a slip-wall MIRROR (reflect wall-normal momentum), i.e. a symmetry
+    // plane at y = prob_lo_y.  Run y in [0.5, 1.0] with the gap at the y-lo
+    // plane to solve only the upper half and exclude the antisymmetric
+    // (flapping) flash-lip mode.  0 = off (full domain, default).
+    int sym_ylo = 0;
+
+    // Ambient phase branch.  0 (default): single-phase ambient on the phase-1
+    // (liquid/supercritical) branch.  1: place the ambient on the phase-2
+    // (VAPOR) branch -- required for a subcritical GAS ambient so the flash
+    // source does not mistake it for superheated liquid (rung 5).
+    int amb_vapor = 0;
+
     // Reservoir soft-start (task #48): ramp the imposed reservoir pressure
     // linearly from ambient (p0) to p_res over ramp_time, so the inlet is
     // not an impulsive p_res|p0 discontinuity at t=0 — that impulsive

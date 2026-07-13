@@ -81,14 +81,22 @@ CAMR_initdata( int i, int j, int k,
 
 #ifdef USE_PS_HYDRO
     // Write the six-equation slots directly (Array4 is component-major).
+    // Phase identity matters for the flash source (phase 1 = liquid branch,
+    // phase 2 = vapor branch): a single-phase GAS ambient must live on the
+    // VAPOR branch (phase-2 dominant, prob.amb_vapor=1) so the flash does not
+    // mistake it for superheated liquid and boil it.  For supercritical /
+    // liquid ambients keep phase-1 dominant (default).
     const amrex::Real alpha_trace = amrex::Real(1.0e-6);
-    const amrex::Real alpha_1     = amrex::Real(1.0) - alpha_trace;
+    const amrex::Real alpha_1 = (prob_parm.amb_vapor != 0)
+                              ? alpha_trace                    // vapor (phase 2)
+                              : (amrex::Real(1.0) - alpha_trace); // liquid (phase 1)
+    const amrex::Real alpha_2 = amrex::Real(1.0) - alpha_1;
     const amrex::Real E_spec = e0 + amrex::Real(0.5)*prob_parm.u0*prob_parm.u0;
     state(i,j,k, UALPHA1) = alpha_1;
-    state(i,j,k, UM1RHO1) = alpha_1     * rho0;
-    state(i,j,k, UM2RHO2) = alpha_trace * rho0;
-    state(i,j,k, UE1    ) = alpha_1     * rho0 * E_spec;
-    state(i,j,k, UE2    ) = alpha_trace * rho0 * E_spec;
+    state(i,j,k, UM1RHO1) = alpha_1 * rho0;
+    state(i,j,k, UM2RHO2) = alpha_2 * rho0;
+    state(i,j,k, UE1    ) = alpha_1 * rho0 * E_spec;
+    state(i,j,k, UE2    ) = alpha_2 * rho0 * E_spec;
 #endif
 }
 
@@ -204,6 +212,21 @@ bcnormal(
         } else {
             for (int n = 0; n < NVAR; ++n) s_ext[n] = W[n];
         }
+        return;
+    }
+
+    // -----------------------------------------------------------------
+    //  y-lo CENTERLINE SYMMETRY plane (idir==1, sgn==+1), rung 5.  A
+    //  slip-wall mirror: reflect the wall-normal (y) momentum, copy the
+    //  rest (all PS slots are scalars -> even reflection).  Run the upper
+    //  half y in [0.5,1.0] with the gap at this plane so only half the jet
+    //  is solved and the antisymmetric flapping lip mode is excluded by
+    //  construction, letting the flash nucleation physics be developed
+    //  against the symmetric baseline.
+    // -----------------------------------------------------------------
+    if (prob_parm.sym_ylo != 0 && idir == 1 && sgn == 1) {
+        for (int n = 0; n < NVAR; ++n) s_ext[n] = s_int[n];
+        s_ext[UMY] = -s_int[UMY];
         return;
     }
 

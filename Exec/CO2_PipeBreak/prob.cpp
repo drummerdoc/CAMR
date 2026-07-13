@@ -24,6 +24,8 @@ extern "C" {
         pp.query("gap_taper", CAMR::h_prob_parm->gap_taper);
         pp.query("ramp_time", CAMR::h_prob_parm->ramp_time);
         pp.query("res_alpha1", CAMR::h_prob_parm->res_alpha1);
+        pp.query("sym_ylo",    CAMR::h_prob_parm->sym_ylo);
+        pp.query("amb_vapor",  CAMR::h_prob_parm->amb_vapor);
 
         // Two-phase saturated reservoir (rung 4): precompute the saturated
         // liquid/vapor per-phase (rho,e) at T_res once, so the per-cell
