@@ -55,6 +55,12 @@ CAMR.ps_mt_gref  = 5.0e4
 # lower (0.1-0.5 bar) preserves more of the physical jet-edge expansion but
 # runs slower.  Default 0 = off (other Execs / the 1-D suite are unaffected).
 CAMR.ps_pres_floor = 1.0e5
+# Temperature floor (task #50): raise per-phase energy so T_k >= this.
+# Strong-vent expansion cools CO2 below its triple point (216.6 K) where the
+# PR EOS is invalid and T oscillates; floor at the triple point to keep the
+# EOS valid.  0 = off.  (Below the triple point real CO2 would form dry ice,
+# which this EOS cannot model.)
+CAMR.ps_temp_floor = 216.6
 # Nucleation source: under the sharp wp scheme the flash must be seeded
 # physically (unlike HLLC, whose numerical mixing at the contact spuriously
 # seeded two-phase cells).  Subcritical-gated (216.6..304.13 K).
@@ -79,19 +85,23 @@ amr.max_grid_size   = 64
 amr.n_error_buf     = 2 2 2 2
 amr.grid_eff        = 0.9
 
-# Refine on (a) the pressure jump — shock cells + jet front — and (b) the
-# PS phase-1 volume fraction vfrac1, which tracks the flashing two-phase
-# front.  vfrac1 is a registered derive (= alpha_1); tagging the raw alpha_1
-# STATE variable segfaults the adjacent-difference tagger.  NOTE: vfrac1 is
-# the PS phase fraction, NOT the EB fluid volume fraction "vfrac".
-amr.refinement_indicators = ptag atag
-amr.ptag.field_name = pressure
-# Threshold well above the ambient (5 bar) so refinement tracks the jet /
-# shock cells, not acoustic-outflow boundary noise (2 MPa ~ jet-core scale).
-amr.ptag.adjacent_difference_greater = 2.0e6
-amr.ptag.max_level = 2
+# Refinement criteria — chosen by what each feature IS:
+#  (a) ldtag: log10(density) jump — the JET HEAD is a CONTACT (dense injected
+#      CO2 | ambient), across which PRESSURE is continuous, so a pressure tag
+#      cannot see it; density jumps there (and at shocks), so logden is the
+#      comprehensive "follow the growing jet head" criterion.
+#  (b) atag: vfrac1 (=alpha_1) < 0.95 — the flashing two-phase plume.
+# Both are DERIVES: tagging a raw STATE var (density, alpha_1) segfaults the
+# tagger; and value_less (not adjacent_difference) is used for alpha_1 (the
+# adjacent_difference tagger on the derive hit an AMReX heap bug).
+# (A pressure-jump tag would only add pure-shock/Mach-disk sharpening that
+#  logden largely already covers — left off to save cells; re-add if needed.)
+amr.refinement_indicators = ldtag atag
+amr.ldtag.field_name = logden
+amr.ldtag.adjacent_difference_greater = 0.15   # ~1.4x density jump (log10)
+amr.ldtag.max_level = 2
 amr.atag.field_name = vfrac1
-amr.atag.value_less = 0.95      # tag genuine two-phase cells (alpha_1 < 0.95)
+amr.atag.value_less = 0.95
 amr.atag.max_level = 2
 
 DistributionMapping.strategy = ROUNDROBIN
@@ -102,7 +112,7 @@ amr.check_int               = -1
 
 amr.plot_files_output = 1
 amr.plot_file         = plt
-amr.plot_int          = 100
+amr.plot_int          = 10
 amr.derive_plot_vars  = x_velocity y_velocity pressure
 
 # --- Problem state ---------------------------------------------------

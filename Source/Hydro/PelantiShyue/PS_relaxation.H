@@ -378,6 +378,22 @@ inline amrex::Real ps_pres_floor()
     return v;
 }
 
+// Cached CAMR.ps_temp_floor (K, default 0 = disabled).  When > 0, ps_apply_floor
+// also raises each phase's internal energy so its EOS temperature is at least
+// this value.  Strong-vent expansion cools CO2 below its triple point
+// (216.6 K), where the PR two-phase EOS is invalid/extrapolated and T
+// oscillates; flooring T at ~triple point keeps the EOS valid.
+inline amrex::Real ps_temp_floor()
+{
+    static const amrex::Real v = []() -> amrex::Real {
+        amrex::Real val = amrex::Real(0.0);
+        amrex::ParmParse pp("CAMR");
+        pp.query("ps_temp_floor", val);
+        return val;
+    }();
+    return v;
+}
+
 
 // -----------------------------------------------------------------
 //  ps_apply_floor  —  per-cell positivity floor (task #50).  For each
@@ -395,7 +411,8 @@ ps_apply_floor(amrex::MultiFab& S_new, int nghost = 0)
 {
     using amrex::Real;
     const Real pfloor = ps_pres_floor();
-    if (pfloor <= Real(0.0)) return;
+    const Real tfloor = ps_temp_floor();
+    if (pfloor <= Real(0.0) && tfloor <= Real(0.0)) return;
     constexpr Real alpha_floor = Real(1.0e-6);
 
     for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
@@ -436,33 +453,36 @@ ps_apply_floor(amrex::MultiFab& S_new, int nghost = 0)
                 const int  ue  = (ph == 1) ? UE1 : UE2;
                 const Real rhok = mk / alk;
                 const Real ek   = U(i,j,k, ue) / mk - kesp;   // phase internal e
-                Real P, T, Sent;
                 const hem::Phase3 p3 = (ph == 1) ? hem::Phase3::Liquid
                                                  : hem::Phase3::Vapor;
-                auto Pofe = [&](Real e) -> Real {
+                // A phase energy e is acceptable iff its branch-locked EOS
+                // (P,T) are finite AND above the pressure/temperature floors.
+                // Both P and T increase with e at fixed rho, so raising e to
+                // the smallest acceptable value floors both simultaneously.
+                auto ok = [&](Real e) -> bool {
                     Real Pq, Tq, Sq;
                     EOS::REY2PTS_phase(Real(rhok), Real(e), Y, p3, Pq, Tq, Sq);
-                    return Pq;
+                    return std::isfinite(Pq) && std::isfinite(Tq)
+                           && Pq >= pfloor && Tq >= tfloor;
                 };
-                EOS::REY2PTS_phase(Real(rhok), Real(ek), Y, p3, P, T, Sent);
-                if (std::isfinite(P) && P >= pfloor) continue;   // healthy
-                // Branch-consistent floor: find e_hi with P(e_hi) >= pfloor
-                // (seed from the base-PR inverse, expand if the branch EOS
-                // disagrees), then bisect to e where P == pfloor.
-                Real e_hi;
-                EOS::RYP2E(Real(rhok), Y, Real(pfloor), e_hi);
+                if (ok(ek)) continue;   // healthy
+                // Seed e_hi from the base-PR inverses (max of P- and T-floor
+                // energies), expand until the branch EOS agrees, then bisect.
+                Real e_pf = ek, e_tf = ek;
+                if (pfloor > Real(0.0)) EOS::RYP2E(Real(rhok), Y, Real(pfloor), e_pf);
+                if (tfloor > Real(0.0)) EOS::RTY2E(Real(rhok), Real(tfloor), Y, e_tf);
+                Real e_hi = std::max(std::isfinite(e_pf) ? e_pf : ek,
+                                     std::isfinite(e_tf) ? e_tf : ek);
                 if (!std::isfinite(e_hi)) e_hi = std::abs(ek) + Real(1.0);
                 int guard = 0;
-                while (!(std::isfinite(Pofe(e_hi)) && Pofe(e_hi) >= pfloor)
-                       && guard++ < 40)
+                while (!ok(e_hi) && guard++ < 50)
                     e_hi += std::abs(e_hi) + Real(1.0);
-                Real e_lo = (std::isfinite(ek) && ek < e_hi) ? ek : (e_hi - std::abs(e_hi) - Real(1.0));
-                if (std::isfinite(Pofe(e_hi)) && Pofe(e_hi) >= pfloor) {
+                if (ok(e_hi)) {
+                    Real e_lo = (std::isfinite(ek) && ek < e_hi)
+                                ? ek : (e_hi - std::abs(e_hi) - Real(1.0));
                     for (int it = 0; it < 40; ++it) {
                         const Real em = Real(0.5) * (e_lo + e_hi);
-                        const Real Pm = Pofe(em);
-                        if (std::isfinite(Pm) && Pm >= pfloor) e_hi = em;
-                        else                                    e_lo = em;
+                        if (ok(em)) e_hi = em; else e_lo = em;
                     }
                     U(i,j,k, ue) = mk * (e_hi + kesp);
                     floored = true;
