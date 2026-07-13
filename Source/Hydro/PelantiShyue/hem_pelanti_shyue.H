@@ -3175,7 +3175,13 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
     p_dom.alpha = (liq_dominant ? alpha_1 : alpha_2);
     if (liq_dominant) eos.state_from_rho_e_phase(1, rho_1, e_1, p_dom);
     else              eos.state_from_rho_e_phase(2, rho_2, e_2, p_dom);
-    if (!p_dom.valid || !std::isfinite(p_dom.T) || !std::isfinite(p_dom.P))
+    // Accept the metastable branch state even where its extrapolated pressure
+    // is <= 0 (liquid in tension): that is a *maximally* metastable state that
+    // should flash, and the smooth w_meta window carries the rate.  Gating on
+    // p_dom.valid (which requires P > 0) is a hard cliff at P = 0 that mirror
+    // cells straddle -> y-asymmetry (task #55).  Reject only genuinely
+    // non-finite states (not reached at the lip, where P,T stay finite).
+    if (!std::isfinite(p_dom.T) || !std::isfinite(p_dom.P) || p_dom.T <= 0.0)
         return false;
     // Smooth activation windows (task #55): ramp the flash RATE to zero
     // approaching each hard threshold instead of an on/off switch, so two
@@ -3424,7 +3430,11 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
         c1.alpha = a1; c2.alpha = 1.0 - a1;
         eos.state_from_rho_e_phase(1, r1, e1, c1);
         eos.state_from_rho_e_phase(2, r2, e2, c2);
-        return c1.valid && c2.valid;
+        // Representable = finite with positive T (accept metastable P<=0);
+        // requiring P>0 (c.valid) would reintroduce a P=0 cliff into the
+        // limiter and reseed the asymmetry (task #55).
+        return std::isfinite(c1.T) && std::isfinite(c1.P) && c1.T > 0.0
+            && std::isfinite(c2.T) && std::isfinite(c2.P) && c2.T > 0.0;
     };
     double s_star;
     if (valid_at(1.0)) {
