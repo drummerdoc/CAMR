@@ -48,6 +48,13 @@ CAMR.ps_alpha_vanish = 1.0e-8   # fold vanishing trace phase (2-D robustness)
 CAMR.ps_do_relax = 1
 CAMR.ps_mt_tau   = 1.0e-6
 CAMR.ps_mt_gref  = 5.0e4
+# Positivity floor (task #50): branch-consistently raise per-phase energy so
+# P_k >= this, post-hydro.  Prevents the strong-vent (18:1) gap-edge shear
+# from cratering to vacuum (dt collapse) — holds Pmin at the floor and tames
+# the whole oscillation cascade.  1 bar keeps dt healthy for a stable demo;
+# lower (0.1-0.5 bar) preserves more of the physical jet-edge expansion but
+# runs slower.  Default 0 = off (other Execs / the 1-D suite are unaffected).
+CAMR.ps_pres_floor = 1.0e5
 # Nucleation source: under the sharp wp scheme the flash must be seeded
 # physically (unlike HLLC, whose numerical mixing at the contact spuriously
 # seeded two-phase cells).  Subcritical-gated (216.6..304.13 K).
@@ -103,7 +110,7 @@ prob.p0       = 5.0e5     # Pa   ambient (5 bar)
 prob.T0       = 260.0     # K    ambient
 prob.u0       = 0.0
 prob.p_amb    = 5.0e5     # Pa   outflow far-field target
-prob.p_res    = 9.0e6     # Pa   reservoir (90 bar dense CO2)
+prob.p_res    = 9.0e6     # Pa   reservoir (90 bar dense CO2; 18:1 vent)
 prob.T_res    = 290.0     # K    reservoir
 prob.gap_yc   = 0.5       # m    break-gap centre
 prob.gap_half = 0.05      # m    break-gap half-width (gap = 0.1 m)

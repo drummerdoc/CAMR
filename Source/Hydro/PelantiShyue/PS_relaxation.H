@@ -362,6 +362,120 @@ inline int ps_relax_verbose()
     return v;
 }
 
+// Cached CAMR.ps_pres_floor (Pa, default 0 = disabled).  When > 0,
+// ps_apply_floor raises each phase's internal energy so its EOS pressure is
+// at least this value — a positivity floor that prevents the near-vacuum
+// crater (strong vents) from collapsing dt.  The PS wp path does not
+// otherwise floor pressure (small_pres is unused there).
+inline amrex::Real ps_pres_floor()
+{
+    static const amrex::Real v = []() -> amrex::Real {
+        amrex::Real val = amrex::Real(0.0);
+        amrex::ParmParse pp("CAMR");
+        pp.query("ps_pres_floor", val);
+        return val;
+    }();
+    return v;
+}
+
+
+// -----------------------------------------------------------------
+//  ps_apply_floor  —  per-cell positivity floor (task #50).  For each
+//  phase, if the EOS pressure at (rho_k, e_k) is below ps_pres_floor
+//  (or non-finite), raise the phase internal energy e_k to the value
+//  giving P_k = ps_pres_floor at the current rho_k (EOS::RYP2E).  Mass
+//  and momentum are untouched; the mixture UEDEN/UEINT are re-synced
+//  from the per-phase energies (UEDEN = UE1 + UE2).  Energy is added at
+//  floored (pathological near-vacuum) cells only — a robustness net,
+//  not a conservative operation.  CPU (uses the branch-locked per-phase
+//  EOS + the single-phase inverse), applied post-hydro before relax.
+// -----------------------------------------------------------------
+inline void
+ps_apply_floor(amrex::MultiFab& S_new, int nghost = 0)
+{
+    using amrex::Real;
+    const Real pfloor = ps_pres_floor();
+    if (pfloor <= Real(0.0)) return;
+    constexpr Real alpha_floor = Real(1.0e-6);
+
+    for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
+        const amrex::Box bx = mfi.growntilebox(nghost);
+        amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
+        amrex::LoopOnCpu(bx, [=] (int i, int j, int k) noexcept
+        {
+            Real alpha1 = U(i,j,k, UALPHA1);
+            if (!std::isfinite(alpha1)) return;
+            alpha1 = std::max(alpha_floor, std::min(Real(1.0) - alpha_floor, alpha1));
+            const Real m1 = U(i,j,k, UM1RHO1);
+            const Real m2 = U(i,j,k, UM2RHO2);
+            if (m1 <= Real(0.0) || m2 <= Real(0.0)) return;
+            const Real rho_mix = m1 + m2;
+
+            const Real px = U(i,j,k, UMX);
+#if (AMREX_SPACEDIM >= 2)
+            const Real py = U(i,j,k, UMY);
+#else
+            const Real py = Real(0.0);
+#endif
+#if (AMREX_SPACEDIM == 3)
+            const Real pz = U(i,j,k, UMZ);
+#else
+            const Real pz = Real(0.0);
+#endif
+            const Real p2   = px*px + py*py + pz*pz;
+            const Real kesp = Real(0.5) * p2 / (rho_mix * rho_mix);   // ½u²
+
+            amrex::Real Y[NUM_SPECIES];
+            Y[0] = Real(1.0);
+            for (int n = 1; n < NUM_SPECIES; ++n) Y[n] = Real(0.0);
+
+            bool floored = false;
+            for (int ph = 1; ph <= 2; ++ph) {
+                const Real mk  = (ph == 1) ? m1 : m2;
+                const Real alk = (ph == 1) ? alpha1 : (Real(1.0) - alpha1);
+                const int  ue  = (ph == 1) ? UE1 : UE2;
+                const Real rhok = mk / alk;
+                const Real ek   = U(i,j,k, ue) / mk - kesp;   // phase internal e
+                Real P, T, Sent;
+                const hem::Phase3 p3 = (ph == 1) ? hem::Phase3::Liquid
+                                                 : hem::Phase3::Vapor;
+                auto Pofe = [&](Real e) -> Real {
+                    Real Pq, Tq, Sq;
+                    EOS::REY2PTS_phase(Real(rhok), Real(e), Y, p3, Pq, Tq, Sq);
+                    return Pq;
+                };
+                EOS::REY2PTS_phase(Real(rhok), Real(ek), Y, p3, P, T, Sent);
+                if (std::isfinite(P) && P >= pfloor) continue;   // healthy
+                // Branch-consistent floor: find e_hi with P(e_hi) >= pfloor
+                // (seed from the base-PR inverse, expand if the branch EOS
+                // disagrees), then bisect to e where P == pfloor.
+                Real e_hi;
+                EOS::RYP2E(Real(rhok), Y, Real(pfloor), e_hi);
+                if (!std::isfinite(e_hi)) e_hi = std::abs(ek) + Real(1.0);
+                int guard = 0;
+                while (!(std::isfinite(Pofe(e_hi)) && Pofe(e_hi) >= pfloor)
+                       && guard++ < 40)
+                    e_hi += std::abs(e_hi) + Real(1.0);
+                Real e_lo = (std::isfinite(ek) && ek < e_hi) ? ek : (e_hi - std::abs(e_hi) - Real(1.0));
+                if (std::isfinite(Pofe(e_hi)) && Pofe(e_hi) >= pfloor) {
+                    for (int it = 0; it < 40; ++it) {
+                        const Real em = Real(0.5) * (e_lo + e_hi);
+                        const Real Pm = Pofe(em);
+                        if (std::isfinite(Pm) && Pm >= pfloor) e_hi = em;
+                        else                                    e_lo = em;
+                    }
+                    U(i,j,k, ue) = mk * (e_hi + kesp);
+                    floored = true;
+                }
+            }
+            if (floored) {
+                U(i,j,k, UEDEN) = U(i,j,k, UE1) + U(i,j,k, UE2);
+                U(i,j,k, UEINT) = U(i,j,k, UEDEN) - Real(0.5) * p2 / rho_mix;
+            }
+        });
+    }
+}
+
 
 // -----------------------------------------------------------------
 //  ps_apply_vanish_fold  —  grid-level wrapper for the standalone's

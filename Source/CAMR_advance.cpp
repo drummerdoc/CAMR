@@ -139,6 +139,7 @@ CAMR::CAMR_advance (Real time,
     // diagnostics (off for the pre-step to avoid double reductions/prints).
     auto apply_ps_reaction = [&](amrex::MultiFab& S, amrex::Real dt_r,
                                  int ng, bool do_print) {
+        ps_apply_floor(S, ng);          // positivity floor (task #50) first
         ps_apply_vanish_fold(S, ng);
         clean_state(S);
         if (ps_do_relax_cached != 0) {
