@@ -480,8 +480,19 @@ ps_apply_floor(amrex::MultiFab& S_new, int nghost = 0)
                 // asymmetry that grew every step.
                 Real e_floor = ek;
                 if (pfloor > Real(0.0)) {
-                    // Pressure floor: state_from_P_rho is phase-DETECTED and
-                    // smooth in rho_k, so RYP2E gives a symmetry-safe target.
+                    // Pressure floor via the phase-DETECTED base-PR inverse
+                    // (state_from_P_rho): smooth and continuous in rho_k, hence
+                    // symmetry-safe.  NOTE: this hits the auto-detect pressure,
+                    // which for a phase held on the "wrong" locked branch (e.g.
+                    // a physically-vapor phase 1 at the orifice lip) undershoots
+                    // the branch-locked MIXTURE pressure the derived field reads
+                    // -- a mixture-pressure branch-convention artifact (#21/#41),
+                    // not a floor bug.  A branch-consistent target (bisection on
+                    // REY2PTS_phase) removes the undershoot but the branch-locked
+                    // EOS is non-monotone near the dome, so it root-jumps between
+                    // mirror cells and REINTRODUCES the y-asymmetry.  Symmetry
+                    // wins here; the residual crater is a handful of trace lip
+                    // cells and is addressed separately via the mixture rule.
                     Real e_pf;
                     EOS::RYP2E(rhok, Y, pfloor, e_pf);
                     if (std::isfinite(e_pf) && e_pf > e_floor) e_floor = e_pf;
