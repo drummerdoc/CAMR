@@ -861,12 +861,16 @@ PS_umeth(const Box& bx,
 {
     BL_PROFILE("PS_umeth()");
 
-    // Phase 4c-β3: runtime reconstruction dispatch.
-    //   CAMR.ps_recon = 0  →  first-order Godunov (LLF baseline)
-    //   CAMR.ps_recon = 1  →  MUSCL slope-limited PLM (minmod) on
-    //                         conservative slots with contact-jump
+    // Phase 4c-β3: runtime reconstruction dispatch (named by RECONSTRUCTION
+    // order, not by method — "Godunov" is avoided as it conflated the
+    // piecewise-constant reconstruction with the overall scheme).
+    //   CAMR.ps_recon = 0  →  piecewise-constant face states (first order;
+    //                         for wp this is the base, made 2nd order by the
+    //                         limited BL correction flux)
+    //   CAMR.ps_recon = 1  →  piecewise-linear (MUSCL slope-limited PLM,
+    //                         minmod) on conservative slots with contact-jump
     //                         fallback.  See PS_reconstruction.H.
-    //   CAMR.ps_recon = 2  →  PPM (Colella-Woodward, van Leer) on
+    //   CAMR.ps_recon = 2  →  piecewise-parabolic (PPM, Colella-Woodward, van Leer) on
     //                         PRIMITIVE slots, faithful to the standalone
     //                         ppm_1d_ps_wp.cpp (no contact guard; relies
     //                         on monotonisation + positivity clip).

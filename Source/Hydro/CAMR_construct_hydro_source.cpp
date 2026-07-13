@@ -21,6 +21,22 @@ CAMR::construct_hydro_source (const MultiFab& S,
     if (verbose) {
         if (do_mol) {
             amrex::Print() << "... Computing MOL-based hydro advance" << std::endl;
+        } else if (ps_hydro != 0) {
+            // Pelanti-Shyue path: report the actual PS flux (CAMR.ps_flux) and
+            // the reconstruction order named by what it is (piecewise-
+            // constant / -linear / -parabolic).  "Godunov-based" (non-PS
+            // branch below) is the generic single-step-unsplit driver label
+            // and does NOT mean a Godunov flux; for PS runs name the real flux.
+            static const std::string l_ps_flux = []{
+                std::string s = "llf"; amrex::ParmParse pp("CAMR");
+                pp.query("ps_flux", s); return s;
+            }();
+            const char* l_recon = (ps_recon == 2) ? "piecewise-parabolic (PPM)"
+                                : (ps_recon == 1) ? "piecewise-linear (MUSCL/PLM)"
+                                                  : "piecewise-constant";
+            amrex::Print() << "... Computing PS unsplit hydro advance (flux="
+                           << l_ps_flux << ", recon=" << l_recon << ")"
+                           << std::endl;
         } else {
             amrex::Print() << "... Computing Godunov-based hydro advance" << std::endl;
         }

@@ -34,13 +34,14 @@ CAMR.ppm_type = 1
 CAMR.ps_hydro   = 1
 # wp (Berger-LeVeque wave propagation) is the production flux: cleaner,
 # limited (non-oscillatory) contacts vs HLLC.  It DOES drive the reservoir
-# inlet, but only via the Godunov path — ps_recon MUST be 0 (ps_recon=1 =
-# MUSCL-PLM reconstructs interior-only at the boundary and ignores the
-# Dirichlet reservoir ghost, so the jet never fires; task #43).  For a
-# quick diffusive-but-robust fallback, set ps_flux=hllc ps_recon=0.
+# inlet, but only with piecewise-constant reconstruction — ps_recon MUST be 0
+# (ps_recon=1 = piecewise-linear MUSCL/PLM reconstructs interior-only at the
+# boundary and ignores the Dirichlet reservoir ghost, so the jet never fires;
+# task #43).  For a quick diffusive-but-robust fallback, set ps_flux=hllc
+# ps_recon=0.
 CAMR.ps_flux    = wp
 CAMR.ps_wp_order = 2            # 2nd order via BL-2 limited correction fluxes
-CAMR.ps_recon   = 0            # REQUIRED for wp reservoir-inlet injection
+CAMR.ps_recon   = 0            # piecewise-constant (REQUIRED for wp inlet injection)
 CAMR.ps_bc_use_nscbc = 0        # legacy bcnormal path (rupture-plane BC)
 CAMR.ps_alpha_vanish = 1.0e-8   # fold vanishing trace phase (2-D robustness)
 
@@ -61,10 +62,21 @@ CAMR.ps_pres_floor = 1.0e5
 # EOS valid.  0 = off.  (Below the triple point real CO2 would form dry ice,
 # which this EOS cannot model.)
 CAMR.ps_temp_floor = 216.6
-# Nucleation source: under the sharp wp scheme the flash must be seeded
-# physically (unlike HLLC, whose numerical mixing at the contact spuriously
-# seeded two-phase cells).  Subcritical-gated (216.6..304.13 K).
-CAMR.ps_flash_tau = 1.0e-5
+# Nucleation source (flash).  Under the sharp wp scheme the flash must be
+# seeded physically (unlike HLLC, whose numerical mixing at the contact
+# spuriously seeded two-phase cells).  Subcritical-gated (216.6..304.13 K).
+#
+# CLEAN/SYMMETRIC BASELINE (task #56): flash is DISABLED (tau=0) here.  The
+# flash-created two-phase lip under the 18:1 vent is a physical amplifier that
+# grows any perturbation (down to round-off) into an O(1) asymmetry by ~step 70
+# even with the continuous flash machinery (smooth activation + fractional
+# limiter cut the SEED ~100-1000x but cannot beat a few-step e-folding
+# amplifier).  With flash off the run is round-off symmetric and stable
+# (MT + mechanical relaxation still give the two-phase vent physics).
+# Re-hardening ladder: re-enable flash (set tau=1.0e-5) only behind a
+# centerline symmetry BC / with lip regularization, validating symmetry at
+# each rung.  See docs/design/co2_pipebreak_demo_roadmap.md.
+CAMR.ps_flash_tau = 0.0        # 0 = flash OFF (clean baseline); 1.0e-5 = on
 
 CAMR.v = 1
 amr.v = 1
