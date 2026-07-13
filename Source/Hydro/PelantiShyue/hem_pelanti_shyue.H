@@ -3177,7 +3177,25 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
     else              eos.state_from_rho_e_phase(2, rho_2, e_2, p_dom);
     if (!p_dom.valid || !std::isfinite(p_dom.T) || !std::isfinite(p_dom.P))
         return false;
-    if (p_dom.T <= eos.t_triple() || p_dom.T >= eos.t_crit()) return false;   // outside sat curve (fluid props from EOS)
+    // Smooth activation windows (task #55): ramp the flash RATE to zero
+    // approaching each hard threshold instead of an on/off switch, so two
+    // mirror cells that straddle a threshold get flash rates differing only
+    // by round-off -- no y-reflection asymmetry seed.  p_dom is the DOMINANT
+    // phase on its natural branch (liquid for a liquid-dominant cell), which
+    // is well-conditioned, so p_dom.T / p_dom.P vary smoothly with cell state;
+    // the asymmetry came purely from the hard gate response, not p_dom itself.
+    auto ss01 = [](double x) -> double {
+        if (x <= 0.0) return 0.0;
+        if (x >= 1.0) return 1.0;
+        return x * x * (3.0 - 2.0 * x);
+    };
+    // (a) Saturation-dome temperature window: 0 at/below t_triple and at/above
+    //     t_crit (EOS invalid outside the dome), ramping to 1 over a band.
+    const double T_trip_g = eos.t_triple(), T_crit_g = eos.t_crit();
+    const double bw_T = 0.05 * (T_crit_g - T_trip_g);
+    const double w_T = ss01((p_dom.T - T_trip_g) / bw_T)
+                     * ss01((T_crit_g - p_dom.T) / bw_T);
+    if (w_T <= 0.0) return false;   // strictly outside the saturation dome
 
     const double P_sat_here = co2_P_sat_wagner(p_dom.T);
     // Metastability triggers:
@@ -3191,14 +3209,34 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
         const char* v = std::getenv("PS_FLASH_METASTABLE_MARGIN");
         return (v && *v) ? std::atof(v) : 0.10;
     }();
-    const bool flash_liq  = liq_dominant && (p_dom.P < (1.0 - meta_margin) * P_sat_here);
-    const bool flash_vap  = vap_dominant && (p_dom.P > (1.0 + meta_margin) * P_sat_here);
-    if (!flash_liq && !flash_vap) return false;
+    // Direction is set by which phase is dominant; the metastability strength
+    // is a smooth window centred on the (1±margin)·P_sat threshold (task #55)
+    // rather than a hard predicate.
+    const bool flash_liq = liq_dominant;
+    const bool flash_vap = vap_dominant;
+    const double bw_P = meta_margin * P_sat_here;   // pressure ramp band
+    double w_meta;
+    if (flash_liq) {
+        // superheated liquid boils as P falls below (1-margin)·P_sat
+        w_meta = ss01(0.5 + ((1.0 - meta_margin) * P_sat_here - p_dom.P) / bw_P);
+    } else {
+        // subcooled vapor condenses as P rises above (1+margin)·P_sat
+        w_meta = ss01(0.5 + (p_dom.P - (1.0 + meta_margin) * P_sat_here) / bw_P);
+    }
+    if (w_meta <= 0.0) return false;
+    // (c) Dominance window: ramp to zero approaching the α threshold so a cell
+    //     drifting toward the mid-range (handled by MT) does not switch flash
+    //     on/off discontinuously.
+    const double w_alpha = flash_liq
+        ? ss01((alpha_1 - (1.0 - flash_alpha_thr)) / (0.5 * flash_alpha_thr))
+        : ss01((flash_alpha_thr - alpha_1)         / (0.5 * flash_alpha_thr));
+    if (w_alpha <= 0.0) return false;
 
-    // Blend factor: how far toward seed target we move this timestep.
-    // 1 − exp(−dt/τ) is the classic finite-rate relaxation kernel.
+    // Blend factor: finite-rate kernel 1 − exp(−dt/τ), scaled by the smooth
+    // activation windows so the flash rate is a continuous function of state.
     double blend = 1.0 - std::exp(-dt / tau_flash);
     if (blend > 0.2) blend = 0.2;  // clamp: never move more than 20 % per step
+    blend *= w_T * w_meta * w_alpha;
 
     // COUPLED α + m step.  Two variants, selected by
     // PS_FLASH_PROJECT_SAT (default 0):
@@ -3350,38 +3388,63 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
     if (!std::isfinite(h_transfer)) return false;
     const double H_I = h_transfer + 0.5 * u_mix * u_mix;
 
-    // Apply mass, energy, α updates.
-    double U1_new, U2_new, U4_new, U5_new;
-    if (flash_liq) {
-        U1_new = m_1 - dm;
-        U2_new = m_2 + dm;
-        U4_new = U[4] - dm * H_I;
-        U5_new = U[5] + dm * H_I;
+    // Fractional-flash limiter (task #55).  The previous design committed the
+    // full proposed flash if the post-flash state was EOS-valid on both phases
+    // and otherwise rolled the whole step back (return false).  That accept/
+    // reject is discontinuous: two mirror cells whose full-flash state
+    // straddles the branch-locked EOS validity boundary commit dm vs 0 and
+    // seed a y-reflection asymmetry at the orifice lip.
+    //
+    // Instead, commit the LARGEST fraction s in [0,1] of the proposed flash
+    // that keeps both phases EOS-valid.  s=0 recovers the current cell (which
+    // is valid by construction), so as the full-step state approaches
+    // invalidity the admissible fraction s* -- and hence the committed dm =
+    // s*.dm -- goes to zero CONTINUOUSLY rather than snapping from dm to 0.
+    const double d_alpha1 = alpha_1_new - alpha_1;          // full-step Δα_1
+    const double sgn = flash_liq ? -1.0 : +1.0;            // m_1 += sgn·s·dm
+    const double ke_cell = 0.5 * u_mix * u_mix;
+    auto trial = [&](double s, double& a1, double& U1, double& U2,
+                     double& U4, double& U5) {
+        a1 = alpha_1 + s * d_alpha1;
+        U1 = m_1 + sgn * s * dm;
+        U2 = m_2 - sgn * s * dm;
+        U4 = U[4] + sgn * s * dm * H_I;
+        U5 = U[5] - sgn * s * dm * H_I;
+    };
+    auto valid_at = [&](double s) -> bool {
+        double a1, U1, U2, U4, U5;
+        trial(s, a1, U1, U2, U4, U5);
+        if (!std::isfinite(U1) || !std::isfinite(U2) ||
+            !std::isfinite(U4) || !std::isfinite(U5) ||
+            U1 <= 0.0 || U2 <= 0.0) return false;
+        if (a1 < alpha_floor || a1 > 1.0 - alpha_floor) return false;
+        const double r1 = U1 / a1, r2 = U2 / (1.0 - a1);
+        const double e1 = U4 / U1 - ke_cell, e2 = U5 / U2 - ke_cell;
+        PsPhase c1{}, c2{};
+        c1.alpha = a1; c2.alpha = 1.0 - a1;
+        eos.state_from_rho_e_phase(1, r1, e1, c1);
+        eos.state_from_rho_e_phase(2, r2, e2, c2);
+        return c1.valid && c2.valid;
+    };
+    double s_star;
+    if (valid_at(1.0)) {
+        s_star = 1.0;                       // full flash admissible
     } else {
-        U1_new = m_1 + dm;
-        U2_new = m_2 - dm;
-        U4_new = U[4] + dm * H_I;
-        U5_new = U[5] - dm * H_I;
+        // Largest valid s in [0,1] by bisection (s=0 is the valid current
+        // cell).  ~40 iters -> s to ~1e-12.
+        double s_lo = 0.0, s_hi = 1.0;
+        for (int it = 0; it < 40; ++it) {
+            const double sm = 0.5 * (s_lo + s_hi);
+            if (valid_at(sm)) s_lo = sm; else s_hi = sm;
+        }
+        s_star = s_lo;
     }
-    if (!std::isfinite(U1_new) || !std::isfinite(U2_new) ||
-        !std::isfinite(U4_new) || !std::isfinite(U5_new) ||
-        U1_new <= 0.0 || U2_new <= 0.0)
-        return false;
+    if (s_star <= 0.0) return false;        // no admissible flash this step
 
-    // Rollback protection: verify the proposed state is EOS-valid
-    // on BOTH phases before committing.  Prevents any single flash
-    // step from injecting garbage that later blows up the CFL step.
-    const double rho_1_check = U1_new / alpha_1_new;
-    const double rho_2_check = U2_new / (1.0 - alpha_1_new);
-    const double e_1_check = U4_new / U1_new - 0.5 * u_mix * u_mix;
-    const double e_2_check = U5_new / U2_new - 0.5 * u_mix * u_mix;
-    PsPhase p1_check{}, p2_check{};
-    p1_check.alpha = alpha_1_new; p2_check.alpha = 1.0 - alpha_1_new;
-    eos.state_from_rho_e_phase(1, rho_1_check, e_1_check, p1_check);
-    eos.state_from_rho_e_phase(2, rho_2_check, e_2_check, p2_check);
-    if (!p1_check.valid || !p2_check.valid) return false;
+    double a1_new, U1_new, U2_new, U4_new, U5_new;
+    trial(s_star, a1_new, U1_new, U2_new, U4_new, U5_new);
 
-    U[0] = alpha_1_new;
+    U[0] = a1_new;
     U[1] = U1_new;
     U[2] = U2_new;
     U[4] = U4_new;
