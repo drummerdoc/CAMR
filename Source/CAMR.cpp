@@ -520,6 +520,23 @@ CAMR::init()
   setTimeLevel(cur_time, dt_old, dt);
   amrex::MultiFab& S_new = get_new_data(State_Type);
   FillCoarsePatch(S_new, 0, cur_time, State_Type, 0, NVAR);
+#ifdef USE_PS_HYDRO
+  // Diagnostic (task #18/#41): alpha_1 range on a NEW fine level right after
+  // coarse->fine interpolation.  If alpha1_max here jumps above the injected
+  // value, the coarse-fine interpolation of the two-phase state is a driver of
+  // the alpha_1 -> pure-phase blow-up.  Gated: CAMR.ps_diag_alpha = 1.
+  {
+    static int dg = -1;
+    if (dg < 0) { int t = 0; amrex::ParmParse pp("CAMR");
+                  pp.query("ps_diag_alpha", t); dg = t; }
+    if (dg != 0) {
+      amrex::Print() << "[PS-DIAG] L" << level
+                     << " post-C-F-interp(init): alpha1 in ["
+                     << S_new.min(UALPHA1, 0) << ", " << S_new.max(UALPHA1, 0)
+                     << "]\n";
+    }
+  }
+#endif
 }
 
 amrex::Real

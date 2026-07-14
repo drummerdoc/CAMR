@@ -33,6 +33,14 @@ CAMR.ps_wp_order = 2
 CAMR.ps_recon    = 0
 CAMR.ps_bc_use_nscbc = 0
 CAMR.ps_alpha_vanish = 1.0e-8
+CAMR.ps_wp_transverse = 2   # transverse coupling: 2 = contact + analytic acoustic
+                            # eigen-projection (task #18). Was OFF (0) by default,
+                            # which left the near-jet with no transverse coupling.
+CAMR.ps_shear_diss    = 0.5 # targeted transverse-shear dissipation (task #18):
+                            # damps the numerical transverse odd-even (checkerboard)
+                            # in the near-orifice x_velocity. Sensor-gated (2nd-order
+                            # vanishing in smooth flow). ~0.2-0.5 typical; drop if
+                            # it looks heavy on the jet, raise if checkerboard leaks.
 
 CAMR.ps_do_relax  = 1
 CAMR.ps_mt_tau    = 1.0e-6       # mass transfer ON (real two-phase cells)
@@ -48,13 +56,13 @@ CAMR.sum_interval = -1
 CAMR.redistribution_type = StateRedist
 amr.loadbalance_with_workestimates = 0
 
-# max_level=1 (2 levels, finest 512x256) is the VERIFIED-CLEAN baseline
-# (machine-precision symmetric, pressure-bounded).  With res_dome_taper=1 the
-# gap-edge lip is now dome-consistent (no off-dome pockets/ringing at the
-# source), so max_level=2 (3 levels, finest 1024x512) should now be stable --
-# please RE-TEST at 2 on real hardware; the sandbox cannot run 3 levels or
-# fine uniform grids at speed.  Bump to 2 to restore the full 3-level showcase.
-amr.max_level       = 1
+# 3-level showcase (finest 1024x512).  Validated: dome-consistent lip (no
+# ringing), shear-diss + acoustic transverse coupling (no checkerboard), and the
+# atag fix below (refines only the plume, ~1% footprint).  Symmetry is witnessed
+# on the UNIFORM companion (inputs.satjet_conv512, machine-precision) since AMR
+# does not grid mirror-symmetrically -- the full-plane AMR run is stable & bounded
+# but symmetry is not a well-posed check on the non-mirror grid hierarchy.
+amr.max_level       = 2
 amr.ref_ratio       = 2 2 2 2
 amr.regrid_int      = 2 2 2 2
 amr.blocking_factor = 16

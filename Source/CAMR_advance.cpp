@@ -149,17 +149,34 @@ CAMR::CAMR_advance (Real time,
     // dt-independent), then finite-rate sources (integrated over dt_r).
     // `ng` grows the loop over ghost cells; `do_print` gates the relaxation
     // diagnostics (off for the pre-step to avoid double reductions/prints).
+    // Diagnostic tripwire (task #18/#41): report the alpha_1 range at labeled
+    // points so a crash driven by alpha_1 -> pure phase can be attributed to
+    // MT (jump across the relax bracket) vs advection/C-F (already high on
+    // entry / post-hydro).  Gated: CAMR.ps_diag_alpha = 1 (default 0 = silent).
+    auto diag_a1 = [&](const amrex::MultiFab& S, const char* label) {
+        static int dg = -1;
+        if (dg < 0) { int t = 0; amrex::ParmParse pp("CAMR");
+                      pp.query("ps_diag_alpha", t); dg = t; }
+        if (dg == 0) return;
+        amrex::Print() << "[PS-DIAG] L" << level << " step "
+                       << parent->levelSteps(level) << " " << label
+                       << ": alpha1 in [" << S.min(UALPHA1, 0) << ", "
+                       << S.max(UALPHA1, 0) << "]\n";
+    };
     auto apply_ps_reaction = [&](amrex::MultiFab& S, amrex::Real dt_r,
                                  int ng, bool do_print) {
         ps_resync_phase_energy(S, ng);  // task #58: UE1+UE2==UEDEN after C-F interp/regrid
         ps_apply_floor(S, ng);          // positivity floor (task #50)
         ps_apply_vanish_fold(S, ng);
         clean_state(S);
+        diag_a1(S, "reaction pre-relax");   // entering: reflects hydro/advection/C-F
         if (ps_do_relax_cached != 0) {
             ps_apply_relaxation(S, ng, do_print);
             clean_state(S);
         }
+        diag_a1(S, "reaction post-relax");  // jump here => MT/relaxation is the driver
         ps_apply_sources(S, dt_r, ng);
+        diag_a1(S, "reaction post-sources");// jump here => flash/source is the driver
     };
     // Strang pre-hydro HALF step.  Applied to the OLD-time data in place so
     // that (a) the subsequent expand_state FillPatch propagates it to the
@@ -258,6 +275,7 @@ CAMR::CAMR_advance (Real time,
     // relaxation → optional finite-rate sources (flash / MT / triple
     // point, all dials default OFF).  See apply_ps_reaction above.
     if (ps_hydro != 0) {
+        diag_a1(S_new, "post-hydro");    // high here (w/o relax) => advection/C-F, not MT
         const amrex::Real dt_react =
             (ps_strang_cached != 0) ? amrex::Real(0.5) * dt : dt;
         apply_ps_reaction(S_new, dt_react, 0, true);
