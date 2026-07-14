@@ -51,6 +51,24 @@ struct ProbParmDevice
     amrex::Real res_rhoV = 0.0;   // kg/m3 saturated-vapor  density  @ T_res
     amrex::Real res_eV   = 0.0;   // J/kg  saturated-vapor  internal energy
 
+    // Dome-consistent lip taper (task #59).  0 (default): legacy linear blend
+    //   s_ext = w*R + (1-w)*W of the (dense) two-phase reservoir R against the
+    //   vapor wall-reflection W -- this lands taper-edge cells OFF the
+    //   saturation dome, where the stiff PR-EOS rings (dense-liquid pockets,
+    //   dt collapse) at showcase resolution.
+    // 1: build EVERY in-gap ghost cell as a VALID ON-DOME saturated mixture at
+    //   P=Psat(T_res) with liquid fraction tapered as res_alpha1*swin (liquid
+    //   confined toward the gap core, -> pure saturated vapor at the edge), and
+    //   NO linear blend with W.  Keeps the EOS response continuous across the
+    //   lip so round-off stays round-off and no off-dome pockets form.
+    int res_dome_taper = 0;
+    // Reservoir inflow normal velocity [m/s] (tapered by swin).  0 (default):
+    //   stagnation ghost (u=0), flow is pressure-driven -- but the dense liquid
+    //   then accumulates at the inflow face until P builds, seeding edge
+    //   pockets.  A small positive value carries liquid in so it does not
+    //   stagnate/concentrate at the orifice.  Only used with res_dome_taper=1.
+    amrex::Real res_u = 0.0;
+
     // Break-gap geometry on the x-lo rupture plane.
     amrex::Real gap_yc   = 0.5;   // m    gap centre (y)
     amrex::Real gap_half = 0.05;  // m    gap half-width

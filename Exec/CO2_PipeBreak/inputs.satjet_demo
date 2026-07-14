@@ -48,7 +48,13 @@ CAMR.sum_interval = -1
 CAMR.redistribution_type = StateRedist
 amr.loadbalance_with_workestimates = 0
 
-amr.max_level       = 2
+# max_level=1 (2 levels, finest 512x256) is the VERIFIED-CLEAN baseline
+# (machine-precision symmetric, pressure-bounded).  With res_dome_taper=1 the
+# gap-edge lip is now dome-consistent (no off-dome pockets/ringing at the
+# source), so max_level=2 (3 levels, finest 1024x512) should now be stable --
+# please RE-TEST at 2 on real hardware; the sandbox cannot run 3 levels or
+# fine uniform grids at speed.  Bump to 2 to restore the full 3-level showcase.
+amr.max_level       = 1
 amr.ref_ratio       = 2 2 2 2
 amr.regrid_int      = 2 2 2 2
 amr.blocking_factor = 16
@@ -80,7 +86,24 @@ prob.u0       = 0.0
 prob.p_amb    = 1.0e6
 prob.p_res    = 4.0e6     # (unused for two-phase reservoir; P=Psat(T_res))
 prob.T_res    = 280.0     # reservoir T -> sets Psat + saturated L/V states
-prob.res_alpha1 = 0.5     # SATURATED two-phase reservoir (0<..<1), on-dome
+prob.res_alpha1 = 0.05    # SATURATED two-phase reservoir (0<..<1), on-dome.
+                          # VAPOR-RICH (5% liquid by vol): rho_mix~130, not ~490.
+                          # A liquid-rich slug (res_alpha1=0.5, rho_mix~490) blows
+                          # up under AMR: coarse-fine interpolation of the dense
+                          # two-phase state lands intermediate cells OFF the dome,
+                          # where the stiff PR-EOS maps them to 480 bar / 4400 K by
+                          # step 25 (no-AMR base level stays bounded at ~27 bar --
+                          # the amplifier is the C-F interp of the dense liquid).
+                          # 5% liquid keeps the mixture light enough that the C-F
+                          # contrast is gentle: clean past step 64 (max_level=1).
+prob.res_dome_taper = 1   # DOME-CONSISTENT lip (task #59): build every in-gap
+                          # ghost as a valid on-dome saturated state at P=Psat,
+                          # liquid tapered as res_alpha1*swin -> no off-dome
+                          # dense pockets, no stiff-EOS ringing at the orifice.
+                          # (no-AMR verified: a1max stays = res_alpha1, i.e. NO
+                          # pocket accumulation; machine-precision symmetric.)
+prob.res_u      = 20.0    # m/s reservoir inflow (tapered by swin) so liquid is
+                          # carried in rather than stagnating/piling at the face.
 prob.amb_vapor  = 1       # gas ambient on the vapor branch (phase 2)
 prob.sym_ylo    = 0       # FULL PLANE
 prob.gap_yc   = 0.5

@@ -160,7 +160,44 @@ bcnormal(
             R[UTEMP] = prob_parm.T_res;
 
 #ifdef USE_PS_HYDRO
-            if (prob_parm.res_alpha1 < amrex::Real(1.0)) {
+            if (prob_parm.res_alpha1 < amrex::Real(1.0)
+                && prob_parm.res_dome_taper != 0) {
+                // ---- DOME-CONSISTENT saturated two-phase lip (task #59) ------
+                //   Build the ghost DIRECTLY as a valid on-dome saturated
+                //   mixture at P=Psat(T_res): liquid fraction tapered as
+                //   res_alpha1*swin so it -> pure saturated vapor at the gap
+                //   edge, with the inflow velocity tapered by swin.  Because
+                //   every cell is an exact saturated state, the PR-EOS response
+                //   is smooth across the lip -- no off-dome dense pockets, no
+                //   ringing.  This path sets s_ext itself and SKIPS the linear
+                //   R/W blend below (which is what lands cells off-dome).
+                const amrex::Real a1 = prob_parm.res_alpha1 * swin; // -> 0 at edge
+                const amrex::Real a2 = amrex::Real(1.0) - a1;
+                const amrex::Real m1 = a1 * prob_parm.res_rhoL;
+                const amrex::Real m2 = a2 * prob_parm.res_rhoV;
+                const amrex::Real rho_mix = m1 + m2;
+                const amrex::Real rhoe = m1 * prob_parm.res_eL
+                                       + m2 * prob_parm.res_eV;
+                const amrex::Real un  = swin * prob_parm.res_u; // inflow, taper->0
+                const amrex::Real ke  = amrex::Real(0.5) * rho_mix * un * un;
+                for (int n = 0; n < NVAR; ++n) s_ext[n] = amrex::Real(0.0);
+                s_ext[URHO]    = rho_mix;
+                s_ext[UMX]     = rho_mix * un;
+                s_ext[UMY]     = amrex::Real(0.0);
+#if (AMREX_SPACEDIM == 3)
+                s_ext[UMZ]     = amrex::Real(0.0);
+#endif
+                s_ext[UEINT]   = rhoe;
+                s_ext[UEDEN]   = rhoe + ke;
+                s_ext[UTEMP]   = prob_parm.T_res;
+                s_ext[UFS  ]   = rho_mix;   // Y=CO2
+                s_ext[UALPHA1] = a1;
+                s_ext[UM1RHO1] = m1;
+                s_ext[UM2RHO2] = m2;
+                s_ext[UE1    ] = m1 * prob_parm.res_eL;
+                s_ext[UE2    ] = m2 * prob_parm.res_eV;
+                return;   // dome-consistent ghost is complete; skip R/W blend
+            } else if (prob_parm.res_alpha1 < amrex::Real(1.0)) {
                 // ---- SATURATED TWO-PHASE reservoir (rung 4): fixed saturated
                 //      mixture at T_res (P = Psat(T_res)); per-phase sat (rho,e)
                 //      precomputed in probinit.  No pressure ramp (the state is

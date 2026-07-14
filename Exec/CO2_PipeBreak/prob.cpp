@@ -24,6 +24,8 @@ extern "C" {
         pp.query("gap_taper", CAMR::h_prob_parm->gap_taper);
         pp.query("ramp_time", CAMR::h_prob_parm->ramp_time);
         pp.query("res_alpha1", CAMR::h_prob_parm->res_alpha1);
+        pp.query("res_dome_taper", CAMR::h_prob_parm->res_dome_taper);
+        pp.query("res_u",      CAMR::h_prob_parm->res_u);
         pp.query("sym_ylo",    CAMR::h_prob_parm->sym_ylo);
         pp.query("amb_vapor",  CAMR::h_prob_parm->amb_vapor);
 

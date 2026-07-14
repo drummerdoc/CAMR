@@ -125,6 +125,12 @@ struct PsPhaseAPI {
     std::function<void(int phase, double rho, double e, PsPhase& ph)>
         state_from_rho_e_phase;
 
+    // Saturation pressure P_sat(T) [Pa], fluid-sourced (task #53).  When set,
+    // the flash metastability test uses this instead of the hard-coded CO2
+    // Wagner correlation, so the generic flash stays fluid-agnostic.  Unset
+    // (null) -> callers fall back to co2_P_sat_wagner (CO2 default).
+    std::function<double(double T)> Psat_of_T;
+
     // Session 89af: per-phase real-fluid (rho, e) -> {P, c} callbacks
     // for the exact-Riemann face flux (PS_FLUX=exact).  Optional --
     // ps_face_flux only reads these when PS_FLUX=exact is set.  For
@@ -3203,7 +3209,8 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
                      * ss01((T_crit_g - p_dom.T) / bw_T);
     if (w_T <= 0.0) return false;   // strictly outside the saturation dome
 
-    const double P_sat_here = co2_P_sat_wagner(p_dom.T);
+    const double P_sat_here = eos.Psat_of_T ? eos.Psat_of_T(p_dom.T)   // task #53
+                                            : co2_P_sat_wagner(p_dom.T);
     // Metastability triggers:
     //   liquid dominant + P_liq < P_sat  → boil (create vapor)
     //   vapor dominant  + P_vap > P_sat  → condense (create liquid)

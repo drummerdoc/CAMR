@@ -100,6 +100,29 @@ namespace EOS {
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   amrex::Real P_triple() { return amrex::Real(5.1795e5); }    // triple-point P [Pa]
 
+  // Saturation pressure P_sat(T) [Pa] — the fluid's own saturation curve,
+  // sourced from the EOS so the flash/relaxation stay fluid-agnostic (task
+  // #53).  For CO2 this is the Span-Wagner correlation (accurate); wired onto
+  // PsPhaseAPI.Psat_of_T so the generic hem flash uses eos.Psat_of_T(T)
+  // instead of a hard-coded co2_P_sat_wagner.  Other fluids provide their own
+  // EOS::Psat.
+  AMREX_FORCE_INLINE
+  amrex::Real Psat(amrex::Real T)
+  {
+      const hem::PRFluid f = co2_fluid();
+      const amrex::Real T_c = f.pr.Tc;     // critical point from the fluid def
+      const amrex::Real P_c = f.pr.Pc;
+      if (T <= T_triple()) return amrex::Real(5.18e5);   // triple-point P
+      if (T >= T_c)        return P_c;
+      // Span-Wagner reduced-vapor-pressure coefficients (CO2-specific fit).
+      const amrex::Real tau = amrex::Real(1.0) - T / T_c;
+      const amrex::Real s = amrex::Real(-7.0602087) * tau
+                          + amrex::Real( 1.9391218) * std::pow(tau, amrex::Real(1.5))
+                          + amrex::Real(-1.6463597) * std::pow(tau, amrex::Real(2.5))
+                          + amrex::Real(-3.2995634) * std::pow(tau, amrex::Real(5.0));
+      return P_c * std::exp(T_c / T * s);
+  }
+
   // Saturated liquid/vapor (rho, e) at temperature T on the PR coexistence
   // curve.  Used to build a genuine two-phase (saturated) inlet/IC without
   // relying on flash nucleation.  Iterative (Psat solve) -- call once and

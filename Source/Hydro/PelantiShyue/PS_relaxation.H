@@ -115,6 +115,9 @@ ps_make_camr_eos_api()
     // triple point / critical temperature in the gate code.
     api.T_crit_K   = double(EOS::T_crit());
     api.T_triple_K = double(EOS::T_triple());
+    // Fluid-sourced saturation pressure for the flash metastability test
+    // (task #53) — no hard-coded co2_P_sat_wagner in the generic flash.
+    api.Psat_of_T  = [](double T) { return double(EOS::Psat(amrex::Real(T))); };
     api.state_from_rho_e_phase =
         [](int phase, double rho, double e, hem::PsPhase& ph)
     {
