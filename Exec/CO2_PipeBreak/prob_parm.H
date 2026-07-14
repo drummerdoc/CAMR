@@ -69,6 +69,20 @@ struct ProbParmDevice
     //   stagnate/concentrate at the orifice.  Only used with res_dome_taper=1.
     amrex::Real res_u = 0.0;
 
+    // Characteristic (non-reflecting) subsonic two-phase inlet (task #41/#59).
+    // 0 (default): the dome-consistent ghost fixes velocity (res_u) AND pressure
+    //   (Psat) AND composition -- a full-state Dirichlet inlet, which over-
+    //   specifies a subsonic inflow and REFLECTS outgoing acoustic waves
+    //   (intermittent inlet pressure flares / core-P noise).
+    // 1: keep pressure=Psat and the on-dome composition from the reservoir, but
+    //   take the inflow VELOCITY from the outgoing (u-c) acoustic invariant of
+    //   the interior:  u_b = u_int + (Psat - P_int)/(rho_int c_int).  This lets
+    //   the leaving acoustic characteristic pass through instead of reflecting.
+    //   Requires res_dome_taper=1.  res_u is then ignored.
+    int res_char_inflow = 0;
+    amrex::Real res_Psat = 0.0;  // Pa  Psat(T_res); filled in probinit for the
+                                 //     characteristic inlet (P target).
+
     // Break-gap geometry on the x-lo rupture plane.
     amrex::Real gap_yc   = 0.5;   // m    gap centre (y)
     amrex::Real gap_half = 0.05;  // m    gap half-width

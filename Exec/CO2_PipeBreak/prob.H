@@ -178,7 +178,32 @@ bcnormal(
                 const amrex::Real rho_mix = m1 + m2;
                 const amrex::Real rhoe = m1 * prob_parm.res_eL
                                        + m2 * prob_parm.res_eV;
-                const amrex::Real un  = swin * prob_parm.res_u; // inflow, taper->0
+                // Inflow normal velocity: either the fixed res_u, or the
+                // outgoing-acoustic-invariant (non-reflecting) value taken from
+                // the interior (task #41/#59).  The characteristic form fixes P
+                // (=Psat) and composition but lets the leaving (u-c) wave pass:
+                //     u_b = u_int + (Psat - P_int)/(rho_int c_int)
+                amrex::Real un;
+                if (prob_parm.res_char_inflow != 0) {
+                    const amrex::Real inv_ri = amrex::Real(1.0) / s_int[URHO];
+                    const amrex::Real ux_i   = s_int[UMX] * inv_ri;
+                    const amrex::Real e_i    = s_int[UEINT] * inv_ri;
+                    amrex::Real Yi[NUM_SPECIES];
+                    Yi[0] = s_int[UFS  ] * inv_ri;
+                    Yi[1] = s_int[UFS+1] * inv_ri;
+                    Yi[2] = s_int[UFS+2] * inv_ri;
+                    amrex::Real P_i, gam_i;
+                    EOS::REY2P (s_int[URHO], e_i, Yi, P_i);
+                    EOS::REY2Gam(s_int[URHO], e_i, Yi, gam_i);
+                    amrex::Real c2 = gam_i * P_i * inv_ri;
+                    if (c2 < amrex::Real(1.0)) c2 = amrex::Real(1.0);
+                    const amrex::Real rhoc = s_int[URHO] * std::sqrt(c2);
+                    amrex::Real ub = ux_i + (prob_parm.res_Psat - P_i) / rhoc;
+                    if (ub < amrex::Real(0.0)) ub = amrex::Real(0.0); // inflow only
+                    un = swin * ub;
+                } else {
+                    un = swin * prob_parm.res_u; // fixed inflow, taper->0
+                }
                 const amrex::Real ke  = amrex::Real(0.5) * rho_mix * un * un;
                 for (int n = 0; n < NVAR; ++n) s_ext[n] = amrex::Real(0.0);
                 s_ext[URHO]    = rho_mix;

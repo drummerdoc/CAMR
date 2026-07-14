@@ -26,6 +26,7 @@ extern "C" {
         pp.query("res_alpha1", CAMR::h_prob_parm->res_alpha1);
         pp.query("res_dome_taper", CAMR::h_prob_parm->res_dome_taper);
         pp.query("res_u",      CAMR::h_prob_parm->res_u);
+        pp.query("res_char_inflow", CAMR::h_prob_parm->res_char_inflow);
         pp.query("sym_ylo",    CAMR::h_prob_parm->sym_ylo);
         pp.query("amb_vapor",  CAMR::h_prob_parm->amb_vapor);
 
@@ -39,6 +40,7 @@ extern "C" {
             CAMR::h_prob_parm->res_eL   = eL;
             CAMR::h_prob_parm->res_rhoV = rhoV;
             CAMR::h_prob_parm->res_eV   = eV;
+            CAMR::h_prob_parm->res_Psat = EOS::Psat(CAMR::h_prob_parm->T_res);
             amrex::Print() << "  CO2_PipeBreak: saturated two-phase reservoir @ T_res="
                            << CAMR::h_prob_parm->T_res << " K, alpha1_liq="
                            << CAMR::h_prob_parm->res_alpha1

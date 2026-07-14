@@ -1,0 +1,120 @@
+# CONVERGENCE STUDY variant of inputs.satjet_demo -- uniform 1024 512, matched physics/time.
+# =====================================================================
+#  CO2_PipeBreak — SHOWCASE: saturated two-phase CO2 blowdown,
+#  full plane, 3-level AMR.  Physically-realistic clean two-phase demo:
+#  reservoir is a SATURATED liquid+vapor mixture (on the dome, NOT
+#  metastable compressed liquid -> avoids the #48 near-inlet amplifier),
+#  vented into vapor ambient.  MT active on genuine two-phase cells;
+#  flash OFF (reservoir already two-phase, no nucleation needed).  The
+#  #58 energy re-sync keeps the two-phase per-phase split consistent
+#  across coarse-fine interpolation, so AMR is safe here.
+# =====================================================================
+amrex.fpe_trap_invalid = 0
+max_step  = 20000
+stop_time = 1.0e-3
+
+geometry.is_periodic = 0 0 0
+geometry.coord_sys   = 0
+geometry.prob_lo     = 0.0  0.0
+geometry.prob_hi     = 2.0  1.0
+amr.n_cell           = 1024 512
+
+CAMR.lo_bc = Inflow Inflow
+CAMR.hi_bc = Inflow Inflow
+
+CAMR.cfl = 0.3
+CAMR.fixed_dt = 0
+CAMR.allow_negative_energy = 1
+CAMR.do_mol = 0
+CAMR.ppm_type = 1
+
+CAMR.ps_hydro    = 1
+CAMR.ps_flux     = wp
+CAMR.ps_wp_order = 2
+CAMR.ps_recon    = 0
+CAMR.ps_bc_use_nscbc = 0
+CAMR.ps_alpha_vanish = 1.0e-8
+
+CAMR.ps_do_relax  = 1
+CAMR.ps_mt_tau    = 1.0e-6       # mass transfer ON (real two-phase cells)
+CAMR.ps_mt_gref   = 5.0e4
+CAMR.ps_flash_tau = 0.0          # flash OFF (saturated reservoir; no nucleation)
+CAMR.ps_pres_floor = 1.0e5
+CAMR.ps_temp_floor = 216.6
+# CAMR.eos_warmstart = 1         # optional throughput
+
+CAMR.v = 1
+amr.v = 1
+CAMR.sum_interval = -1
+CAMR.redistribution_type = StateRedist
+amr.loadbalance_with_workestimates = 0
+
+# max_level=1 (2 levels, finest 512x256) is the VERIFIED-CLEAN baseline
+# (machine-precision symmetric, pressure-bounded).  With res_dome_taper=1 the
+# gap-edge lip is now dome-consistent (no off-dome pockets/ringing at the
+# source), so max_level=2 (3 levels, finest 1024x512) should now be stable --
+# please RE-TEST at 2 on real hardware; the sandbox cannot run 3 levels or
+# fine uniform grids at speed.  Bump to 2 to restore the full 3-level showcase.
+amr.max_level       = 0    # UNIFORM grid (convergence study: no AMR C-F confounding)
+amr.ref_ratio       = 2 2 2 2
+amr.regrid_int      = 2 2 2 2
+amr.blocking_factor = 16
+amr.max_grid_size   = 64
+amr.n_error_buf     = 2 2 2 2
+amr.grid_eff        = 0.9
+# Refine the jet head (density jump) AND the two-phase plume (vfrac1<0.95).
+amr.refinement_indicators = ldtag atag
+amr.ldtag.field_name = logden
+amr.ldtag.adjacent_difference_greater = 0.15
+amr.ldtag.max_level = 2
+amr.atag.field_name = vfrac1
+amr.atag.value_less = 0.95
+amr.atag.max_level = 2
+
+DistributionMapping.strategy = ROUNDROBIN
+amr.checkpoint_files_output = 0
+amr.check_file              = chk_sj
+amr.check_int               = -1
+amr.plot_files_output = 1
+amr.plot_file         = conv1024_
+amr.plot_int          = -1
+amr.derive_plot_vars  = x_velocity y_velocity pressure
+amr.plot_per          = 2.0e-4   # matched-time snapshots (t=2,4,6,8,10 e-4) for cross-resolution compare
+
+# --- Problem state: saturated two-phase reservoir -> vapor ambient ----
+prob.p0       = 1.0e6     # Pa   ambient (10 bar; gas at 280 K, Psat~41 bar)
+prob.T0       = 280.0
+prob.u0       = 0.0
+prob.p_amb    = 1.0e6
+prob.p_res    = 4.0e6     # (unused for two-phase reservoir; P=Psat(T_res))
+prob.T_res    = 280.0     # reservoir T -> sets Psat + saturated L/V states
+prob.res_alpha1 = 0.05    # SATURATED two-phase reservoir (0<..<1), on-dome.
+                          # VAPOR-RICH (5% liquid by vol): rho_mix~130, not ~490.
+                          # A liquid-rich slug (res_alpha1=0.5, rho_mix~490) blows
+                          # up under AMR: coarse-fine interpolation of the dense
+                          # two-phase state lands intermediate cells OFF the dome,
+                          # where the stiff PR-EOS maps them to 480 bar / 4400 K by
+                          # step 25 (no-AMR base level stays bounded at ~27 bar --
+                          # the amplifier is the C-F interp of the dense liquid).
+                          # 5% liquid keeps the mixture light enough that the C-F
+                          # contrast is gentle: clean past step 64 (max_level=1).
+prob.res_dome_taper = 1   # DOME-CONSISTENT lip (task #59): build every in-gap
+                          # ghost as a valid on-dome saturated state at P=Psat,
+                          # liquid tapered as res_alpha1*swin -> no off-dome
+                          # dense pockets, no stiff-EOS ringing at the orifice.
+                          # (no-AMR verified: a1max stays = res_alpha1, i.e. NO
+                          # pocket accumulation; machine-precision symmetric.)
+prob.res_u      = 0.0     # m/s reservoir inflow (tapered by swin).  0 is BETTER-
+                          # POSED: fixing rho,u AND P at a subsonic inlet over-
+                          # specifies it and reflects outgoing acoustics (intermit-
+                          # tent inlet pressure flares).  Measured: res_u 20->0
+                          # drops core-P total-variation 35.7->22.4 bar (coarse)
+                          # and removes the near-inlet dropout.  With dome-taper
+                          # the on-dome state (not inflow momentum) prevents liquid
+                          # pile-up, so a1max stays = res_alpha1 even at u=0.
+prob.amb_vapor  = 1       # gas ambient on the vapor branch (phase 2)
+prob.sym_ylo    = 0       # FULL PLANE
+prob.gap_yc   = 0.5
+prob.gap_half = 0.05
+prob.gap_taper = 0.02
+prob.ramp_time = 3.0e-4
