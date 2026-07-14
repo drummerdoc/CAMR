@@ -102,8 +102,14 @@ prob.res_dome_taper = 1   # DOME-CONSISTENT lip (task #59): build every in-gap
                           # dense pockets, no stiff-EOS ringing at the orifice.
                           # (no-AMR verified: a1max stays = res_alpha1, i.e. NO
                           # pocket accumulation; machine-precision symmetric.)
-prob.res_u      = 20.0    # m/s reservoir inflow (tapered by swin) so liquid is
-                          # carried in rather than stagnating/piling at the face.
+prob.res_u      = 0.0     # m/s reservoir inflow (tapered by swin).  0 is BETTER-
+                          # POSED: fixing rho,u AND P at a subsonic inlet over-
+                          # specifies it and reflects outgoing acoustics (intermit-
+                          # tent inlet pressure flares).  Measured: res_u 20->0
+                          # drops core-P total-variation 35.7->22.4 bar (coarse)
+                          # and removes the near-inlet dropout.  With dome-taper
+                          # the on-dome state (not inflow momentum) prevents liquid
+                          # pile-up, so a1max stays = res_alpha1 even at u=0.
 prob.amb_vapor  = 1       # gas ambient on the vapor branch (phase 2)
 prob.sym_ylo    = 0       # FULL PLANE
 prob.gap_yc   = 0.5
