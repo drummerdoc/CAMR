@@ -67,7 +67,11 @@ amr.ldtag.field_name = logden
 amr.ldtag.adjacent_difference_greater = 0.15
 amr.ldtag.max_level = 2
 amr.atag.field_name = vfrac1
-amr.atag.value_less = 0.95
+# vfrac1 == alpha_1 (liquid volume fraction).  Refine where LIQUID IS PRESENT
+# (the two-phase plume, alpha_1 > 1e-3), NOT value_less=0.95 -- with a vapor-rich
+# reservoir alpha_1<=0.05 EVERYWHERE, so value_less=0.95 tagged the whole domain
+# and drove level 2 to cover everything (uniform 1024x512, no real AMR).
+amr.atag.value_greater = 1.0e-3
 amr.atag.max_level = 2
 
 DistributionMapping.strategy = ROUNDROBIN
