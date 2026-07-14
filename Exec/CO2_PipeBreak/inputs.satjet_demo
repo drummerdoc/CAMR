@@ -1,0 +1,89 @@
+# =====================================================================
+#  CO2_PipeBreak — SHOWCASE: saturated two-phase CO2 blowdown,
+#  full plane, 3-level AMR.  Physically-realistic clean two-phase demo:
+#  reservoir is a SATURATED liquid+vapor mixture (on the dome, NOT
+#  metastable compressed liquid -> avoids the #48 near-inlet amplifier),
+#  vented into vapor ambient.  MT active on genuine two-phase cells;
+#  flash OFF (reservoir already two-phase, no nucleation needed).  The
+#  #58 energy re-sync keeps the two-phase per-phase split consistent
+#  across coarse-fine interpolation, so AMR is safe here.
+# =====================================================================
+amrex.fpe_trap_invalid = 0
+max_step  = 20000
+stop_time = 2.5e-3
+
+geometry.is_periodic = 0 0 0
+geometry.coord_sys   = 0
+geometry.prob_lo     = 0.0  0.0
+geometry.prob_hi     = 2.0  1.0
+amr.n_cell           = 256  128            # base; 3 levels -> 1024x512 finest
+
+CAMR.lo_bc = Inflow Inflow
+CAMR.hi_bc = Inflow Inflow
+
+CAMR.cfl = 0.3
+CAMR.fixed_dt = 0
+CAMR.allow_negative_energy = 1
+CAMR.do_mol = 0
+CAMR.ppm_type = 1
+
+CAMR.ps_hydro    = 1
+CAMR.ps_flux     = wp
+CAMR.ps_wp_order = 2
+CAMR.ps_recon    = 0
+CAMR.ps_bc_use_nscbc = 0
+CAMR.ps_alpha_vanish = 1.0e-8
+
+CAMR.ps_do_relax  = 1
+CAMR.ps_mt_tau    = 1.0e-6       # mass transfer ON (real two-phase cells)
+CAMR.ps_mt_gref   = 5.0e4
+CAMR.ps_flash_tau = 0.0          # flash OFF (saturated reservoir; no nucleation)
+CAMR.ps_pres_floor = 1.0e5
+CAMR.ps_temp_floor = 216.6
+# CAMR.eos_warmstart = 1         # optional throughput
+
+CAMR.v = 1
+amr.v = 1
+CAMR.sum_interval = -1
+CAMR.redistribution_type = StateRedist
+amr.loadbalance_with_workestimates = 0
+
+amr.max_level       = 2
+amr.ref_ratio       = 2 2 2 2
+amr.regrid_int      = 2 2 2 2
+amr.blocking_factor = 16
+amr.max_grid_size   = 64
+amr.n_error_buf     = 2 2 2 2
+amr.grid_eff        = 0.9
+# Refine the jet head (density jump) AND the two-phase plume (vfrac1<0.95).
+amr.refinement_indicators = ldtag atag
+amr.ldtag.field_name = logden
+amr.ldtag.adjacent_difference_greater = 0.15
+amr.ldtag.max_level = 2
+amr.atag.field_name = vfrac1
+amr.atag.value_less = 0.95
+amr.atag.max_level = 2
+
+DistributionMapping.strategy = ROUNDROBIN
+amr.checkpoint_files_output = 1
+amr.check_file              = chk_sj
+amr.check_int               = 200
+amr.plot_files_output = 1
+amr.plot_file         = plt_sj
+amr.plot_int          = 25
+amr.derive_plot_vars  = x_velocity y_velocity pressure
+
+# --- Problem state: saturated two-phase reservoir -> vapor ambient ----
+prob.p0       = 1.0e6     # Pa   ambient (10 bar; gas at 280 K, Psat~41 bar)
+prob.T0       = 280.0
+prob.u0       = 0.0
+prob.p_amb    = 1.0e6
+prob.p_res    = 4.0e6     # (unused for two-phase reservoir; P=Psat(T_res))
+prob.T_res    = 280.0     # reservoir T -> sets Psat + saturated L/V states
+prob.res_alpha1 = 0.5     # SATURATED two-phase reservoir (0<..<1), on-dome
+prob.amb_vapor  = 1       # gas ambient on the vapor branch (phase 2)
+prob.sym_ylo    = 0       # FULL PLANE
+prob.gap_yc   = 0.5
+prob.gap_half = 0.05
+prob.gap_taper = 0.02
+prob.ramp_time = 3.0e-4
