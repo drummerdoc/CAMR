@@ -36,6 +36,14 @@ CAMR.ps_alpha_vanish = 1.0e-8
 CAMR.ps_wp_transverse = 2   # transverse coupling: 2 = contact + analytic acoustic
                             # eigen-projection (task #18). Was OFF (0) by default,
                             # which left the near-jet with no transverse coupling.
+CAMR.ps_bl_reflux     = 2   # CONSISTENT two-phase coarse-fine reflux (task #51):
+                            # 0 (default) refluxes the per-phase masses/energies
+                            # but leaves alpha_1 STALE -> inconsistent (alpha1,
+                            # alpha1*rho1) at the C-F boundary -> garbage per-phase
+                            # rho/P next advance -> alpha1 -> pure liquid -> crash.
+                            # 2 = capacity-form alpha co-move (alpha1 tracks its
+                            # refluxed mass, HARDENED Δalpha1 limiter) + UE1/UE2
+                            # fluctuation reflux.  Required for stable 2-phase AMR.
 CAMR.ps_shear_diss    = 0.5 # targeted transverse-shear dissipation (task #18):
                             # damps the numerical transverse odd-even (checkerboard)
                             # in the near-orifice x_velocity. Sensor-gated (2nd-order
