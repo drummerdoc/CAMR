@@ -401,6 +401,53 @@ inline amrex::Real ps_temp_floor()
 
 
 // -----------------------------------------------------------------
+//  ps_resync_phase_energy  —  enforce UE1 + UE2 == UEDEN (task #58).
+//  UEDEN (total energy) is the conserved / refluxed mixture quantity;
+//  the per-phase split UE1/UE2 is auxiliary.  After INDEPENDENT
+//  coarse-fine interpolation / regrid (each component interpolated with
+//  its own limiter), UE1+UE2 drifts from UEDEN (a few % at the flash
+//  front, re-injected every regrid) — and the PS reconstruction assumes
+//  they agree, so on the fine level it eventually produces NaN.  Rescale
+//  UE1,UE2 to sum to UEDEN, preserving their RATIO (keeps the
+//  interpolated split) and total energy EXACTLY.  A no-op on interior
+//  cells where the update already keeps them consistent; only C-F /
+//  regrid-touched cells move.  Call BEFORE the floor / relaxation.
+// -----------------------------------------------------------------
+inline void
+ps_resync_phase_energy(amrex::MultiFab& S_new, int nghost = 0)
+{
+    using amrex::Real;
+    for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
+        const amrex::Box bx = mfi.growntilebox(nghost);
+        amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
+        amrex::LoopOnCpu(bx, [=] (int i, int j, int k) noexcept
+        {
+            const Real ue1 = U(i,j,k, UE1);
+            const Real ue2 = U(i,j,k, UE2);
+            const Real ued = U(i,j,k, UEDEN);
+            if (!std::isfinite(ued)) return;
+            const Real s = ue1 + ue2;
+            if (std::isfinite(s) && std::abs(s) > Real(0.0)) {
+                const Real f = ued / s;                 // preserve split ratio
+                U(i,j,k, UE1) = ue1 * f;
+                U(i,j,k, UE2) = ue2 * f;
+            } else {
+                // Degenerate split (zero / non-finite sum): fall back to a
+                // mass-fraction split of the trusted total energy.
+                const Real m1 = U(i,j,k, UM1RHO1);
+                const Real m2 = U(i,j,k, UM2RHO2);
+                const Real mm = m1 + m2;
+                if (std::isfinite(mm) && mm > Real(0.0)) {
+                    U(i,j,k, UE1) = ued * (m1 / mm);
+                    U(i,j,k, UE2) = ued * (m2 / mm);
+                }
+            }
+        });
+    }
+}
+
+
+// -----------------------------------------------------------------
 //  ps_apply_floor  —  per-cell positivity floor (task #50).  For each
 //  phase, if the EOS pressure at (rho_k, e_k) is below ps_pres_floor
 //  (or non-finite), raise the phase internal energy e_k to the value
