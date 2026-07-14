@@ -790,17 +790,21 @@ ps_wp_tvterm(int d, int t, int i, int j, int k,
              amrex::Array4<const amrex::Real> const& uin,
              amrex::Array4<amrex::Real> const& wv_t,
              const int* domlo, const int* domhi,
-             amrex::Real dt, amrex::Real dxt, amrex::Real g[NVAR]) noexcept
+             amrex::Real dt, amrex::Real dxt, amrex::Real g[NVAR],
+             int mode = 1) noexcept   // 1=contact-only (BL-3a); 2=+acoustic (BL-3b)
 {
     using amrex::Real;
     const int di=(d==0), dj=(d==1), dk=(d==2);
     const int ti=(t==0), tj=(t==1), tk=(t==2);
 #if (AMREX_SPACEDIM == 3)
     const int UM_d = (d==0)?UMX : (d==1)?UMY : UMZ;
+    const int UM_t = (t==0)?UMX : (t==1)?UMY : UMZ;
 #elif (AMREX_SPACEDIM == 2)
     const int UM_d = (d==0)?UMX : UMY;
+    const int UM_t = (t==0)?UMX : UMY;
 #else
     const int UM_d = UMX;   // 1D: transverse term is never invoked
+    const int UM_t = UMX;
 #endif
     // d-velocity at the t-face whose high-side cell is (a,b,c):
     auto ud = [&](int a,int b,int c) noexcept -> Real {
@@ -824,6 +828,157 @@ ps_wp_tvterm(int d, int t, int i, int j, int k,
     for(int n=0;n<NVAR;++n){
         g[n] += -h*( cP0*Apm(i,      j,      k,      n,+1) + cP1*Apm(i+ti,   j+tj,   k+tk,   n,-1)
                    + cM0*Apm(i-di,   j-dj,   k-dk,   n,+1) + cM1*Apm(i-di+ti,j-dj+tj,k-dk+tk,n,-1) );
+    }
+
+    // ---- BL-3b (mode 2): exact ACOUSTIC transverse coupling ----------------
+    //  EXPERIMENTAL (task #18) — analytic acoustic eigen-projection.  Coarse-res
+    //  VALIDATED stable + effective (satjet 256x128: symmetric to 5e-15, Pmax
+    //  bounded 22 bar, transverse odd-even(u) roughly HALVED vs off).  This
+    //  replaced an earlier FD-Jacobian HLL split that blew up (604 bar). Still
+    //  DEFAULT OFF (ps_wp_transverse<2) pending fine-res (512/1024, 3-level AMR)
+    //  validation on real HW — see BL3b_transverse_acoustic_design.md gates 1-5.
+    //  Add the d-projected contribution of the acoustic transverse waves l=0
+    //  (S_L) and l=2 (S_R), which BL-3a omits.  For each contributing t-face,
+    //  the acoustic FLUCTUATION asdq = s_t,l * W_t[l] is split into d-going
+    //  pieces by the HLL d-fan (speeds s∓ = u_d ∓ c at the t-face reference
+    //  state Qbar):
+    //     Ghat = F_d(Qbar+asdq) - F_d(Qbar)        (≈ Â_d asdq)
+    //     B⁻asdq = s⁻(s⁺ asdq − Ghat)/(s⁺−s⁻)      (−d going; feeds hi-d column)
+    //     B⁺asdq = s⁺(Ghat − s⁻ asdq)/(s⁺−s⁻)      (+d going; feeds lo-d column)
+    //  Same four-t-face gather + domain guards (mCp/mCm) as the contact term,
+    //  same −h prefactor.  This is the momentum-pressure transverse coupling
+    //  the contact wave cannot provide (fixes the near-orifice x_velocity
+    //  odd-even decoupling; task #18/#41/#59).  See BL3b_transverse_acoustic_design.md.
+    //  DEFAULT OFF (ps_wp_transverse<2): reproduces BL-3a exactly.
+    if (mode >= 2) {
+        // Analytic acoustic eigen-projection of the transverse fluctuation
+        // asdq = s_t,l·W_t[l] onto the d-direction eigenbasis, λ-sign upwinded.
+        // Local-Γ (gam1) Euler acoustic eigenvectors with the FROZEN mixture c:
+        //   λ± = u_d ± c ; r± = [ρ:1, m_d:λ±, m_t:u_t, E:H±u_dc]
+        //   strengths a± = (dp ± ρc du_d)/(2c²),  dp = (Γ−1)(dE − u_d dm_d + ½u_d²dρ)
+        // Phase slots partitioned so the acoustic wave keeps UM1RHO1+UM2RHO2=ρ
+        // and UE1+UE2=UEDEN consistent (mass-fraction Y_k and energy-fraction
+        // f_k); α is NOT moved by acoustics (contact term handles it). UEINT is
+        // recomputed from UEDEN−ke at ctoprim, so it is left 0 here.
+        // want_minus=true → keep only λ<0 waves (−d going); false → λ>0 (+d).
+        auto bsplit = [&](int a,int b,int c,int l,bool want_minus,Real out[NVAR]) noexcept {
+            for (int n=0;n<NVAR;++n) out[n]=Real(0.0);
+            const Real st = wv_t(a,b,c,3*NVAR+l);
+            Real dR=st*ps_finite_or(wv_t(a,b,c,l*NVAR+URHO ),Real(0.0));   // dρ
+            Real dMd=st*ps_finite_or(wv_t(a,b,c,l*NVAR+UM_d),Real(0.0));   // dm_d
+            Real dE=st*ps_finite_or(wv_t(a,b,c,l*NVAR+UEDEN),Real(0.0));   // dE_tot
+            // reference state Qbar (average of the two t-straddling cells)
+            auto qb=[&](int n){return Real(0.5)*( ps_finite_or(uin(a-ti,b-tj,c-tk,n),Real(0.0))
+                                                + ps_finite_or(uin(a,   b,   c,   n),Real(0.0)) );};
+            Real rho=qb(URHO); if(!(std::isfinite(rho)&&rho>Real(1e-30))) rho=Real(1e-30);
+            const Real invr=Real(1.0)/rho;
+            const Real ud=qb(UM_d)*invr, ut=qb(UM_t)*invr, e=qb(UEINT)*invr;
+            Real Y[NUM_SPECIES]; Y[0]=Real(1.0); for(int s=1;s<NUM_SPECIES;++s) Y[s]=Real(0.0);
+            Real P,g1; EOS::REY2P(rho,e,Y,P); EOS::REY2Gam(rho,e,Y,g1);
+            Real c2=g1*P*invr; if(!(std::isfinite(c2)&&c2>Real(1.0))) c2=Real(1.0);
+            const Real snd=std::sqrt(c2);
+            const Real Etot=qb(UEDEN); const Real H=(Etot+P)*invr;
+            const Real du=(dMd-ud*dR)*invr;
+            const Real dp=(g1-Real(1.0))*(dE-ud*dMd+Real(0.5)*ud*ud*dR);
+            const Real ap=(dp+rho*snd*du)/(Real(2.0)*c2);   // u+c wave strength
+            const Real am=(dp-rho*snd*du)/(Real(2.0)*c2);   // u−c wave strength
+            const Real lp=ud+snd, lm=ud-snd;
+            const Real m1=amrex::max(qb(UM1RHO1),Real(0.0)), m2=amrex::max(qb(UM2RHO2),Real(0.0));
+            Real ms=m1+m2; if(!(ms>Real(1e-30))) ms=Real(1e-30);
+            const Real Y1=m1/ms, Y2=Real(1.0)-Y1;
+            const Real ue1=qb(UE1), ue2=qb(UE2); const Real ues=ue1+ue2;
+            const Real f1=(std::abs(ues)>Real(1e-30))?ue1/ues:Y1, f2=Real(1.0)-f1;
+            auto add=[&](Real lam,Real amp,Real Hc){
+                const Real w=lam*amp;
+                out[URHO]+=w;              out[UM_d]+=w*lam;   out[UM_t]+=w*ut;
+                out[UEDEN]+=w*Hc;          out[UFS]+=w;
+                out[UM1RHO1]+=w*Y1;        out[UM2RHO2]+=w*Y2;
+                out[UE1]+=w*f1*Hc;         out[UE2]+=w*f2*Hc;
+            };
+            if(want_minus){ if(lm<Real(0.0)) add(lm,am,H-ud*c); if(lp<Real(0.0)) add(lp,ap,H+ud*c); }
+            else          { if(lm>Real(0.0)) add(lm,am,H-ud*c); if(lp>Real(0.0)) add(lp,ap,H+ud*c); }
+            for(int n=0;n<NVAR;++n) out[n]=ps_finite_or(out[n],Real(0.0));
+        };
+        Real bm0[NVAR], bm1[NVAR], bp0[NVAR], bp1[NVAR];
+        for (int l=0; l<3; l+=2) {   // l = 0 (S_L) and l = 2 (S_R)
+            // hi-d column (guard mCp): −d-going pieces from its two t-faces.
+            bsplit(i,       j,       k,       l, true,  bm0);
+            bsplit(i+ti,    j+tj,    k+tk,    l, true,  bm1);
+            // lo-d column (guard mCm): +d-going pieces from its two t-faces.
+            bsplit(i-di,    j-dj,    k-dk,    l, false, bp0);
+            bsplit(i-di+ti, j-dj+tj, k-dk+tk, l, false, bp1);
+            for (int n=0;n<NVAR;++n)
+                g[n] += -h*( mCp*(bm0[n]+bm1[n]) + mCm*(bp0[n]+bp1[n]) );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------
+//  ps_shear_diss_face  (task #18: targeted transverse-shear dissipation)
+//
+//  Damps the numerical y-direction odd-even (checkerboard) in the X-velocity
+//  (and generally the d-direction odd-even in each transverse velocity) that
+//  the acoustic/contact waves cannot touch (linearly-degenerate shear field,
+//  λ=u ⇒ no upwind dissipation).  Adds a CONSERVATIVE, flux-form dissipation
+//  of the transverse momentum in the d-direction, gated by a Jameson-style
+//  odd-even SENSOR s∈[0,1] so it is 2nd-order-vanishing in smooth flow (s→0
+//  for any locally-linear u_t profile) and only bites at grid-scale zig-zag:
+//     Φ[UM_t] = −coef · s · (ρ̄ λ̄) · (u_t,R − u_t,L)   (d-face flux)
+//     s = |Δ_LR − ½(Δ_LL+Δ_RR)| / (|Δ_LR| + ½|Δ_LL| + ½|Δ_RR| + ε)
+//  Consistent energy flux Φ[E] = ū_t·Φ[UM_t] (conserves total energy; the
+//  removed KE becomes heat via the flux divergence), partitioned to UE1/UE2
+//  by mass fraction so UE1+UE2=UEDEN stays consistent; α untouched.  All ops
+//  symmetric ⇒ machine-precision y-reflection symmetry preserved.  Skipped
+//  within 2 cells of a domain edge (1st-order-safe, like the other terms).
+//  coef = CAMR.ps_shear_diss (default 0 = off).
+AMREX_GPU_DEVICE
+AMREX_FORCE_INLINE
+void
+ps_shear_diss_face(int d, int i, int j, int k,
+                   amrex::Array4<const amrex::Real> const& uin,
+                   amrex::Array4<amrex::Real> const& flx,
+                   const int* domlo, const int* domhi,
+                   amrex::Real coef) noexcept
+{
+    using amrex::Real;
+    if (coef <= Real(0.0)) return;
+    const int di=(d==0), dj=(d==1), dk=(d==2);
+    const int Id=(d==0)?i:(d==1)?j:k;
+    if (Id-2 < domlo[d] || Id+1 > domhi[d]) return;   // need LL,L,R,RR in-domain
+    auto ut=[&](int a,int b,int c,int comp) noexcept -> Real {
+        Real r=uin(a,b,c,URHO); r=(std::isfinite(r)&&r>Real(1e-30))?r:Real(1e-30);
+        return ps_finite_or(uin(a,b,c,comp),Real(0.0))/r; };
+    Real UL[NVAR],UR[NVAR];
+    for(int n=0;n<NVAR;++n){ UL[n]=ps_finite_or(uin(i-di,j-dj,k-dk,n),Real(0.0));
+                             UR[n]=ps_finite_or(uin(i,   j,   k,   n),Real(0.0)); }
+    Real rL=UL[URHO],rR=UR[URHO]; rL=(rL>Real(1e-30))?rL:Real(1e-30); rR=(rR>Real(1e-30))?rR:Real(1e-30);
+    const Real lamL=ps_max_wave_speed_from_state(d,UL), lamR=ps_max_wave_speed_from_state(d,UR);
+    const Real scale=Real(0.25)*(rL+rR)*(lamL+lamR);   // ≈ ρ c (acoustic impedance)
+    Real m1=Real(0.5)*(amrex::max(UL[UM1RHO1],Real(0.0))+amrex::max(UR[UM1RHO1],Real(0.0)));
+    Real m2=Real(0.5)*(amrex::max(UL[UM2RHO2],Real(0.0))+amrex::max(UR[UM2RHO2],Real(0.0)));
+    Real ms=m1+m2; if(!(ms>Real(1e-30))) ms=Real(1e-30);
+    const Real Y1=m1/ms, Y2=Real(1.0)-Y1;
+    for(int t=0;t<AMREX_SPACEDIM;++t){
+        if(t==d) continue;
+#if (AMREX_SPACEDIM == 3)
+        const int UM_t=(t==0)?UMX:(t==1)?UMY:UMZ;
+#else
+        const int UM_t=(t==0)?UMX:UMY;
+#endif
+        const Real uLL=ut(i-2*di,j-2*dj,k-2*dk,UM_t);
+        const Real uL =ut(i-di,  j-dj,  k-dk,  UM_t);
+        const Real uR =ut(i,     j,     k,     UM_t);
+        const Real uRR=ut(i+di,  j+dj,  k+dk,  UM_t);
+        const Real dLL=uL-uLL, dLR=uR-uL, dRR=uRR-uR;
+        const Real num=std::abs(dLR-Real(0.5)*(dLL+dRR));
+        const Real den=std::abs(dLR)+Real(0.5)*std::abs(dLL)+Real(0.5)*std::abs(dRR)+Real(1e-12);
+        const Real s=num/den;                       // 0 smooth → 1 odd-even
+        const Real Phi=-coef*s*scale*dLR;           // transverse-momentum diss flux
+        const Real Ef =Real(0.5)*(uL+uR)*Phi;       // consistent energy flux
+        flx(i,j,k,UM_t) =ps_finite_or(flx(i,j,k,UM_t) +Phi,   Real(0.0));
+        flx(i,j,k,UEDEN)=ps_finite_or(flx(i,j,k,UEDEN)+Ef,    Real(0.0));
+        flx(i,j,k,UE1)  =ps_finite_or(flx(i,j,k,UE1)  +Y1*Ef, Real(0.0));
+        flx(i,j,k,UE2)  =ps_finite_or(flx(i,j,k,UE2)  +Y2*Ef, Real(0.0));
     }
 }
 
@@ -1011,7 +1166,9 @@ PS_umeth(const Box& bx,
             int v = 0;
             amrex::ParmParse pp("CAMR");
             pp.query("ps_wp_transverse", v);
-            cached = (v != 0) ? 1 : 0;
+            // 0 = off; 1 = contact-only (BL-3a); 2 = contact + exact acoustic
+            // (BL-3b, task #18).  Preserve the value (was clamped to 0/1).
+            cached = (v < 0) ? 0 : (v > 2 ? 2 : v);
         }
         return cached;
     };
@@ -1020,6 +1177,27 @@ PS_umeth(const Box& bx,
 #else
     const int wp_transverse = 0;   // no transverse in 1D
     amrex::ignore_unused(ps_wp_transverse_cached);
+#endif
+
+    // Targeted transverse-shear dissipation (task #18): damps the numerical
+    // near-jet transverse odd-even (checkerboard) in the transverse velocity.
+    // CAMR.ps_shear_diss = coefficient (default 0 = off); ~0.1-0.5 typical.
+    auto ps_shear_diss_cached = []() -> amrex::Real
+    {
+        static amrex::Real cached = -1.0;
+        if (cached < amrex::Real(0.0)) {
+            amrex::Real v = 0.0;
+            amrex::ParmParse pp("CAMR");
+            pp.query("ps_shear_diss", v);
+            cached = (v > amrex::Real(0.0)) ? v : amrex::Real(0.0);
+        }
+        return cached;
+    };
+#if (AMREX_SPACEDIM >= 2)
+    const amrex::Real shear_diss = ps_shear_diss_cached();
+#else
+    const amrex::Real shear_diss = amrex::Real(0.0);
+    amrex::ignore_unused(ps_shear_diss_cached);
 #endif
 
     // CTU (Corner-Transport-Upwind) multidimensional coupling.
@@ -1275,9 +1453,9 @@ PS_umeth(const Box& bx,
             // x-faces: transverse from y (+ z in 3D).
             amrex::ParallelFor(xfbx, [=] AMREX_GPU_DEVICE (int i,int j,int k) noexcept {
                 Real g[NVAR]; for(int n=0;n<NVAR;++n) g[n]=Real(0.0);
-                ps_wp_tvterm(0,1,i,j,k, uin_arr, wp_wave_y, domlo,domhi, dt_l, dx[1], g);
+                ps_wp_tvterm(0,1,i,j,k, uin_arr, wp_wave_y, domlo,domhi, dt_l, dx[1], g, wp_transverse);
 #if (AMREX_SPACEDIM == 3)
-                ps_wp_tvterm(0,2,i,j,k, uin_arr, wp_wave_z, domlo,domhi, dt_l, dx[2], g);
+                ps_wp_tvterm(0,2,i,j,k, uin_arr, wp_wave_z, domlo,domhi, dt_l, dx[2], g, wp_transverse);
 #endif
                 for(int n=0;n<NVAR;++n){
                     if      (n==UALPHA1) gtv_x(i,j,k,0)=ps_finite_or(g[n],Real(0.0));
@@ -1289,9 +1467,9 @@ PS_umeth(const Box& bx,
             // y-faces: transverse from x (+ z in 3D).
             amrex::ParallelFor(yfbx, [=] AMREX_GPU_DEVICE (int i,int j,int k) noexcept {
                 Real g[NVAR]; for(int n=0;n<NVAR;++n) g[n]=Real(0.0);
-                ps_wp_tvterm(1,0,i,j,k, uin_arr, wp_wave_x, domlo,domhi, dt_l, dx[0], g);
+                ps_wp_tvterm(1,0,i,j,k, uin_arr, wp_wave_x, domlo,domhi, dt_l, dx[0], g, wp_transverse);
 #if (AMREX_SPACEDIM == 3)
-                ps_wp_tvterm(1,2,i,j,k, uin_arr, wp_wave_z, domlo,domhi, dt_l, dx[2], g);
+                ps_wp_tvterm(1,2,i,j,k, uin_arr, wp_wave_z, domlo,domhi, dt_l, dx[2], g, wp_transverse);
 #endif
                 for(int n=0;n<NVAR;++n){
                     if      (n==UALPHA1) gtv_y(i,j,k,0)=ps_finite_or(g[n],Real(0.0));
@@ -1304,8 +1482,8 @@ PS_umeth(const Box& bx,
             // z-faces: transverse from x + y.
             amrex::ParallelFor(zfbx, [=] AMREX_GPU_DEVICE (int i,int j,int k) noexcept {
                 Real g[NVAR]; for(int n=0;n<NVAR;++n) g[n]=Real(0.0);
-                ps_wp_tvterm(2,0,i,j,k, uin_arr, wp_wave_x, domlo,domhi, dt_l, dx[0], g);
-                ps_wp_tvterm(2,1,i,j,k, uin_arr, wp_wave_y, domlo,domhi, dt_l, dx[1], g);
+                ps_wp_tvterm(2,0,i,j,k, uin_arr, wp_wave_x, domlo,domhi, dt_l, dx[0], g, wp_transverse);
+                ps_wp_tvterm(2,1,i,j,k, uin_arr, wp_wave_y, domlo,domhi, dt_l, dx[1], g, wp_transverse);
                 for(int n=0;n<NVAR;++n){
                     if      (n==UALPHA1) gtv_z(i,j,k,0)=ps_finite_or(g[n],Real(0.0));
                     else if (n==UE1)     gtv_z(i,j,k,1)=ps_finite_or(g[n],Real(0.0));
@@ -1313,6 +1491,25 @@ PS_umeth(const Box& bx,
                     else if (n!=UTEMP)   flx3(i,j,k,n)=ps_finite_or(flx3(i,j,k,n)+g[n],Real(0.0));
                 }
             });
+#endif
+        }
+#endif
+
+        // ---- Targeted transverse-shear dissipation (task #18). ----
+        //  Conservative flux-form damping of the transverse-velocity odd-even
+        //  (checkerboard) in the near-jet; added to flx_d (refluxes via the
+        //  FluxRegister and telescopes through consup's -div(flx)).  Sensor-
+        //  gated ⇒ 2nd-order-vanishing in smooth flow.  Default off
+        //  (CAMR.ps_shear_diss = 0).
+#if (AMREX_SPACEDIM >= 2)
+        if (shear_diss > Real(0.0)) {
+            amrex::ParallelFor(xfbx, [=] AMREX_GPU_DEVICE (int i,int j,int k) noexcept {
+                ps_shear_diss_face(0, i,j,k, uin_arr, flx1, domlo,domhi, shear_diss); });
+            amrex::ParallelFor(yfbx, [=] AMREX_GPU_DEVICE (int i,int j,int k) noexcept {
+                ps_shear_diss_face(1, i,j,k, uin_arr, flx2, domlo,domhi, shear_diss); });
+#if (AMREX_SPACEDIM == 3)
+            amrex::ParallelFor(zfbx, [=] AMREX_GPU_DEVICE (int i,int j,int k) noexcept {
+                ps_shear_diss_face(2, i,j,k, uin_arr, flx3, domlo,domhi, shear_diss); });
 #endif
         }
 #endif
