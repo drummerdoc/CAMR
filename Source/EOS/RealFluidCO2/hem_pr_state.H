@@ -896,7 +896,27 @@ inline State state_from_rho_e(const PRFluid& f, amrex::Real rho, amrex::Real e_t
     amrex::Real P_PR = R_gas*T/(v_m - b) - a/D;
     amrex::Real rho_ig = f.M*P_PR / (R_gas*T);
     Phase3 ph = (rho > amrex::Real(2)*rho_ig) ? Phase3::Liquid : Phase3::Vapor;
-    return state_from_T_v(f, T, v_m, ph);
+    // Branch-selection guard (task #69).  The rho>2*rho_ig heuristic is a
+    // knife-edge: for a two-phase-density state that fell through the
+    // two-phase Newton (e.g. its single-phase T is sub-triple-point so the
+    // saturation Newton can't converge), a borderline pick of the LIQUID
+    // branch evaluates state_from_T_v(Liquid) at a density far below the
+    // liquid spinodal, where the (monotone-regularized) PR extension returns
+    // a large NEGATIVE pressure — which is then floored to ~0 and shows up as
+    // an isolated "vacuum-dropout" cell.  Two neighbouring cells whose (rho,e)
+    // straddle the threshold then get wildly different P (e.g. -595 vs +14 bar)
+    // for essentially the same state.  Guard: if the heuristic phase yields a
+    // non-physical (<=P_floor) pressure while the OTHER phase branch is
+    // physical, return the physical one.  Genuine single-phase states (where
+    // the picked branch is already physical) are unaffected.
+    constexpr amrex::Real P_floor_eos = amrex::Real(1.0);   // 1 Pa
+    State s_pick  = state_from_T_v(f, T, v_m, ph);
+    if (s_pick.P <= P_floor_eos || !std::isfinite(s_pick.P)) {
+        const Phase3 other = (ph == Phase3::Liquid) ? Phase3::Vapor : Phase3::Liquid;
+        State s_other = state_from_T_v(f, T, v_m, other);
+        if (s_other.P > P_floor_eos && std::isfinite(s_other.P)) return s_other;
+    }
+    return s_pick;
 }
 
 // =====================================================================

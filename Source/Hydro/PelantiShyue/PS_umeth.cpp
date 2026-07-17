@@ -958,6 +958,7 @@ ps_shear_diss_face(int d, int i, int j, int k,
     Real m2=Real(0.5)*(amrex::max(UL[UM2RHO2],Real(0.0))+amrex::max(UR[UM2RHO2],Real(0.0)));
     Real ms=m1+m2; if(!(ms>Real(1e-30))) ms=Real(1e-30);
     const Real Y1=m1/ms, Y2=Real(1.0)-Y1;
+#if (AMREX_SPACEDIM >= 2)
     for(int t=0;t<AMREX_SPACEDIM;++t){
         if(t==d) continue;
 #if (AMREX_SPACEDIM == 3)
@@ -980,6 +981,9 @@ ps_shear_diss_face(int d, int i, int j, int k,
         flx(i,j,k,UE1)  =ps_finite_or(flx(i,j,k,UE1)  +Y1*Ef, Real(0.0));
         flx(i,j,k,UE2)  =ps_finite_or(flx(i,j,k,UE2)  +Y2*Ef, Real(0.0));
     }
+#else
+    amrex::ignore_unused(m1,m2,ms,Y1,Y2,scale,coef,ut,i,j,k,di,dj,dk,rL,rR);
+#endif
 }
 
 // ---------------------------------------------------------------------

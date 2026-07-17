@@ -83,10 +83,22 @@ def analyze(p, slug=SLUG, plume=PLUME):
     e1 = a1r1E1[j0:j1, i0:i1]/np.maximum(a1r1[j0:j1, i0:i1], 1e-9) - ke
     rho1 = a1r1[j0:j1, i0:i1]/np.maximum(al[j0:j1, i0:i1], 1e-9)
     jp0, jp1, ip0, ip1 = _win(P.shape, plume); Pp = P[jp0:jp1, ip0:ip1] / 1e5
+    # ---- RELIABLE ABSOLUTE metric (relative odd-even is artifact-prone: blows
+    # up where alpha1->0 or P->0; see LEARNINGS session-3). The real defect is
+    # isolated P->0 vacuum-dropout cells in the dense (alpha1>0.02) slug. ----
+    als = al[j0:j1, i0:i1]
+    dense = als > 0.02
+    Pdense = Ps[dense] if dense.any() else Ps.ravel()
+    ndrop = int((Pdense < 1.0).sum()); ndense = int(dense.sum())
     return dict(t=t, nx=P.shape[1], ny=P.shape[0],
-                slug_e1_oe=float(odd_even(e1).mean()),
-                slug_P_oe=float(odd_even(Ps).mean()),        # ARTIFACT-prone post-reg
+                slug_e1_oe=float(odd_even(e1).mean()),       # ARTIFACT-prone (alpha1->0)
+                slug_P_oe=float(odd_even(Ps).mean()),        # ARTIFACT-prone (P->0)
                 plume_P_oe=float(odd_even(Pp).mean()),
+                slug_P_p5=float(np.percentile(Pdense, 5)) if ndense else 0.0,
+                slug_P_p50=float(np.percentile(Pdense, 50)) if ndense else 0.0,
+                slug_P_p95=float(np.percentile(Pdense, 95)) if ndense else 0.0,
+                ndrop=ndrop, ndense=ndense,
+                dropfrac=float(100.0*ndrop/max(ndense, 1)),
                 Pmax=float(np.nanmax(P)/1e5), Pmin=float(np.nanmin(P)/1e5),
                 rho_min=float(np.nanmin(rho)), rho1_lo=float(rho1.min()),
                 rho1_hi=float(rho1.max()))
@@ -105,15 +117,16 @@ def main(argv):
         paths += sorted(glob.glob(a)) if any(c in a for c in '*?[') else [a]
     if not paths:
         print('no plotfiles'); return 1
-    print('%-16s %9s | slug:e1-oe  P-oe* | plume:P-oe | Pmax  Pmin  rho_min  rho1[lo..hi]' % ('plotfile', 't'))
-    print('  (* slug P-oe is a metric artifact when reg. P crosses 0; trust e1-oe + Pmax/rho_min)')
+    print('%-16s %9s | RELIABLE: dense-slug P[bar] p5/p50/p95  vac-dropouts(P<1) | Pmax rho_min | (artifact: e1-oe P-oe)' % ('plotfile', 't'))
+    print('  RELIABLE metric = absolute dense-slug P percentiles + vacuum-dropout count/frac. e1-oe/P-oe are DIVIDE-BY-ZERO ARTIFACTS (see LEARNINGS session-3).')
     for p in paths:
         if not os.path.isdir(p):
             print('%-16s MISSING' % p); continue
         r = analyze(p, slug=slug)
-        print('%-16s %.3e | %8.3f %8.2f | %8.4f | %5.0f %5.0f %7.2f  %.0f..%.0f' % (
-            os.path.basename(p), r['t'], r['slug_e1_oe'], r['slug_P_oe'],
-            r['plume_P_oe'], r['Pmax'], r['Pmin'], r['rho_min'], r['rho1_lo'], r['rho1_hi']))
+        print('%-16s %.3e | %5.1f/%5.1f/%5.1f  drop=%d/%d (%.1f%%) | %5.0f %6.2f | (%.2f %.1e)' % (
+            os.path.basename(p), r['t'], r['slug_P_p5'], r['slug_P_p50'], r['slug_P_p95'],
+            r['ndrop'], r['ndense'], r['dropfrac'], r['Pmax'], r['rho_min'],
+            r['slug_e1_oe'], r['slug_P_oe']))
     return 0
 
 if __name__ == '__main__':
