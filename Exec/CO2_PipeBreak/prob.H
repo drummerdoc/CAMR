@@ -138,9 +138,25 @@ bcnormal(
         const amrex::Real swin = amrex::Real(1.0);
 #endif
         // Slip-wall ghost W: reflect normal momentum, extrapolate the rest.
+        // BELL-MOUTH (task #60 follow-on): soften the wall-normal reflection in
+        // a band just outside the orifice lip so the jet does not separate off a
+        // hard corner (vena contracta).  refl ramps 0 (outflow-like) at the
+        // orifice edge -> 1 (solid slip wall) over gap_bell.  0 disables it.
+        amrex::Real refl = amrex::Real(1.0);
+#if (AMREX_SPACEDIM >= 2)
+        if (prob_parm.gap_bell > amrex::Real(0.0)) {
+            const amrex::Real d0 = prob_parm.gap_half + prob_parm.gap_taper;
+            if (dgap <= d0) {
+                refl = amrex::Real(0.0);
+            } else if (dgap < d0 + prob_parm.gap_bell) {
+                const amrex::Real xi = (dgap - d0) / prob_parm.gap_bell; // 0->1
+                refl = xi * xi * (amrex::Real(3.0) - amrex::Real(2.0) * xi);
+            }
+        }
+#endif
         amrex::Real W[NVAR];
         for (int n = 0; n < NVAR; ++n) W[n] = s_int[n];
-        W[UMX] = -s_int[UMX];
+        W[UMX] = -refl * s_int[UMX];
 
         if (in_gap) {
             // ---- Dense-CO2 reservoir stagnation ghost R, BLENDED into the

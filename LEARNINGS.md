@@ -1,0 +1,73 @@
+# LEARNINGS.md — CAMR PS CO2 solver, cross-session briefing (Claude-oriented, conclusions only)
+
+Terse/dense on purpose. Not for humans. Replace obsolete lines; keep <300. Companion: `Exec/CO2_PipeBreak/BASELINE.md` (verified single/two-phase ladder, still valid).
+
+## Project
+6-eq Pelanti-Shyue (PS) two-phase compressible, CAMR/AMReX, `ps_flux=wp` (Berger-LeVeque wave-prop), Peng-Robinson real-fluid EOS (RealFluidCO2). Invariant: every per-cell operator continuous in state (round-off stays round-off, no amplification to asymmetry/nonphysical). Deliverable style: honest (not over-optimistic), fluid-agnostic, symmetry-preserving, brief commits.
+Run env: user builds+runs on their Mac; I cannot run their HW. Exe `CAMR2d.llvm.MPI.PS.ex`; typical `mpiexec -np 6 ./CAMR2d.llvm.MPI.PS.ex inputs.X`. I analyze plotfiles from sandbox mount.
+
+## CURRENT FOCUS: satjet dense two-phase inlet-slug pressure ring
+Showcase = saturated CO2 blowdown (`inputs.satjet_demo`, 3-level AMR). Zoom repro = `inputs.satjet_zoom` (320x400 uniform, 0.24x0.30 m, gap yc=0.5 half=0.05 taper=0.02, T_res=280 res_alpha1=0.05, MT off variants). Persistent defect: cell-to-cell (2Δ) pressure speckle in the dense two-phase inlet slug; downstream jet plume is clean. User standard: must be smooth/clean, understand root cause, no band-aids.
+
+## DIAGNOSIS CHAIN (this session's core conclusions — solid)
+1. Slug (x<0.02, y∈[0.44,0.57]) at t~2e-4: relative odd-even (2nd-diff/|f|, mean): P 0.63, e1(liq spec int energy) 0.25, e2 0.12, rho1/rho2 ~0.08, alpha1 0.018 (SMOOTH). Plume (x∈[0.03,0.06]) P-oe 0.0015 (clean). => pure per-phase INTERNAL-ENERGY ring, amplified by stiff EOS into P. NOT a shear/velocity instability, NOT alpha transport.
+2. MT + pressure relaxation EXONERATED. `zoomNR_`(ps_do_relax=0) vs `zoomNoMT_`(ps_mt_tau=1e3, relax on) are BIT-IDENTICAL (max|Δ|=0 in P,rho,alpha1), and identical to full-relax run. Relaxation is per-cell (drives P1→P2 within a cell); the ring is a SPATIAL cell-to-cell pattern it structurally cannot touch. Fix is NOT in relaxation/MT.
+3. BL-2 (2nd-order limited correction) is minor. `ps_wp_order=1` drops slug P-oe only 0.63→0.55, e1 0.25→0.18. => seed is the BASE 1st-order deposit / HLLC contact wave, not the correction.
+4. MECHANISM (Abgrall stiff-contact energy instability, base per-phase HLLC):
+   - Per-phase MASS (UM1RHO1/UM2RHO2) = CONSERVED flux slots (consup telescopes). Per-phase ENERGY (UE1/UE2) = NON-CONSERVED A±/A∓ fluctuation deposit (wpf comps 2/3=UE1,4/5=UE2). Transverse correct (`ps_ctu_transverse_correct`) FREEZES alpha1 but corrects mass+energy. So e_k=E_k/m_k − ke is a quotient of quantities carried by operators that match only at 1st order.
+   - HLLC star per-phase energy (`PS_HLLC.H` ~L321): E_k_star = E_k + (S_M−u_n)(S_M + P_mix/q_k), q_k=rho_k(S_K−u_n). Exactly contact-preserving ONLY at machine-uniform (p,u): S_M=u ⇒ term=0, r_K=1. But q_1(liq ρ~400)/q_2(vap ρ~20) differ ~20×, so any O(ε) departure from uniform p,u injects DIFFERENTIAL per-phase work → δe_k. Stiff liquid EOS: δe1→large δP1→δP_mix→δS_M→differential work→δe1. Loop gain>1 ⇒ grows round-off→63%→blowup. Amplifies (not smears); explains α1 smooth while e1 rings; explains relax/MT/BL2 irrelevance.
+5. EOS PATHOLOGY (complementary amplifier, was mis-hypothesized as root). PR 280K isotherm has vdW loop: spinodal ρ∈(229,673) kg/m3 where (dP/dρ)_T<0 (anti-restoring, imaginary c). Scheme drives per-phase LIQUID ρ1=m1/α1 (α1=0.05 ⇒ ~20× amplification of m1/α1 error) OFF saturated-liquid (851, real dP/dρ=+4.6e4, physically stiff & fine) INTO the loop (ρ1 seen 155–496) → negative stiffness closes the feedback + a separate imaginary-c blowup class (=#60). PHYSICAL liquid stiffness is real/unavoidable; the vdW LOOP is the spurious "inappropriate-for-CFD" part.
+
+## FIX 1 — EOS spinodal monotonization (DONE, but INSUFFICIENT)
+Impl: `Source/EOS/RealFluidCO2/hem_pr_state.H` `state_from_T_v` (single choke point for all REY2P/REY2P_liquid/_vapor/RPY2Cs). If T<Tc: single upward march from v=1.05b crosses (dP/dρ)_T=csq_floor twice → liquid edge (1st), vapor edge (2nd), query-independent. Past the requested phase's edge, extend P linearly IN DENSITY with constant slope csq_floor=2500 (m/s)^2 (monotone, C1, restoring); set dPdv_T accordingly for real c. Stable/metastable states before edge UNTOUCHED (P(851)=raw byte-identical), so A-C suite should be safe. Verified in isolation (Python + standalone g++): monotone, restoring, min-slope=2500, stable point unchanged.
+RESULT (rebuilt+ran `inputs.satjet_zoom_nomt`): did NOT fix the ring. Slug e1-oe still ~0.21–0.58 (≈ baseline 0.25), field still noisy/asymmetric (user-confirmed), near-vacuum still forms (ρmin→4.1 by step400), ρ1 now ranges 154–1512. CONCLUSION: spinodal was a downstream amplifier/symptom, NOT the seed. Fix1 is necessary (removes imag-c blowup class + neg-stiffness) but not sufficient. Keep it.
+NOTE metric artifact: slug relative odd-even oe=d2/(|f|+eps) EXPLODES when regularized liquid P passes through ~0 (denominator→0). Use e1-oe and absolute Pmax/ρmin as the real signals, not slug P-oe, post-regularization.
+
+## FIX 2 — #64 (the real root fix) — REFRAMED by 1-D harness result
+Original plan: Abgrall contact per-phase-pressure reset (pin star per-phase P to upwind via EOS inversion at contacts; gate by large|Δα1|,small|ΔP|; keep conservative energy at shocks). Injection: `PS_HLLC.H` star (~L318-361) and/or `PS_umeth.cpp` `ps_wp_face` deposit (~L710-756).
+REFRAME from `abgrall_contact_1d.py` (this session): a MINIMAL uniform-(p,u) advected two-phase contact with a MONOTONE EOS gives only a BOUNDED ~1-2% P oscillation (not runaway, not 63%); dilute liquid α1=0.05 makes it SMALLER (liquid contributes little to P_mix). So the strong CAMR ring is NOT the textbook advected-contact Abgrall oscillation. It requires the DYNAMIC per-phase state inconsistency: m1 (conserved flux), UE1 (non-cons A± deposit), α1 (frozen through transverse) evolve under DIFFERENT operators → e1=UE1/m1−ke and ρ1=m1/α1 drift wildly (CAMR post-Fix1: ρ1 ranged 154–1512) under the strong inlet forcing. => #64 should target OPERATOR CONSISTENCY between per-phase mass and per-phase energy transport (same operator / same upwinding / consistent transverse treatment for m_k and UE_k), not merely a contact-pressure reset. The pressure reset may still help but is secondary.
+Harness caveats: --reset branch currently BUGGY (worsens; fix the hand-rolled non-cons α update first). Harness too simplified (fixed ρ1, no forcing) to show the ring — next: drive it (inlet BC, let ρ1 evolve) OR build the richer test in CAMR.
+
+## KEY CODE LOCATIONS
+- `Source/EOS/RealFluidCO2/hem_pr_state.H`: `state_from_T_v` (has Fix1 regularization), `state_from_rho_e[_phase]` (workhorse (ρ,e)→state; phase-locked returns metastable PR extrapolation past dome — the path that hit the spinodal). `state_from_T_x` = two-phase equilibrium (Wallis c), untouched.
+- `Source/EOS/RealFluidCO2/EOS.H`: REY2P/REY2Gam/REY2T (auto-detect via co2_state_from_rho_e_cached), REY2P_liquid/_vapor/REY2Cs_* (branch-locked), RPY2Cs, co2_sat_LV, Psat.
+- `Source/Hydro/PelantiShyue/PS_HLLC.H`: `fluctuations()` A±/A∓, `ps_star_state` star per-phase energy (Abgrall target).
+- `Source/Hydro/PelantiShyue/PS_umeth.cpp`: `ps_physical_flux_from_state` (F[UE_k]=(E_k+α_k·P_MIX)u, MUST use P_mix per #211), `ps_wp_face` (conserved flx + non-cons wpf deposit), `ps_ctu_transverse_correct` (α frozen), `ps_wp_tvterm` (BL-3a/4 transverse), `ps_viscous_face` (CAMR.ps_mu Newtonian), `ps_shear_diss_face` (CAMR.ps_shear_diss Jameson).
+- `Source/Hydro/Hydro_ctoprim.H` ~L94: guarded cs sqrt (isfinite&&>0 else 0) — prevents SIGFPE on neg ρ/P.
+- `Source/CAMR.cpp`: `estTimeStep`/`CAMR_estdt_hydro` (Utils/Timestep.H) — hydro dt only; NO viscous/conduction dt limit (add if high ps_mu). reflux() capacity-form α co-move (ps_bl_reflux=2, da_cap=0.05).
+
+## satjet_zoom INPUTS (all in Exec/CO2_PipeBreak/)
+- `inputs.satjet_zoom` base (max_step800 stop3e-4 plot_int10, ps_mu set on CLI in prior runs).
+- `inputs.satjet_zoom_norelax` (ps_do_relax=0), `_nomt` (ps_mt_tau=1e3, relax on = TARGET config), `_o1` (ps_wp_order=1). All: 320x400, ps_mu=2, MT-off family, max_step400 stop2e-4 plot_int100, plot_file zoomNR_/zoomNoMT_/zoomO1_.
+- Analysis: read alpha_1, alpha1_rho1, alpha1_rho1_E1, xmom, ymom; e1=alpha1_rho1_E1/alpha1_rho1 − 0.5(u²+v²); slug window x<0.02 y∈[0.44,0.57].
+
+## DEAD ENDS / DON'T RETRY (this session + prior)
+- Dissipation knobs `ps_shear_diss` (Jameson): cosmetic, sweeps confusing, rejected by user.
+- Physical viscosity `ps_mu`: smooths PLUME shear layer well (that IS physical/LD-shear), but does NOTHING for slug ring (ring is thermodynamic e1, not velocity). μ=2 zoom BLEW UP by step600 (Pmax2096, near-vacuum ρ→0.18) — viscous dt limit dt_visc=ρdx²/4μ collapses in low-ρ pockets, NOT in estimator. If ever using large μ, add viscous dt constraint.
+- `res_char_inflow` characteristic inlet: made things WORSE (positive feedback), off.
+- `gap_bell`/`gap_taper` sweeps: relocate lip low-P pocket, don't remove (lip low-P largely physical vena-contracta).
+- Symmetry metric under AMR unreliable (AMR grids asymmetrically) — use uniform-grid runs as symmetry witness.
+- Conduction/energy-diffusion band-aid for the ring: rejected framing (would mask a numerical artifact, unlike μ which resolves a physical LD-shear feature).
+
+## STILL-VALID PRIOR FACTS
+- BASELINE.md ladder rungs 1-4 clean & symmetric (single-phase supercritical jets, AMR, two-phase MT). Flash (nucleation) held out; rung5 = flash behind centerline-symmetry BC. Flash lip = few-step-efold amplifier; smoothing gates cut seed ~1e3 but can't defeat amplifier alone.
+- do_mol=1 (2nd-order-time, Strang split relax) validated. ref_ratio=4 AMR validated. Derived pressure uses volume-fraction mixture rule (matches standalone). 1-D DIM=1 CAMR-vs-standalone A-C suite matched.
+- F[UE_k] MUST use P_mix (mixture), not per-phase P_k (#211) — matches standalone WP F_L; per-phase P1/P2 only for augment/wave-speed helpers.
+
+## OPEN TASKS
+- #64 Abgrall contact reset (NEXT, real fix).
+- #63 re-measure after Fix1 (DONE: insufficient — see Fix1).
+- #60 satjet finest-level NaN box / EOS-fragility class (partly eased by ctoprim guard + Fix1 removing imag-c; residual is Abgrall-driven off-branch excursion → #64 should further reduce).
+- #41 trace-cell/metastable pressure-relax robustness. #42 active-learning EOS sampler (MLP). #33/#45 phase-locked MLP EOS pair (monotone-constrained MLP trained on Span-Wagner would also cure the spinodal cleanly + be fast — long-term).
+- Uncommitted: Fix1 (hem_pr_state.H), inputs.satjet_zoom_{norelax,nomt,o1}, ps_zoom_diag.py, abgrall_contact_1d.py, LEARNINGS.md. WIP-checkpointed on branch `wip/eos-abgrall` (see RESUME).
+
+## RESUME (turnkey cold start after reboot)
+Branch: `co2-eos`; WIP checkpoint on `wip/eos-abgrall` (git log to recover if needed). Exe build on Mac.
+1. Rebuild: cd Exec/CO2_PipeBreak; make -j  (llvm MPI PS build → CAMR2d.llvm.MPI.PS.ex)
+2. Reproduce ring + get stable metrics (one command):
+   mpiexec -np 6 ./CAMR2d.llvm.MPI.PS.ex inputs.satjet_zoom_nomt
+   python3 ps_zoom_diag.py 'zoomNoMT_00[1234]00'
+   (watch slug e1-oe [~0.2-0.58 now], Pmax, rho_min; slug P-oe is an artifact post-Fix1)
+3. 1-D #64 harness (no build): python3 abgrall_contact_1d.py [--reset]  (see its STATUS block — WIP)
+4. #64 next actions (in priority): (a) make per-phase ENERGY transport use the SAME operator as per-phase MASS (consistent upwind + consistent transverse; stop freezing α1 only) in PS_umeth.cpp deposit/transverse — the operator-consistency fix the harness pointed to; (b) fix the harness --reset α update + drive it (inlet, evolving ρ1) to reproduce the ring as the fast test bed; (c) then contact-pressure reset in PS_HLLC.H if residual remains; (d) full A-C re-validation after any hydro change.
+5. A-C regression check after any EOS/hydro change: run one A-C Riemann case, compare vs standalone (stable states are untouched by Fix1, so expect no change).

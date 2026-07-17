@@ -93,6 +93,17 @@ struct ProbParmDevice
     // craters the corner pressure to vacuum (dt collapse).  0 = hard top-hat.
     amrex::Real gap_taper = 0.02; // m
 
+    // Bell-mouth orifice lip (task #60 follow-on).  The jet issuing from a
+    // sharp-edged orifice separates at the corner (vena contracta), leaving a
+    // cold low-pressure recirculation cell just outside the lip.  A real
+    // bell-mouth rounds the wall so the flow stays attached.  We emulate it by
+    // SOFTENING the slip-wall reflection over a band `gap_bell` just outside the
+    // taper: the wall-normal reflection coefficient ramps 0 (outflow-like, no
+    // hard corner to separate from) at the orifice edge -> 1 (solid slip wall)
+    // a distance gap_bell farther out.  0 (default) = hard slip wall
+    // everywhere (original behaviour).
+    amrex::Real gap_bell = 0.0;   // m  (0 = off)
+
     // Half-domain centerline symmetry (rung 5).  When nonzero, the y-lo face
     // is a slip-wall MIRROR (reflect wall-normal momentum), i.e. a symmetry
     // plane at y = prob_lo_y.  Run y in [0.5, 1.0] with the gap at the y-lo

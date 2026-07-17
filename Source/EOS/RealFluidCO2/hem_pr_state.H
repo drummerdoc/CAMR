@@ -210,9 +210,86 @@ inline State state_from_T_v(const PRFluid& f, amrex::Real T, amrex::Real v_m,
     amrex::Real a, dadT, d2adT2, b;
     pureParams2(f.pr, T, a, dadT, d2adT2, b);
 
-    // PR pressure
+    // PR pressure and its isothermal volume derivative (raw cubic).
     amrex::Real D    = v_m*v_m + amrex::Real(2)*b*v_m - b*b;     // (v+s1 b)(v+s2 b)
     amrex::Real P    = R_gas*T/(v_m - b) - a/D;
+    amrex::Real dPdv_T = -R_gas*T/((v_m-b)*(v_m-b))
+                       + amrex::Real(2)*a*(v_m+b)/(D*D);
+
+    // -------- Spinodal regularization (task #62) -----------------------
+    //  The PR cubic has a van der Waals loop inside the saturation dome
+    //  where (dP/dv)_T > 0  <=>  (dP/drho)_T < 0: mechanically UNSTABLE
+    //  (anti-restoring pressure, imaginary sound speed).  A two-phase
+    //  solver can drive a phase's density PAST its spinodal into this
+    //  forbidden region, where the anti-restoring response amplifies
+    //  per-phase pressure noise (the dense-slug ring) into blow-up.
+    //  Regularize by extending the REQUESTED phase's stable branch
+    //  MONOTONICALLY past its spinodal edge: for densities beyond the
+    //  edge, continue the pressure linearly in density with a constant
+    //  positive slope csq_floor = (dP/drho)_T, so P is monotone (C1) and
+    //  the sound speed real.  Stable/metastable states BEFORE the edge
+    //  (where (dP/drho)_T >= csq_floor) are left byte-for-byte untouched,
+    //  so all stable single-phase states — and the A–C Riemann suite —
+    //  are unchanged.  A single upward march from deep liquid crosses the
+    //  floor twice: 1st = liquid spinodal edge, 2nd = vapor spinodal edge
+    //  (query-independent, so the extension is consistent between cells).
+    //  Fluid-agnostic: only the local cubic and its slope are used.
+    if (T < f.pr.Tc) {                       // no loop above Tc
+        const amrex::Real csq_floor = amrex::Real(2500.0);     // (dP/drho)_T floor, (m/s)^2
+        auto dpdv_at = [&](amrex::Real vv) {
+            amrex::Real Dv = vv*vv + amrex::Real(2)*b*vv - b*b;
+            return -R_gas*T/((vv-b)*(vv-b)) + amrex::Real(2)*a*(vv+b)/(Dv*Dv);
+        };
+        auto dPdrho_at = [&](amrex::Real vv) {                 // (dP/drho)_T, Peneloux-aware
+            amrex::Real vr = vv + f.c_shift;
+            return -vr*vr / f.M * dpdv_at(vv);
+        };
+        auto p_at = [&](amrex::Real vv) {
+            amrex::Real Dv = vv*vv + amrex::Real(2)*b*vv - b*b;
+            return R_gas*T/(vv-b) - a/Dv;
+        };
+        const bool want_liq = (phase == Phase3::Liquid);
+        // March up from deep liquid to locate the requested phase's edge.
+        amrex::Real vprev = b * amrex::Real(1.05);
+        bool above_prev   = (dPdrho_at(vprev) > csq_floor);    // true (deep liquid stiff)
+        amrex::Real v_edge = amrex::Real(-1.0);
+        bool have_liq_edge = false;
+        for (int it = 0; it < 200; ++it) {
+            amrex::Real vn    = vprev * amrex::Real(1.25);
+            bool above        = (dPdrho_at(vn) > csq_floor);
+            if (above_prev && !above && !have_liq_edge) {      // 1st crossing: liquid edge
+                amrex::Real lo = vprev, hi = vn;
+                for (int b2 = 0; b2 < 34; ++b2) {
+                    amrex::Real m = amrex::Real(0.5)*(lo+hi);
+                    if (dPdrho_at(m) > csq_floor) lo = m; else hi = m;
+                }
+                have_liq_edge = true;
+                if (want_liq) { v_edge = hi; break; }          // liquid: done
+            } else if (!above_prev && above && have_liq_edge) {// 2nd crossing: vapor edge
+                amrex::Real lo = vprev, hi = vn;
+                for (int b2 = 0; b2 < 34; ++b2) {
+                    amrex::Real m = amrex::Real(0.5)*(lo+hi);
+                    if (dPdrho_at(m) > csq_floor) hi = m; else lo = m;
+                }
+                if (!want_liq) { v_edge = hi; }                // vapor: this is the edge
+                break;
+            }
+            vprev = vn; above_prev = above;
+        }
+        // Extend only if the query lies PAST the requested phase's edge.
+        if (v_edge > amrex::Real(0.0)) {
+            const bool past = want_liq ? (v_m > v_edge)        // liquid: lower density
+                                       : (v_m < v_edge);       // vapor : higher density
+            if (past) {
+                const amrex::Real rho_q = f.M / (v_m   + f.c_shift);
+                const amrex::Real rho_e = f.M / (v_edge + f.c_shift);
+                P      = p_at(v_edge) + csq_floor * (rho_q - rho_e);   // monotone in rho
+                // slope in v for the sound speed: (dP/dv)_T = -M/v_real^2 * csq_floor
+                dPdv_T = -f.M / ((v_m+f.c_shift)*(v_m+f.c_shift)) * csq_floor;
+            }
+        }
+    }
+    // -------------------------------------------------------------------
 
     // departure functions
     amrex::Real e_dep, s_dep, cv_dep;
@@ -223,15 +300,14 @@ inline State state_from_T_v(const PRFluid& f, amrex::Real T, amrex::Real v_m,
     amrex::Real s_ig = s_ig_per_mole(f, T, v_m);
     amrex::Real cv_ig = R_gas * cv_ig_over_R(f, T);
 
-    // totals (per mole)
+    // totals (per mole).  h uses the (possibly regularized) pressure.
     amrex::Real e_mol  = e_ig + e_dep;
     amrex::Real s_mol  = s_ig + s_dep;
     amrex::Real h_mol  = e_mol + P*v_m;
     amrex::Real cv_mol = cv_ig + cv_dep;
 
-    // single-phase sound speed (uses v_real^2 prefactor with Peneloux shift)
-    amrex::Real dPdv_T = -R_gas*T/((v_m-b)*(v_m-b))
-                       + amrex::Real(2)*a*(v_m+b)/(D*D);
+    // single-phase sound speed (uses v_real^2 prefactor with Peneloux shift).
+    // dPdv_T is the regularized isothermal slope (capped negative in the loop).
     amrex::Real dPdT_v =  R_gas/(v_m-b) - dadT/D;
 
     // c_p - c_v = -T (dP/dT)^2 / (dP/dv)_T

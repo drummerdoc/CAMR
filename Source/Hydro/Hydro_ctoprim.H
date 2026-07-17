@@ -91,7 +91,16 @@ hydro_ctoprim(
         qa(i, j, k, QDPDR) = dpdr_e;
         qa(i, j, k, QDPDE) = dpde;
         qa(i, j, k, QGAMC) = gam1;
-        cs =  std::sqrt(gam1*p/rho);
+        // Guard the sound-speed sqrt: a finest-level cell left with negative
+        // rho or p by the prior hydro / coarse-fine op (before the post-hydro
+        // positivity floor runs) makes gam1*p/rho < 0 and sqrt() raises SIGFPE
+        // (INVALID) under fpe_trap — the satjet 3-level crash (task #60).  For a
+        // valid state gam1*p/rho > 0 so this is a no-op; for an invalid cell it
+        // degrades to cs=0 (no acoustic dt constraint) instead of NaN, letting
+        // the run reach the floor/relaxation that repairs the cell.
+        const amrex::Real cs2 = gam1 * p / rho;
+        cs = (std::isfinite(cs2) && cs2 > amrex::Real(0.0))
+               ? std::sqrt(cs2) : amrex::Real(0.0);
         qa(i, j, k, QC) = cs;
         qa(i, j, k, QCSML) = std::max(l_small_num, l_small_num * cs);
     }

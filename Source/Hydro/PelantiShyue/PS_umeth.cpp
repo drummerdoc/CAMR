@@ -982,6 +982,80 @@ ps_shear_diss_face(int d, int i, int j, int k,
     }
 }
 
+// ---------------------------------------------------------------------
+//  ps_viscous_face  (physical Newtonian viscosity, task #60 follow-on)
+//
+//  Adds the deviatoric Newtonian viscous stress to the d-direction flux at
+//  face (i,j,k):  momentum flux += -tau_{d,c},  energy flux += -u_c tau_{d,c},
+//  with  tau_{dd}=mu(2 du_d/dd - 2/3 div u),  tau_{dt}=mu(du_t/dd + du_d/dt).
+//  This gives the shear layer a FINITE, physical thickness (~mu/(rho U)) so
+//  the Kelvin-Helmholtz roll-up is a resolved physical mode rather than a
+//  grid-scale odd-even of the (dissipation-free) linearly-degenerate contact.
+//  Conservative (flux form -> refluxes), continuous, symmetric.  Viscous
+//  heating partitioned to UE1/UE2 by mass fraction so UE1+UE2=UEDEN.
+//  Transverse gradients use the two cells straddling the face; skipped within
+//  one cell of a transverse domain edge.  mu = CAMR.ps_mu [Pa s] (0 = off).
+AMREX_GPU_DEVICE
+AMREX_FORCE_INLINE
+void
+ps_viscous_face(int d, int i, int j, int k,
+                amrex::Array4<const amrex::Real> const& uin,
+                amrex::Array4<amrex::Real> const& flx,
+                const int* domlo, const int* domhi,
+                amrex::Real mu, const amrex::Real* dx) noexcept
+{
+    using amrex::Real;
+    if (mu <= Real(0.0)) return;
+    const int off[3][3] = { {1,0,0}, {0,1,0}, {0,0,1} };
+#if (AMREX_SPACEDIM == 3)
+    const int UM[3] = { UMX, UMY, UMZ };
+#elif (AMREX_SPACEDIM == 2)
+    const int UM[3] = { UMX, UMY, UMX };
+#else
+    const int UM[3] = { UMX, UMX, UMX };
+#endif
+    const int di=off[d][0], dj=off[d][1], dk=off[d][2];
+    auto vel=[&](int a,int b,int c,int comp) noexcept -> Real {
+        Real r=uin(a,b,c,URHO); r=(std::isfinite(r)&&r>Real(1e-30))?r:Real(1e-30);
+        return ps_finite_or(uin(a,b,c,comp),Real(0.0))/r; };
+    // normal-direction gradient of each velocity component at the face
+    Real dvdn[3] = {Real(0.0),Real(0.0),Real(0.0)};
+    for (int c=0;c<AMREX_SPACEDIM;++c)
+        dvdn[c] = (vel(i,j,k,UM[c]) - vel(i-di,j-dj,k-dk,UM[c]))/dx[d];
+    // transverse gradients (average of the two straddling cells)
+    Real dvdt[3][3]; for(int a=0;a<3;++a)for(int b=0;b<3;++b) dvdt[a][b]=Real(0.0);
+    Real div = dvdn[d];
+    for (int t=0;t<AMREX_SPACEDIM;++t){
+        if (t==d) continue;
+        const int ti=off[t][0], tj=off[t][1], tk=off[t][2];
+        const int It=(t==0)?i:(t==1)?j:k;
+        if (It+1 > domhi[t] || It-1 < domlo[t]) return;   // 1st-order-safe at edge
+        for (int c=0;c<AMREX_SPACEDIM;++c){
+            const Real gR=(vel(i+ti,j+tj,k+tk,UM[c])-vel(i-ti,j-tj,k-tk,UM[c]))/(Real(2.0)*dx[t]);
+            const Real gL=(vel(i-di+ti,j-dj+tj,k-dk+tk,UM[c])-vel(i-di-ti,j-dj-tj,k-dk-tk,UM[c]))/(Real(2.0)*dx[t]);
+            dvdt[t][c]=Real(0.5)*(gR+gL);
+        }
+        div += dvdt[t][t];
+    }
+    Real tau[3]={Real(0.0),Real(0.0),Real(0.0)};
+    tau[d] = mu*(Real(2.0)*dvdn[d] - (Real(2.0)/Real(3.0))*div);
+    for (int t=0;t<AMREX_SPACEDIM;++t){ if(t==d) continue;
+        tau[t] = mu*(dvdn[t] + dvdt[t][d]); }
+    Real Ef=Real(0.0);
+    for (int c=0;c<AMREX_SPACEDIM;++c){
+        const Real uf=Real(0.5)*(vel(i,j,k,UM[c])+vel(i-di,j-dj,k-dk,UM[c]));
+        flx(i,j,k,UM[c]) = ps_finite_or(flx(i,j,k,UM[c]) - tau[c], Real(0.0));
+        Ef += -uf*tau[c];
+    }
+    Real m1=Real(0.5)*(amrex::max(uin(i,j,k,UM1RHO1),Real(0.0))+amrex::max(uin(i-di,j-dj,k-dk,UM1RHO1),Real(0.0)));
+    Real m2=Real(0.5)*(amrex::max(uin(i,j,k,UM2RHO2),Real(0.0))+amrex::max(uin(i-di,j-dj,k-dk,UM2RHO2),Real(0.0)));
+    Real ms=m1+m2; if(!(ms>Real(1e-30))) ms=Real(1e-30);
+    const Real Y1=m1/ms, Y2=Real(1.0)-Y1;
+    flx(i,j,k,UEDEN)=ps_finite_or(flx(i,j,k,UEDEN)+Ef,   Real(0.0));
+    flx(i,j,k,UE1)  =ps_finite_or(flx(i,j,k,UE1)  +Y1*Ef,Real(0.0));
+    flx(i,j,k,UE2)  =ps_finite_or(flx(i,j,k,UE2)  +Y2*Ef,Real(0.0));
+}
+
 void
 PS_umeth(const Box& bx,
          const int* /*bclo*/, const int* /*bchi*/,
@@ -1198,6 +1272,24 @@ PS_umeth(const Box& bx,
 #else
     const amrex::Real shear_diss = amrex::Real(0.0);
     amrex::ignore_unused(ps_shear_diss_cached);
+#endif
+
+    // Physical Newtonian viscosity (task #60): gives the shear layer a finite
+    // thickness so KH is a resolved physical mode, not grid-scale odd-even.
+    // CAMR.ps_mu = dynamic viscosity [Pa s] (default 0 = inviscid).
+    auto ps_mu_cached = []() -> amrex::Real {
+        static amrex::Real cached = -1.0;
+        if (cached < amrex::Real(0.0)) {
+            amrex::Real v = 0.0; amrex::ParmParse pp("CAMR");
+            pp.query("ps_mu", v); cached = (v > amrex::Real(0.0)) ? v : amrex::Real(0.0);
+        }
+        return cached;
+    };
+#if (AMREX_SPACEDIM >= 2)
+    const amrex::Real ps_mu = ps_mu_cached();
+#else
+    const amrex::Real ps_mu = amrex::Real(0.0);
+    amrex::ignore_unused(ps_mu_cached);
 #endif
 
     // CTU (Corner-Transport-Upwind) multidimensional coupling.
@@ -1510,6 +1602,21 @@ PS_umeth(const Box& bx,
 #if (AMREX_SPACEDIM == 3)
             amrex::ParallelFor(zfbx, [=] AMREX_GPU_DEVICE (int i,int j,int k) noexcept {
                 ps_shear_diss_face(2, i,j,k, uin_arr, flx3, domlo,domhi, shear_diss); });
+#endif
+        }
+
+        // ---- Physical Newtonian viscosity (task #60): adds -tau to the
+        //  conserved momentum/energy flux at each face (refluxes; telescopes
+        //  through consup).  Gives the shear layer a finite thickness so KH is
+        //  resolved rather than grid-scale.  Default off (CAMR.ps_mu = 0).
+        if (ps_mu > Real(0.0)) {
+            amrex::ParallelFor(xfbx, [=] AMREX_GPU_DEVICE (int i,int j,int k) noexcept {
+                ps_viscous_face(0, i,j,k, uin_arr, flx1, domlo,domhi, ps_mu, dx.data()); });
+            amrex::ParallelFor(yfbx, [=] AMREX_GPU_DEVICE (int i,int j,int k) noexcept {
+                ps_viscous_face(1, i,j,k, uin_arr, flx2, domlo,domhi, ps_mu, dx.data()); });
+#if (AMREX_SPACEDIM == 3)
+            amrex::ParallelFor(zfbx, [=] AMREX_GPU_DEVICE (int i,int j,int k) noexcept {
+                ps_viscous_face(2, i,j,k, uin_arr, flx3, domlo,domhi, ps_mu, dx.data()); });
 #endif
         }
 #endif
