@@ -42,6 +42,7 @@ CAMR.ps_wp_transverse = 0    # OFF: raw scheme, no transverse coupling knob
 CAMR.ps_shear_diss    = 0.0  # OFF: no dissipation — see the raw instability
 
 CAMR.ps_do_relax  = 1
+CAMR.ps_relax_mode = 1        # P+T equilibrium (HEM): thermally couples phases, prevents per-phase energy runaway (#64/#72)
 CAMR.ps_mt_tau    = 1.0e-6
 CAMR.ps_mt_gref   = 5.0e4
 CAMR.ps_flash_tau = 0.0

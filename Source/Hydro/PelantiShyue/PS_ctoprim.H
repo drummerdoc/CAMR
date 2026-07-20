@@ -224,5 +224,147 @@ ps_mixture_pressure_from_cons(const amrex::Real U[NVAR], amrex::Real P_stock)
     return (!P1_bad && !P2_bad) ? (a1 * P1 + a2 * P2) : P_stock;
 }
 
+// ---------------------------------------------------------------------
+//  ps_phase_temp_from_cons  (diagnostic derives temp_1 / temp_2)
+//
+//  Per-phase temperature T_k = T(rho_k, e_k) on the branch-locked EOS
+//  (phase 1 = Liquid, phase 2 = Vapor).  A VANISHED phase has no well-
+//  defined temperature: rho_k = m_k/alpha_k and e_k = UE_k/m_k degenerate
+//  to 0/0 (or floored garbage after the vanish-fold), and the branch EOS
+//  then extrapolates to a physically meaningless value (e.g. the liquid
+//  branch at vapor density -> cold metastable garbage).  So when phase k is
+//  below the two-phase threshold, has non-positive mass, or the EOS returns
+//  a non-physical T, we FALL BACK to the supplied mixture temperature
+//  T_mix (a defined, continuous value) rather than emitting garbage or a
+//  misleading zero.  Mirrors the #52 UTEMP construction and the
+//  ps_state_from_cons vanish substitution.  phase: 1 = liquid, 2 = vapor.
+// ---------------------------------------------------------------------
+AMREX_GPU_HOST_DEVICE
+AMREX_FORCE_INLINE
+amrex::Real
+ps_phase_temp_from_cons(const amrex::Real U[NVAR], int phase, amrex::Real T_mix)
+{
+    using amrex::Real;
+    constexpr Real a_eps  = Real(1.0e-3);   // two-phase presence threshold (#52)
+    constexpr Real T_lo   = Real(216.0);    // ~CO2 triple point (physical floor)
+    constexpr Real T_hi   = Real(1.0e4);
+    const Real a1 = U[UALPHA1];
+    if (!std::isfinite(a1)) return T_mix;
+    const Real ak = (phase == 1) ? a1 : (Real(1.0) - a1);
+    const Real mk = (phase == 1) ? U[UM1RHO1] : U[UM2RHO2];
+    // Vanished / absent phase -> temperature undefined; report mixture T.
+    if (!(ak > a_eps) || !(mk > Real(0.0))) return T_mix;
+
+    const Real rho_mix = U[URHO];
+    if (!(rho_mix > Real(0.0))) return T_mix;
+    const Real inv_r = Real(1.0) / rho_mix;
+    const Real ux = U[UMX] * inv_r;
+#if (AMREX_SPACEDIM >= 2)
+    const Real uy = U[UMY] * inv_r;
+#else
+    const Real uy = Real(0.0);
+#endif
+#if (AMREX_SPACEDIM == 3)
+    const Real uz = U[UMZ] * inv_r;
+#else
+    const Real uz = Real(0.0);
+#endif
+    const Real ke  = Real(0.5) * (ux*ux + uy*uy + uz*uz);
+    const Real rho_k = mk / ak;
+    const Real e_k   = ((phase == 1) ? U[UE1] : U[UE2]) / mk - ke;
+
+    amrex::Real Y[NUM_SPECIES];
+    Y[0] = amrex::Real(1.0);
+    for (int n = 1; n < NUM_SPECIES; ++n) Y[n] = amrex::Real(0.0);
+    amrex::Real Pq, Tq, Sq;
+    EOS::REY2PTS_phase(rho_k, e_k, Y,
+                       (phase == 1) ? hem::Phase3::Liquid : hem::Phase3::Vapor,
+                       Pq, Tq, Sq);
+    // Reject non-physical extrapolations -> mixture-T fallback.
+    if (!std::isfinite(Tq) || Tq <= T_lo || Tq >= T_hi) return T_mix;
+    return Tq;
+}
+
+// ---------------------------------------------------------------------
+//  ps_flash_rate_from_cons  (REMOVED — see below)
+//
+//  This stateless proxy reproduced the integrator's Gibbs-driven MT source
+//  formula on the STORED state.  It reads ~0 everywhere for the showcase:
+//  with tau<<dt the near-instant MT flashes cells fully OUT of the two-phase
+//  coexistence band within a single step, so the post-step state carries no
+//  residual disequilibrium to measure, and the coexistence gate then admits
+//  essentially no cells.  The faithful flashing rate is the mass ACTUALLY
+//  transferred per unit time during the reaction substep (dm1/dt), which is
+//  recorded in CAMR::flash_src during advance and served via the
+//  CAMR::derive("flash_rate") override.  The dead proxy below is retained,
+//  commented, only as a record of why the stored-state approach fails.
+//
+//  Reproduces the integrator's Gibbs-driven finite-rate mass-transfer
+//  SOURCE expression (hem::ps_mass_transfer_finite_cell) evaluated on the
+//  local conservative state, so a plotted field shows WHERE and HOW FAST
+//  the two-phase mixture is flashing:
+//     mdot = (rho_mix / tau_g) * (g1 - g2) / g_ref     [kg m^-3 s^-1]
+//  with per-phase Gibbs g_k = h_k - T_k s_k (branch-locked EOS).
+//  SIGN: mdot > 0 = evaporation (liquid -> vapor, flashing);
+//        mdot < 0 = condensation.
+//  Same two-phase-coexistence gate as the MT source (alpha in the mixed
+//  band; both phase T in (T_triple, T_crit); finite Gibbs) -> 0 elsewhere.
+//  NOTE: this is the source FORMULA on the output state; it omits the
+//  bounded non-overshoot relaxation factor, so it slightly overstates the
+//  applied dm where the cell is near equilibrium (negligible for tau<<dt).
+// ---------------------------------------------------------------------
+#if 0  // DEAD: stored-state proxy — reads ~0 for tau<<dt (see note above).
+AMREX_GPU_HOST_DEVICE
+AMREX_FORCE_INLINE
+amrex::Real
+ps_flash_rate_from_cons(const amrex::Real U[NVAR], amrex::Real tau_g, amrex::Real g_ref)
+{
+    using amrex::Real;
+    if (!(tau_g > Real(0.0)) || !(g_ref > Real(0.0))) return Real(0.0);
+    constexpr Real a_thr    = Real(5.0e-3);   // mixed-cell band (matches MT alpha_mt_thr)
+    constexpr Real T_triple = Real(216.592);  // CO2 triple / crit (dome gate, matches EOS)
+    constexpr Real T_crit   = Real(304.128);
+
+    Real a1 = U[UALPHA1];
+    if (!std::isfinite(a1) || a1 <= a_thr || a1 >= Real(1.0) - a_thr) return Real(0.0);
+    const Real a2 = Real(1.0) - a1;
+    const Real m1 = U[UM1RHO1], m2 = U[UM2RHO2];
+    if (!(m1 > Real(0.0)) || !(m2 > Real(0.0))) return Real(0.0);
+    const Real rho_mix = U[URHO];
+    if (!(rho_mix > Real(0.0))) return Real(0.0);
+    const Real inv_r = Real(1.0) / rho_mix;
+    const Real ux = U[UMX] * inv_r;
+#if (AMREX_SPACEDIM >= 2)
+    const Real uy = U[UMY] * inv_r;
+#else
+    const Real uy = Real(0.0);
+#endif
+#if (AMREX_SPACEDIM == 3)
+    const Real uz = U[UMZ] * inv_r;
+#else
+    const Real uz = Real(0.0);
+#endif
+    const Real ke = Real(0.5) * (ux*ux + uy*uy + uz*uz);
+    const Real rho1 = m1 / a1, rho2 = m2 / a2;
+    const Real e1 = U[UE1] / m1 - ke;
+    const Real e2 = U[UE2] / m2 - ke;
+
+    // Per-phase Gibbs from the branch-locked EOS state (h - T s).
+    hem::State s1 = EOS::co2_state_from_rho_e_phase_cached(rho1, e1, hem::Phase3::Liquid);
+    hem::State s2 = EOS::co2_state_from_rho_e_phase_cached(rho2, e2, hem::Phase3::Vapor);
+    if (!(s1.P > Real(0.0)) || !(s2.P > Real(0.0))) return Real(0.0);
+    if (!std::isfinite(s1.h) || !std::isfinite(s1.s) ||
+        !std::isfinite(s2.h) || !std::isfinite(s2.s)) return Real(0.0);
+    // Coexistence gate: both phase temperatures in the saturable range.
+    if (s1.T <= T_triple || s1.T >= T_crit ||
+        s2.T <= T_triple || s2.T >= T_crit) return Real(0.0);
+
+    const Real g1 = s1.h - s1.T * s1.s;
+    const Real g2 = s2.h - s2.T * s2.s;
+    const Real mdot = (rho_mix / tau_g) * (g1 - g2) / g_ref;   // + = evaporation
+    return std::isfinite(mdot) ? mdot : Real(0.0);
+}
+#endif // 0 (dead proxy)
+
 #endif // USE_PS_HYDRO
 #endif // PS_CTOPRIM_H

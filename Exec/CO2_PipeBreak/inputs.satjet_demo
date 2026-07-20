@@ -51,6 +51,7 @@ CAMR.ps_shear_diss    = 0.5 # targeted transverse-shear dissipation (task #18):
                             # it looks heavy on the jet, raise if checkerboard leaks.
 
 CAMR.ps_do_relax  = 1
+CAMR.ps_relax_mode = 1        # P+T equilibrium (HEM): thermally couples phases, prevents per-phase energy runaway (#64/#72)
 CAMR.ps_mt_tau    = 1.0e-6       # mass transfer ON (real two-phase cells)
 CAMR.ps_mt_gref   = 5.0e4
 CAMR.ps_flash_tau = 0.0          # flash OFF (saturated reservoir; no nucleation)

@@ -189,6 +189,14 @@ inline void departureFunctions(const PRFluid& f, amrex::Real T, amrex::Real v_m,
     amrex::Real a, dadT, d2adT2, b;
     pureParams2(f.pr, T, a, dadT, d2adT2, b);
 
+    // Max-packing guard: PR is only defined for v_m > b (molar volume above the
+    // covolume; density below rho_max = M/b ~ 1650 kg/m3 for CO2).  A transient
+    // hyper-compression excursion (e.g. dilute-phase rho_k = m_k/alpha_k) can
+    // push v_m <= b, making log((v_m-b)/v_m) below NaN and crashing the T-Newton.
+    // Clamp to the max-packing limit (regularize, like the low-density rho_floor)
+    // so the EOS returns a bounded state and the cell can recover next step.
+    v_m = amrex::max(v_m, b * amrex::Real(1.000001));
+
     amrex::Real L = std::log((v_m + PR_sigma1*b)/(v_m + PR_sigma2*b));
     amrex::Real K = amrex::Real(1) / (PR_sdiff * b);
 
@@ -209,6 +217,13 @@ inline State state_from_T_v(const PRFluid& f, amrex::Real T, amrex::Real v_m,
 {
     amrex::Real a, dadT, d2adT2, b;
     pureParams2(f.pr, T, a, dadT, d2adT2, b);
+
+    // Max-packing guard (see departureFunctions): PR requires v_m > b.  A
+    // transient hyper-compression excursion can push v_m <= b, making the
+    // pressure R T/(v_m-b) blow up / go negative.  Clamp to the max-packing
+    // limit so P, dP/dv and the sound speed stay finite and consistent with
+    // the (clamped) departureFunctions call below.
+    v_m = amrex::max(v_m, b * amrex::Real(1.000001));
 
     // PR pressure and its isothermal volume derivative (raw cubic).
     amrex::Real D    = v_m*v_m + amrex::Real(2)*b*v_m - b*b;     // (v+s1 b)(v+s2 b)
@@ -322,6 +337,20 @@ inline State state_from_T_v(const PRFluid& f, amrex::Real T, amrex::Real v_m,
 
     // Peneloux: h_real = h_PR + P * c_shift  (per mole)
     amrex::Real h_mol_real = h_mol + P*f.c_shift;
+
+    // Positive per-phase pressure floor (task #70 item-3).  The spinodal
+    // monotone extension (Fix1) can return a large NEGATIVE pressure for a
+    // phase driven far past its spinodal (e.g. a "liquid" at a mixture-vapor
+    // density in a dilute two-phase slug).  That negative P flags P1_bad in
+    // ps_augment_primitives / ps_mixture_pressure_from_cons and DISABLES the
+    // P-S mixture rule (a1 P1 + a2 P2) slug-wide, forcing the single-fluid
+    // REY2P fallback (the path that carried the phase-pick cliff).  Flooring
+    // the per-phase P at a small positive value keeps the mixture rule active
+    // (the phase's tiny volume fraction weights it negligibly) without
+    // affecting any stable/metastable state whose P already exceeds the floor
+    // (all A-C Riemann states: P >> 0.01 bar), so it is inert there.
+    constexpr amrex::Real P_pos_floor = amrex::Real(1.0e3);   // 0.01 bar
+    if (!(P > P_pos_floor)) P = P_pos_floor;
 
     State st;
     st.T     = T;

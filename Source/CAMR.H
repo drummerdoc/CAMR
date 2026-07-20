@@ -374,6 +374,15 @@ protected:
   // A state array with ghost zones.
   amrex::MultiFab Sborder;
 
+#ifdef USE_PS_HYDRO
+  // Diagnostic: local flashing rate dm1/dt [kg m^-3 s^-1], + = evaporation
+  // (liquid -> vapor).  Recorded during advance() from the mass ACTUALLY
+  // transferred by the reaction substep (ps_apply_sources), NOT a stateless
+  // function of the stored state (which reads ~0 for near-instant MT).
+  // Served to plotfiles via the CAMR::derive("flash_rate") override.
+  amrex::MultiFab flash_src;
+#endif
+
   // Source terms to the hydrodynamics solve.
   amrex::MultiFab sources_for_hydro;
 

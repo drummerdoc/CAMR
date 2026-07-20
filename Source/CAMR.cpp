@@ -20,6 +20,9 @@
 #include "CAMR_reset_internal_e.H"
 #include "Tagging.H"
 #include "IndexDefines.H"
+#ifdef USE_PS_HYDRO
+#include "PS_relaxation.H"   // ps_resync_phase_energy / ps_apply_floor (#84)
+#endif
 
 bool CAMR::signalStopJob = false;
 bool CAMR::dump_old = false;
@@ -829,6 +832,22 @@ CAMR::post_regrid(int /*lbase*/, int /*new_finest*/)
 {
   BL_PROFILE("CAMR::post_regrid()");
   fine_mask.clear();
+
+#ifdef USE_PS_HYDRO
+  // Two-phase consistency after a regrid (#84).  Cells filled by C-F
+  // interpolation (new fine regions) or average-down (de-refined regions)
+  // can carry a per-phase energy split slightly off UEDEN; the PS
+  // reconstruction assumes UE1+UE2==UEDEN, and in Lie mode (ps_strang=0)
+  // the next step feeds this straight into the hydro BEFORE the post-hydro
+  // reaction resync runs.  Re-sync + floor the regridded new-time state
+  // here so no regridded cell reaches the flux with an inconsistent /
+  // sub-floor two-phase state.  No-op on untouched interior cells.
+  if (ps_hydro != 0) {
+    amrex::MultiFab& S_new = get_new_data(State_Type);
+    ps_resync_phase_energy(S_new, 0);
+    ps_apply_floor(S_new, 0);
+  }
+#endif
 }
 
 void CAMR::post_init(amrex::Real /*stop_time*/)
@@ -1235,6 +1254,22 @@ CAMR::avgDown(int state_indx)
     const amrex::Geometry& cgeom = geom;
     amrex::average_down(S_fine, S_crse, fgeom, cgeom, 0, S_fine.nComp(), fine_ratio);
 #endif
+
+#ifdef USE_PS_HYDRO
+    // Two-phase consistency after coarsening (#84).  amrex::average_down
+    // volume-averages each conservative slot INDEPENDENTLY; the linear
+    // invariants (rho, m_k, UE_k, UEDEN) stay consistent, but the per-phase
+    // (rho_k, e_k) the PS reconstruction derives from the coarsened
+    // alpha/masses/energies can land just off the EOS-consistent manifold
+    // (same class as the C-F interp #58 / reflux #51 issues, on the DOWN
+    // direction).  Re-sync UE1+UE2 -> UEDEN and apply the positivity floor
+    // on the coarsened data so a coarse cell never feeds an inconsistent
+    // two-phase state into the next hydro.  No-op on interior cells.
+    if (ps_hydro != 0 && state_indx == State_Type) {
+        ps_resync_phase_energy(S_crse, 0);
+        ps_apply_floor(S_crse, 0);
+    }
+#endif
 }
 
 void
@@ -1258,6 +1293,23 @@ CAMR::derive(const std::string& name, amrex::Real time, int ngrow)
   if (name == "vfrac" || name == "volfrac") {
     std::unique_ptr<amrex::MultiFab> derive_dat(new amrex::MultiFab(grids, dmap, 1, 0));
     amrex::MultiFab::Copy(*derive_dat, *volfrac, 0, 0, 1, 0);
+    return derive_dat;
+  }
+#endif
+#ifdef USE_PS_HYDRO
+  // Local flashing rate dm1/dt [kg m^-3 s^-1], + = evaporation.  Data is
+  // recorded during advance() into flash_src (see CAMR_advance.cpp); serve a
+  // copy here.  If not yet populated (e.g. plot at t=0 before any advance, or
+  // just after a regrid), return zeros on the current grids.
+  if (name == "flash_rate") {
+    std::unique_ptr<amrex::MultiFab> derive_dat(
+      new amrex::MultiFab(grids, dmap, 1, ngrow));
+    derive_dat->setVal(0.0);
+    if (flash_src.ok() &&
+        flash_src.boxArray() == grids &&
+        flash_src.DistributionMap() == dmap) {
+      amrex::MultiFab::Copy(*derive_dat, flash_src, 0, 0, 1, 0);
+    }
     return derive_dat;
   }
 #endif

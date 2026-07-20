@@ -10,6 +10,9 @@
 #endif
 
 #include "CAMR.H"
+#ifdef USE_PS_HYDRO
+#include "PS_zerod_test.H"
+#endif
 
 std::string inputs_name;
 
@@ -115,6 +118,25 @@ main(int argc, char* argv[])
 #endif
 
   amrptr->init(strt_time, stop_time);
+
+#ifdef USE_PS_HYDRO
+  // task #77: 0-D coupled-equilibrium (flash) self-test.  Runs after init
+  // (EOS live), prints the table, and exits without time-stepping.
+  {
+    int ps_ptg_selftest = 0;
+    amrex::ParmParse pp_ps("CAMR");
+    pp_ps.query("ps_ptg_selftest", ps_ptg_selftest);
+    int ps_relax_sweep = 0;
+    pp_ps.query("ps_relax_sweep", ps_relax_sweep);
+    if (ps_ptg_selftest || ps_relax_sweep) {
+      if (ps_ptg_selftest) ps_ptg_zerod_selftest();
+      if (ps_relax_sweep)  ps_relax_corner_sweep();
+      delete amrptr;
+      amrex::Finalize();
+      return 0;
+    }
+  }
+#endif
 
   // If we set the regrid_on_restart flag and if we are *not* going to take
   // a time step then we want to go ahead and regrid here.

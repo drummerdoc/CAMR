@@ -39,6 +39,7 @@ CAMR.ps_shear_diss    = 0.0
 CAMR.ps_mu            = 2.0     # same viscosity as zoom2 baseline
 
 CAMR.ps_do_relax  = 1          # pressure relaxation ON
+CAMR.ps_relax_mode = 1        # P+T equilibrium (HEM): thermally couples phases, prevents per-phase energy runaway (#64/#72)
 CAMR.ps_mt_tau    = 1.0e3      # <<< ISOLATION B: mass transfer effectively FROZEN
 CAMR.ps_mt_gref   = 5.0e4
 CAMR.ps_flash_tau = 0.0

@@ -140,6 +140,14 @@ ps_make_camr_eos_api()
                                                // (CAMR EOS reference, = e+P/ρ)
         ph.s     = double(S);                  // task #28: MT reads ph.s / ph.g
         ph.g     = ph.h - double(T) * double(S);   // Gibbs = h - T·s
+        // Per-phase sound speed (task #77 fix): ps_state_from_cons REQUIRES
+        // ph.c > 0 (line ~532); the old callback left c uninitialized, so
+        // ps_state_from_cons — and therefore the coupled MT equilibrium
+        // solver ps_mass_transfer_relax_cell — silently failed (returned
+        // invalid), which is why finite-rate MT never fired (dm_eq forced 0).
+        amrex::Real Cs = amrex::Real(0);
+        EOS::REY2Cs_phase(amrex::Real(rho), amrex::Real(e), Y, ph3, Cs);
+        ph.c     = double(Cs);
         ph.valid = std::isfinite(P) && P > 0.0 && std::isfinite(T) && T > 0.0;
     };
     return api;
@@ -343,8 +351,73 @@ ps_pt_equilibrium_relax_cell(int i, int j, int k,
 }
 
 
+// -----------------------------------------------------------------
+//  ps_ptg_relax_cell (task #77, ps_relax_mode=2): mechanical/isochoric
+//  pressure equilibrium + FINITE-RATE thermal relaxation.  Same Picard
+//  alternation as ps_pt_equilibrium_relax_cell, but the thermal step
+//  relaxes T1->T2 at rate 1/theta (exact-exponential) instead of
+//  instantaneously.  With theta>0 the cell is NOT re-pinned on the
+//  saturation dome, so the finite-rate MT source in ps_apply_sources
+//  retains a genuine Gibbs driving force (sustained flashing) while the
+//  partial thermal coupling still bounds the per-phase energy (#72).
+// -----------------------------------------------------------------
+inline void
+ps_ptg_relax_cell(int i, int j, int k,
+                  amrex::Array4<amrex::Real> const& U,
+                  hem::PsPhaseAPI const& eos,
+                  amrex::Real dt, amrex::Real theta,
+                  int outer_iters = 3)
+{
+    using amrex::Real;
+    constexpr Real alpha_floor = Real(1.0e-6);
+    const Real alpha1_in = U(i,j,k, UALPHA1);
+    if (!std::isfinite(alpha1_in)) return;
+    if (alpha1_in < alpha_floor || alpha1_in > Real(1.0) - alpha_floor) return;
+
+    const Real m1 = U(i,j,k, UM1RHO1);
+    const Real m2 = U(i,j,k, UM2RHO2);
+    if (m1 <= Real(0.0) || m2 <= Real(0.0)) return;
+
+    const Real px = U(i,j,k, UMX);
+#if (AMREX_SPACEDIM >= 2)
+    const Real py = U(i,j,k, UMY);
+#else
+    const Real py = Real(0.0);
+#endif
+#if (AMREX_SPACEDIM == 3)
+    const Real pz = U(i,j,k, UMZ);
+#else
+    const Real pz = Real(0.0);
+#endif
+    hem::V6 Uv;
+    Uv[0] = alpha1_in;
+    Uv[1] = m1;
+    Uv[2] = m2;
+    Uv[3] = std::sqrt(px*px + py*py + pz*pz);
+    Uv[4] = U(i,j,k, UE1);
+    Uv[5] = U(i,j,k, UE2);
+
+    bool ok = true;
+    for (int it = 0; it < outer_iters; ++it) {
+        if (!hem::ps_iso_pressure_relax_cell(Uv, eos)) { ok = false; break; }
+        if (!hem::ps_iso_thermal_relax_cell_finite(Uv, eos, double(dt),
+                                                   double(theta))) { ok = false; break; }
+    }
+    if (!ok) return;
+
+    U(i,j,k, UE1) = Uv[4];
+    U(i,j,k, UE2) = Uv[5];
+}
+
+
 // Cached CAMR.ps_relax_mode: 0 = mechanical pressure relaxation (default,
-// historical); 1 = P+T equilibrium (ps_pt_equilibrium_relax_cell above).
+// historical); 1 = P+T equilibrium (ps_pt_equilibrium_relax_cell above);
+// 2 = P + finite-rate thermal relaxation (task #77): mechanical/isochoric
+// pressure equilibrium each step + thermal relaxation toward T1=T2 at the
+// physical rate 1/ps_theta_tau.  theta->0 reproduces mode 1; theta->inf
+// reproduces mode 0.  Retains thermal non-equilibrium (T_gas != T_liquid)
+// while damping the #72 per-phase energy runaway; lets the finite-rate MT
+// source keep a Gibbs driving force (cells are not re-pinned on the dome).
 inline int ps_relax_mode()
 {
     static const int m = []() -> int {
@@ -354,6 +427,19 @@ inline int ps_relax_mode()
         return v;
     }();
     return m;
+}
+
+// Cached CAMR.ps_theta_tau (thermal relaxation time [s], default 0 =
+// instantaneous).  Only used by ps_relax_mode=2.
+inline amrex::Real ps_theta_tau()
+{
+    static const amrex::Real v = []() -> amrex::Real {
+        amrex::Real val = amrex::Real(0.0);
+        amrex::ParmParse pp("CAMR");
+        pp.query("ps_theta_tau", val);
+        return val;
+    }();
+    return v;
 }
 
 // Cached CAMR.ps_relax_verbose (default 0 = silent).  When 0, ps_apply_relaxation
@@ -674,7 +760,8 @@ ps_apply_vanish_fold(amrex::MultiFab& S_new, int nghost = 0)
 //  hydro step, under `if (ps_hydro != 0)`.
 // -----------------------------------------------------------------
 inline void
-ps_apply_relaxation(amrex::MultiFab& S_new, int nghost = 0, bool do_print = true)
+ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
+                    int nghost = 0, bool do_print = true)
 {
     const hem::PsPhaseAPI eos = ps_make_camr_eos_api();
 
@@ -682,8 +769,10 @@ ps_apply_relaxation(amrex::MultiFab& S_new, int nghost = 0, bool do_print = true
     ps_relax_diag() = PsRelaxDiag{};
 
     // Relaxation strategy: 0 = mechanical (pressure, adjusts α); 1 = P+T
-    // equilibrium (isochoric, redistributes per-phase energy).  task #27.
+    // equilibrium (isochoric, redistributes per-phase energy); 2 = P +
+    // finite-rate thermal relaxation (theta = ps_theta_tau).  tasks #27/#77.
     const int relax_mode = ps_relax_mode();
+    const amrex::Real theta = ps_theta_tau();
 
     for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
         const amrex::Box bx = mfi.growntilebox(nghost);
@@ -693,7 +782,9 @@ ps_apply_relaxation(amrex::MultiFab& S_new, int nghost = 0, bool do_print = true
         // (device kernels can't call std::function).
         amrex::LoopOnCpu(bx, [=] (int i, int j, int k) noexcept
         {
-            if (relax_mode == 1) {
+            if (relax_mode == 2) {
+                ps_ptg_relax_cell(i, j, k, U, eos, dt, theta);
+            } else if (relax_mode == 1) {
                 ps_pt_equilibrium_relax_cell(i, j, k, U, eos);
             } else {
                 ps_mechanical_relax_cell(i, j, k, U, eos);

@@ -77,7 +77,189 @@ Regression vs stored pre-fix references (c1_*_00205), fixed exe = Fix1(spinodal 
  - B9 Deep-Expansion (p_R=5 bar): SAME step/time; max rel Δ ~1.5e-4; min P=5 bar both, zero floored. Clean.
  - A1-Sod-strong: comparison INVALID — I mis-set params from the ambiguous DUPLICATED job_info (base vs cmdline lines), IC didn't match (ref L rho=113.2 vs mine 105.9). NOT a fix effect. (Single-phase/supercritical A/C cases are less dome-sensitive anyway; the suite script suite/run_camr_riemann_suite.py is NOT in the repo/sandbox — redo A1/A3/C3 on the HOST with the real per-case params.)
 VERDICT: fix is SAFE on the dome-crossing benchmarks (B4/B9): tiny physical footprint (~1e-4), no instability, no new garbage, identical dynamics. Single-phase A/C don't reach the guarded path. Full A1/A3/C3 exact-IC regression = host follow-up.
-SOURCE STATE (uncommitted): hem_pr_state.H (Fix1 spinodal monotonization + #69 branch-selection guard), PS_umeth.cpp (1D-build guard for ps_shear_diss_face). Derive.cpp reverted clean (DBG stripped). Ready to commit.
+SOURCE STATE: committed 01a883c on wip/eos-abgrall (hem_pr_state.H Fix1+#69, PS_umeth.cpp 1D guard, LEARNINGS, ps_zoom_diag.py, abgrall_contact_1d.py). Derive.cpp reverted clean.
+
+### #70 RESOLVED (upstream drivers investigated — no new fix needed for the pepper)
+Traced the two-phase Newton in state_from_rho_e for the garbage cell (rho=79.46,e=45085): prelude single-phase T=188 (sub-triple) → enters two-phase block (eBracket false-positive) → Newton Tt trajectory 188→226→269→301 then OSCILLATES near Tc (299-302) forever, never converges. MEANING: there is NO two-phase solution for this (rho,e) — it is genuinely SINGLE-PHASE VAPOR. The two-phase Newton correctly fails; the OLD fall-through picked LIQUID (wrong, -600 bar); #69 guard now picks VAPOR (+14.5 bar, correct). So:
+ - (a) "sub-triple prelude / should T floor at triple point?" → NO. The sub-triple T is a symptom; the state is single-phase, the Newton failure is correct, #69 is the right fix. (The eBracket test — bracket L.e/V.e and rho separately at one T — is a necessary-not-sufficient 2D-dome test, giving a false positive; but the Newton non-convergence + #69 pick handles it correctly.)
+ - (b) "~3% neighbor (rho,e) variation" → at IC (step0) the lip cells are UNIFORM ambient (identical); the 3% is DEVELOPED physical lip-corner/vena-contracta flow structure by step 24, NOT chatter and NOT IC. At the symmetric core it's round-off (#71). So there is NO anomalous input variation to fix — it's physical where 3% (lip) and round-off where it should be symmetric (core).
+CONCLUSION: pepper fully explained = physical lip-corner state landing on the EOS phase-pick cliff (fixed by #69). No further upstream fix required for the pepper.
+REMAINING OPTIONAL ROBUSTNESS (item 3, DONE): Fix1's per-phase LIQUID P is negative across the dense slug (rho1~545<spinodal) → P1_bad → mixture rule disabled slug-wide → single-fluid REY2P fallback. FIXED: state_from_T_v now floors returned per-phase P at 1e3 Pa (0.01 bar) so the mixture rule stays active. Verified: slug 0-dropout, B4/B9 unchanged (~1e-4, floor inert since their liquid P>0). UNCOMMITTED (git HEAD.lock blocks commit — commit on host).
+
+### #64 IS THE REAL REMAINING BLOCKER (task #72) — per-phase energy runaway
+Longer 2D run (fix applied, fixlong_) on host: pepper GONE but PROFILES DESTROYED BY ~step200, hard crash step274 (departureFunctions T-Newton diverges on rho~1e50). ROOT: per-phase LIQUID specific energy e1=UE1/m1 RUNS AWAY. Onset by step50 at the INLET gap-edge lip (i=0, y=0.456): e1 goes from the injected ~-9e4 to +1.26e10 (!), α1~0.63 but ρ1 collapsing 12.7→2.6; UE1 accumulates while m1 stays small → e1=UE1/m1 → 1e10 → T~7000-15000K → blowup. Reservoir INJECTS a sane e1 (-9e4, saturated liquid); the runaway is the per-phase energy DEPOSIT/transport at the lip, NOT the injected value. => this is the REFRAMED #64 (per-phase energy operator consistency), localized at the reservoir-injection lip. The pepper fix (P-floor+#69) removed the PRESSURE-cliff symptom; this per-phase-ENERGY inconsistency is the deeper cause and the next real fix. NB: MT is OFF (nomt); with MT on the dilute liquid would vaporize — may or may not mask this. Candidate fixes: bound e_k when phase is dilute (m_k small); make UE_k deposit track m_k; or the Abgrall-consistent per-phase energy update.
+
+### #64/#72 RESOLVED — enable P+T equilibrium relaxation (CAMR.ps_relax_mode=1)
+ROOT: the satjet ran with ps_relax_mode=0 (default) = MECHANICAL pressure relaxation only → phases thermally DECOUPLED. The volume-fraction partition of pressure work (a_k P_mix u) over-heats the DILUTE liquid phase (high a1~0.6 but low rho1~5): UE1 accumulates while m1 stays small → e1=UE1/m1 runs away to 1e10 → T~1e4 K → blowup. It's a thermal-nonequilibrium artifact of a HALF-equilibrium model (P-equilibrium, T-frozen).
+FIX: CAMR.ps_relax_mode=1 → ps_pt_equilibrium_relax_cell (task #27) does JOINT P+T equilibrium (drives T1->T2) each step. This is the HEM limit — the correct physics for a fine-scale two-phase jet — and makes the per-phase energy split a slaved (not independent) quantity, so the transport inconsistency can't accumulate.
+VERIFIED (2D zoom, sandbox): mode-1 keeps near-inlet e1~1.4e5 (vs 1e10 mode-0), Pmax 20 bar (vs 327), T 315 K (vs 9200), 0 dropouts, healthy dt, clean THROUGH step 50-73 — exactly where mode-0 was already destroyed (blown by 50, crash 274). Onset decisively prevented.
+Patched into inputs.satjet_zoom_nomt / satjet_zoom / satjet_demo (CAMR.ps_relax_mode=1). NOTE: mode-1 is a per-run model choice; A-C suite stays mode-0 (validated) — no conflict.
+HOST CONFIRMATION (mode-1 full run): ran CLEAN to completion at max_time (stop_time=2e-4, step 385) — NO crash (an earlier apparent crash was a STALE Backtrace.0/.1 from prior runs). Solution pristine throughout: 0 dropouts every step, near-inlet e1~2e5 (no runaway), Pmax~18 bar, Tmax~310K, whole-domain rho[20..93] Pmin 8.7 bar, midplane mirror-asym ~1e-7 (round-off). SATJET FIXED + VALIDATED END-TO-END (MT-off, mode-1). To see the KH roll-up, bump stop_time>2e-4.
+
+### LATENT robustness gap (untriggered here, worth hardening): departureFunctions v_m<b
+hem_pr_state.H:192,196 take std::log((v_m-b)/v_m) and log((v_m+s1 b)/(v_m+s2 b)). If a per-phase density transiently exceeds PR max packing rho_max=M/b~1650 kg/m3 (v_m<b, or v_m<(sqrt2-1)b), the logs go NaN/crash (via ps_newton_solve_T). NOT hit in the clean mode-1 run (max rho1~500), but a single-cell hyper-compression excursion (rho_k=m_k/alpha_k amplification, dilute-phase) would crash hard. FIX (APPLIED): clamp v_m = max(v_m, b*1.000001) at the top of departureFunctions AND state_from_T_v (both have b in scope). Verified: compiles, B4 byte-for-byte unchanged (rel 1.5e-4/9.1e-4 = inert; B4 rho<<rho_max). Regularizes hyper-compression to the max-packing limit instead of crashing. UNCOMMITTED (git lock).
+
+### Full-domain demo pass 2 created: inputs.satjet_demo2
+Full 2x1 m, 3-level AMR, with ALL session fixes: EOS branch guard + spinodal reg + positive P-floor + max-packing guard (code), ps_relax_mode=1 (runaway fix), and ps_mu=2 physical viscosity REPLACING ps_shear_diss=0 (band-aid -> physical). MT ON (ps_mt_tau=1e-6) per the showcase intent, with a prominent #74 WATCH comment: if the plume condenses wrong-way, set ps_mt_tau=1e3 (the validated MT-off config). plt_sj2 / chk_sj2 output.
+
+### demo2 (3-level AMR) NaNs by step 25 → ISOLATED to AMR C-F (#60 REOPENED, characterized)
+Host run of inputs.satjet_demo2 (AMR max_level=2, MT on) → NaN in plt_sj200025 (all 3 levels, first at inlet face i=0, y~0.31-0.38, the wall/lip corner below the gap; IC there is clean uniform ambient). SANDBOX ISOLATION (full 2x1 domain):
+  - UNIFORM (max_level=0) + MT-OFF: CLEAN to step30 (P 9.8-17.9 bar, 0 NaN).
+  - UNIFORM + MT-ON: CLEAN to step30 (a1max 0.047, bounded — NO wrong-way condensation in this regime; #74 doesn't bite the satjet).
+  - AMR (max_level=2) + MT-OFF: dt COLLAPSES at the FIRST regrid — DT 1.3e-15 at step16 (REGRID lbase=0), 1.3e-17 by step17 (REGRID lbase=1), stuck ~1e-17 → NaN. MT-INDEPENDENT.
+CONCLUSION: this session's fixes (EOS branch guard + spinodal reg + P-floor + max-packing guard + ps_relax_mode=1 + ps_mu) are ALL GOOD — full-domain UNIFORM is clean (MT on & off). The ONLY blocker for the 3-level demo is the AMR coarse-fine interpolation of the two-phase inlet state at regrid: it creates a pathological fine cell (huge c → dt~1e-17). That is #60 (satjet finest-level dt-collapse), now reconfirmed + localized to the FIRST regrid creating the fine levels, and proven MT-independent.
+### #60 RESOLVED — root cause = ps_wp_transverse=2 (NOT AMR coarse-fine)
+CORRECTION to the above: the uniform FINE grid ALSO NaNs, so it is NOT an AMR C-F interp bug. Decisive isolation (uniform 512x256, everything else identical): ps_wp_transverse=0 -> CLEAN (step 43, dt 3.4e-6); ps_wp_transverse=2 -> COLLAPSE (dt->5e-116 by step 40). The BL-3b analytic-acoustic transverse coupling (=2) is UNSTABLE at fine resolution — it drives the alpha1->1 pure-liquid overshoot (injected 0.05 -> 0.9999) -> stiff liquid -> dt collapse. It bit the AMR run because AMR refines to fine dx; and the uniform-fine run directly. The code comment on BL-3b even flagged it "DEFAULT OFF pending fine-res (512/1024, 3-level) validation" — this IS that failure. The validated zoom used =0.
+FIX: ps_wp_transverse=0 (patched into inputs.satjet_demo2). CONFIRMED: 3-level AMR (max_level=2) + transverse=0 + MT-off runs CLEAN through step 25, dt healthy 5.4e-6, alpha1 bounded at 0.04999 (NO overshoot). So the full showcase geometry works with AMR once BL-3b is off. (=1 contact-only BL-3a is the stable middle option if the transverse checkerboard reappears; ps_mu physical viscosity is handling the near-jet shear here.)
+NET: the AMR demo is unblocked. Earlier "#60 = AMR C-F interp" framing was WRONG — the fine-uniform NaN disproved it. Real cause: BL-3b acoustic transverse at fine res.
+
+### FLASHING IS WORKING (#74/#75 RESOLVED — earlier "frozen alpha1" was a misread)
+Question: injecting saturated two-phase (Psat(280)=42 bar, alpha1=0.05) into 10-bar superheated vapor — should MT/flashing occur? YES, and it DOES. Earlier claim "alpha1 frozen at 0.05, MT gated off" was WRONG — it looked only at the centerline POTENTIAL CORE (x<0.25), which correctly sits at 0.05 because the fresh injected fluid is still near coexistence (g1≈g2, no driving force yet). Full-field truth (plt_sj200550, Level_0): 1404 two-phase cells, alpha1 min 0.0001 max 0.0500 mean 0.032; 55.6% EVAPORATED (a1<0.049), 376 nearly fully flashed (a1<0.01), 0% condensed (a1 never exceeds injected 0.05). So the injected liquid BOILS OFF on expansion — one-directional evaporation, correct direction, no spurious condensation. The MT coexistence gate (ps_mass_transfer_finite_cell, hem_pelanti_shyue.H ~L2823) PASSES on jet cells (T~231-245 in [Ttrip216.6, Tcrit304.1], phases valid, Gibbs finite) — it is NOT blocking MT. NO CODE FIX made (instrumented, diagnosed, debug stripped). The flashing plume (a1 decreasing from the two-phase core to ~0) is a real labelable demo feature; #74's wrong-way concern does NOT bite the satjet (0% condensation). (A1-Sod-strong condensation remains a separate strong-rarefaction case, optional to adjudicate vs standalone.)
+
+### CRITICAL BUG (#77): EOS callback left PsPhase.c uninitialized -> MT silently dead
+ps_make_camr_eos_api (PS_relaxation.H) populated rho,e,P,T,h,s,g,valid but NOT ph.c.
+ps_state_from_cons REQUIRES ph.c > 0 (line ~532) and PsPhase had no default member
+initializers, so it read INDETERMINATE stack memory: the coupled MT equilibrium solver
+ps_mass_transfer_relax_cell (which calls ps_state_from_cons) silently returned invalid,
+forcing dm_eq=0. That is the REAL reason finite-rate MT never fired in the satjet demo
+(not only the on-dome g1=g2 starvation argument). Flux/HLLC/relaxation-Newton paths read
+only .P/.T/.valid/.alpha/.rho (all set), so hydro ran fine for months while MT was dead.
+FIX: (a) api now sets ph.c via EOS::REY2Cs_phase; (b) DEFENSIVE: added default member
+initializers to PsPhase (all 0, valid=false) and PsState so any future omitted field
+fails SAFE (deterministic invalid->skip), never a spurious physics signal. After fix:
+[ps_mt] fires; flash_rate records real dm1/dt (step 4: 14 cells, max +4.96e5 = evaporation).
+Audit: only ONE producer of the callback exists (fixed); ph.alpha is always set by caller;
+V6 producers (ps_cons_from_prim, ps_flux, star-states) fill all 6 slots.
+
+### THERMAL EQUILIBRIUM still required (but finite-rate, not instantaneous)
+Test (mode-0 mechanical-P + now-working MT, NO thermal relax, T1!=T2 allowed): #72 energy
+runaway RETURNS -- T -> 373 K (>Tc) by step 25, dt collapses to ~1e-122 by step 38. So MT
+interface-enthalpy coupling alone does NOT bound per-phase energy. Mode-1 (instantaneous
+T1=T2) is over-strong (re-pins cells on dome, throttles MT) and erases real thermal
+non-equilibrium. PLAN: finite-rate thermal relaxation with time const theta, exp integrator
+frac=1-exp(-dt/theta); theta->0 = mode-1, theta->inf = mode-0(unstable); sweep theta for
+largest (most non-eq) value that holds dt/energy. ps_mass_transfer_relax_cell gives P+g
+equilibrium (T1!=T2): dP,dg~1e-6, dT~0.1, off-dome -- correct for a mechanical+chemical
+(non-thermal-eq) target.
+
+### #84 DONE: PS coarsen/regrid two-phase consistency hardening
+Added (CAMR.cpp, guarded USE_PS_HYDRO + ps_hydro): ps_resync_phase_energy + ps_apply_floor
+after avgDown (State_Type only) and in post_regrid on the new-time State. Rationale: the
+regrid C-F INTERP (limited) does NOT preserve UE1+UE2==UEDEN, and in Lie mode the next step
+feeds the regridded state to hydro BEFORE the post-hydro reaction resync -> inconsistent
+two-phase reconstruction. (Note: avgDown coarsening is linear so UE1+UE2==UEDEN is already
+preserved there -> resync ~no-op on coarsened cells; the FLOOR is the operative net for
+nonphysical per-phase P from the nonlinear rho_k=avg(m_k)/avg(alpha_k); resync matters mainly
+for the INTERP-filled new fine cells in post_regrid.) Included PS_relaxation.H in CAMR.cpp.
+Validated: fresh 3-level AMR demo, 21 regrids, coarse minDT 7.08e-6, no NaN/faults, flashing
+active -> no regression. This is belt-and-suspenders (did NOT cause the #79 crash, which was
+the vfrac1 gradient-tag heap overrun). A-C suite regression not run in sandbox (low risk:
+guarded + resync no-op on consistent cells + floor gated on ps_pres/temp_floor). Commit: CAMR.cpp.
+
+### #41 DONE: relaxation robust in corners; isoP hardened; 0-D CI path documented
+Corner sweep (PS_zerod_test.H, CAMR.ps_relax_sweep=1): NO NaN/inf in any corner; metastable/
+spinodal converge clean (Fix1 holds); trace cells skipped by design; deep-trace alpha<=1e-6 =
+single-phase (vanish-fold owns it upstream). ONE real bug found+fixed: ps_iso_pressure_relax_cell
+"converged" on the pressure residual (uses only p.valid=P>0,T>0) but at COLD near-triple committed
+a SPINODAL state (c<=0 / sub-floor P) that ps_state_from_cons then rejected -> "ok=1 valid=0"
+UNSAFE. FIX: require the committed partition to be FULLY valid (both phases valid, P>1Pa, c>0);
+if Newton lands invalid, validity-guarded BRACKETING/BISECTION over e1 (only fully-valid samples);
+if no stable P1=P2 exists at that alpha, RETURN FALSE (leave cell unchanged) rather than write a
+degenerate state. Cold near-triple now ok=0/valid=1 (graceful refuse). Warm/metastable/spinodal
+UNCHANGED (dP~1e-6); warm demo unregressed (fresh mode-2 step80, MT 78/80, DT 7.28e-6). Sweep now
+"0 UNSAFE -> PASS". 0-D CI usage documented in PS_zerod_test.H header (ps_ptg_selftest + relax_sweep
+flags, add-a-case, exit-code gate for #82, MLP-EOS first-line validator for #42).
+
+### RESOLVED (#77): warmer back-pressure -> visible sustained flashing
+Fix chosen (case design, no solver change): raised prob.p0 & prob.p_amb 1.0e6 -> 2.0e6 so the
+under-expansion endpoint stays warm (reservoir stays dome-consistent, p_res~Psat(280)). Result
+(fresh mode-2, theta=1e-3, mt_tau=1e-3, step80): two-phase-cell Temp = [224,247]K (ABOVE triple
+216.6) -> coex gate passes -> MT fires 78/80 steps, flash_rate nonzero=56 cells (~1.2e4), DT
+7.3e-6 healthy. vs old p_amb=1e6: plume pinned at 216.6 floor, MT gated off, flash_rate=0. Demo
+now flashes out of the box. (If more triple-point margin wanted, raise p_amb further.)
+
+### ROOT CAUSE of "hard zero flash_rate" in the DEVELOPED jet (#77): triple-point coex gate
+flash_rate=0 on restart-from-developed (and eventually in any developed run) is NOT a
+recorded-source bug. Reproduced single-level (mode-1 dev state m1chk00080 -> restart mode-2):
+150-170 two-phase cells, |T1-T2| up to 36 K (real disequilibrium), yet MT fires 0. Gate tally:
+seen~580, a_band~150, phys_ok~150, coex_ok=0 -> ALL cells fail the coexistence-T gate
+(ps_mass_transfer_finite_cell: reject if p1.T or p2.T <= T_triple(216.6) or >= T_crit(304.1)).
+Failing bound = LOWER (T<=216.6): the strong CO2 blowdown cools the whole two-phase plume to
+the ps_temp_floor=216.6 (triple point), and the raw per-phase reconstructions dip to/below it
+-> gate (meant to keep MT out of the sub-triple/dry-ice regime the L-V PR EOS can't model)
+rejects the entire flashing plume. CONFIRM: PS_MT_NO_DOME_GATE=1 -> MT fires 80-100 cells/step
+(cumulative 916->1080). Fresh runs flash only TRANSIENTLY (warm near-orifice jet >216.6) then
+stop as they cool to the floor. So it's the coex-T gate colliding with the triple-point floor
+that the blowdown drives the plume into. DECISION NEEDED (physics): (a) warmer demo conditions
+so the steady flashing endpoint stays >T_triple; (b) revisit lower gate / triple-point handling
+(CO2 blowdown really does approach dry-ice — model limit); (c) accept flashing = near-orifice
++ transient only. NOTE: this is separate from and downstream of the mode-2 machinery, which works.
+
+### ps_relax_mode=2 IMPLEMENTED: P + finite-rate thermal relaxation (#77)
+New: ps_iso_thermal_relax_cell_finite (hem_pelanti_shyue.H) blends per-phase energy
+toward the full thermal-eq partition by frac=1-exp(-dt/theta) (exact-exp, uncond stable,
+energy-conserving). ps_ptg_relax_cell (PS_relaxation.H) = iso pressure relax + finite
+thermal relax, dispatched by ps_relax_mode==2; CAMR.ps_theta_tau [s] (0=instantaneous=mode1,
+inf=mode0). dt threaded through ps_apply_relaxation (sig now (S,dt,ng,do_print); one caller
+updated in CAMR_advance.cpp). theta-SWEEP (uniform demo, MT on tau=1e-6):
+  theta=0    -> step100 clean (==mode1)                 mt_prints=2
+  theta=1e-4 -> step90  clean minDT 5.5e-6               mt=6
+  theta=1e-3 -> step100 clean; T=[216.6,299.4]K (<Tc)   mt=7; 178 two-phase cells retained
+  theta=1e-2 -> step48  clean (timeout-cut) minDT 5.4e-6 mt=8
+  mode0(theta=inf) -> UNSTABLE, T->373K dt->1e-122 step38.
+=> finite-rate thermal relaxation CURES #72 runaway (T bounded) AND retains thermal
+non-equilibrium (T1!=T2, cells stay two-phase) AND sustains MT more than mode-1. theta in
+[1e-4,1e-2] all stable; MT activity rises with theta. REMAINING: MT still intermittent
+(bursts) so instantaneous flash_rate reads 0 on most snapshots -> for the demo, consider a
+time-ACCUMULATED flash field (integral of |dm1| over the output interval) so flashing is
+always visible; and longer (few-hundred-step) + AMR stability confirmation. All uncommitted.
+
+### FIXED (#79): vfrac1 gradient-tag heap corruption on regrid/derefine
+Symptom: restart chk_sj200550 + amr.atag.adjacent_difference_greater=0.1 on vfrac1 ->
+SIGABRT "malloc mismatching next->prev_size" during first regrid (user saw it as density
+derefine noise; heap corruption is UB -> crash here, noise there). ROOT CAUSE (not the
+coarsen arithmetic): vfrac1 was registered addComponent(State_Type, UALPHA1, 1) -- a SINGLE
+component. A GRADIENT error tag (adjacent_difference) FillPatches the derive source with 1
+ghost, and the PS physical-BC fill (CAMRHypFill/NSCBC, BCfill.cpp ~L97-124) unconditionally
+reads/writes ALL NVAR components of the buffer (ignores dcomp/numcomp). 1-comp buffer + NVAR
+writes = out-of-bounds. value_greater needs no ghosts -> never hit it (why #44 value tag was
+fine). logden/pressure register URHO,NVAR -> their gradient tags work. FIX: register vfrac1
+URHO,NVAR (full state) + CAMR_dervfrac1 reads dat(.,UALPHA1) not dat(.,0). Validated: exact
+repro now regrids (x2) + steps cleanly, DT 6.03e-6, no faults. NOTE any derive used as a
+gradient error-tag MUST carry the full state.
+SEPARATE latent gap (NOT this crash; value-tag derefine was clean): avgDown = generic
+amrex::average_down, no PS per-phase consistency; clean_state clamps alpha/mass + NaN only
+(no ps_resync_phase_energy / ps_apply_floor); post_regrid does no cleanup. Optional hardening.
+
+### MT burstiness explained + mode-2 stability confirmed (#77)
+Bursty flashing is a tau_g artifact, NOT a bug. Per-step flash_rate (mode-2, theta=1e-3):
+with ps_mt_tau=1e-6 (<<dt~7e-6) MT is effectively INSTANTANEOUS -> a cell snaps to g1=g2
+in one step then goes quiet (nonzero on scattered steps 2,3,5,20,22,35,36; two-phase cells
+persist 16->72 but sit at chemical equilibrium). With ps_mt_tau=1e-3 (finite, >dt) each cell
+converts over ~tau/dt~140 steps -> flash_rate nonzero on ~every step (continuous), magnitude
+~1e3 vs 1e5. => for a continuously-visible flash use a FINITE ps_mt_tau (HRM-style); no
+time-accumulator needed. STABILITY (mode-2 theta=1e-3, mt_tau=1e-3): single-level clean to
+step 176 (chained), minDT 5.6e-6, T bounded [216.6,299.4]<Tc, no NaN; 3-level AMR clean to
+step 33 with regrids, coarse minDT 5.3e-6, no NaN. COMMIT: sandbox mount cannot write
+.git/objects (Operation not permitted) -> must commit on host.
+
+### temp_1 / temp_2 per-phase temperature derives (#77)
+Added ps_phase_temp_from_cons (PS_ctoprim.H) + CAMR_dertemp1/2 (Derive.cpp, decl Derive.H,
+registered CAMR_setup.cpp). Per-phase T_k = REY2PTS_phase(rho_k,e_k,branch).  VANISHED-PHASE
+GUARD (user concern): a phase below alpha_eps=1e-3, or m_k<=0, or non-physical EOS T, has no
+well-defined temperature (rho_k=m_k/alpha_k, e_k=UE_k/m_k -> 0/0 / garbage; branch EOS
+extrapolates to cold metastable garbage) -> FALL BACK to mixture UTEMP (defined, continuous),
+never garbage or a misleading zero.  Validated (mode-2, theta=1e-3, step80): 162 two-phase
+cells with max|T1-T2|=35.3 K (real thermal non-eq now visible), pure-vapor cells temp_1==Temp
+exactly (clean fallback), no NaN. Note "Temp" (UTEMP) is already the #52 volume-weighted
+mixture T (a1*T1+a2*T2 in two-phase cells).
+
+### flash_rate DERIVED FIELD added (demo visualization of flashing)
+New derived plot var `flash_rate` [kg/m3/s], + = evaporation (liquid->vapor), - = condensation. = integrator's Gibbs-driven finite-rate MT SOURCE form evaluated on the state: (rho_mix/tau_g)(g1-g2)/g_ref, g_k=h_k-T_k s_k via EOS::co2_state_from_rho_e_phase_cached; same coexistence gate as the MT (alpha in (5e-3,1-5e-3), T in (216.6,304.1), finite) -> 0 elsewhere. Files: ps_flash_rate_from_cons (PS_ctoprim.H), CAMR_derflashrate (Derive.cpp, reads CAMR.ps_mt_tau/ps_mt_gref), decl (Derive.H), register (CAMR_setup.cpp under USE_PS_HYDRO), demo2 derive_plot_vars. Built+tested: nonzero ONLY in two-phase cells, signed, at orifice/plume. Magnitudes ~1e7-1e8 (tau=1e-6 near-instant) -> plot with signed-log. It's the source FORMULA-on-state (faithful; not the exact during-step deposited dm — that would need a stored diagnostic MultiFab, offered as follow-up). User must rebuild (llvm MPI) to get flash_rate in their run's plotfiles. All uncommitted (git lock).
+So the satjet blowup was TWO stacked issues, both now fixed: (1) EOS phase-pick cliff → pepper (P-floor + #69 branch guard); (2) thermal-nonequilibrium per-phase energy runaway → mode-1 P+T equilibrium. Neither is a band-aid: (1) returns the physical EOS root, (2) is the correct HEM closure.
+
+### A-C SUITE RUNNER FIXED (task: fix A-C test suite run)
+Created Exec/CO2_RiemannSuite/run_ac_suite.py (the original suite/run_camr_riemann_suite.py is absent). It extracts each case's real params from the stored reference job_info (command-line override = LAST occurrence of each key — my earlier A1 error was using the base value phase_L=1 instead of override phase_L=0), re-runs CAMR1d, compares. Build 1D: make DIM=1 USE_MPI=FALSE TINY_PROFILE=TRUE COMP=gnu (needs the ps_shear_diss_face 1D guard). RESULT with current fix: A3-Lax 3e-11 OK, C3-Strong-shock 1e-10 OK (bit-identical, single-phase → fix inert), B4 1.5e-4 OK, B9 1.9e-4 OK (dome cases, tiny footprint). A1-Sod-strong 8.6e-2 CHECK — RESOLVED (task #73): it is NOT this session's fixes. A1 with MT OFF (ps_mt_tau=1e3) matches the ref to 2e-6 (bit-level; a1 stays 0=vapor) → Fix1/#69/P-floor + hydro are PROVABLY INERT for A1. The 8.6% is ENTIRELY the instantaneous MT (ref used ps_mt_tau=0): the current build CONDENSES A1 to liquid (a1: 0->1) during the strong EXPANSION while the 7/12 ref (git 29627b4-dirty, pre-Fix1) stayed vapor (a1->0). IC identical (a1=0 both). Condensing during expansion is physically suspect → the instant-MT drives a wrong-way phase change on this dome-crossing case. This is an MT-relaxation-direction issue (the MT equilibrium via the EOS/saturation; possibly #35/#37/#55 MT-gating and/or Fix1's effect on the MT equilibrium — NOT isolated), SEPARATE from the pepper/runaway fixes, and does NOT affect the current satjet showcase (MT-off). FLAG for when MT is enabled: verify instant-MT phase direction on a dome-crossing expansion vs standalone/analytic. Suite verdict: fixes are SAFE for A-C (A3/C3 bit-identical, B4/B9 ~1e-4 dome-footprint, A1 MT-off bit-identical).
 
 ## KEY CODE LOCATIONS
 - `Source/EOS/RealFluidCO2/hem_pr_state.H`: `state_from_T_v` (has Fix1 regularization), `state_from_rho_e[_phase]` (workhorse (ρ,e)→state; phase-locked returns metastable PR extrapolation past dome — the path that hit the spinodal). `state_from_T_x` = two-phase equilibrium (Wallis c), untouched.

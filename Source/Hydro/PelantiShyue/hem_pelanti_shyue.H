@@ -78,17 +78,24 @@ inline int& ps_temperature_relax_count()  { static int n = 0; return n; }
 //  Per-phase primitives.  Encapsulates the state of one phase at a
 //  single cell, computed from the conservative variables.
 // ---------------------------------------------------------------------
+// Default member initializers (task #77): a partially-filled PsPhase must
+// fail SAFE.  Before this, the fields were uninitialized, so a producer that
+// forgot one (e.g. the EOS callback historically left `c` unset) fed
+// indeterminate memory into physics gates — ps_state_from_cons's `c > 0`
+// check then passed or failed on stack garbage, silently disabling the mass-
+// transfer solver.  Zero-init with valid=false makes any future omission a
+// deterministic "invalid -> skip" (caught), never a spurious physics signal.
 struct PsPhase {
-    double alpha;    // volume fraction
-    double rho;      // per-phase density [kg/m^3]
-    double e;        // per-phase specific internal energy [J/kg]
-    double P;        // per-phase pressure [Pa]
-    double T;        // per-phase temperature [K]
-    double c;        // per-phase sound speed [m/s]
-    double h;        // per-phase specific enthalpy = e + P/rho [J/kg]
-    double s;        // per-phase specific entropy [J/(kg*K)]
-    double g;        // per-phase Gibbs free energy = h - T*s [J/kg]
-    bool   valid;    // false if EOS query failed
+    double alpha = 0.0;    // volume fraction
+    double rho   = 0.0;    // per-phase density [kg/m^3]
+    double e     = 0.0;    // per-phase specific internal energy [J/kg]
+    double P     = 0.0;    // per-phase pressure [Pa]
+    double T     = 0.0;    // per-phase temperature [K]
+    double c     = 0.0;    // per-phase sound speed [m/s]
+    double h     = 0.0;    // per-phase specific enthalpy = e + P/rho [J/kg]
+    double s     = 0.0;    // per-phase specific entropy [J/(kg*K)]
+    double g     = 0.0;    // per-phase Gibbs free energy = h - T*s [J/kg]
+    bool   valid = false;  // false if EOS query failed (safe default)
 };
 
 
@@ -96,12 +103,12 @@ struct PsPhase {
 //  Full P-S primitive state at a single cell.
 // ---------------------------------------------------------------------
 struct PsState {
-    PsPhase p1, p2;             // per-phase states
-    double  u;                  // mixture velocity [m/s]
-    double  rho_mix;            // rho_mix = a1*r1 + a2*r2 [kg/m^3]
-    double  P_mix;              // P_mix = a1*P1 + a2*P2 [Pa]
-    double  c_frozen;           // frozen sound speed (see below) [m/s]
-    bool    valid;              // combined validity
+    PsPhase p1, p2;             // per-phase states (default-init: valid=false)
+    double  u        = 0.0;     // mixture velocity [m/s]
+    double  rho_mix  = 0.0;     // rho_mix = a1*r1 + a2*r2 [kg/m^3]
+    double  P_mix    = 0.0;     // P_mix = a1*P1 + a2*P2 [Pa]
+    double  c_frozen = 0.0;     // frozen sound speed (see below) [m/s]
+    bool    valid    = false;   // combined validity (safe default)
 };
 
 
@@ -2056,49 +2063,91 @@ inline bool ps_iso_pressure_relax_cell(V6& U, const PsPhaseAPI& eos,
         return p1.P - p2.P;
     };
 
-    double e1 = e1_init;
+    // Full physical validity of the candidate partition (task #41): both
+    // phases must be a STABLE EOS state -- valid, positive pressure, and
+    // c > 0 (NOT inside the spinodal).  The bare Newton residual only uses
+    // p.valid (P>0,T>0), so at cold near-triple it can "converge" to a
+    // c<=0 / sub-floor-P state that ps_state_from_cons later rejects; that
+    // degenerate write is the #41 UNSAFE case.  We refuse to commit such a
+    // state.  Fills P1/P2/Pref on success.
+    constexpr double P_pos_floor = 1.0;   // Pa
+    auto fully_valid = [&](double e1v, double& P1o, double& P2o, double& Pref) -> bool {
+        const double e2 = e2_of_e1(e1v);
+        PsPhase p1{}, p2{}; p1.alpha = alpha1; p2.alpha = alpha2;
+        eos.state_from_rho_e_phase(1, rho_1, e1v, p1);
+        eos.state_from_rho_e_phase(2, rho_2, e2,  p2);
+        if (!p1.valid || !p2.valid) return false;
+        if (!std::isfinite(p1.P) || !std::isfinite(p2.P)) return false;
+        if (!(p1.P > P_pos_floor) || !(p2.P > P_pos_floor)) return false;
+        if (!(p1.c > 0.0) || !(p2.c > 0.0)) return false;   // reject unstable branch
+        P1o = p1.P; P2o = p2.P; Pref = std::max(1.0e4, std::abs(p1.P));
+        return true;
+    };
+    auto commit = [&](double e1v) {
+        const double e2 = e2_of_e1(e1v);
+        U[4] = m1 * (e1v + 0.5 * u * u);
+        U[5] = m2 * (e2 + 0.5 * u * u);
+        ++ps_pressure_relax_count();
+    };
 
-    // Check if already converged.
+    double e1 = e1_init;
     const double r0 = residual(e1);
     if (!std::isfinite(r0)) return false;
 
-    // Newton with FD derivative.  Damping via step cap.
+    // Newton with FD derivative + step cap.  On breakdown (non-finite,
+    // singular slope) we BREAK to the bracketing fallback rather than fail.
     for (int iter = 0; iter < max_iter; ++iter) {
         const double r = residual(e1);
-        if (!std::isfinite(r)) return false;
-        // Reference: |P_1| + |P_2|, both bounded from below at O(1e5) Pa.
-        PsPhase pref1{}; pref1.alpha = alpha1;
-        eos.state_from_rho_e_phase(1, rho_1, e1, pref1);
-        if (!pref1.valid) return false;
-        const double P_ref = std::max(1.0e4, std::abs(pref1.P));
-        if (std::abs(r) < tol_rel * P_ref) {
-            // Converged.  Write back to U.  alpha and phase masses
-            // unchanged.  Only per-phase energies shift.
-            const double e2 = e2_of_e1(e1);
-            U[4] = m1 * (e1 + 0.5 * u * u);
-            U[5] = m2 * (e2 + 0.5 * u * u);
-            ++ps_pressure_relax_count();
-            return true;
-        }
-        // FD derivative.  Use a step scaled to |e1|.
+        if (!std::isfinite(r)) break;
+        double P1, P2, P_ref;
+        const bool fv = fully_valid(e1, P1, P2, P_ref);
+        if (fv && std::abs(r) < tol_rel * P_ref) { commit(e1); return true; }
         const double de = 1.0e-4 * std::max(1.0e3, std::abs(e1));
         const double rp = residual(e1 + de);
         const double rm = residual(e1 - de);
-        if (!std::isfinite(rp) || !std::isfinite(rm)) return false;
+        if (!std::isfinite(rp) || !std::isfinite(rm)) break;
         const double drde = (rp - rm) / (2.0 * de);
-        if (!std::isfinite(drde) || std::abs(drde) < 1.0e-20) return false;
-
-        // Damped Newton step; cap magnitude at 20% of |e1| to prevent
-        // overshoot in stiff-EOS regions.
+        if (!std::isfinite(drde) || std::abs(drde) < 1.0e-20) break;
         double step = -r / drde;
         const double cap = 0.20 * std::max(1.0e3, std::abs(e1));
         if (step >  cap) step =  cap;
         if (step < -cap) step = -cap;
         e1 += step;
-        if (!std::isfinite(e1)) return false;
+        if (!std::isfinite(e1)) break;
     }
-    // Newton failed to converge; leave U unchanged.
-    return false;
+
+    // -------- Bracketing / bisection fallback (task #41) --------------
+    // Newton either did not converge or converged to a thermodynamically
+    // INVALID (c<=0 / sub-floor-P) state.  Scan e1 over a physical range,
+    // keep only FULLY-VALID samples, and bisect a P1-P2 sign change
+    // bracketed by valid endpoints.  If no stable mechanical equilibrium
+    // exists at this fixed alpha, leave the cell UNCHANGED (return false)
+    // instead of writing a degenerate state.
+    {
+        const double Escale = std::max({std::abs(e1_init), std::abs(e2_init), 1.0e5});
+        const int NS = 64;
+        bool have_prev = false; double e_prev = 0.0, r_prev = 0.0;
+        for (int s = 0; s <= NS; ++s) {
+            const double es = e1_init + (2.0 * (double(s) / NS) - 1.0) * Escale;
+            double P1, P2, Pref;
+            if (!fully_valid(es, P1, P2, Pref)) { have_prev = false; continue; }
+            const double rs = P1 - P2;
+            if (std::abs(rs) < tol_rel * Pref) { commit(es); return true; }
+            if (have_prev && ((r_prev < 0.0) != (rs < 0.0))) {
+                double a = e_prev, b = es, ra = r_prev;
+                for (int it = 0; it < 60; ++it) {
+                    const double mid = 0.5 * (a + b);
+                    double Pa, Pb, Pr;
+                    if (!fully_valid(mid, Pa, Pb, Pr)) break;   // validity broke inside bracket
+                    const double rmid = Pa - Pb;
+                    if (std::abs(rmid) < tol_rel * Pr) { commit(mid); return true; }
+                    if ((ra < 0.0) != (rmid < 0.0)) b = mid; else { a = mid; ra = rmid; }
+                }
+            }
+            e_prev = es; r_prev = rs; have_prev = true;
+        }
+        return false;   // no stable P1=P2 at this alpha -> leave unchanged (safe)
+    }
 }
 
 
@@ -2188,6 +2237,42 @@ inline bool ps_iso_thermal_relax_cell(V6& U, const PsPhaseAPI& eos,
         if (!std::isfinite(e1)) return false;
     }
     return false;
+}
+
+
+// ---------------------------------------------------------------------
+//  Finite-rate thermal relaxation (task #77).
+//
+//  Relax T_1 toward T_2 with a PHYSICAL time constant theta, rather than
+//  instantaneously (ps_iso_thermal_relax_cell).  Motivation: instantaneous
+//  T-equilibrium (mode-1 HEM) re-pins every two-phase cell on the saturation
+//  dome each step (g1=g2), starving the mass-transfer source and erasing the
+//  genuine thermal non-equilibrium of fast flashing.  Pure mechanical
+//  relaxation with NO thermal coupling (mode-0), however, lets the per-phase
+//  energy run away (#72).  Finite-rate thermal relaxation is the middle
+//  ground: it damps the runaway while retaining T_1 != T_2.
+//
+//  Integrator: exact-exponential, so it is unconditionally stable and
+//  strictly non-overshooting for any dt/theta.  We first compute the FULL
+//  thermal-equilibrium energy partition (Ueq) -- which conserves mixture
+//  internal energy -- then move a fraction frac = 1 - exp(-dt/theta) of the
+//  way toward it.  A convex blend of two energy-conserving states conserves
+//  energy, so mixture rho*e is preserved exactly.  theta<=0 recovers the
+//  instantaneous limit; theta->inf recovers no thermal relaxation.
+// ---------------------------------------------------------------------
+inline bool ps_iso_thermal_relax_cell_finite(V6& U, const PsPhaseAPI& eos,
+                                             double dt, double theta,
+                                             double tol_rel = 1.0e-5,
+                                             int    max_iter = 30)
+{
+    if (theta <= 0.0) return ps_iso_thermal_relax_cell(U, eos, tol_rel, max_iter);
+    if (!(dt > 0.0))  return true;   // no time advanced -> no relaxation
+    V6 Ueq = U;
+    if (!ps_iso_thermal_relax_cell(Ueq, eos, tol_rel, max_iter)) return false;
+    const double frac = -std::expm1(-dt / theta);   // 1 - exp(-dt/theta) in [0,1)
+    U[4] += frac * (Ueq[4] - U[4]);
+    U[5] += frac * (Ueq[5] - U[5]);
+    return true;
 }
 
 

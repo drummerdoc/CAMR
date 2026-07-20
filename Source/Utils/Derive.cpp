@@ -279,11 +279,13 @@ CAMR_dervfrac1(
   const int* /*bcrec*/,
   const int /*level*/)
 {
-  // datfab component 0 is UALPHA1 (see addComponent in CAMR_setup.cpp).
+  // datfab now carries the FULL state (URHO..NVAR); read the UALPHA1 slot.
+  // (Registration changed to URHO,NVAR so the boundary fill stays in-bounds
+  // for gradient-based error tagging — see CAMR_setup.cpp / #79.)
   auto const dat = datfab.const_array();
   auto vf = derfab.array();
   amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-    vf(i, j, k) = dat(i, j, k, 0);
+    vf(i, j, k) = dat(i, j, k, UALPHA1);
   });
 }
 #endif
@@ -712,6 +714,48 @@ CAMR_derpres(
     }
   });
 }
+
+#ifdef USE_PS_HYDRO
+// Per-phase temperatures temp_1 (liquid) / temp_2 (vapor).  Well-defined only
+// where the phase genuinely exists; a vanished phase falls back to the mixture
+// temperature UTEMP (see ps_phase_temp_from_cons) so the field stays physical
+// and continuous — never garbage or a misleading zero.
+static void CAMR_dertemp_phase(
+  const amrex::Box& bx, amrex::FArrayBox& derfab, const amrex::FArrayBox& datfab,
+  int phase)
+{
+  auto const dat = datfab.const_array();
+  auto tfab = derfab.array();
+  amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
+    amrex::Real Uloc[NVAR];
+    for (int n = 0; n < NVAR; ++n) Uloc[n] = dat(i, j, k, n);
+    tfab(i, j, k) = ps_phase_temp_from_cons(Uloc, phase, dat(i, j, k, UTEMP));
+  });
+}
+void
+CAMR_dertemp1(
+  const amrex::Box& bx, amrex::FArrayBox& derfab, int /*dcomp*/, int /*ncomp*/,
+  const amrex::FArrayBox& datfab, const amrex::Geometry& /*geomdata*/,
+  amrex::Real /*time*/, const int* /*bcrec*/, const int /*level*/)
+{
+  CAMR_dertemp_phase(bx, derfab, datfab, 1);
+}
+void
+CAMR_dertemp2(
+  const amrex::Box& bx, amrex::FArrayBox& derfab, int /*dcomp*/, int /*ncomp*/,
+  const amrex::FArrayBox& datfab, const amrex::Geometry& /*geomdata*/,
+  amrex::Real /*time*/, const int* /*bcrec*/, const int /*level*/)
+{
+  CAMR_dertemp_phase(bx, derfab, datfab, 2);
+}
+#endif
+
+// NOTE: flash_rate is NOT a stateless derive.  The physical flashing rate is
+// the mass ACTUALLY transferred during the reaction substep (dm1/dt); on the
+// stored post-step state there is nothing left mid-flash to measure (near-
+// instant MT flashes cells fully out of the two-phase band within one step).
+// It is therefore recorded in CAMR::flash_src during advance and served via
+// the CAMR::derive("flash_rate") override (mirrors the EB "vfrac" pattern).
 
 void
 CAMR_dertemp(

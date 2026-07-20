@@ -171,7 +171,7 @@ CAMR::CAMR_advance (Real time,
         clean_state(S);
         diag_a1(S, "reaction pre-relax");   // entering: reflects hydro/advection/C-F
         if (ps_do_relax_cached != 0) {
-            ps_apply_relaxation(S, ng, do_print);
+            ps_apply_relaxation(S, dt_r, ng, do_print);   // dt for finite-rate thermal (mode 2)
             clean_state(S);
         }
         diag_a1(S, "reaction post-relax");  // jump here => MT/relaxation is the driver
@@ -278,7 +278,26 @@ CAMR::CAMR_advance (Real time,
         diag_a1(S_new, "post-hydro");    // high here (w/o relax) => advection/C-F, not MT
         const amrex::Real dt_react =
             (ps_strang_cached != 0) ? amrex::Real(0.5) * dt : dt;
+
+        // flash_rate diagnostic (task #76): record the phase-1 mass ACTUALLY
+        // transferred by the reaction substep.  Only ps_apply_sources (MT /
+        // flash / triple-point) and the vanish-fold change m1; pressure/thermal
+        // relaxation conserve per-phase mass exactly.  Snapshot m1, run the
+        // reaction, then store the rate (m1_pre - m1_post)/dt_react.  SIGN:
+        // + = evaporation (phase-1 liquid shrinks -> vapor).  This is the
+        // faithful field: unlike a stateless proxy it captures near-instant MT
+        // that flashes a cell fully out of the two-phase band within one step.
+        if (!flash_src.ok() ||
+            flash_src.boxArray() != grids ||
+            flash_src.DistributionMap() != dmap) {
+            flash_src.define(grids, dmap, 1, 0);
+        }
+        amrex::MultiFab m1_pre(grids, dmap, 1, 0);
+        amrex::MultiFab::Copy(m1_pre, S_new, UM1RHO1, 0, 1, 0);
         apply_ps_reaction(S_new, dt_react, 0, true);
+        amrex::MultiFab::Copy    (flash_src, m1_pre, 0, 0, 1, 0);
+        amrex::MultiFab::Subtract(flash_src, S_new, UM1RHO1, 0, 1, 0); // m1_pre - m1_post
+        flash_src.mult(amrex::Real(1.0) / dt_react, 0, 1, 0);
     }
 #endif
 
