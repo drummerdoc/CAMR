@@ -129,11 +129,22 @@ main(int argc, char* argv[])
     int ps_relax_sweep = 0;
     pp_ps.query("ps_relax_sweep", ps_relax_sweep);
     if (ps_ptg_selftest || ps_relax_sweep) {
-      if (ps_ptg_selftest) ps_ptg_zerod_selftest();
-      if (ps_relax_sweep)  ps_relax_corner_sweep();
+      // CI gate (#82): nonzero exit on any failure so ctest/CI can fail the
+      // build.  Only IOProcessor runs the (serial, deterministic) 0-D checks.
+      int fail = 0;
+      if (amrex::ParallelDescriptor::IOProcessor()) {
+        if (ps_ptg_selftest) fail += ps_ptg_zerod_selftest();
+        if (ps_relax_sweep)  fail += ps_relax_corner_sweep();
+      }
+      amrex::ParallelDescriptor::Bcast(&fail, 1,
+                                       amrex::ParallelDescriptor::IOProcessorNumber());
+      if (amrex::ParallelDescriptor::IOProcessor()) {
+        amrex::Print() << "[ps-0D] CI gate: " << (fail==0 ? "PASS" : "FAIL")
+                       << " (" << fail << " failures)\n";
+      }
       delete amrptr;
       amrex::Finalize();
-      return 0;
+      return (fail == 0) ? 0 : 1;
     }
   }
 #endif

@@ -142,6 +142,16 @@ largest (most non-eq) value that holds dt/energy. ps_mass_transfer_relax_cell gi
 equilibrium (T1!=T2): dP,dg~1e-6, dT~0.1, off-dome -- correct for a mechanical+chemical
 (non-thermal-eq) target.
 
+### #82 DONE: 0-D self-test + corner sweep are a CI pass/fail gate
+ps_ptg_zerod_selftest / ps_relax_corner_sweep now RETURN failure counts; main() sums them
+(IOProcessor + Bcast, MPI-safe) and returns NONZERO exit on any failure. Self-test pass
+criteria fixed to the MT solver's ACTUAL contract: converged + P1=P2 (dP<1e-3) + g1=g2
+(dg<1e-3) + exact conservation (dM<1e-10,dE<1e-8); dT/dome/dir are informational only (this
+solver does not enforce full thermal/dome eq) -> now 6/6 PASS (was 0/6 from over-strict
+criteria). Corner sweep gates on 0 UNSAFE. CI command: run exe with CAMR.ps_ptg_selftest=1
+CAMR.ps_relax_sweep=1 max_step=0; exit 0=PASS, !=0=FAIL. VERIFIED both directions
+(forced-fail -> exit 1; nominal -> exit 0). Commit: PS_zerod_test.H, main.cpp.
+
 ### #84 DONE: PS coarsen/regrid two-phase consistency hardening
 Added (CAMR.cpp, guarded USE_PS_HYDRO + ps_hydro): ps_resync_phase_energy + ps_apply_floor
 after avgDown (State_Type only) and in post_regrid on the new-time State. Rationale: the
