@@ -77,10 +77,14 @@ def main(argv):
         cmd = [EXE, 'inputs'] + ['%s=%s' % (k, v) for k, v in ov.items()]
         cmd += ['amr.plot_int=-1', 'amr.plot_per=%s' % st, 'amr.plot_file=' + pref]
         subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        g = sorted([p for p in glob.glob(pref + '*') if '.old' not in p])
+        g = [p for p in glob.glob(pref + '*') if '.old' not in p and os.path.isdir(p)]
         if not g:
             print('%-22s  RUN FAILED' % c); continue
-        new = g[-1]
+        # Pick the FRESHLY-written plotfile by mtime, not lexical order: the
+        # sandbox cannot delete host-owned stale rgr_* dirs, so a leftover with
+        # a lexically-higher step name would otherwise shadow this run's output
+        # (this is what produced the spurious A1 8.6% "condensation" flag).
+        new = max(g, key=os.path.getmtime)
         tr, tn = hdr(ref)[1], hdr(new)[1]
         rel = {}
         for v in ('density', 'pressure', 'xmom'):

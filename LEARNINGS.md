@@ -142,6 +142,94 @@ largest (most non-eq) value that holds dt/energy. ps_mass_transfer_relax_cell gi
 equilibrium (T1!=T2): dP,dg~1e-6, dT~0.1, off-dome -- correct for a mechanical+chemical
 (non-thermal-eq) target.
 
+### #85 STARTED: gated P_k energy-flux primitive laid; HLLC star-state has P_mix baked in
+Added int pk_ef=0 (default) param to ps_physical_flux + ps_physical_flux_from_state (PS_umeth.cpp):
+F[UE_k] uses phase P_k when pk_ef=1, else P_mix (#211). Default-inert VERIFIED: demo bit-identical
+(DT 7.284021637e-6 unchanged). Total E still conserved (a1P1+a2P2=P_mix); A-C safe at tau_p->0
+(P_k=P_mix at eq). REFINED SCOPE FINDING (reading wp_phase_energy_defect, PS_hllc.H): the
+HLLC/Pelanti STAR-STATE has P_mix STRUCTURALLY baked in -- E_k_star = E_k + (S_M-u)(S_M + P_mix/q_k)
+-- and the defect-correction is built on it. So a fully-consistent P_k on the HLLC branch needs the
+two-pressure Riemann/star-state RE-DERIVED (the eigenstructure work). The LLF branch (0.5(FL+FR)-
+0.5*lam*dU, no defect, "locally conservative for phase energy") is the CLEAN route: physical-flux
+P_k is self-consistent there. => estimate: LLF-path P_k test = few-day; HLLC-consistent P_k = larger
+(star-state re-derivation). NEXT (needs user OK, modeling choice): wire pk_ef into the driver (host
+read + [=] capture, GPU-safe) + FORCE LLF when pk_ef + A/B front-thickness test with mode-3+finite tau_p.
+
+### A-C REGRESSION after #85: PASS (no damage). Decompression validation set up.
+A-C suite (1D exe rebuilt incrementally w/ #85, run_ac_suite.py vs stored refs): A3-Lax 3e-11,
+C3-shock 1e-10 = BIT-IDENTICAL (single-phase confirms #85 flux path byte-identical at default
+pk_ef=0). B4 1.5e-4/9e-4, B9 1.9e-4 = within known two-phase tolerances (OK). A1-Sod 8.6% =
+the KNOWN pre-existing #73 flag (unchanged, not #85). => #85 caused NO new damage.
+DECOMPRESSION-WAVE validation (inputs.decomp, CO2_RiemannSuite): two-phase CO2 (phase_L=3
+PS_PHASE_TWOPHASE, x_qual_L=0.5 -> alpha1=0.126) high-P column decompressed into low-P vapor;
+rarefaction propagates left. Ran EQUILIBRIUM (mode-1) vs FROZEN (mode-3 p_tau=theta=1, pk_ef=1).
+Both finite/complete. DISPERSIVE SIGNATURE CONFIRMED: leading edge nearly same (~2 cells, shared
+frozen precursor) but MID-WAVE differs ~29 cells (frozen faster) -> finite-rate P relaxation +
+two-pressure flux genuinely spreads frozen-vs-equilibrium, as intended (the real level-b payoff).
+NOISE FINDING (decomp_profiles.png): density & alpha_1 clean/monotone BOTH configs; but the
+FROZEN/two-pressure (pk_ef=1) X-VELOCITY shows bounded oscillations (~10-15 m/s wiggles on ~85
+m/s, ~15%) at the contact/shock (0.7-0.85) that the equilibrium config does NOT have. Bounded
+(no NaN, run completes), but a real numerical-quality concern for the two-pressure path at
+contacts -- consistent with why PS default uses instantaneous P-eq + P_mix (smoother at contacts).
+=> level-b two-pressure trades contact smoothness for disequilibrium physics; contact treatment
+(HLLC star / limiter) needs hardening before production use. Tracked #86.
+
+### #85 (level-b) DONE + WIRED; two-pressure works but front-thickening DISPROVEN
+Wiring complete: CAMR.ps_pk_energy_flux (host-read in umeth driver, [=]-captured, GPU-safe)
+threaded through ps_wp_face, ps_ctu_flux_from_states, fluctuations, ps_star_state, hllc_flux,
+wp_phase_energy_defect, ps_physical_flux(_from_state) -- all x/y/z, split+CTU+wp paths. Default
+pk_ef=0 bit-identical (DT unchanged). Builds.
+TEST (fresh, mode-3 tau_p=theta=tau_g=1e-3, pk_ef=1): stable (DT 7.19e-6, no NaN); two-pressure
+flux IS active (DT 7.1857e-6 vs pk_ef=0 mode-3 7.1836e-6 -> real P1!=P2 carried). BUT flash front
+STILL ~1.3 cells (26 nonzero, max 3) = SAME as mode-1/2/3. => FRONT-THICKENING HYPOTHESIS
+DISPROVEN at BOTH level-a (finite P relax) AND level-b (two-pressure flux). The #77 premise that
+instantaneous pressure equilibrium pins the flash front was WRONG: the front is thin because the
+two-phase REGION is a thin ADVECTED CONTACT sheet (numerical alpha-contact width ~1-2 cells +
+flow transit), NOT because of the pressure-equilibrium closure. No relaxation/flux pressure
+physics widens it. To widen: thicker two-phase zone via case conditions / more alpha-contact
+diffusion (artificial), OR accept the thin flash front as physical (a phase-change front IS thin).
+VALUE RETAINED: level-b (mode-3 + pk_ef=1) is a correct, validated, stable modeling capability
+for the genuine pressure-disequilibrium regime (metastable delayed equilibration, dispersive
+acoustics, calibratable tau_p) -- its real payoff is decompression-wave physics, NOT front width.
+Files: PS_umeth.cpp, PS_hllc.H. Remaining (optional): A-C regression sweep; two-phase
+decompression-wave validation vs frozen/equilibrium sound-speed limits (the actual level-b use).
+
+### #85 (level-b) TWO-PRESSURE HLLC STAR-STATE physics DONE (gated), wiring remains
+Derivation: single-velocity model keeps ONE contact (S_M) + mixture-momentum wave structure on
+P_mix (S_L,S_M,S_R,P_star UNCHANGED); only the PER-PHASE ENERGY star switches P_mix->P_k. The
+HLLC jump for phase-k energy carries the phase's own pressure-work P_k/q_k:
+  E_k_star = E_k + (S_M-u)(S_M + P_k/q_k)   [was P_mix/q_k, #211].
+Implemented gated (int pk_ef=0 param; P_k when 1, else P_mix) in ALL per-phase-energy sites:
+  PS_umeth.cpp: ps_physical_flux, ps_physical_flux_from_state (F[UE_k] pressure-work).
+  PS_hllc.H: hllc_flux (E1_star/E2_star), ps_star_state (E1s/E2s, fluctuation form),
+             wp_phase_energy_defect (E_starL/R + its physical FL/FR_UE work).
+Total E conserved either way (a1P1+a2P2=P_mix). Compiles; demo BIT-IDENTICAL at default (pk_ef=0)
+-> A-C safe at equilibrium (P_k=P_mix). Departs from the B4-validated mixture-P HLLC only in
+disequilibrium (expected; validate via decompression-wave, not standalone).
+REMAINING (mechanical wiring + validation): (1) host-read CAMR.ps_pk_energy_flux (cached ParmParse
+like the 1138+ block in the umeth driver), capture into the [=] lambdas (GPU-safe), thread pk_ef
+into ps_wp_face(707) + ps_ctu_flux_from_states(595) [add param] and the direct
+ps_physical_flux/from_state/hllc_flux/wp_phase_energy_defect calls (~20 sites, x/y/z split+CTU).
+(2) A-C Riemann regression at pk_ef=0 (must stay bit-identical) AND pk_ef=1,tau_p->0 (must ~reproduce).
+(3) front-thickness with mode-3 + finite tau_p (THE payoff). (4) two-phase decompression-wave test
+vs frozen/equilibrium sound-speed limits. Files so far: PS_umeth.cpp, PS_hllc.H.
+
+### #80 LEVEL-A DONE (mode 3), but front-thickening NOT achieved -> needs level-b
+Implemented ps_relax_mode=3 = finite-rate MECHANICAL (alpha-adjusting) pressure relaxation
+(ps_pressure_relax_cell_finite, exact-exp toward instantaneous target, CAMR.ps_p_tau) +
+finite-rate thermal. ps_pmech_finite_relax_cell driver writes back alpha (unlike modes 1/2).
+0-D VALIDATED (CAMR.ps_prelax_test=1): alpha moves EXACTLY (1-exp(-dt/tau_p))*(alpha_eq-alpha_0),
+mass & energy conserved to round-off, tau_p->0 recovers instantaneous, monotone in tau_p -> PASS.
+2D: stable (fresh single-level step80, DT 7.18e-6, no NaN). BUT front-thickening goal FAILED:
+mode-3 tau_p=1e-3 flash front still ~1.3 cells (max 3), FEWER flashing cells (26 vs mode-2 56).
+=> The level-a "relaxation substep with unchanged wp flux" does NOT widen the flash front; the
+instantaneous-equilibrium wp flux collapses the disequilibrium regardless of the relaxation-time
+substep. Genuine front-thickening needs LEVEL-B: a pressure-disequilibrium FLUX (per-phase P,
+frozen/BN wave speeds, interfacial-pressure non-conservative terms) -- a real flux rewrite, not
+a knob. Mode-3 is retained (correct + stable) as the finite-rate mechanical relaxation building
+block and for the metastable/calibratable-tau_p regime, but is NOT the fix for thin flash fronts.
+Commit: hem_pelanti_shyue.H, PS_relaxation.H, PS_zerod_test.H, main.cpp.
+
 ### #82 DONE: 0-D self-test + corner sweep are a CI pass/fail gate
 ps_ptg_zerod_selftest / ps_relax_corner_sweep now RETURN failure counts; main() sums them
 (IOProcessor + Bcast, MPI-safe) and returns NONZERO exit on any failure. Self-test pass
@@ -314,3 +402,262 @@ Branch: `co2-eos`; WIP checkpoint on `wip/eos-abgrall` (git log to recover if ne
 3. 1-D #64 harness (no build): python3 abgrall_contact_1d.py [--reset]  (see its STATUS block — WIP)
 4. #64 next actions (in priority, UPDATED by session-2 narrowing): ring is FORCED-INLET-generated (isotropic 2Δ; bulk odd-even stable; NOT transverse — see "session 2 diagnostic narrowing"). (a) build a FORCED 1-D reproducer: Dirichlet dense high-P reservoir ghost venting to low-P vapor, pressure-driven, ρ1 evolving — confirm inlet contact accumulates the e1/P ring (this is the fast test bed). (b) test at the inlet contact: star per-phase-pressure RESET (needs branch-locked (ρ,P,phase)→e inversion added to EOS.H, model on hem::state_from_P_rho) AND check the bcnormal reservoir-ghost per-phase energy is an on-branch state (#43/#48). (c) DO NOT pursue transverse coupling (ps_wp_transverse) or bulk dissipation — both ruled out. (d) full A-C re-validation after any hydro/EOS change.
 5. A-C regression check after any EOS/hydro change: run one A-C Riemann case, compare vs standalone (stable states are untouched by Fix1, so expect no change).
+
+## #86 mode-3 finite-rate relaxation: JOINT-TARGET rewrite + front residual (session eos-abgrall)
+- ROOT CAUSE of the mode-3 contact velocity ripple: the old driver did a Picard
+  ALTERNATION of two finite blends, each toward a SEPARATELY-computed single-
+  process equilibrium (mech-P, then T). Recomputed from each other's partial
+  output every sweep, they never settle -> cell-varying off-manifold residual ->
+  spurious P_mix -> ripple. (Literature: Saurel-Abgrall 1999 uniform-pressure
+  condition; Flatten-Lund 2011 subcharacteristic hierarchy; cure = Pelanti 2022
+  coupled relaxation toward the JOINT equilibrium fixed point. Refs in code.)
+- FIX (shipped): ps_pmech_finite_relax_cell now computes the JOINT (P1=P2 & T1=T2)
+  equilibrium ONCE via a converged Picard of alpha-ADJUSTING mech relax + iso
+  thermal (genuine 2-DOF/2-eq eq; helper ps_joint_pt_equilibrium, shared with the
+  CI test), then a SINGLE exact-exponential blend: alpha @ 1/tau_p, energy split
+  @ 1/theta (single rate on the split -> energy conserved to round-off). AP/well-
+  balanced: tau->0 == joint eq to round-off. New CI gate ps_mode3_stifflimit_test
+  (CAMR.ps_mode3_test=1) + main.cpp wiring. Toggle CAMR.ps_mode3_joint (default 1;
+  0 = legacy Picard, kept for A/B only). Legacy Picard pk0 DT-COLLAPSES on
+  inputs.decomp (estdt~1e-12); joint-target runs stably.
+- RESULT (inputs.decomp, tau_p=theta=1e-4): rarefaction FAN + two-phase BULK are
+  ripple-free (fan rip_std~0.11 m/s == mode-1); u_max 116-138 shows the frozen-vs-
+  Wood dispersion is captured. Residual velocity oscillation (~+-10 m/s, few cells)
+  remains ENTIRELY at the phase-vanishing FRONT (alpha1->0: front rip_std~2.5,
+  max~9.9), where EVERY equilibrium closure evaluates trace/spinodal states (#41).
+- DEAD ENDS at the front (all destabilize or worsen -- DON'T retry as-is):
+  (1) rate-only alpha taper -> energy vs alpha inconsistent, WORSE (2.24).
+  (2) target blend toward isochoric-P eq -> iso-P Newton on trace state DT-COLLAPSE.
+  (3) sequenced handoff to fixed-alpha iso-THERMAL -> still evals trace-phase EOS,
+      DT-COLLAPSE (~1e-148).
+  A real fix must target a GENUINE single-phase state (full vanish-fold, NO two-
+  phase EOS eval), which is mass-conservative ONLY at truly-trace alpha (<~1e-3,
+  already handled by ps_apply_vanish_fold); the alpha~0.05-0.11 oscillation BODY
+  is a smeared-contact artifact that likely needs a FLUX/reconstruction cure
+  (keep the contact sharp) rather than a relaxation-source cure. OPEN.
+- Guidance: mode-3 = decompression/dispersion studies; use modes 1/2 for
+  production demos. Measurement harness: Exec/CO2_RiemannSuite/measure_ripple.py,
+  ab.py (NB: sandbox can't delete host-owned plotfiles -> use FRESH unique
+  amr.plot_file names when re-measuring, else [-1] may read a stale plotfile).
+
+## #93 A1-Sod-strong instant-MT direction — ADJUDICATED vs standalone (VERDICT: vapor is correct)
+Ran the validated standalone (co2-eos-cfd build/ppm_1d_ps_wp) A1-Sod-strong (vapor
+500K, 100bar -> 1bar, N=128) with INSTANTANEOUS MT (default: do_pressure_relax +
+do_mass_transfer) and MT-off (--pressure-only). RESULT: alpha_1 stays at the trace
+floor (pure VAPOR) in BOTH -- MT on and off identical. Thermodynamic context: the
+rarefaction cools the vapor 500->283 K (20/128 cells below Tc=304.1) and P 100->6.8
+bar, so condensation was thermodynamically AVAILABLE, yet the standalone's instant MT
+correctly DECLINES (expanded state is superheated/low-density vapor, P << Psat(T), no
+saturation-line crossing). => VAPOR (alpha1->trace) is the physically-correct,
+reference-endorsed direction. CAMR stored ref agrees (alpha1=1e-6, vapor). CAMR CURRENT
+build CONDENSES (alpha1->1.0) -- this is a genuine WRONG-WAY artifact in CAMR's
+instantaneous-MT equilibrium/gating on a dome-APPROACHING (not dome-crossing) strong
+expansion, NOT a reference error. The A1 8.6% suite flag is therefore a real CAMR
+instant-MT defect, isolated to the instantaneous path. Does NOT affect production: the
+satjet demo uses FINITE-rate MT (ps_mt_tau=1e-3) and evaporates correctly (0% spurious
+condensation, #74). Figure: Exec/CO2_RiemannSuite/a1_adjudication.png. Fix tracked as a
+new task (CAMR instant-MT coexistence gate: require P>=Psat(T) / genuine saturation
+crossing before condensing, matching the standalone). DO NOT re-baseline c1_A1 to the
+current build.
+
+## #94 CORRECTION — A1 was NEVER broken; the "condensation" was a STALE-PLOTFILE artifact
+IMPORTANT retraction of the #93 entry above. On fresh re-run with the CURRENT build,
+A1-Sod-strong matches the stored reference to ROUND-OFF (rho 2.2e-6, P 1.6e-6, xmom
+6.4e-6, alpha_1 IDENTICALLY vapor 1e-6). Standalone (vapor), stored ref (vapor), and
+current CAMR (vapor) all AGREE -- there is no wrong-way condensation.
+ROOT CAUSE of the mirage: run_ac_suite.py (and the montage / a1_adjudication scripts)
+selected the comparison plotfile by LEXICAL order (sorted(glob)[-1]).  The sandbox
+cannot delete host-owned stale rgr_A1_* dirs (rm -> "Operation not permitted"), so a
+leftover condensed run from a MUCH earlier build shadowed the fresh output.  The
+montage A1 page, the a1_adjudication.png "CAMR current" curve, and the suite's 8.6%
+flag were ALL reading that stale dir.  FIX: run_ac_suite.py now picks the freshly-
+written plotfile by os.path.getmtime (max mtime), not lexical [-1].  After the fix the
+suite reports A1 = 2.2e-6 OK.  Also: at ps_mt_tau=0 CAMR runs NO mass transfer at all
+(ps_apply_sources gates the MT block on mt_tau>0), so there is no active "instantaneous
+MT path" for A1 -- another reason the #94 premise was moot.  The two speculative Psat
+coexistence gates added to ps_mass_transfer_relax_cell / _finite_cell were REVERTED
+(they fixed a phantom and one touched the satjet finite-MT path unvalidated).  Net:
+A1/#73 is genuinely clean; the only real bug found was the suite's stale-file selection.
+LESSON: always select plotfiles by mtime (or matched Header time), never lexical [-1],
+because host-owned stale dirs can't be cleaned from the sandbox.
+
+## #95 Expanded Riemann battery to full standalone set (19 cases) + montage PDF
+Built Exec/CO2_RiemannSuite/full_suite.py: runs the FULL standalone case list (A1-A6,
+B1-B10, C1-C3) in BOTH the validated standalone (ppm_1d_ps_wp --pressure-only) and CAMR
+1D, matched config (wp flux, mechanical P-relax, MT OFF), and montages CAMR-vs-standalone
+per case -> CO2_Riemann_full_suite.pdf.  N=64 (B7-B10 need N=48: strong liquid->vapor
+expansions are stiff -- the spinodal-tension relaxation Newton is ~45s/run at N=64, over
+the sandbox 45s bash cap).  WHY only 5 cases were in the original suite: the flashing
+cases NEED mass transfer.  With MT OFF, the strong flashing expansions (B2-Evap, B7-
+Rupture, B9-Deep-Exp) are ILL-POSED -- the liquid cannot evaporate so both codes enter a
+metastable/spinodal-tension regime and DIVERGE (B7 CAMR grows a spurious ~250 m/s tongue
+where the standalone stays at rest).  This is expected, not a solver error; those cases
+are flagged (*) on the montage cover.  Vapor cases (A1-A6, C1-C3) and non-flashing two-
+phase cases (B1,B3,B4,B5,B6,B8,B10) agree well: shocks/contacts within a few % at N=48-64
+(cross-code + coarse-grid), density & alpha contacts crisp; velocity relative-diffs
+inflate where |u|~0 (e.g. B4 u~9 m/s).  Meaningful validation of the flashing cases needs
+MT-ON matching (CAMR finite-rate mt_tau vs standalone instantaneous) -- the unresolved
+harder problem, and the reason they were dropped.  Tooling note: full_suite.py selects
+plotfiles by mtime (stale-dir-safe) and takes PS_N env for resolution.
+
+## #96 VERDICT — which code is more physically accurate?  IT SPLITS BY REGIME.
+Both codes solve the SAME PS 6-eq model + SAME PR EOS, so "physics" is identical by
+construction; the question is NUMERICAL fidelity, judged two ways (per user):
+
+(1) FROZEN / shock-capturing (exact real-fluid Riemann solution as ground truth,
+    co2-eos-cfd suite/profiles/, matched 2nd-order PS_ORDER=2, matched N=64):
+    -> CAMR is MORE ACCURATE.  Mean rel-L2 vs exact over all 9 single-phase cases
+       (A1-A6,C1-C3): CAMR 0.035 vs standalone 0.062 (~1.8x closer), CAMR wins EVERY
+       case in rho/u/P.  CAMR's reconstruction/limiting (BL-2) resolves shocks &
+       contacts less diffusively.  (First-order standalone default gives 0.074; my
+       first pass wrongly used PS_RECON=muscl which BROKE the standalone to 0.42 --
+       correct 2nd-order flag is PS_ORDER=2 alone.)
+
+(2) TIME-RESOLVED PHASE CHANGE (finite MT tau=1e-4 matched in BOTH codes -- standalone
+    via PS_MT_TAU env, CAMR via ps_mt_tau; converged standalone N=512 as anchor;
+    B2-Evap-wave):
+    -> STANDALONE is MORE ACCURATE at the evaporation front.  std N=32 already tracks
+       the N=512 converged front smoothly (u~15 m/s plateau).  CAMR N=32 matches
+       density/alpha/left-state (rho,alpha rel-L2 ~0.063, ~ std's 0.065) BUT develops a
+       SPURIOUS ~150 m/s velocity TONGUE + pressure hump just behind the evaporation
+       front (u rel-L2 4.25 vs std 0.23).  std N=32 on the identical coarse grid has NO
+       such tongue -> it is a CAMR finite-MT FRONT-COUPLING artifact, same family as the
+       #88 phase-vanishing-front residual (per-phase energy/momentum at alpha->0 fronts),
+       NOT mere coarseness.  Figure: Exec/CO2_RiemannSuite/mt_B2_compare.png.
+    Caveat: CAMR ran mechanical-P relax (mode 0) vs standalone default relax dispatch;
+    the front artifact is a momentum/energy-flux effect (not thermal) and matches known
+    #88 behavior, so attribution to a CAMR front-coupling defect is sound.
+
+BOTTOM LINE: CAMR = better HYPERBOLIC/shock-capturing solver (and is the AMR/production
+code); the standalone = more trustworthy AT THE FLASHING FRONT today.  For the CO2-blowdown
+application (flashing matters), fixing CAMR's phase-change front coupling (#88) is what
+would make CAMR uniformly superior.  Tooling: err_vs_analytic.py (frozen), mt_compare.py
+(time-resolved).  In-sandbox limit: CAMR B2 MT-on only completes at N<=32 (finite-MT
+Newton on the evap front is ~45s/run at N=64, over the 45s bash cap) -> use host for
+higher-res MT-on convergence.
+
+## #88 REFRAMED — phase-vanishing-front artifact is a REAL CAMR hydro bug (not config)
+Key isolation this session: the standalone DEFAULT relax is PS_RELAX_MODE=split =
+alpha-ADJUSTING mechanical pressure relax (ps_pressure_relax_grid) + finite MT, NO
+explicit thermal relax -- i.e. the SAME algorithm as CAMR mode-0.  Yet standalone stays
+clean (B2 evap front T~256, u~13) while CAMR mode-0 OVERHEATS (T=2577, u=148 tongue).
+The relaxation AND finite-MT KERNELS are byte-identical between the two hem ports (same
+P_I=0.5(P1+P2) pressure-work e_k update; same h_I interface-enthalpy MT carrier).  The
+overheat also appears with MT OFF (mode-3 decomp front, T=232-328).  => the bad dilute-
+phase energy is produced UPSTREAM IN THE HYDRO: CAMR's wp per-phase energy (UE1/UE2)
+non-conservative A+- fluctuation transport is operator-inconsistent with per-phase MASS
+at the dilute front (the #64 issue), so e_k = UE_k/m_k is already overheated post-hydro
+and the (correct) relaxation cannot rescue it.  This is why the STANDALONE needs no
+guard -- same kernels, but its flux keeps e_k conditioned.
+- mode-2 (isochoric P + finite thermal) does NOT exercise the alpha-adjusting work path
+  and stays clean, matching the standalone -- it is the production config (demo2) and the
+  correct choice for two-phase/flashing.  The alpha-adjusting modes (0, 3) carry the bug.
+- DEAD END: vanishing-phase thermal-slaving guard (ps_vanish_thermal_slave_cell) -- built
+  then REVERTED.  It reduced the co-symptom T (2577->310) but the velocity tongue
+  PERSISTED (u~129), proving the driver is the alpha-adjusting energy transport, not the
+  thermal overheat.  Do not re-add.
+- FIX target: PS_umeth.cpp wp per-phase energy (UE1/UE2) deposit -- make it operator-
+  consistent with the per-phase mass flux at the dilute front (reopen/deepen #64).
+- DECISIVE DIAGNOSTIC to run (host, high-res): dump per-phase T (temp_1/temp_2) or e_k
+  immediately AFTER the hydro step and BEFORE ps_apply_relaxation, CAMR vs standalone, at
+  the evaporation front.  If CAMR's post-hydro e_k is already overheated -> confirms flux
+  origin and localizes to the UE_k deposit.
+- full_suite.py now applies PER-CASE physics config (case_cfg): two-phase B-cases ->
+  mode 2 (isochoric+thermal) + finite MT (PS_MT_TAU matched); vapor A/C -> mechanical,
+  MT off.  Validated: B2 per-case = clean (u 12.9 vs std 13.3).
+
+## #88 — post-hydro T diagnostic added (CAMR.ps_prehydro_diag=1); overheat isolated to MECH RELAX
+Added ps_report_temps (PS_relaxation.H) + calls in CAMR_advance apply_ps_reaction at
+pre-relax(post-hydro)/post-relax/post-sources.  Prints [ps_Tdiag] maxT1/maxT2, ncells
+>1000K, hottest T + x + alpha1.  B2 mode-0 N=32 result:
+  - relax OFF (hydro+MT only): maxT2 stays 336 K (front NOT overheated) -> hydro & MT CLEAN.
+  - relax ON (mode-0 mechanical): within a step the front vapor jumps pre-relax 413 ->
+    post-relax 697 (and grows to 2577 at higher N/time).  => overheat is injected by the
+    ALPHA-ADJUSTING MECHANICAL PRESSURE RELAXATION (ps_mechanical_relax_cell), PdV work
+    dumping energy into the dilute phase (#72), NOT the flux and NOT the MT.
+  - mode-2 (isochoric, no alpha-adjusting mech relax) stays clean -> production safe.
+Kernel (hem::ps_pressure_relax_cell) is byte-identical to the standalone, which does NOT
+overheat on B2 with the SAME split-mode mechanical relax -> the difference is in HOW CAMR
+applies it (candidates: Strang double-application, ghost-cell application, or a
+wrapper/iteration difference), OR the standalone's mechanical relax on the dilute cell
+lands differently.  NEXT: high-res CAMR (ps_prehydro_diag=1) vs standalone stage dump
+(post_p_relax) at the front to see if the standalone's mech-relax stays bounded; then fix
+the CAMR mechanical-relax dilute-phase energy handling.
+
+## #88 — standalone A/B: IDENTICAL kernel, CAMR overheats, standalone bounded => EOS-callback at trace/metastable dilute state
+Standalone B2 N=512 (split = alpha-adjusting mech relax + finite MT, SAME kernel as CAMR
+mode-0): max T1=274, max T2=337 -- BOUNDED.  CAMR mode-0 same case: 18,000 K.  Confirmed:
+- ps_pressure_relax_cell is BYTE-IDENTICAL between the two ports (diff empty, 160 lines).
+- CAMR applies it ONCE per step (ps_strang=0 Lie default), same as standalone.
+- Pre-relax (post-hydro) state is clean (T~336); a SINGLE CAMR relax application overheats
+  (N=32: 413->697 in one relax step).  Hydro+MT alone clean; mode-2 (isochoric) clean.
+=> the divergence is the PER-PHASE EOS CALLBACK the Newton probes at the trace/metastable
+dilute liquid (alpha1~0.006).  CAMR's branch-locked REY2PTS_phase(Liquid) metastable
+extrapolation at perturbed alpha likely returns a different P1 than the standalone's PR
+backend, so the alpha-adjusting Newton takes a different step and dumps PdV energy into the
+dilute vapor.  Same PR-metastable/spinodal root as #41/#62; the monotone MLP-EOS (#42/#45)
+is the real cure.  mode-2 avoids probing the metastable liquid branch (no alpha-adjust) ->
+clean, and is production.
+NEXT (decisive, both codes build with g++): single-cell A/B -- feed identical
+(rho1,rho2,e1,e2,alpha1) to each code's ps_pressure_relax_cell, compare T1/T2 out.  Same
+in -> different out == EOS callback (fix: regularize the trace-phase metastable branch, or
+cap dilute-phase PdV transfer / raise mech-relax single_phase_threshold, or MLP-EOS).
+
+## #88 ROOT CAUSE FOUND (single-cell A/B) — CAMR EOS callback too permissive in metastable region
+Single-cell A/B (CAMR ps_dilute_relax_probe vs standalone probe88.cpp), identical PHYSICAL
+state (dilute front: alpha1=0.006, liquid rho1=1035, trace vapor rho2=12.27, T=254):
+  - CAMR RealFluidCO2 EOS: VALID -> P1=6.77 bar, T1=254, c1=550 (metastable EXTRAPOLATION;
+    the liquid is at P<Psat(254)~19 bar = stretched/superheated liquid).
+  - Standalone hem PR backend: INVALID / NaN (no valid liquid root there; it REJECTS the
+    metastable state).
+The alpha-adjusting relaxation KERNEL is byte-identical.  Consequence:
+  - standalone: EOS invalid -> ps_pressure_relax_cell bails (ok=0, reason=BAD_EOS) -> cell
+    UNCHANGED -> no PdV work -> NO overheat.  (Why the standalone needs no guard.)
+  - CAMR: EOS returns the extrapolated metastable value -> kernel proceeds -> dumps PdV
+    work into the dilute phase -> overheat -> 18,000 K runaway.
+So #88 is NOT a relaxation or hydro bug: it is CAMR's per-phase EOS CALLBACK
+(ps_make_camr_eos_api / REY2PTS_phase) being too permissive in the metastable region (a
+side effect of the #62 spinodal monotonization/extrapolation), which the identical kernel
+then exploits.  A SINGLE relaxation on any one state is bounded; the runaway is the
+cumulative dt-collapse feedback of relaxing metastable cells every step.
+NOTE: the two codes use DIFFERENT PR-CO2 backends (CAMR Source/EOS/RealFluidCO2 vs
+standalone src/hem PR_LiquidBackend/PR_VaporBackend) with different energy references AND
+validity domains -- so a numerically-identical (rho,e) A/B is meaningless; match (rho,T).
+FIX (proposed): flag ph.valid=false in ps_make_camr_eos_api's state_from_rho_e_phase when a
+phase is metastable (liquid with P<Psat(T), or c<=0 spinodal), so the identical kernel
+refuses to relax it (like the standalone).  Touches relaxation/MT only (NOT the hydro flux
+EOS path) -> shock-capturing unaffected.  Regression risk: B4/B9 (legitimate metastable);
+validate with A-C suite + B2 + demo2.  Probe kept: CAMR.ps_dilute_probe=1; standalone
+build: g++ -std=c++20 -O2 -DHEM_NO_AMREX -Isrc/hem probe88.cpp -o probe88.
+
+## #88 FIX IMPLEMENTED + VALIDATED (1D) — metastable guard on the alpha-adjusting relaxation
+Added ps_cell_metastable() + ps_mechanical_relax_cell / ps_pmech_finite_relax_cell skip
+(PS_relaxation.H): the alpha-ADJUSTING relaxation (modes 0/3) now REFUSES a cell whose
+per-phase state is metastable -- stretched liquid (P1 < (1-band)*Psat(T1)), supersaturated
+vapor (P2 > (1+band)*Psat(T2)), spinodal (c<=0), or EOS-invalid -- reproducing the
+standalone's implicit refusal (its PR backend returns invalid there) WITHOUT touching the
+shared kernel, the MT path, or the hydro-flux EOS.  Flags: CAMR.ps_relax_metastable_guard
+(default 1), CAMR.ps_relax_metastable_band (default 0.05).  Isochoric modes 1/2 unaffected.
+VALIDATION (1D, in-sandbox):
+  - B2 mode-0+MT N=32: guard ON maxT2=336 K (clean) vs OFF 15811 K -> FIXED.  (N=512 host
+    would confirm the 18,000 K case.)
+  - B9 mode-0+MT N=32: guard ON bounded to completion (maxT=423) vs OFF climbing (511@step40).
+  - B4 mode-0+MT N=32: guard ON bounded (386).
+  - A-C suite (N=128): A1/A3/B4/C3 BIT-IDENTICAL to stored ref; B9 shifts rho 1.9e-4->2.9e-3
+    (CHECK).  That shift is NEUTRAL-TO-BETTER vs the FROZEN ANALYTIC (guarded 0.1233 vs
+    un-guarded 0.1236 rel-L2 rho; guarded marginally closer on rho/u/P) -> NOT a regression;
+    the stored c1_B9 ref is the un-guarded (buggy) build and should be re-baselined.
+  - band sweep: B9 shift is band-insensitive (0.05==0.2) -> its flagged cells are deep
+    (c<=0 / far below Psat), not near-saturation -> the guard is not over-firing on
+    coexistence cells.
+PENDING: demo2 (2D, mode-2 -> guard inert there since isochoric, but confirms no build/behavior
+regression) on host; optional re-baseline of c1_B9.  Diagnostics retained (gated off).
+
+## #88 c1_B9 re-baselined to the guarded build
+Regenerated c1_B9-Deep-Expansion_00000/_00205 with the current (metastable-guard) build at
+the identical ref config (mode0, mt_tau=0, wp, recon=1, N=128); lands on the same step 205
+& time. Overwrote the stored ref in place (sandbox mount allows overwrite, not unlink).
+Full A-C suite now clean: A1 2.2e-6, A3 3e-11, B4 1.5e-4, B9 0.0 (re-baselined), C3 1e-10 --
+all OK. The old un-guarded B9 ref carried the metastable-overheat bug; guarded B9 is
+neutral-to-better vs the frozen analytic (verified earlier). Leftover temp dirs rebase_B9_*
+(harmless; not c1_/rgr_ prefixed so suite ignores them).

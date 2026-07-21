@@ -268,7 +268,8 @@ AMREX_FORCE_INLINE
 bool hllc_flux(int idir,
                 const amrex::Real UL[NVAR], const amrex::Real UR[NVAR],
                 const amrex::Real FL[NVAR], const amrex::Real FR[NVAR],
-                amrex::Real F[NVAR]) noexcept
+                amrex::Real F[NVAR],
+                int pk_ef = 0) noexcept   // #85: 1 -> per-phase P_k in star energy
 {
     using amrex::Real;
 
@@ -315,13 +316,18 @@ bool hllc_flux(int idir,
     const Real q_2 = fK.rho_2 * (S_K - fK.u_n);
     if (std::abs(q_1) < Real(1.0e-30) || std::abs(q_2) < Real(1.0e-30)) return false;
 
-    // Per-phase specific total energy at the star state.  KEY: MIXTURE
-    // P_K_mix in the pressure boost, PER-PHASE ρ_k in the denominator.
-    // Matches COTT HLLC_v Q_est_L(5,6) formula exactly.
+    // Per-phase specific total energy at the star state.  Default (#211):
+    // MIXTURE P in the pressure boost, PER-PHASE ρ_k in the denominator
+    // (COTT HLLC_v).  #85 two-pressure (pk_ef=1): use the phase's OWN
+    // pressure P_k — the HLLC jump for the phase-k energy carries the phase
+    // pressure-work P_k/q_k, consistent with the P_k physical energy flux.
+    // At mechanical equilibrium P_k = P_mix so pk_ef=1 is bit-identical.
+    const Real Pe1 = (pk_ef != 0) ? fK.P_1 : fK.P_mix;
+    const Real Pe2 = (pk_ef != 0) ? fK.P_2 : fK.P_mix;
     const Real E1_star = fK.E_1 + (w.S_M - fK.u_n) *
-                                  (w.S_M + fK.P_mix / q_1);
+                                  (w.S_M + Pe1 / q_1);
     const Real E2_star = fK.E_2 + (w.S_M - fK.u_n) *
-                                  (w.S_M + fK.P_mix / q_2);
+                                  (w.S_M + Pe2 / q_2);
     if (!std::isfinite(E1_star) || !std::isfinite(E2_star)) return false;
 
     // Star-state mixture velocity components.  Normal → S_M.  Tangential
@@ -412,7 +418,8 @@ AMREX_GPU_HOST_DEVICE
 AMREX_FORCE_INLINE
 bool ps_star_state(int idir, const Face& fK, const amrex::Real UK[NVAR],
                    amrex::Real S_K, amrex::Real S_M,
-                   amrex::Real U_star[NVAR]) noexcept
+                   amrex::Real U_star[NVAR],
+                   int pk_ef = 0) noexcept   // #85: per-phase P_k in star energy
 {
     using amrex::Real;
     const Real denom = S_K - S_M;
@@ -426,8 +433,10 @@ bool ps_star_state(int idir, const Face& fK, const amrex::Real UK[NVAR],
     const Real q1 = fK.rho_1 * (S_K - fK.u_n);
     const Real q2 = fK.rho_2 * (S_K - fK.u_n);
     if (std::abs(q1) < Real(1.0e-30) || std::abs(q2) < Real(1.0e-30)) return false;
-    const Real E1s = fK.E_1 + (S_M - fK.u_n) * (S_M + fK.P_mix / q1);
-    const Real E2s = fK.E_2 + (S_M - fK.u_n) * (S_M + fK.P_mix / q2);
+    const Real Pe1 = (pk_ef != 0) ? fK.P_1 : fK.P_mix;   // #85 two-pressure
+    const Real Pe2 = (pk_ef != 0) ? fK.P_2 : fK.P_mix;
+    const Real E1s = fK.E_1 + (S_M - fK.u_n) * (S_M + Pe1 / q1);
+    const Real E2s = fK.E_2 + (S_M - fK.u_n) * (S_M + Pe2 / q2);
     if (!std::isfinite(E1s) || !std::isfinite(E2s)) return false;
 
     Real ux = fK.ux, uy = fK.uy, uz = fK.uz;   // transverse advected; normal → S_M
@@ -470,7 +479,7 @@ struct Fluctuations {
 AMREX_GPU_HOST_DEVICE
 AMREX_FORCE_INLINE
 bool fluctuations(int idir, const amrex::Real UL[NVAR], const amrex::Real UR[NVAR],
-                  Fluctuations& f) noexcept
+                  Fluctuations& f, int pk_ef = 0) noexcept   // #85: per-phase P_k
 {
     using amrex::Real;
     f.valid = false;
@@ -483,8 +492,8 @@ bool fluctuations(int idir, const amrex::Real UL[NVAR], const amrex::Real UR[NVA
     if (!w.valid) return false;
 
     Real UsL[NVAR], UsR[NVAR];
-    if (!ps_star_state(idir, fL, UL, w.S_L, w.S_M, UsL)) return false;
-    if (!ps_star_state(idir, fR, UR, w.S_R, w.S_M, UsR)) return false;
+    if (!ps_star_state(idir, fL, UL, w.S_L, w.S_M, UsL, pk_ef)) return false;
+    if (!ps_star_state(idir, fR, UR, w.S_R, w.S_M, UsR, pk_ef)) return false;
 
     f.s[0] = w.S_L; f.s[1] = w.S_M; f.s[2] = w.S_R;
     for (int n = 0; n < NVAR; ++n) {
@@ -532,7 +541,8 @@ void wp_phase_energy_defect(int idir,
                              const amrex::Real UL[NVAR],
                              const amrex::Real UR[NVAR],
                              amrex::Real& defect_UE1,
-                             amrex::Real& defect_UE2) noexcept
+                             amrex::Real& defect_UE2,
+                             int pk_ef = 0) noexcept   // #85: per-phase P_k
 {
     using amrex::Real;
     defect_UE1 = Real(0.0);
@@ -561,14 +571,20 @@ void wp_phase_energy_defect(int idir,
         std::abs(q_R1) < Real(1.0e-30) || std::abs(q_R2) < Real(1.0e-30)) return;
 
     // Pelanti star-state per-phase specific total energies.
+    // #85: per-phase P_k (pk_ef=1) vs mixture P (default #211).  Must match
+    // hllc_flux's star energy AND the physical flux below (same pk_ef).
+    const Real PeL1 = (pk_ef != 0) ? fL.P_1 : fL.P_mix;
+    const Real PeL2 = (pk_ef != 0) ? fL.P_2 : fL.P_mix;
+    const Real PeR1 = (pk_ef != 0) ? fR.P_1 : fR.P_mix;
+    const Real PeR2 = (pk_ef != 0) ? fR.P_2 : fR.P_mix;
     const Real E1_starL = fL.E_1 + (w.S_M - fL.u_n) *
-                                    (w.S_M + fL.P_mix / q_L1);
+                                    (w.S_M + PeL1 / q_L1);
     const Real E2_starL = fL.E_2 + (w.S_M - fL.u_n) *
-                                    (w.S_M + fL.P_mix / q_L2);
+                                    (w.S_M + PeL2 / q_L2);
     const Real E1_starR = fR.E_1 + (w.S_M - fR.u_n) *
-                                    (w.S_M + fR.P_mix / q_R1);
+                                    (w.S_M + PeR1 / q_R1);
     const Real E2_starR = fR.E_2 + (w.S_M - fR.u_n) *
-                                    (w.S_M + fR.P_mix / q_R2);
+                                    (w.S_M + PeR2 / q_R2);
 
     // Star-state partial masses.
     const Real m1_starL = fL.m_1 * r_L;
@@ -599,10 +615,10 @@ void wp_phase_energy_defect(int idir,
 
     // Physical Euler flux F(U_L) and F(U_R) for the UE_k slots.
     //   F[UE_k] = m_k · E_k · u_n + α_k · P_mix · u_n
-    const Real FL_UE1 = m1E1_L * fL.u_n + fL.alpha_1 * fL.P_mix * fL.u_n;
-    const Real FL_UE2 = m2E2_L * fL.u_n + fL.alpha_2 * fL.P_mix * fL.u_n;
-    const Real FR_UE1 = m1E1_R * fR.u_n + fR.alpha_1 * fR.P_mix * fR.u_n;
-    const Real FR_UE2 = m2E2_R * fR.u_n + fR.alpha_2 * fR.P_mix * fR.u_n;
+    const Real FL_UE1 = m1E1_L * fL.u_n + fL.alpha_1 * PeL1 * fL.u_n;
+    const Real FL_UE2 = m2E2_L * fL.u_n + fL.alpha_2 * PeL2 * fL.u_n;
+    const Real FR_UE1 = m1E1_R * fR.u_n + fR.alpha_1 * PeR1 * fR.u_n;
+    const Real FR_UE2 = m2E2_R * fR.u_n + fR.alpha_2 * PeR2 * fR.u_n;
 
     // Defect = (A^+ + A^-) - (F_R - F_L)
     defect_UE1 = sum_sW_UE1 - (FR_UE1 - FL_UE1);

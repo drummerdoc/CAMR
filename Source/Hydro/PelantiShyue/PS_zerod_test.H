@@ -284,5 +284,213 @@ inline int ps_relax_corner_sweep()
                    << " =====\n\n";
     return total_unsafe;
 }
+
+
+// ---------------------------------------------------------------------
+//  ps_prelax_finite_test  (task #80) — verify the finite-rate mechanical
+//  pressure relaxation ps_pressure_relax_cell_finite:
+//    (1) exact-exponential: one step moves alpha by EXACTLY
+//        (1 - exp(-dt/tau_p)) * (alpha_eq - alpha_0);
+//    (2) mass & mixture-energy conserved exactly;
+//    (3) tau_p -> 0 reproduces the instantaneous relax (alpha_eq);
+//    (4) larger tau_p -> smaller step (monotone), alpha stays in (0,1).
+//  Returns the number of failed checks (0 = pass) for the CI gate.
+// ---------------------------------------------------------------------
+inline int ps_prelax_finite_test()
+{
+    const hem::PsPhaseAPI eos = ps_make_camr_eos_api();
+    if (!eos.valid()) { amrex::Print() << "[ps-prelax] EOS API invalid\n"; return 1; }
+    amrex::Print() << "\n===== PS finite-rate pressure relaxation test (#80) =====\n";
+
+    // Two-phase cell with P1 != P2 (liquid & vapor at common T, different
+    // branches -> genuinely off mechanical equilibrium).
+    const double T = 270.0, a1 = 0.5, r1 = 950.0, r2 = 63.0;
+    const double e1 = ps_zt_e_of_rhoT(eos, 1, r1, T);
+    const double e2 = ps_zt_e_of_rhoT(eos, 2, r2, T);
+    const double m1 = a1 * r1, m2 = (1.0 - a1) * r2;
+    hem::V6 U0; U0[0]=a1; U0[1]=m1; U0[2]=m2; U0[3]=0.0; U0[4]=m1*e1; U0[5]=m2*e2;
+
+    // Instantaneous target.
+    hem::V6 Ueq = U0; int rs=0;
+    const bool eq_ok = hem::ps_pressure_relax_cell(Ueq, eos, hem::PsPressureRelaxParams{}, &rs);
+    const double a_eq = Ueq[0];
+    const double M0 = U0[1]+U0[2], E0 = U0[4]+U0[5];
+
+    int fail = 0;
+    const double dt = 7.0e-6;
+    const double taus[] = {1.0e-5, 1.0e-4, 1.0e-3, 0.0 /* instantaneous */};
+    amrex::Print() << "  target: alpha_0=" << a1 << " -> alpha_eq=" << a_eq
+                   << " (instant relax ok=" << (int)eq_ok << ")\n";
+    char b[256];
+    double a_prev_move = 1e300;
+    for (double tp : taus) {
+        hem::V6 U = U0;
+        const bool ok = hem::ps_pressure_relax_cell_finite(U, eos, dt, tp);
+        const double frac = (tp <= 0.0) ? 1.0 : -std::expm1(-dt/tp);
+        const double a_expect = a1 + frac * (a_eq - a1);
+        const double da_err = std::abs(U[0] - a_expect);
+        const double dM = std::abs((U[1]+U[2]) - M0)/M0;
+        const double dE = std::abs((U[4]+U[5]) - E0)/std::max(1.0,std::abs(E0));
+        const bool inrange = (U[0] > 0.0 && U[0] < 1.0);
+        const double moved = std::abs(U[0]-a1);
+        // Monotonicity applies only among FINITE tau_p (larger tau -> smaller
+        // move); tau_p=0 is the instantaneous extreme (largest move), skip it.
+        const bool monotone = (tp <= 0.0) ? true : (moved <= a_prev_move + 1e-14);
+        if (tp > 0.0) a_prev_move = moved;
+        const bool pass = ok && da_err < 1e-9 && dM < 1e-14 && dE < 1e-12
+                          && inrange && monotone;
+        if (!pass) ++fail;
+        std::snprintf(b,sizeof b,
+            "  tau_p=%.0e frac=%.4f alpha=%.6f (expect %.6f, err=%.1e) dM=%.0e dE=%.1e %s",
+            tp, frac, U[0], a_expect, da_err, dM, dE, pass?"PASS":"**FAIL**");
+        amrex::Print() << b << "\n";
+    }
+    amrex::Print() << "===== finite-P relax test: " << (fail==0?"PASS":"FAIL")
+                   << " (" << fail << " failed) =====\n\n";
+    return fail;
+}
+
+
+// ---------------------------------------------------------------------
+//  ps_mode3_stifflimit_test  (#86) — verify the JOINT-TARGET mode-3
+//  relaxation (ps_joint_pt_equilibrium + the single exact-exponential
+//  blend used by ps_pmech_finite_relax_cell):
+//    (1) the joint target is a GENUINE joint equilibrium: P1=P2 AND T1=T2
+//        (distinguishes it from the isochoric 1-DOF P/T compromise);
+//    (2) the target conserves mixture mass & energy exactly;
+//    (3) ASYMPTOTIC-PRESERVING / well-balanced: the finite integrator with
+//        tau_p, theta -> 0 reproduces the joint equilibrium to round-off;
+//    (4) every finite-tau step conserves mixture energy EXACTLY (single rate
+//        on the energy split) and keeps alpha in (0,1);
+//    (5) monotone: larger tau -> smaller move.
+//  This is the CI relation that the old Picard-alternation mode-3 violated
+//  (its two competing single-process targets left a cell-varying residual ->
+//  the contact velocity ripple).  Returns the number of failed checks.
+// ---------------------------------------------------------------------
+inline int ps_mode3_stifflimit_test()
+{
+    const hem::PsPhaseAPI eos = ps_make_camr_eos_api();
+    if (!eos.valid()) { amrex::Print() << "[ps-mode3] EOS API invalid\n"; return 1; }
+    amrex::Print() << "\n===== PS mode-3 joint-target stiff-limit test (#86) =====\n";
+
+    // Off-equilibrium two-phase cell: liquid & vapor branches at DIFFERENT
+    // temperatures so both P1!=P2 and T1!=T2 (genuine joint disequilibrium).
+    const double a1 = 0.5, r1 = 950.0, r2 = 63.0;
+    const double e1 = ps_zt_e_of_rhoT(eos, 1, r1, 268.0);   // liquid at 268 K
+    const double e2 = ps_zt_e_of_rhoT(eos, 2, r2, 285.0);   // vapor  at 285 K
+    const double m1 = a1 * r1, m2 = (1.0 - a1) * r2;
+    hem::V6 U0; U0[0]=a1; U0[1]=m1; U0[2]=m2; U0[3]=0.0; U0[4]=m1*e1; U0[5]=m2*e2;
+    const double M0 = U0[1]+U0[2], E0 = U0[4]+U0[5];
+
+    int fail = 0;
+
+    // (1)+(2) Joint target quality.
+    hem::V6 Ueq = U0;
+    const bool teq_ok = ps_joint_pt_equilibrium(Ueq, eos, 8);
+    hem::PsState seq = hem::ps_state_from_cons(Ueq, eos);
+    double dP_eq=1, dT_eq=1;
+    if (teq_ok && seq.valid) {
+        dP_eq = std::abs(seq.p1.P-seq.p2.P)/std::max(1.0,std::abs(seq.p1.P));
+        dT_eq = std::abs(seq.p1.T-seq.p2.T)/std::max(1.0,seq.p1.T);
+    }
+    const double dM_eq = std::abs((Ueq[1]+Ueq[2])-M0)/M0;
+    const double dE_eq = std::abs((Ueq[4]+Ueq[5])-E0)/std::max(1.0,std::abs(E0));
+    const bool eq_pass = teq_ok && seq.valid && dP_eq<1e-3 && dT_eq<1e-3
+                       && dM_eq<1e-12 && dE_eq<1e-10;
+    if (!eq_pass) ++fail;
+    {
+        char b[256];
+        std::snprintf(b,sizeof b,
+            "  joint target: ok=%d valid=%d dP=%.1e dT=%.1e dM=%.0e dE=%.1e  %s\n",
+            (int)teq_ok,(int)seq.valid,dP_eq,dT_eq,dM_eq,dE_eq,eq_pass?"PASS":"**FAIL**");
+        amrex::Print() << b;
+    }
+
+    // (3)-(5) Finite integrator sweep — mirrors ps_pmech_finite_relax_cell's
+    // single-blend math exactly (alpha @ 1/tau_p, energy split @ 1/theta).
+    const double dt = 7.0e-6;
+    // theta = tau_p in this sweep (isotropic stiffness); tiny -> stiff limit.
+    const double taus[] = {1.0e-12, 1.0e-6, 1.0e-4, 1.0e-2};
+    double move_prev = 1e300;
+    char b[256];
+    for (double tp : taus) {
+        const double th = tp;
+        hem::V6 U = U0;
+        const double frac_p = (tp>0.0)? -std::expm1(-dt/tp) : 1.0;
+        const double frac_E = (th>0.0)? -std::expm1(-dt/th) : 1.0;
+        U[0] += frac_p * (Ueq[0]-U[0]);
+        U[4] += frac_E * (Ueq[4]-U[4]);
+        U[5] += frac_E * (Ueq[5]-U[5]);
+        const double dM = std::abs((U[1]+U[2])-M0)/M0;
+        const double dE = std::abs((U[4]+U[5])-E0)/std::max(1.0,std::abs(E0));
+        const bool inrange = (U[0] > 0.0 && U[0] < 1.0);
+        const double move = std::abs(U[0]-a1);
+        const bool monotone = (move <= move_prev + 1e-14);
+        move_prev = move;
+        // Stiff limit (tp=1e-12): must reproduce the joint target to round-off.
+        const bool stiff = (tp > 1e-9) ? true
+            : (std::abs(U[0]-Ueq[0]) < 1e-9 &&
+               std::abs(U[4]-Ueq[4]) < 1e-6*std::max(1.0,std::abs(Ueq[4])) &&
+               std::abs(U[5]-Ueq[5]) < 1e-6*std::max(1.0,std::abs(Ueq[5])));
+        // Energy split blended at a SINGLE rate -> total energy conserved to
+        // round-off regardless of tau (the property the old mode-3 lacked).
+        const bool pass = dM<1e-14 && dE<1e-12 && inrange && monotone && stiff;
+        if (!pass) ++fail;
+        std::snprintf(b,sizeof b,
+            "  tau=theta=%.0e frac=%.4f alpha=%.6f move=%.3e dM=%.0e dE=%.1e %s%s\n",
+            tp, frac_p, U[0], move, dM, dE,
+            (tp<=1e-9?"[stifflim] ":""), pass?"PASS":"**FAIL**");
+        amrex::Print() << b;
+    }
+    amrex::Print() << "===== mode-3 stiff-limit test: " << (fail==0?"PASS":"FAIL")
+                   << " (" << fail << " failed) =====\n\n";
+    return fail;
+}
+
+
+// ---------------------------------------------------------------------
+//  ps_dilute_relax_probe  (#88) — single-cell A/B probe.  Feeds a fixed
+//  dilute-front two-phase state (alpha1~0.006, liquid rho1, trace vapor rho2,
+//  both near T) to ONE alpha-adjusting mechanical relaxation and prints the
+//  EOS eval (in) + the relaxed (out) per-phase P/T.  Compare the printed
+//  numbers against the standalone fed the SAME (rho1,rho2,e1,e2,alpha1) to
+//  see whether the identical kernel + each code's EOS callback diverge.
+//  Triggered CAMR.ps_dilute_probe=1.  Returns 0 (diagnostic only).
+// ---------------------------------------------------------------------
+inline int ps_dilute_relax_probe()
+{
+    const hem::PsPhaseAPI eos = ps_make_camr_eos_api();
+    if (!eos.valid()) { amrex::Print() << "[ps-88probe] EOS invalid\n"; return 1; }
+    amrex::Print() << "\n===== #88 dilute-front single-cell relax probe (CAMR) =====\n";
+    double a1 = 0.006, r1 = 1035.29, r2 = 12.268, T1i = 254.0, T2i = 254.0;
+    { amrex::ParmParse pp("CAMR");
+      pp.query("probe_a1",a1); pp.query("probe_r1",r1); pp.query("probe_r2",r2);
+      pp.query("probe_T1",T1i); pp.query("probe_T2",T2i); }
+    const double e1 = ps_zt_e_of_rhoT(eos, 1, r1, T1i);
+    const double e2 = ps_zt_e_of_rhoT(eos, 2, r2, T2i);
+    const double m1 = a1*r1, m2 = (1.0-a1)*r2;
+    char b[512];
+    std::snprintf(b,sizeof b,"  INPUT: alpha1=%.6f rho1=%.4f rho2=%.5f  e1=%.9e  e2=%.9e\n",a1,r1,r2,e1,e2);
+    amrex::Print()<<b;
+    hem::PsPhase p1{},p2{}; p1.alpha=a1; p2.alpha=1.0-a1;
+    eos.state_from_rho_e_phase(1,r1,e1,p1); eos.state_from_rho_e_phase(2,r2,e2,p2);
+    std::snprintf(b,sizeof b,"  EOS(in):  P1=%.4e T1=%.2f c1=%.2f v1=%d | P2=%.4e T2=%.2f c2=%.2f v2=%d\n",
+                  p1.P,p1.T,p1.c,(int)p1.valid, p2.P,p2.T,p2.c,(int)p2.valid);
+    amrex::Print()<<b;
+    hem::V6 U; U[0]=a1;U[1]=m1;U[2]=m2;U[3]=0.0;U[4]=m1*e1;U[5]=m2*e2;
+    hem::V6 Uo=U; int rs=0;
+    const bool ok = hem::ps_pressure_relax_cell(Uo,eos,hem::PsPressureRelaxParams{},&rs);
+    const double e1o=Uo[4]/Uo[1], e2o=Uo[5]/Uo[2];
+    hem::PsPhase q1{},q2{}; q1.alpha=Uo[0]; q2.alpha=1.0-Uo[0];
+    eos.state_from_rho_e_phase(1,Uo[1]/Uo[0],e1o,q1);
+    eos.state_from_rho_e_phase(2,Uo[2]/(1.0-Uo[0]),e2o,q2);
+    std::snprintf(b,sizeof b,"  RELAX ok=%d reason=%d  alpha1: %.6f -> %.6f\n",(int)ok,rs,a1,Uo[0]);
+    amrex::Print()<<b;
+    std::snprintf(b,sizeof b,"  OUT:      P1=%.4e T1=%.2f | P2=%.4e T2=%.2f   (dE_mix=%.3e)\n",
+                  q1.P,q1.T,q2.P,q2.T, (Uo[4]+Uo[5])-(U[4]+U[5]));
+    amrex::Print()<<b;
+    amrex::Print() << "===== end #88 probe =====\n\n";
+    return 0;
+}
 #endif // USE_PS_HYDRO
 #endif // PS_ZEROD_TEST_H

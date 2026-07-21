@@ -170,13 +170,16 @@ CAMR::CAMR_advance (Real time,
         ps_apply_vanish_fold(S, ng);
         clean_state(S);
         diag_a1(S, "reaction pre-relax");   // entering: reflects hydro/advection/C-F
+        ps_report_temps(S, "pre-relax (post-hydro)", geom, ng);  // #88 diag
         if (ps_do_relax_cached != 0) {
             ps_apply_relaxation(S, dt_r, ng, do_print);   // dt for finite-rate thermal (mode 2)
             clean_state(S);
         }
         diag_a1(S, "reaction post-relax");  // jump here => MT/relaxation is the driver
+        ps_report_temps(S, "post-relax", geom, ng);              // #88 diag
         ps_apply_sources(S, dt_r, ng);
         diag_a1(S, "reaction post-sources");// jump here => flash/source is the driver
+        ps_report_temps(S, "post-sources", geom, ng);            // #88 diag
     };
     // Strang pre-hydro HALF step.  Applied to the OLD-time data in place so
     // that (a) the subsequent expand_state FillPatch propagates it to the

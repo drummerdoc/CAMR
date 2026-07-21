@@ -38,3 +38,12 @@ step_dump.txt
 face_dump_camr.txt
 runlog*
 User/
+# --- session scratch (Riemann battery / #86-#88 diagnostics) ---
+std_ref/
+mt_std*/
+mt_camr*/
+__pycache__/
+*.log
+tdiag_*.txt
+_*.png
+build_sbx/

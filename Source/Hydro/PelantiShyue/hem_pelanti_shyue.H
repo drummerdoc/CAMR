@@ -1987,6 +1987,50 @@ inline bool ps_pressure_relax_cell(V6& U, const PsPhaseAPI& eos,
 
 
 // ---------------------------------------------------------------------
+//  Finite-rate MECHANICAL pressure relaxation (task #80, ps_relax_mode=3).
+//
+//  Relax P_1 -> P_2 by adjusting the volume fraction alpha at a PHYSICAL
+//  rate 1/tau_p, rather than the instantaneous mechanical-equilibrium
+//  projection (ps_pressure_relax_cell).  Lets genuine mechanical
+//  disequilibrium (P_1 != P_2) persist over a finite flow distance
+//  ~ u*tau_p -- the Baer-Nunziato / Saurel-Abgrall pressure-relaxation
+//  regime -- which (a) thickens the flash/relaxation front and (b)
+//  represents metastable delayed equilibration (fast decompression /
+//  cavitation / flashing).
+//
+//  Integrator: exact-exponential toward the instantaneous-equilibrium
+//  target (alpha_eq, e1_eq, e2_eq) -> unconditionally stable, strictly
+//  non-overshooting for any dt/tau_p.  tau_p -> 0 recovers the
+//  instantaneous relax; tau_p -> inf freezes alpha (mechanically frozen).
+//  Conserves mixture energy EXACTLY (convex blend of two states that each
+//  keep UE1+UE2 fixed) and keeps alpha in (0,1) (convex blend of two
+//  in-range alphas).  Masses / momentum untouched.
+//
+//  SCOPE (level-a): the wp flux still forms P_mix / the mixture sound
+//  speed assuming mechanical equilibrium, so this is a RELAXATION-substep
+//  extension, consistent in the stiff limit (tau_p not >> flow time).  A
+//  genuine pressure-disequilibrium flux (per-phase P, frozen wave speeds)
+//  is the level-b follow-on.
+// ---------------------------------------------------------------------
+inline bool ps_pressure_relax_cell_finite(
+    V6& U, const PsPhaseAPI& eos, double dt, double tau_p,
+    const PsPressureRelaxParams& p = PsPressureRelaxParams{},
+    int* out_reason = nullptr)
+{
+    if (tau_p <= 0.0) return ps_pressure_relax_cell(U, eos, p, out_reason);
+    if (!(dt > 0.0)) { if (out_reason) *out_reason = PSR_OK; return true; }
+    V6 Ueq = U;
+    if (!ps_pressure_relax_cell(Ueq, eos, p, out_reason)) return false; // no valid target
+    const double frac = -std::expm1(-dt / tau_p);   // 1 - exp(-dt/tau_p) in [0,1)
+    U[0] += frac * (Ueq[0] - U[0]);   // alpha lags toward mechanical equilibrium
+    U[4] += frac * (Ueq[4] - U[4]);   // per-phase energies (mechanical work)
+    U[5] += frac * (Ueq[5] - U[5]);
+    if (out_reason) *out_reason = PSR_OK;
+    return true;
+}
+
+
+// ---------------------------------------------------------------------
 //  Session 89ag: ISOCHORIC pressure relaxation (P-S 2014 eq (5) analog).
 //
 //  *** WARNING (session 89aj) ***
@@ -2270,6 +2314,33 @@ inline bool ps_iso_thermal_relax_cell_finite(V6& U, const PsPhaseAPI& eos,
     V6 Ueq = U;
     if (!ps_iso_thermal_relax_cell(Ueq, eos, tol_rel, max_iter)) return false;
     const double frac = -std::expm1(-dt / theta);   // 1 - exp(-dt/theta) in [0,1)
+    U[4] += frac * (Ueq[4] - U[4]);
+    U[5] += frac * (Ueq[5] - U[5]);
+    return true;
+}
+
+
+// Finite-rate ISOCHORIC pressure relaxation (task #86): relax P1 -> P2 by
+// re-partitioning per-phase ENERGY at FIXED alpha (ps_iso_pressure_relax_cell)
+// at a physical rate 1/tau_p, via the exact-exponential blend toward the
+// instantaneous iso-P-equilibrium target.  Unlike the alpha-ADJUSTING
+// ps_pressure_relax_cell_finite (mode-3 v1), this does NOT move alpha, so at a
+// material contact (sharp alpha gradient) it produces NO per-cell alpha motion
+// and hence NO contact velocity ripple -- alpha evolves only by (smooth)
+// advection, exactly like modes 1/2.  Still lets P1 != P2 persist at finite
+// rate (the dispersive/frozen-vs-equilibrium decompression physics).
+// Conserves mixture internal energy exactly (convex blend of two
+// energy-conserving states).  tau_p<=0 -> instantaneous.
+inline bool ps_iso_pressure_relax_cell_finite(V6& U, const PsPhaseAPI& eos,
+                                              double dt, double tau_p,
+                                              double tol_rel = 1.0e-5,
+                                              int    max_iter = 30)
+{
+    if (tau_p <= 0.0) return ps_iso_pressure_relax_cell(U, eos, tol_rel, max_iter);
+    if (!(dt > 0.0))  return true;
+    V6 Ueq = U;
+    if (!ps_iso_pressure_relax_cell(Ueq, eos, tol_rel, max_iter)) return false;
+    const double frac = -std::expm1(-dt / tau_p);   // 1 - exp(-dt/tau_p) in [0,1)
     U[4] += frac * (Ueq[4] - U[4]);
     U[5] += frac * (Ueq[5] - U[5]);
     return true;
