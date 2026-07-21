@@ -134,7 +134,9 @@ main(int argc, char* argv[])
     pp_ps.query("ps_mode3_test", ps_mode3_test);
     int ps_dilute_probe = 0;
     pp_ps.query("ps_dilute_probe", ps_dilute_probe);
-    if (ps_ptg_selftest || ps_relax_sweep || ps_prelax_test || ps_mode3_test || ps_dilute_probe) {
+    int ps_dev_relax_test = 0;
+    pp_ps.query("ps_dev_relax_test", ps_dev_relax_test);
+    if (ps_ptg_selftest || ps_relax_sweep || ps_prelax_test || ps_mode3_test || ps_dilute_probe || ps_dev_relax_test) {
       // CI gate (#82/#80): nonzero exit on any failure so ctest/CI can fail
       // the build.  Only IOProcessor runs the (serial, deterministic) checks.
       int fail = 0;
@@ -144,6 +146,7 @@ main(int argc, char* argv[])
         if (ps_prelax_test)  fail += ps_prelax_finite_test();
         if (ps_mode3_test)   fail += ps_mode3_stifflimit_test();
         if (ps_dilute_probe) fail += ps_dilute_relax_probe();
+        if (ps_dev_relax_test) fail += ps_dev_relax_bitmatch_test();
       }
       amrex::ParallelDescriptor::Bcast(&fail, 1,
                                        amrex::ParallelDescriptor::IOProcessorNumber());

@@ -53,3 +53,6 @@ hv_r*.csv
 cloud_*_r*.csv
 harvest_cloud.csv
 harvest_train45.csv
+sj*_cloud.csv
+sj*_train45.csv
+ws_data.csv

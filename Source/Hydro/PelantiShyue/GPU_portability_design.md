@@ -28,6 +28,18 @@ host call inside a device kernel. EOS in the flux path is via direct
 
 ## 2. Blockers, ranked (hot-path first)
 
+### B0 — env-gated kernel variants via `std::getenv` (CRITICAL; discovered on B1 dig)
+hem_pelanti_shyue.H selects kernel variants at RUN TIME by reading ~30 environment
+variables INSIDE the per-cell code paths: PS_P_MODE, PS_P_CLIP, PS_C_MODE,
+PS_WAVE_SPEED, PS_Y_FLOOR, PS_NCP, PS_MT_TAU, PS_MT_*, PS_FLUX, PS_IFACE_*, etc.
+`std::getenv` is host-only -> none of these kernels can run on device as written.
+This is the DEEPER blocker (B1 alone is insufficient). KEY REALISATION: these are
+DEV/EXPERIMENT knobs; in production each resolves to a FIXED choice. The device
+kernel must be the production-FROZEN variant: env-gating removed, the few genuine
+numeric knobs (tau, thresholds) passed as ARGUMENTS, not read from the environment.
+Also: the CAMR and co2-eos-cfd copies of this file HAVE ALREADY DIVERGED (the
+"byte-identical" note is stale) -> a single-source constraint no longer strictly holds.
+
 ### B1 — `std::function`-based `PsPhaseAPI` (CRITICAL, blocks all relax/sources)
 `hem::PsPhaseAPI` is a struct of `std::function`/lambda members
 (`state_from_rho_e_phase`, `Psat_of_T`, ...) built by `ps_make_camr_eos_api()`.
@@ -76,13 +88,50 @@ New; currently MFIter+LoopOnCpu calling `EOS::REY2PTS_phase`/`RTY2E_*` (already
 device-capable). Porting is the same mechanical LoopOnCpu->ParallelFor as B2 (no
 std::function). Gated off by default, so not on the critical path.
 
-## 3. Staged plan
+## 2b. DECISION (Marc, this session): standalone stays host-only
 
-1. **B1 (device EOS accessor).** Introduce `EOSPolicy` functor; template the shared
-   relax/flash kernels in `hem_pelanti_shyue.H` on it. CAMR device instantiation
-   forwards to `EOS::REY2PTS_phase`/`EOS::Psat`. Host/standalone path unchanged
-   (instantiate with the existing backend). Validate: A–C suite + zerod CI bit-match
-   on host (the template must reproduce the std::function path exactly).
+The co2-eos-cfd standalone does NOT need to run on GPU. Consequence: there is no
+requirement to keep the device kernels byte-shared with the standalone (the copies
+have already diverged anyway). This RESOLVES the B0/B1 structural fork in favour of
+a SEPARATE CAMR-only device-native kernel:
+
+  * hem_pelanti_shyue.H stays the HOST/standalone reference -- untouched, keeps its
+    env-gated (getenv) experimental variants and std::function API. No #ifdef surgery,
+    no regression risk to the validated host path or the standalone.
+  * CAMR gets a new device-native production relaxation kernel (e.g.
+    PS_relax_device.H) that is the FROZEN production variant of the host kernel:
+      - no std::getenv: the production choice of every PS_* knob is hard-coded; the
+        few genuine numeric parameters (relax tau, MT tau, alpha thresholds, bands)
+        are passed as plain arguments;
+      - no std::function: EOS via a device EOS functor (AMREX_GPU_HOST_DEVICE
+        state_from_rho_e_phase forwarding to EOS::REY2PTS_phase, plus Psat/t_crit/
+        t_triple), bypassing the static MRU cache (B3);
+      - HEM_HD-qualified so it compiles host+device from one source.
+  * Correctness gate: the device kernel must bit-match the HOST kernel run with the
+    production env settings, on host, before any GPU build. That makes the frozen
+    reimplementation verifiable against the validated reference rather than a
+    parallel unvalidated code path.
+
+This is deferred to a GPU-capable environment (no CUDA/HIP in the current sandbox);
+NO kernel code was written this session by request -- this section is the plan.
+
+## 2c. PROGRESS (this session): B1 mode 0 landed + host-validated
+PS_relax_device.H created: EosDev device functor (un-cached, no std::function) +
+ps_dev::ps_pressure_relax_cell (mode 0, frozen, getenv-free, PS_HD, templated).
+Host gate ps_dev_relax_bitmatch_test (CAMR.ps_dev_relax_test=1): 8/8 bit-identical
+vs the host reference kernel; A-C unchanged. hem_pelanti_shyue.H untouched.
+CORRECTION to section 1: the static MRU cache is in the FLUX path too (REY2*_phase
+all route through co2_state_from_rho_e_phase_cached) -> B3 blocks flux-on-device as
+well; EosDev bypasses it via un-cached hem::state_from_rho_e_phase.
+
+## 3. Staged plan (updated for the separate-kernel decision)
+
+1. **B0+B1 (new device-native production kernel, PS_relax_device.H).** Write the
+   frozen production relaxation kernels (mode 0/2/3) device-clean: no getenv (knobs
+   as args), no std::function (device EOS functor forwarding to EOS::), HEM_HD
+   qualifier. Leave hem_pelanti_shyue.H (host/standalone) untouched. Validate:
+   device kernel bit-matches the host kernel under production env settings, then
+   A–C + zerod bit-match on host.
 2. **B3 (stateless seed).** Wire `ps_warmstart_Tinit` (#45) as the device Newton
    seed; drop the static cache on the device path; fixed iteration count, no
    convergence-check branch (feasibility already measured: k=3 -> 100% on the

@@ -848,3 +848,91 @@ SUBTLE FINDINGS (correct the naive "just call EOS:: on device" plan):
 Concrete step done: annotated EOS::Psat device-safe (verified host build clean, 1D).
 Remaining B1/B2/B3 are code refactors that MUST be built+validated on GPU HW (sandbox
 has no CUDA/HIP) -> staged plan + validation gates written in the design doc.
+
+## B1 dig (GPU port): scope correction + decision
+Investigating B1 (std::function PsPhaseAPI -> device functor) revealed B1 was
+under-scoped. hem_pelanti_shyue.H is a HOST library: besides std::function it uses
+~30 std::getenv reads INSIDE the per-cell kernels (PS_P_MODE, PS_C_MODE,
+PS_WAVE_SPEED, PS_MT_TAU, PS_NCP, PS_FLUX, ...) to pick experimental variants, plus
+std::vector in the grid drivers. std::getenv is host-only -> the deeper blocker (B0).
+Also the CAMR and co2-eos-cfd copies of the file have ALREADY DIVERGED (the
+"byte-identical" note was stale).
+
+DECISION (Marc): the standalone does NOT need GPU. -> device port is a SEPARATE
+CAMR-only device-native production kernel (PS_relax_device.H), frozen (no getenv;
+knobs as args; device EOS functor; HEM_HD), validated to bit-match the host kernel
+under production env settings. hem_pelanti_shyue.H stays the untouched host/standalone
+reference. No #ifdef surgery, no standalone changes, no regression risk to the
+validated host path. Deferred to GPU HW (no CUDA/HIP in sandbox); no kernel code
+written this session by request. Full plan in GPU_portability_design.md (sections
+B0, 2b, 3).
+
+## GPU port B1 (mode 0) DONE + validated on host
+New file Source/Hydro/PelantiShyue/PS_relax_device.H (CAMR-only device path;
+hem_pelanti_shyue.H untouched per the standalone-stays-host decision):
+ * ps_dev::EosDev -- device EOS functor (PS_HD state_from_rho_e_phase) that
+   replicates the ps_make_camr_eos_api lambda EXACTLY but via a SINGLE un-cached
+   hem::state_from_rho_e_phase call -> no std::function (B1), no static MRU cache
+   (B3). h=e+P/rho, g=h-T*s, valid=finite(P)&&P>0&&finite(T)&&T>0, c from state.
+ * ps_dev::ps_pressure_relax_cell -- mode-0 kernel, byte-faithful copy of the
+   (already getenv-free) hem::ps_pressure_relax_cell, templated on the EOS type,
+   frozen RelaxParams (single_phase_threshold=5e-3, was getenv), static counter
+   removed, PS_HD-qualified.
+ * PS_HD = AMREX_GPU_HOST_DEVICE under AMReX, empty for a non-AMReX compile.
+
+VALIDATION (host, gated CAMR.ps_dev_relax_test=1, wired as a CI gate in main.cpp
++ ps_dev_relax_bitmatch_test in PS_zerod_test.H): 8/8 two-phase cells (incl
+P/T-diseq, cross-critical, near-critical) BIT-IDENTICAL device-vs-host, worst
+|dU|=0.000e+00. A-C suite unchanged (production path untouched; device kernel only
+runs under the gate). GPU compile deferred to GPU HW (no CUDA/HIP in sandbox).
+
+FINDING (corrects the audit): the static MRU cache (co2_state_from_rho_e_phase_cached)
+is used by REY2P_phase/REY2Cs_phase/REY2PTS_phase -> it is in the FLUX path too, not
+just relaxation. So B3 (cache) is a latent device blocker in the "device-ready" flux
+path as well; the device EOS accessor must call the un-cached hem::state_from_rho_e_phase
+(as EosDev now does). Bit-match holds because the cached path == un-cached path when
+warm-start is off (production default).
+
+REMAINING B1/B2: modes 2/3 device kernels (ps_ptg_relax_cell / ps_pmech_finite_relax_cell
+-- check their hem finite-relax helpers for getenv, e.g. PS_MT_*), a device #88 guard,
+then the ParallelFor driver (B2) replacing the MFIter+LoopOnCpu wrapper. Each gated by
+the same bit-match methodology.
+
+## GPU port B1 modes 2/3 DONE + validated
+Added to PS_relax_device.H (device-native, frozen, EosDev functor, PS_HD):
+ * ps_dev::ps_iso_pressure_relax_cell, ps_iso_thermal_relax_cell,
+   ps_iso_thermal_relax_cell_finite -- faithful copies of the hem helpers
+   (all getenv-free except the single_phase_thr default arg, frozen to 5e-3;
+   static ps_pressure_relax_count removed; std::max{init-list} -> nested).
+ * ps_dev::ps_ptg_relax_cell (MODE 2): Picard(iso-P, finite-thermal), outer=3.
+ * ps_dev::ps_joint_pt_equilibrium + ps_pmech_finite_relax_cell (MODE 3,
+   production joint path ps_mode3_joint=1): #88 metastable guard (device
+   ps_cell_metastable, band 0.05) + joint (P1=P2&T1=T2) target + exact-exp blend.
+Finding: the relaxation helpers all sit in the getenv-free zone of
+hem_pelanti_shyue.H (no getenv between L1777 and L2692), so modes 2/3 needed NO
+knob-freezing beyond single_phase_thr -> clean ports.
+
+VALIDATION (CAMR.ps_dev_relax_test=1, ps_dev_relax_bitmatch_test extended):
+MODE 0 8/8, MODE 2 8/8, MODE 3 8/8 BIT-IDENTICAL vs the host hem-helper sequence,
+worst |dU|=0.000e+00 across all. A-C suite unchanged (production path untouched).
+GPU compile still deferred to GPU HW (no CUDA/HIP in sandbox).
+
+REMAINING for B2: replace the MFIter+LoopOnCpu driver (ps_apply_relaxation) with
+MFIter+ParallelFor device lambdas dispatching ps_dev::* (+ device-safe diagnostics
+or drop on device), and the sources path (PS_sources.H). The kernels themselves
+are now device-ready and host-validated.
+
+## GPU port B2 DONE (fused device relax driver) + validated
+ps_apply_relaxation gained a gated device path (CAMR.ps_relax_device=1, default 0):
+a SINGLE fused amrex::ParallelFor(S_new, IntVect(nghost), f(box_no,i,j,k)) over the
+whole MultiFab (box loop internal -> one launch across all boxes; tiled on CPU,
+non-blocking fused launch on GPU) dispatching ps_relax_cell_device -> ps_dev::*
+kernels + EosDev. Chosen over MFIter+per-box ParallelFor per Marc: fewer/concurrent
+launches, hedges many-small-box overhead. ps_relax_cell_device (AMREX_GPU_HOST_DEVICE
+template) packs V6, dispatches mode 0/2/3, writes back the same slots as the host
+wrappers; NO PsRelaxDiag (host-only). mode 1 + device-off fall through to the host
+MFIter path (unchanged).
+
+VALIDATION (host, CPU build): device-driver ON vs OFF, full 200-step runs ->
+A1 (mode 0) and B2 (mode 2) BIT-IDENTICAL (max|dU|=0.000e+00 on rho/xmom/P/alpha).
+A-C suite (device OFF, default) unchanged. GPU compile still deferred to GPU HW.

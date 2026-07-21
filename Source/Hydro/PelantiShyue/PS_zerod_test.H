@@ -70,6 +70,7 @@
 #include <AMReX_Print.H>
 #include "hem_pelanti_shyue.H"
 #include "PS_relaxation.H"
+#include "PS_relax_device.H"   // GPU-port B1: device-native relax kernels + EosDev
 #include "IndexDefines.H"
 
 // Build a phase's specific internal energy e such that the branch-locked
@@ -491,6 +492,130 @@ inline int ps_dilute_relax_probe()
     amrex::Print()<<b;
     amrex::Print() << "===== end #88 probe =====\n\n";
     return 0;
+}
+
+// ---------------------------------------------------------------------
+//  ps_dev_relax_bitmatch_test  (GPU-port B1 gate).  Runs a table of
+//  two-phase cells through BOTH the host reference kernel
+//  (hem::ps_pressure_relax_cell, std::function EOS, cached) AND the new
+//  device-native kernel (ps_dev::ps_pressure_relax_cell, EosDev functor,
+//  un-cached) under production settings, and asserts the outputs
+//  (alpha, UE1, UE2) are BIT-IDENTICAL.  This validates that the B1
+//  std::function->functor swap + B3 cache-bypass changed nothing on host,
+//  the correctness gate required before any GPU build.
+//  CAMR.ps_dev_relax_test=1.  Returns nonzero on any mismatch.
+// ---------------------------------------------------------------------
+inline int ps_dev_relax_bitmatch_test()
+{
+    const hem::PsPhaseAPI eos_h = ps_make_camr_eos_api();   // host reference
+    const ps_dev::EosDev  eos_d;                            // device functor
+    if (!eos_h.valid()) { amrex::Print() << "[ps-devbm] host EOS invalid\n"; return 1; }
+    amrex::Print() << "\n===== GPU-port B1: device-vs-host relax bit-match =====\n";
+
+    // (alpha1, rho1[liq], rho2[vap], T1, T2) -- genuine two-phase cells
+    // spanning the production regime, several with P1!=P2 so Newton iterates.
+    struct C { double a1, r1, r2, T1, T2; };
+    const C cases[] = {
+        {0.500, 1000.0,  20.0, 260.0, 260.0},
+        {0.100, 1035.0,  12.0, 254.0, 254.0},
+        {0.900,  950.0,  40.0, 270.0, 262.0},   // P/T diseq
+        {0.020, 1050.0,  10.0, 250.0, 250.0},
+        {0.700,  900.0,  55.0, 275.0, 280.0},   // cross-ish, diseq
+        {0.300,  980.0,  25.0, 268.0, 261.0},
+        {0.050, 1040.0,  15.0, 258.0, 258.0},
+        {0.500,  870.0,  70.0, 295.0, 290.0},   // near-critical vapor
+    };
+    const int N = int(sizeof(cases)/sizeof(cases[0]));
+    int nfail = 0; double worst = 0.0;
+    char b[512];
+    for (int t = 0; t < N; ++t) {
+        const C& c = cases[t];
+        const double e1 = ps_zt_e_of_rhoT(eos_h, 1, c.r1, c.T1);
+        const double e2 = ps_zt_e_of_rhoT(eos_h, 2, c.r2, c.T2);
+        const double m1 = c.a1*c.r1, m2 = (1.0-c.a1)*c.r2;
+        hem::V6 U0; U0[0]=c.a1; U0[1]=m1; U0[2]=m2; U0[3]=0.0; U0[4]=m1*e1; U0[5]=m2*e2;
+
+        hem::V6 Uh = U0; int rh = 0;
+        const bool okh = hem::ps_pressure_relax_cell(Uh, eos_h,
+                             hem::PsPressureRelaxParams{}, &rh);
+        hem::V6 Ud = U0; int rd = 0;
+        const bool okd = ps_dev::ps_pressure_relax_cell(Ud, eos_d,
+                             ps_dev::RelaxParams{}, &rd);
+
+        double dmax = 0.0;
+        for (int n = 0; n < 6; ++n) dmax = std::max(dmax, std::abs(Uh[n]-Ud[n]));
+        worst = std::max(worst, dmax);
+        const bool match = (okh==okd) && (rh==rd) && (dmax==0.0);
+        if (!match) ++nfail;
+        std::snprintf(b,sizeof b,
+            "  case %d a1=%.3f: ok(h/d)=%d/%d reason=%d/%d  a1: %.6f->h%.6f/d%.6f  max|dU|=%.3e %s\n",
+            t, c.a1, (int)okh,(int)okd, rh,rd, c.a1, Uh[0], Ud[0], dmax,
+            match?"OK":"MISMATCH");
+        amrex::Print()<<b;
+    }
+    std::snprintf(b,sizeof b,"  MODE 0: %d/%d bit-identical, worst |dU|=%.3e  %s\n",
+                  N-nfail, N, worst, nfail? "FAIL":"PASS");
+    amrex::Print()<<b;
+
+    // ---- MODE 2 (isochoric-P + finite thermal): host Picard vs ps_dev ----
+    const double dt = 1.0e-6, theta = 1.0e-4, tau_p = 1.0e-4;
+    int nfail2 = 0; double worst2 = 0.0;
+    for (int t = 0; t < N; ++t) {
+        const C& c = cases[t];
+        const double e1 = ps_zt_e_of_rhoT(eos_h, 1, c.r1, c.T1);
+        const double e2 = ps_zt_e_of_rhoT(eos_h, 2, c.r2, c.T2);
+        const double m1 = c.a1*c.r1, m2 = (1.0-c.a1)*c.r2;
+        hem::V6 U0; U0[0]=c.a1; U0[1]=m1; U0[2]=m2; U0[3]=0.0; U0[4]=m1*e1; U0[5]=m2*e2;
+        // host reference == ps_ptg_relax_cell core (write only if all sweeps ok)
+        hem::V6 Uh = U0; { hem::V6 tv = U0; bool ok = true;
+            for (int it=0; it<3 && ok; ++it) {
+                if (!hem::ps_iso_pressure_relax_cell(tv, eos_h)) { ok=false; break; }
+                if (!hem::ps_iso_thermal_relax_cell_finite(tv, eos_h, dt, theta)) { ok=false; break; }
+            }
+            if (ok) { Uh[4]=tv[4]; Uh[5]=tv[5]; } }
+        hem::V6 Ud = U0; ps_dev::ps_ptg_relax_cell(Ud, eos_d, dt, theta, 3);
+        double dmax = 0.0; for (int n=0;n<6;++n) dmax = std::max(dmax, std::abs(Uh[n]-Ud[n]));
+        worst2 = std::max(worst2, dmax); if (dmax != 0.0) ++nfail2;
+    }
+    std::snprintf(b,sizeof b,"  MODE 2: %d/%d bit-identical, worst |dU|=%.3e  %s\n",
+                  N-nfail2, N, worst2, nfail2? "FAIL":"PASS");
+    amrex::Print()<<b;
+
+    // ---- MODE 3 (finite mechanical + thermal, joint target): host vs ps_dev ----
+    int nfail3 = 0; double worst3 = 0.0;
+    for (int t = 0; t < N; ++t) {
+        const C& c = cases[t];
+        const double e1 = ps_zt_e_of_rhoT(eos_h, 1, c.r1, c.T1);
+        const double e2 = ps_zt_e_of_rhoT(eos_h, 2, c.r2, c.T2);
+        const double m1 = c.a1*c.r1, m2 = (1.0-c.a1)*c.r2;
+        hem::V6 U0; U0[0]=c.a1; U0[1]=m1; U0[2]=m2; U0[3]=0.0; U0[4]=m1*e1; U0[5]=m2*e2;
+        // host reference == ps_pmech_finite_relax_cell joint branch
+        hem::V6 Uh = U0;
+        { const double rm = U0[1]+U0[2]; const double ke = 0.5*(U0[3]/rm)*(U0[3]/rm);
+          const double r1=U0[1]/U0[0], r2=U0[2]/(1.0-U0[0]);
+          const double eh1=U0[4]/U0[1]-ke, eh2=U0[5]/U0[2]-ke;
+          if (!ps_cell_metastable(eos_h, r1, eh1, r2, eh2)) {
+              hem::V6 Ueq = U0;
+              if (ps_joint_pt_equilibrium(Ueq, eos_h, 3)) {
+                  const double fp = (tau_p>0.0)?-std::expm1(-dt/tau_p):1.0;
+                  const double fE = (theta>0.0)?-std::expm1(-dt/theta):1.0;
+                  Uh[0]=U0[0]+fp*(Ueq[0]-U0[0]);
+                  Uh[4]=U0[4]+fE*(Ueq[4]-U0[4]);
+                  Uh[5]=U0[5]+fE*(Ueq[5]-U0[5]);
+              }
+          } }
+        hem::V6 Ud = U0; ps_dev::ps_pmech_finite_relax_cell(Ud, eos_d, dt, tau_p, theta, true, 0.05, 3);
+        double dmax = 0.0; for (int n=0;n<6;++n) dmax = std::max(dmax, std::abs(Uh[n]-Ud[n]));
+        worst3 = std::max(worst3, dmax); if (dmax != 0.0) ++nfail3;
+    }
+    std::snprintf(b,sizeof b,"  MODE 3: %d/%d bit-identical, worst |dU|=%.3e  %s\n",
+                  N-nfail3, N, worst3, nfail3? "FAIL":"PASS");
+    amrex::Print()<<b;
+
+    const int total = nfail + nfail2 + nfail3;
+    amrex::Print() << (total? "  RESULT: FAIL\n" : "  RESULT: PASS (modes 0/2/3 bit-identical)\n");
+    amrex::Print() << "===== end B1 bit-match =====\n\n";
+    return total;
 }
 #endif // USE_PS_HYDRO
 #endif // PS_ZEROD_TEST_H
