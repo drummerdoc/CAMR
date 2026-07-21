@@ -106,6 +106,9 @@ namespace EOS {
   // PsPhaseAPI.Psat_of_T so the generic hem flash uses eos.Psat_of_T(T)
   // instead of a hard-coded co2_P_sat_wagner.  Other fluids provide their own
   // EOS::Psat.
+  // Pure arithmetic (co2_fluid/T_triple are device-annotated; pow/exp are
+  // device-available) -> device-safe; the annotation was missing (GPU-port #B1).
+  AMREX_GPU_HOST_DEVICE
   AMREX_FORCE_INLINE
   amrex::Real Psat(amrex::Real T)
   {
@@ -405,6 +408,29 @@ namespace EOS {
       hem::State s = hem::state_from_T_v(f, T, v_m, hem::Phase3::Vapor);
       E = s.e;
   }
+
+  //  ρ, T → e   BRANCH-LOCKED (task #64 dilute-phase energy closure).
+  //  Same PR machinery as RTY2E but on the requested phase branch, so a
+  //  dilute phase can be set to thermal equilibrium with its host on its
+  //  OWN branch (liquid stays liquid, vapor stays vapor).  Mirrors the
+  //  REY2P_liquid/_vapor branch-locked pattern; fluid-agnostic at the
+  //  EOS:: interface.
+  AMREX_GPU_HOST_DEVICE
+  AMREX_FORCE_INLINE
+  void RTY2E_phase(amrex::Real R, amrex::Real T, amrex::Real* /*Y*/,
+                   hem::Phase3 phase, amrex::Real& E)
+  {
+      const hem::PRFluid f = co2_fluid();
+      const amrex::Real v_m = hem::v_PR_from_rho(f, R);
+      hem::State s = hem::state_from_T_v(f, T, v_m, phase);
+      E = s.e;
+  }
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void RTY2E_liquid(amrex::Real R, amrex::Real T, amrex::Real* Y, amrex::Real& E)
+  { RTY2E_phase(R, T, Y, hem::Phase3::Liquid, E); }
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void RTY2E_vapor(amrex::Real R, amrex::Real T, amrex::Real* Y, amrex::Real& E)
+  { RTY2E_phase(R, T, Y, hem::Phase3::Vapor, E); }
 
   // ================================================================
   //  Everything below is either forwarded to the six hot functions,

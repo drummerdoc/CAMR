@@ -166,6 +166,7 @@ CAMR::CAMR_advance (Real time,
     auto apply_ps_reaction = [&](amrex::MultiFab& S, amrex::Real dt_r,
                                  int ng, bool do_print) {
         ps_resync_phase_energy(S, ng);  // task #58: UE1+UE2==UEDEN after C-F interp/regrid
+        ps_dilute_energy_closure(S, ng); // #64: thermal-eq closure of vanishing-phase e_k (gated)
         ps_apply_floor(S, ng);          // positivity floor (task #50)
         ps_apply_vanish_fold(S, ng);
         clean_state(S);
@@ -177,6 +178,8 @@ CAMR::CAMR_advance (Real time,
         }
         diag_a1(S, "reaction post-relax");  // jump here => MT/relaxation is the driver
         ps_report_temps(S, "post-relax", geom, ng);              // #88 diag
+        ps_report_energy_overshoot(S, "post-relax", ng);         // #64 decision diagnostic (gated)
+        ps_harvest_states(S, ng);            // #42 active-learning EOS state harvest (gated)
         ps_apply_sources(S, dt_r, ng);
         diag_a1(S, "reaction post-sources");// jump here => flash/source is the driver
         ps_report_temps(S, "post-sources", geom, ng);            // #88 diag

@@ -43,6 +43,10 @@
 #include <AMReX_GpuQualifiers.H>
 #include <AMReX_Print.H>
 #include <cmath>
+#include <cstdint>
+#include <string>
+#include <fstream>
+#include <unordered_map>
 
 
 // ---------------------------------------------------------------------
@@ -760,6 +764,180 @@ ps_report_temps(amrex::MultiFab& S_new, const char* label,
     }
 }
 
+// =====================================================================
+//  #42 active-learning EOS state harvester (in-situ, opt-in, read-only).
+//
+//  Purpose: harvest the (rho, e, phase) states the per-phase PR EOS is
+//  ACTUALLY inverted at during real CAMR runs -- the deployment
+//  distribution -- into a reusable training cloud for both the #45
+//  learned Newton warm-start (rho,e,phase)->T_init and the #33
+//  surrogate MLP EOS pair.  A static (T,rho) grid over-samples the easy
+//  bulk and under-samples the dome / spinodal / metastable trace-phase
+//  regions the solver spends its hard iterations in; harvesting fixes
+//  that by construction.
+//
+//  "Active-learning" mechanism (novelty-greedy, cheap): states are
+//  quantized into log-rho x e x phase buckets.  Each NEW bucket is a
+//  region the training set has not yet covered; we keep the first
+//  representative per bucket + a visit count.  The aggregator can then
+//  either take one-per-bucket (uniform coverage of the VISITED manifold,
+//  which up-weights rare dome/spinodal cells relative to their cell
+//  frequency) or rarity-weight by 1/count.  Bounded memory (#buckets),
+//  bounded output, O(1) per cell.
+//
+//  Safety: purely diagnostic.  Reads S, never writes it -> bit-identical
+//  solution with harvest on/off (validated).  Gated by CAMR.ps_harvest
+//  (default 0).  MPI-only single-thread per rank (see note above) -> a
+//  plain per-rank std::unordered_map needs no atomics; each rank writes
+//  its own shard <file>_r<rank>.csv, flushed at teardown (+ optional
+//  periodic flush for crash resilience).  Fluid-agnostic: buckets and
+//  columns carry no CO2 assumption; retrain per fluid from its own cloud.
+// =====================================================================
+inline int ps_harvest()
+{
+    static const int v = []() -> int {
+        int val = 0; amrex::ParmParse pp("CAMR");
+        pp.query("ps_harvest", val); return val; }();
+    return v;
+}
+// Default 0: record ONLY the physically-present phase of each cell.  In a
+// near-pure cell the trace phase's rho=m/alpha and e=UE/m are numerical noise
+// (the separately-transported m and alpha drift apart) -> a non-physical
+// per-phase state the #88 guard skips.  Set 1 only to audit that trace garbage.
+inline int ps_harvest_trace()
+{
+    static const int v = []() -> int {
+        int val = 0; amrex::ParmParse pp("CAMR");
+        pp.query("ps_harvest_trace", val); return val; }();
+    return v;
+}
+// Per-phase presence floor: a phase is "physical" (worth harvesting) only where
+// its own volume fraction exceeds this.  Records below it are the degenerate
+// trace states.  Matches the aggregator's MINALPHA.
+inline amrex::Real ps_harvest_afloor()
+{
+    static const amrex::Real v = []() -> amrex::Real {
+        amrex::Real val = amrex::Real(1.0e-4); amrex::ParmParse pp("CAMR");
+        pp.query("ps_harvest_afloor", val); return val; }();
+    return v;
+}
+
+struct PsHarvestReservoir
+{
+    struct Rec { double rho, e, alpha, T; int phase; int valid; long count; };
+    std::unordered_map<std::uint64_t, Rec> buckets;
+    double dlr = 0.05;      // log10(rho) bucket width
+    double de  = 2.0e3;     // specific-internal-energy bucket width [J/kg]
+    long   flush_stride = 0;// >0: also flush every N harvest calls
+    long   ncalls = 0;
+    std::string base = "ps_harvest";
+    bool configured = false;
+
+    static PsHarvestReservoir& get() { static PsHarvestReservoir R; return R; }
+
+    void configure()
+    {
+        if (configured) return;
+        amrex::ParmParse pp("CAMR");
+        pp.query("ps_harvest_dlr", dlr);
+        pp.query("ps_harvest_de",  de);
+        pp.query("ps_harvest_flush", flush_stride);
+        pp.query("ps_harvest_file", base);
+        configured = true;
+    }
+
+    void add(int phase, double rho, double e, double alpha, double T, int valid)
+    {
+        if (!(rho > 0.0) || !std::isfinite(rho) || !std::isfinite(e)) return;
+        const std::int32_t ilr = (std::int32_t)std::floor(std::log10(rho) / dlr);
+        const std::int32_t ie  = (std::int32_t)std::floor(e / de);
+        const std::uint64_t key =
+            ((std::uint64_t)(std::uint32_t)ilr << 33) ^
+            ((std::uint64_t)(std::uint32_t)ie  << 1) ^
+            (std::uint64_t)(phase == 1 ? 0u : 1u);
+        auto it = buckets.find(key);
+        if (it == buckets.end()) {
+            buckets.emplace(key, Rec{rho, e, alpha, T, phase, valid, 1L});
+        } else {
+            ++(it->second.count);
+        }
+    }
+
+    void flush() const
+    {
+        const int rank = amrex::ParallelDescriptor::MyProc();
+        const std::string fn = base + "_r" + std::to_string(rank) + ".csv";
+        std::ofstream os(fn);
+        if (!os) return;
+        os << "phase,rho,e,alpha,T,valid,count\n";
+        os.setf(std::ios::scientific); os.precision(9);
+        for (auto const& kv : buckets) {
+            Rec const& r = kv.second;
+            os << r.phase << ',' << r.rho << ',' << r.e << ',' << r.alpha
+               << ',' << r.T << ',' << r.valid << ',' << r.count << '\n';
+        }
+    }
+
+    ~PsHarvestReservoir() { if (!buckets.empty()) flush(); }
+};
+
+// Harvest every valid per-phase EOS-inversion input in S into the reservoir.
+// Mirrors ps_report_temps' cell walk; read-only.  Gated by CAMR.ps_harvest.
+inline void
+ps_harvest_states(amrex::MultiFab& S_new, int nghost = 0)
+{
+    using amrex::Real;
+    if (ps_harvest() == 0) return;
+    PsHarvestReservoir& R = PsHarvestReservoir::get();
+    R.configure();
+    const hem::PsPhaseAPI eos = ps_make_camr_eos_api();
+    const bool trace = (ps_harvest_trace() != 0);
+    const Real afloor = ps_harvest_afloor();  // per-phase presence floor
+    for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
+        const amrex::Box bx = mfi.growntilebox(nghost);
+        amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
+        amrex::LoopOnCpu(bx, [&] (int i, int j, int k) noexcept
+        {
+            const Real a1 = U(i,j,k, UALPHA1);
+            if (!std::isfinite(a1) || a1 <= Real(0.0) || a1 >= Real(1.0)) return;
+            const Real m1 = U(i,j,k, UM1RHO1), m2 = U(i,j,k, UM2RHO2);
+            if (m1 <= Real(0.0) || m2 <= Real(0.0)) return;
+            const Real rho_mix = m1 + m2;
+            const Real px = U(i,j,k, UMX);
+#if (AMREX_SPACEDIM >= 2)
+            const Real py = U(i,j,k, UMY);
+#else
+            const Real py = Real(0.0);
+#endif
+#if (AMREX_SPACEDIM == 3)
+            const Real pz = U(i,j,k, UMZ);
+#else
+            const Real pz = Real(0.0);
+#endif
+            const Real ke = Real(0.5)*(px*px+py*py+pz*pz)/(rho_mix*rho_mix);
+            const Real rho1 = m1/a1, rho2 = m2/(Real(1.0)-a1);
+            const Real e1 = U(i,j,k, UE1)/m1 - ke;
+            const Real e2 = U(i,j,k, UE2)/m2 - ke;
+            const Real a2 = Real(1.0) - a1;
+            // Record a phase only where it is physically present (alpha>=afloor),
+            // unless trace-audit mode.  Skips the degenerate trace-phase states.
+            if (trace || a1 >= afloor) {
+                hem::PsPhase p1{}; p1.alpha=a1;
+                eos.state_from_rho_e_phase(1, double(rho1), double(e1), p1);
+                R.add(1, double(rho1), double(e1), double(a1),
+                      p1.valid ? double(p1.T) : std::nan(""), p1.valid ? 1 : 0);
+            }
+            if (trace || a2 >= afloor) {
+                hem::PsPhase p2{}; p2.alpha=a2;
+                eos.state_from_rho_e_phase(2, double(rho2), double(e2), p2);
+                R.add(2, double(rho2), double(e2), double(a2),
+                      p2.valid ? double(p2.T) : std::nan(""), p2.valid ? 1 : 0);
+            }
+        });
+    }
+    if (R.flush_stride > 0 && (++R.ncalls % R.flush_stride) == 0) R.flush();
+}
+
 // Cached CAMR.ps_mode3_joint (#86): 1 (default) = joint-target integrator
 // (single blend toward the converged joint P/T equilibrium; ripple-free,
 // asymptotic-preserving); 0 = legacy Picard-alternation of two separately
@@ -906,6 +1084,223 @@ ps_resync_phase_energy(amrex::MultiFab& S_new, int nghost = 0)
                 }
             }
         });
+    }
+}
+
+
+// -----------------------------------------------------------------
+//  #64 dilute-phase energy closure (option A; gated, default OFF).
+//
+//  Problem: for a vanishing phase, e_k = UE_k/m_k is the ratio of two
+//  cancellation-dominated small conserved quantities -> a numerically
+//  ill-determined specific energy (garbage T; the 1900-5400 K harvest
+//  tail).  Physics: a phase occupying negligible volume is in thermal
+//  equilibrium with its host (a droplet/bubble equilibrates far faster
+//  than the flow timescale), so its specific energy is DETERMINED by the
+//  host temperature: e_k = e_k^EOS(T_host, rho_k).
+//
+//  Closure: blend the transported e_k toward that equilibrium value with
+//  a SMOOTH, symmetric, threshold-free weight
+//      w_k = exp( -(alpha_k / alpha0)^2 )         (C-infinity; no edges)
+//  so w_k ~ 1 only for a truly dilute phase and w_k -> 0 (super-
+//  exponentially) as the phase becomes present -> the genuine two-phase
+//  band (alpha >~ 5*alpha0) is untouched to machine precision, and there
+//  is NO discontinuity anywhere in state space (addresses the hidden-
+//  threshold sensitivity concern).  Symmetric in 1<->2 (reflection-safe).
+//
+//  Conservation: UEDEN (the conserved mixture energy) is preserved
+//  EXACTLY -- the net energy change from correcting the dilute phase is
+//  absorbed by the present phase(s), distributed by (1-w) so the dilute
+//  phase is not re-perturbed.  Mass, momentum, alpha untouched.
+//
+//  This does NOT touch the flux/relaxation operators; it is a per-cell
+//  closure of the under-determined minor-phase energy DOF applied right
+//  after ps_resync_phase_energy.  Gated by CAMR.ps_dilute_closure.
+// -----------------------------------------------------------------
+inline int ps_dilute_closure()
+{
+    static const int v = []() -> int {
+        int val = 0; amrex::ParmParse pp("CAMR");
+        pp.query("ps_dilute_closure", val); return val; }();
+    return v;
+}
+inline amrex::Real ps_dilute_alpha0()
+{
+    static const amrex::Real v = []() -> amrex::Real {
+        amrex::Real val = amrex::Real(0.02); amrex::ParmParse pp("CAMR");
+        pp.query("ps_dilute_alpha0", val); return val; }();
+    return v;
+}
+
+inline void
+ps_dilute_energy_closure(amrex::MultiFab& S_new, int nghost = 0)
+{
+    using amrex::Real;
+    if (ps_dilute_closure() == 0) return;
+    const Real a0 = ps_dilute_alpha0();
+    const Real inv_a0sq = (a0 > Real(0.0)) ? Real(1.0)/(a0*a0) : Real(0.0);
+    constexpr Real afl  = Real(1.0e-12);
+    constexpr Real wtol = Real(1.0e-12);   // perf skip: negligible & deep in tail
+    Real Y[NUM_SPECIES]; Y[0] = Real(1.0);
+    for (int s = 1; s < NUM_SPECIES; ++s) Y[s] = Real(0.0);
+
+    for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
+        const amrex::Box bx = mfi.growntilebox(nghost);
+        amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
+        amrex::LoopOnCpu(bx, [&] (int i, int j, int k) noexcept
+        {
+            const Real a1 = U(i,j,k, UALPHA1);
+            if (!std::isfinite(a1) || a1 <= afl || a1 >= Real(1.0)-afl) return;
+            const Real a2 = Real(1.0) - a1;
+            const Real w1 = std::exp(-a1*a1*inv_a0sq);
+            const Real w2 = std::exp(-a2*a2*inv_a0sq);
+            if (w1 < wtol && w2 < wtol) return;          // both phases present
+            const Real m1 = U(i,j,k, UM1RHO1), m2 = U(i,j,k, UM2RHO2);
+            if (m1 <= Real(0.0) || m2 <= Real(0.0)) return;
+            const Real ued = U(i,j,k, UEDEN);
+            const Real ue1 = U(i,j,k, UE1), ue2 = U(i,j,k, UE2);
+            if (!std::isfinite(ued) || !std::isfinite(ue1) || !std::isfinite(ue2)) return;
+            const Real rho_mix = m1 + m2;
+            const Real px = U(i,j,k, UMX);
+#if (AMREX_SPACEDIM >= 2)
+            const Real py = U(i,j,k, UMY);
+#else
+            const Real py = Real(0.0);
+#endif
+#if (AMREX_SPACEDIM == 3)
+            const Real pz = U(i,j,k, UMZ);
+#else
+            const Real pz = Real(0.0);
+#endif
+            const Real ke = Real(0.5)*(px*px+py*py+pz*pz)/(rho_mix*rho_mix);
+            const Real rho1 = m1/a1, rho2 = m2/a2;
+            const Real e1 = ue1/m1 - ke;
+            const Real e2 = ue2/m2 - ke;
+
+            // Host temperatures (branch-locked): T of the PRESENT phase sets
+            // the dilute phase's equilibrium energy.  Solve both; each is the
+            // host for the other.
+            Real P1,T1,S1, P2,T2,S2;
+            EOS::REY2PTS_phase(rho1, e1, Y, hem::Phase3::Liquid, P1, T1, S1);
+            EOS::REY2PTS_phase(rho2, e2, Y, hem::Phase3::Vapor,  P2, T2, S2);
+            if (!std::isfinite(T1) || !std::isfinite(T2)) return;
+
+            // Equilibrium specific energy of each phase at the HOST T, on its
+            // OWN branch.  (Phase 1 dilute -> host is phase 2 -> use T2.)
+            Real e1eq = e1, e2eq = e2;
+            if (w1 >= wtol) EOS::RTY2E_liquid(rho1, T2, Y, e1eq);
+            if (w2 >= wtol) EOS::RTY2E_vapor (rho2, T1, Y, e2eq);
+            if (!std::isfinite(e1eq)) e1eq = e1;
+            if (!std::isfinite(e2eq)) e2eq = e2;
+
+            const Real e1n = (Real(1.0)-w1)*e1 + w1*e1eq;
+            const Real e2n = (Real(1.0)-w2)*e2 + w2*e2eq;
+
+            // Corrected per-phase total energies (uncompensated).
+            const Real ue1c = m1*(e1n + ke);
+            const Real ue2c = m2*(e2n + ke);
+            // Preserve UEDEN exactly: remove the net change, distributed to the
+            // PRESENT phase(s) by (1-w) so the dilute phase is not re-perturbed.
+            const Real net = (ue1c + ue2c) - ued;
+            const Real b1 = Real(1.0) - w1, b2 = Real(1.0) - w2;
+            Real bs = b1 + b2; if (!(bs > Real(0.0))) bs = Real(1.0);
+            const Real ue1f = ue1c - net*b1/bs;
+            const Real ue2f = ue2c - net*b2/bs;
+            if (std::isfinite(ue1f) && std::isfinite(ue2f)) {
+                U(i,j,k, UE1) = ue1f;
+                U(i,j,k, UE2) = ue2f;
+            }
+        });
+    }
+}
+
+// -----------------------------------------------------------------
+//  #64 decision diagnostic: per-phase specific-energy MONOTONICITY
+//  OVERSHOOT.  Consistent advective transport of an intensive quantity
+//  obeys a local maximum principle -- e_k in a cell stays within the
+//  range of its same-phase spatial neighbours.  A spurious NEW extremum
+//  (e_k outside the neighbour range) is the fingerprint of the mass/
+//  energy operator inconsistency (option B territory).  Binned by the
+//  phase fraction alpha_k, this answers "is A enough?": if overshoot is
+//  confined to the alpha->0 tail (which the closure fixes), A suffices;
+//  if it is significant in the well-mixed band, B is warranted.
+//  Read-only; gated by CAMR.ps_eovs_diag.  One summary line per call.
+// -----------------------------------------------------------------
+inline int ps_eovs_diag()
+{
+    static const int v = []() -> int {
+        int val = 0; amrex::ParmParse pp("CAMR");
+        pp.query("ps_eovs_diag", val); return val; }();
+    return v;
+}
+inline void
+ps_report_energy_overshoot(amrex::MultiFab& S_new, const char* label, int /*nghost*/ = 0)
+{
+    using amrex::Real;
+    if (ps_eovs_diag() == 0) return;
+    // 4 alpha bins: [1e-4,1e-3),[1e-3,1e-2),[1e-2,0.1),[0.1,0.5]
+    const Real edges[5] = {1e-4, 1e-3, 1e-2, 0.1, 0.5};
+    Real omax[4] = {0,0,0,0}; Real osum[4] = {0,0,0,0}; long ocnt[4] = {0,0,0,0};
+    // needs 1 ghost of valid same-phase e_k; operate on valid box, read +-1.
+    for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
+        const amrex::Box bx = mfi.validbox();
+        amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
+        auto ek = [&](int i,int j,int k,int ph) noexcept -> Real {
+            const Real a1 = U(i,j,k,UALPHA1); if(!std::isfinite(a1)||a1<=0||a1>=1) return std::nan("");
+            const Real ak = (ph==1)?a1:Real(1.0)-a1;
+            const Real mk = (ph==1)?U(i,j,k,UM1RHO1):U(i,j,k,UM2RHO2);
+            if (!(mk>Real(0.0)) || ak<=Real(0.0)) return std::nan("");
+            const Real rho=U(i,j,k,UM1RHO1)+U(i,j,k,UM2RHO2);
+            const Real px=U(i,j,k,UMX);
+#if (AMREX_SPACEDIM>=2)
+            const Real py=U(i,j,k,UMY);
+#else
+            const Real py=Real(0.0);
+#endif
+#if (AMREX_SPACEDIM==3)
+            const Real pz=U(i,j,k,UMZ);
+#else
+            const Real pz=Real(0.0);
+#endif
+            const Real kesp=Real(0.5)*(px*px+py*py+pz*pz)/(rho*rho);
+            const Real uek=(ph==1)?U(i,j,k,UE1):U(i,j,k,UE2);
+            return uek/mk - kesp;
+        };
+        amrex::LoopOnCpu(bx, [&] (int i, int j, int k) noexcept
+        {
+            const Real a1 = U(i,j,k,UALPHA1);
+            if (!std::isfinite(a1) || a1<=0 || a1>=1) return;
+            for (int ph=1; ph<=2; ++ph) {
+                const Real ak = (ph==1)?a1:Real(1.0)-a1;
+                if (ak < edges[0] || ak > edges[4]) continue;
+                const Real ec = ek(i,j,k,ph);
+                if (!std::isfinite(ec)) continue;
+                Real lo=1e300, hi=-1e300; int nn=0;
+                const int off[6][3]={{1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1}};
+                const int nd = 2*AMREX_SPACEDIM;
+                for (int d=0; d<nd; ++d) {
+                    const Real en = ek(i+off[d][0], j+off[d][1], k+off[d][2], ph);
+                    if (std::isfinite(en)) { lo=std::min(lo,en); hi=std::max(hi,en); ++nn; }
+                }
+                if (nn==0 || !(hi>=lo)) continue;
+                const Real over = std::max(Real(0.0), std::max(ec-hi, lo-ec));
+                const Real den  = std::max(hi-lo, std::max(std::abs(ec),Real(1.0e3)));
+                const Real onorm = over/den;
+                int b=0; while (b<3 && ak>=edges[b+1]) ++b;
+                omax[b]=std::max(omax[b],onorm); osum[b]+=onorm; ++ocnt[b];
+            }
+        });
+    }
+    for (int b=0;b<4;++b){ amrex::ParallelDescriptor::ReduceRealMax(omax[b]);
+        amrex::ParallelDescriptor::ReduceRealSum(osum[b]);
+        long c=ocnt[b]; amrex::ParallelDescriptor::ReduceLongSum(c); ocnt[b]=c; }
+    if (amrex::ParallelDescriptor::IOProcessor()) {
+        amrex::Print() << "[ps_eovs] " << label << " (specific-energy overshoot, norm):\n";
+        const char* nm[4]={"a[1e-4,1e-3)","a[1e-3,1e-2)","a[1e-2,0.1) ","a[0.1,0.5]  "};
+        for (int b=0;b<4;++b)
+            amrex::Print() << "   " << nm[b] << "  n=" << ocnt[b]
+                           << "  max=" << omax[b]
+                           << "  mean=" << (ocnt[b]?osum[b]/Real(ocnt[b]):Real(0)) << "\n";
     }
 }
 

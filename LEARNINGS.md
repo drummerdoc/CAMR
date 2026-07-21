@@ -661,3 +661,190 @@ Full A-C suite now clean: A1 2.2e-6, A3 3e-11, B4 1.5e-4, B9 0.0 (re-baselined),
 all OK. The old un-guarded B9 ref carried the metastable-overheat bug; guarded B9 is
 neutral-to-better vs the frozen analytic (verified earlier). Leftover temp dirs rebase_B9_*
 (harmless; not c1_/rgr_ prefixed so suite ignores them).
+
+## #45/#98 learned Newton warm-start for the per-phase EOS T-inversion (done)
+Target root-find: ps_newton_solve_T -- Newton/secant on T at fixed molar volume
+v_m=M/rho solving e_PR(T,v_m)=e_target, per phase, on the branch-locked PR CO2 EOS.
+Learned initializer maps (rho, e, phase) -> T_init to seed it.
+
+Harness (co2-eos-cfd, standalone PR backend = the solver's EOS, -DHEM_NO_AMREX):
+  eos_warmstart.cpp  "gen"   -> (T,rho) grid forward EOS -> ws_train.csv (rho,e,phase,T),
+                                13122 valid rows (liquid rho 600-1200 T 220-320;
+                                vapor rho 0.5-400 log, T 220-520).
+                     "iters <csv>" -> secant on T from Tseed, MAXIT-capped, counts iters.
+  ws_train.py -> fit (24,24) tanh MLP (log rho, e*1e-5, phase_sign)->T (lbfgs).
+  ws_export_header.py -> ps_warmstart_Tinit.H  (branch-free forward pass, GPU-able).
+
+Fit: RMS 2.94 K, MAE 2.10 K, max|err| 14.3 K. Header C++ math reproduces sklearn bit-for-bit.
+
+RESULT (honest). The inversion is already very well-conditioned -- even a fixed 300 K
+seed converges in mean 3.18 secant iters everywhere. So the payoff is NOT big average
+savings; it is a SMALLER GUARANTEED FIXED ITERATION BUDGET (the GPU-relevant metric --
+lets you drop the convergence-check branch). Fixed-k converged fraction over the cloud:
+  k:      1        2        3        4
+  default 0.6%    11.4%    69.5%   100.0%
+  NN-seed 7.5%    95.9%   100.0%  100.0%
+=> guaranteed budget 4 -> 3 iters (branchless); 96% done in 2; mean iters 3.18 -> 1.97
+   (-38%). Modest but real; the win is worst-case/branch-elimination, not mean.
+
+Integration sketch (deferred, low-risk): in RealFluidCO2's per-phase e->T inversion,
+replace the fixed initial guess with ps_warmstart_Tinit(rho,e,phase) and set the Newton
+cap to 3 (was ~100 w/ convergence check). Weights are CO2-specific; regenerate ws_train.csv
++ retrain per fluid to stay fluid-agnostic (data-driven, no hand-tuning). Not yet wired
+into CAMR -- header + harness live in co2-eos-cfd; wiring is a follow-up when the EOS
+inversion is on the GPU hot path.
+
+## #42 active-learning EOS state harvester (in-situ; done)
+Goal: train #45 warm-start and #33 surrogate EOS on the states the per-phase PR
+EOS is ACTUALLY inverted at during real runs (deployment distribution), not a
+static (T,rho) grid that over-samples the easy bulk and misses the hard regions.
+
+Impl (CAMR, PS_relaxation.H): ps_harvest_states(S,ng) mirrors ps_report_temps'
+cell walk, READ-ONLY; for each cell computes (rho_k,e_k,alpha,T_k,valid) per phase
+and buckets into a novelty-greedy reservoir (PsHarvestReservoir): quantize on
+(log10 rho / dlr, e / de, phase); keep first representative + visit count per
+bucket -> bounded memory/output, O(1)/cell. Per-rank shard <file>_r<rank>.csv
+flushed at teardown (+ optional periodic). Gated CAMR.ps_harvest (default 0);
+CAMR.ps_harvest_trace (default 1) includes near-pure trace-phase cells (the hard
+metastable inputs). Hooked in CAMR_advance apply_ps_reaction post-relax.
+Flags: ps_harvest, ps_harvest_trace, ps_harvest_dlr(.05), ps_harvest_de(2e3),
+ps_harvest_flush(0), ps_harvest_file("ps_harvest"). Fluid-agnostic (no CO2 in the
+buckets/columns; retrain per fluid from its own cloud).
+
+Aggregator (Exec/CO2_RiemannSuite/harvest_aggregate.py): merge shards (re-bucket,
+sum counts) -> harvest_cloud.csv; regime split (two-phase-bulk/trace/invalid-
+metastable); coverage diff vs the static grid; emit harvest_train45.csv (valid
+states, rho,e,phase,T) for #45 retrain and flag invalid buckets for #33.
+
+VALIDATION (sandbox gnu DIM=1 serial build w/ harvester):
+ * zero-impact: B2 N=128, 150 steps, harvest OFF vs ON -> max rel diff 0.00e+00
+   on density/xmom/pressure/alpha (bit-identical -> read-only confirmed).
+ * dedup: 4 two-phase cases (B2/B4/B9/B7) N=128 x200 steps = 204,800 cell-visits
+   -> 1293 distinct buckets (474 two-phase-bulk, 819 trace-phase).
+ * ACTIVE-LEARNING PAYOFF: 900/1293 = 69.6% of VISITED buckets are MISSED by the
+   #45 static (T,rho) grid (which itself has 5547 buckets) -- 594 trace-phase,
+   306 bulk. I.e. the static grid trains where the solver mostly ISN'T; the
+   harvested cloud is complementary and on-distribution.
+ * 0 invalid/metastable at N=128 (guard #88 keeps B-cases on valid branches);
+   harvester auto-flags them when they occur (satjet / hi-res deep expansion).
+
+Follow-ups (not done): (a) harvest a satjet 2D run to get the metastable/invalid
+buckets #33 most needs; (b) retrain #45 on harvest_train45 and re-measure the
+fixed-iteration budget on the visited distribution (expect the k=3->100% margin
+to tighten further since training now matches deployment); (c) periodic-flush +
+per-rank merge already handle MPI/crash. GPU note: harvester is CPU-only (debug
+flag); a device version would need per-block reservoirs -- deferred with #45 wiring.
+
+## #42 satjet harvest (5 restarts) -- honest outcome + per-phase-noise finding
+Harvested the DEMO2 flashing satjet by restarting 5 checkpoints spread across
+the run (steps 200100/200400/200800/201000/201400), 1 coarse step each (each
+sweeps the full 3-level 1024x512-finest field). Sandbox serial: ~35 s/coarse
+step -> ran one 40 s window per checkpoint; set CAMR.ps_harvest_flush=1 so the
+per-rank shard survives the timeout kill (destructor flush never fires on SIGTERM).
+
+Raw harvest (trace=1): 14,485 buckets / 1.30M cell-visits, 98.9% missed by the
+static grid -- BUT T median 1915 K, max 5428 K. Those are NOT physical states:
+in a near-pure cell the MINOR phase's rho=m/alpha and e=UE/m are numerical noise
+(m and alpha are transported separately -> they drift; #64 per-phase-energy
+consistency is the open limiter). This is exactly what the #88 relaxation guard
+skips. So harvesting the minor phase pollutes the cloud with garbage.
+
+Fix (principled): record a phase only where its own alpha>=afloor (harvester
+default flipped ps_harvest_trace 1->0, added ps_harvest_afloor=1e-4; aggregator
+MINALPHA mirror). Physical-T fraction rises monotonically with the phase's own
+fraction: 10% at alpha~1e-3, 39% at ~0.05, 50% at ~0.9, 94% only at alpha>0.98.
+The genuine well-mixed band alpha 0.1-0.5 is EMPTY at these snapshots -- the
+satjet interface is sharp, so there are almost no clean two-phase cells.
+
+=> Trustworthy satjet harvest = ~247 dominant-phase (alpha>0.5) states, all
+VAPOR, T 190-294 K (expansion-cooled CO2; physically sensible). Written
+sjclean_train45.csv. The hoped-for clean metastable STRETCHED-LIQUID training
+data is NOT recoverable from the running field, because the liquid lives almost
+entirely as the noisy near-pure minor phase.
+
+Recommendation (revised): (1) field-harvest is good for the DOMINANT-phase
+manifold and for confirming where the solver goes, but NOT for minor-phase
+metastable training data until #64 (operator-consistent per-phase energy
+transport) is closed. (2) For #33 stretched-liquid/supersat-vapor support data,
+generate directly from the analytic PR EOS on a targeted sub-saturation (T,rho)
+grid (extend eos_warmstart.cpp "gen" below Psat) -- the EOS is well-defined
+there; no need to mine noisy cells. (3) The harvester + aggregator remain the
+right tool once #64 makes minor-phase (rho,e) meaningful.
+
+## #64 dilute-phase energy closure (option A; gated) -- diagnosis + fix + decision
+DIAGNOSIS (verified in code): per-phase MASS is a conserved slot (consup flux-div,
+telescopes); per-phase ENERGY is non-conserved (HLLC A-/A+ fluctuation deposit,
+PS_umeth.cpp ps_wp_face). Same wave decomposition -> consistent where a phase is
+populated, but for a vanishing phase e_k=UE_k/m_k is the ratio of two cancellation-
+dominated smalls -> ill-determined (the 1900-5400 K harvest tail).
+
+FIX A (PS_relaxation.H ps_dilute_energy_closure, gated CAMR.ps_dilute_closure=0):
+a vanishing phase is in thermal equilibrium with its host, so close its energy DOF
+with e_k = e_k^EOS(T_host, rho_k) (new branch-locked EOS::RTY2E_liquid/_vapor added,
+fluid-agnostic pattern). Blend weight w_k = exp(-(alpha_k/alpha0)^2): C-infinity,
+symmetric in 1<->2, NO threshold/edge (addresses the hidden-threshold sensitivity
+concern) -> genuine two-phase band untouched to machine precision. UEDEN preserved
+EXACTLY (net change absorbed by present phase, distributed by (1-w)). Mass/momentum/
+alpha untouched.
+
+DECISION DIAGNOSTIC (ps_report_energy_overshoot, gated CAMR.ps_eovs_diag): per-phase
+specific-energy MONOTONICITY overshoot beyond same-phase neighbour range, binned by
+alpha. This is the fingerprint of the mass/energy operator inconsistency and tells us
+if the deeper option B (tie contact-wave phase-energy to phase-mass in PS_HLLC, byte-
+shared w/ standalone -> high regression risk) is warranted.
+
+VALIDATION:
+ * A-C suite (closure OFF = default): A1 2.19e-6, A3 3e-11, B4 1.5e-4, B9 0.0,
+   C3 1e-10 -- identical to baselines. All changes correctly gated.
+ * satjet overshoot (closure OFF, chk_sj200800): overshoot concentrated in alpha<0.1
+   (max 0.50-0.57 in alpha[1e-4,1e-2), low mean 0.001-0.05); alpha[0.1,0.5] band is
+   EMPTY (sharp interface, no well-mixed cells).
+ * satjet closure ON (alpha0=0.01): dilute-phase T 1625/5379 K -> 273/287 K (median/
+   max), physical at the ~280 K reservoir. Distinct dilute buckets 4252 -> 208.
+ * bulk cost: closure ON perturbs B2 bulk ~2.4e-4 (replaces garbage trace-pressure P1
+   with a physical one in the flux; does not vanish as alpha0->0 -> it is the trace-P
+   feedback path, arguably MORE correct, not a regression).
+
+VERDICT on B: NOT warranted for the satjet -- B's only advantage is the well-mixed
+band, which is EMPTY here; the inconsistency lives entirely in alpha<0.1 where A acts.
+IDEAL REFINEMENT ("A-prime", deferred): the diagnostic shows the residual is spurious
+EXTREMA concentrated in a MINORITY of near-pure cells (high max, low mean). The
+cleanest fix is therefore a MONOTONICITY LIMITER: clip transported e_k to its same-
+phase neighbour range (exactly what the diagnostic measures) -- operator-consistent,
+acts ONLY on offending cells, preserves well-transported dilute cells AND physical
+thermal non-equilibrium (unlike blanket thermal-slaving). Recommend A now (gated, for
+clean harvest/training data), A-prime if the ~2e-4 blanket-slaving bulk cost matters.
+Default stays OFF; does not touch the validated demo unless enabled.
+
+## GPU-portability audit + roadmap (analysis; no GPU compile in sandbox)
+Audited the PS path. RESULT: the flux/hydro path is ALREADY device-portable
+(PS_umeth 30 ParallelFor / 0 LoopOnCpu / 0 std::function / 41 GPU-quals; hllc +
+reconstruction likewise; ParmParse read once on host + captured by value; EOS via
+direct AMREX_GPU_HOST_DEVICE EOS::REY2P_* ). The per-cell EOS-Newton path
+(relaxation, sources, cached ctoprim, #64 closure) is HOST-ONLY.
+
+Blockers ranked (full detail in Source/Hydro/PelantiShyue/GPU_portability_design.md):
+ B1 CRITICAL: hem::PsPhaseAPI is a struct of std::function callbacks -> not device-
+    callable; it is the single indirection keeping the (per-cell, embarrassingly
+    parallel) relax/source kernels on the host. Fix: template kernels on an EOSPolicy
+    functor (host=current API, device=thin forwarder to EOS::), or call EOS:: directly
+    like the flux path.
+ B2 CRITICAL(mechanical): MFIter+LoopOnCpu in ps_apply_relaxation/sources/floor/
+    resync -> MFIter+ParallelFor device lambdas once B1 lands.
+ B3 MEDIUM: static MRU cache in co2_state_from_rho_e_phase_cached is device-illegal
+    /thread-unsafe; the device path must call the un-cached hem::state_from_rho_e_phase
+    seeded by the #45 branch-free ps_warmstart_Tinit (stateless, fixed 3-iter) -- this
+    is the concrete #45<->GPU payoff.
+ B4 NONE: host diagnostics (harvest/temps/overshoot) are host-only by design, gated,
+    called only from CAMR_advance host code -> keep off device.
+
+SUBTLE FINDINGS (correct the naive "just call EOS:: on device" plan):
+ * EOS::Psat was AMREX_FORCE_INLINE only (host-only) despite pure-arithmetic body ->
+   FIXED: added AMREX_GPU_HOST_DEVICE (host build byte-identical; macro no-op on CPU).
+ * EOS::REY2PTS_phase IS annotated AMREX_GPU_HOST_DEVICE but transitively calls the
+   static-cache path -> annotation is misleading; device use must bypass the cache
+   (entangles B3 with B1).
+
+Concrete step done: annotated EOS::Psat device-safe (verified host build clean, 1D).
+Remaining B1/B2/B3 are code refactors that MUST be built+validated on GPU HW (sandbox
+has no CUDA/HIP) -> staged plan + validation gates written in the design doc.
