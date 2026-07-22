@@ -936,3 +936,24 @@ MFIter path (unchanged).
 VALIDATION (host, CPU build): device-driver ON vs OFF, full 200-step runs ->
 A1 (mode 0) and B2 (mode 2) BIT-IDENTICAL (max|dU|=0.000e+00 on rho/xmom/P/alpha).
 A-C suite (device OFF, default) unchanged. GPU compile still deferred to GPU HW.
+
+## Active-learning payoff DEMONSTRATED (#42+#45+#64 closed loop, task #26)
+Re-harvested the satjet (3 checkpoints, closure-on CAMR.ps_dilute_closure=1) -> 802
+distinct deployment (rho,T,phase) states, T 150-338 K (med 237), 493 liquid + 309
+vapor. Crucially the LIQUID branch is now present & physical (was the 5000 K garbage
+pre-#64). Recomputed e in the standalone PR (new eos_warmstart "efromrT" mode) ->
+deploy_train.csv (reference-clean). Trained the #45 warm-start MLP on the uniform grid
+vs the deployment set; evaluated fixed-k on the DEPLOYMENT states:
+
+  seed RMS on deployment: uniform-grid MLP = 25.77 K ; deployment MLP = 1.06 K (24x)
+  fixed-k converged frac:   k=2    k=3    k=4
+    default(300 K)          0.5%  38.7%  100%
+    uniform-grid MLP       31.2%  90.0%  100%
+    deployment MLP         98.6%  100%   100%
+
+=> On-distribution training cuts seed error 24x and tightens the GUARANTEED
+branchless budget from k=4 (uniform) to k=3 (deployment; 98.6% at k=2). The uniform
+grid under-serves where the solver actually goes -> the active-learning loop
+(harvest deployment dist -> retrain) is the fix. Enabled by #64 (physical minor/liquid
+branch). Files (co2-eos-cfd, uncommitted): eos_warmstart.cpp (efromrT mode),
+ws_deploy_eval.py, deploy_rT.csv, deploy_train.csv.
