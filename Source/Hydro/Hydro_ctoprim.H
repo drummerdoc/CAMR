@@ -74,13 +74,13 @@ hydro_ctoprim(
 
         amrex::Real dpdr_e, dpde, gam1, cs,  p;
 
-        // Are all these EOS calls needed? Seems fairly convoluted.
-        EOS::REY2T  (rho, e, massfrac, T);
-        EOS::REY2P  (rho, e, massfrac, p);
-        EOS::REY2Gam(rho, e, massfrac, gam1);
-
-        EOS::REY2dpde  (rho, e, massfrac, dpde);
-        EOS::REY2dpdr_e(rho, e, massfrac, dpdr_e);
+        // One EOS state solve fills all five primitives (T, p, gam1, dpde,
+        // dpdr_e).  These were five separate same-(rho,e) calls that the
+        // RealFluidCO2 MRU cache collapsed into one solve; with that cache
+        // removed for GPU-portability, the fused entry does the single solve
+        // explicitly — byte-identical output, EOS-agnostic (every model
+        // implements REY2_prim).
+        EOS::REY2_prim(rho, e, massfrac, T, p, gam1, dpde, dpdr_e);
 
         q(i, j, k, QTEMP)  = T;
         q(i, j, k, QREINT) = e * rho;

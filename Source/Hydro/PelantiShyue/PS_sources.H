@@ -32,6 +32,7 @@
 #include <AMReX_MultiFab.H>
 #include <AMReX_ParmParse.H>
 #include <AMReX_Print.H>
+#include <AMReX_BLProfiler.H>
 #include <cmath>
 
 // -----------------------------------------------------------------
@@ -78,6 +79,7 @@ inline const PsSourceDials& ps_source_dials()
 inline void
 ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
 {
+    BL_PROFILE("PS::ps_apply_sources()");
     const PsSourceDials& dials = ps_source_dials();
 
     // Default-off fast path: nothing enabled -> true no-op (bit-exact).
@@ -103,6 +105,8 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
     //      (std::function EOS callback), matching ps_apply_relaxation.
     // -------------------------------------------------------------
     if (dials.flash_tau > amrex::Real(0.0)) {
+        // EOS-heavy: Wagner Psat metastability trigger + PR state per cell.
+        BL_PROFILE_VAR("PS::ps_source_flash()", ps_src_flash);
         const amrex::Real tau = dials.flash_tau;
         for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
             const amrex::Box bx = mfi.growntilebox(nghost);
@@ -149,6 +153,7 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
             amrex::Print() << "[ps_flash] cumulative cells flashed = " << nf << "\n";
             s_prev_flash = nf;
         }
+        BL_PROFILE_VAR_STOP(ps_src_flash);
     }
 
     // -------------------------------------------------------------
@@ -164,6 +169,8 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
     //      was reverted; the ported cell fn has the sign fix + caps.
     // -------------------------------------------------------------
     if (dials.mt_tau > amrex::Real(0.0)) {
+        // EOS-heavy: per-phase Gibbs g = h - T*s (EOS) drives finite-rate MT.
+        BL_PROFILE_VAR("PS::ps_source_masstransfer()", ps_src_mt);
         const amrex::Real tau  = dials.mt_tau;
         const amrex::Real gref = dials.mt_gref;
         for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
@@ -211,6 +218,7 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                            << nmt << "\n";
             s_prev_mt = nmt;
         }
+        BL_PROFILE_VAR_STOP(ps_src_mt);
     }
 
     // -------------------------------------------------------------
@@ -226,6 +234,8 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
     //        3 = ERROR : abort on first solid-region cell (regression use)
     // -------------------------------------------------------------
     if (dials.triple_point_action != 0) {
+        // EOS-heavy: dominant-phase state_from_rho_e_phase + optional RTY2E clip.
+        BL_PROFILE_VAR("PS::ps_source_triple()", ps_src_tp);
         const int action = dials.triple_point_action;
         const amrex::Real T_triple = EOS::T_triple();   // fluid triple point (EOS)
         for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
@@ -300,6 +310,7 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                            << "(cumulative) = " << ntp << "\n";
             s_prev_tp = ntp;
         }
+        BL_PROFILE_VAR_STOP(ps_src_tp);
     }
 }
 

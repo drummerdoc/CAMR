@@ -4,6 +4,12 @@ Status: audit complete (host build clean, 1D+2D). No GPU compile/run performed
 (sandbox has no CUDA/HIP toolchain) — the code changes below must be built and
 validated in a GPU-capable environment. This doc is the prioritized plan.
 
+>>> See §2d for the latest progress (profiling-driven reprioritization + the EOS
+>>> layer made device-clean + the #45 warm-start wired). The headline correction
+>>> from profiling: the RELAXATION is NOT the hotspot (0.9%); the positivity FLOOR
+>>> is (54%), followed by the finite-rate mass-transfer source (16%) and the flux
+>>> sound-speed pass (8%). Prioritize the floor/source/flux device paths, not relax.
+
 ## 1. Current device/host split (audited)
 
 The flux/hydro path is ALREADY GPU-portable; the per-cell EOS-Newton path
@@ -124,22 +130,93 @@ CORRECTION to section 1: the static MRU cache is in the FLUX path too (REY2*_pha
 all route through co2_state_from_rho_e_phase_cached) -> B3 blocks flux-on-device as
 well; EosDev bypasses it via un-cached hem::state_from_rho_e_phase.
 
+## 2d. PROGRESS (profiling + EOS device-clean + warm-start, this session)
+
+Built CAMR 2D with TINY_PROFILE=TRUE in Exec/CO2_PipeBreak (CAMR2d.gnu.TPROF.PS.ex)
+and profiled `inputs.satjet_demo2`, 5 steps. Added BL_PROFILE regions to the
+EOS-heavy loops. Findings (exclusive self-time, total 7.3 s):
+
+| region                         |  self | note |
+|--------------------------------|------:|------|
+| `PS::ps_apply_floor`           |  54%  | RYP2E + REY2T bisection; runs at 3 sites (reaction + post_regrid + avgDown) |
+| `PS::ps_source_masstransfer`   |  16%  | Gibbs g=h−Ts per mixed cell (`ps_mt_tau=1e-3` in demo2) |
+| `PS::wp_face_riemann`          |   8%  | HLLC per-face sound speeds |
+| `ctoprim`                      |   3%  | mixture (auto-detect) EOS |
+| `PS::ps_apply_relaxation`      |  0.9% | (mode 2) — negligible |
+
+So `post_regrid`/`avgDown` (each ~18% before instrumentation) were almost ENTIRELY
+`ps_apply_floor` EOS work, not AMReX bookkeeping. Relaxation — the assumed hotspot,
+and the only kernel ported to device (B1/B2, §2c) — is negligible.
+
+Changes landed this session (host build clean each time; NO GPU compile — sandbox
+is CPU-only aarch64/gcc):
+
+1. **Floor temperature solve → fixed-iteration, branchless** (`ps_apply_floor`,
+   PS_relaxation.H). Replaced the data-dependent expand loop (≤50 doublings) +
+   conditional bisection with a fixed 46-step bisection over a guaranteed-enclosing
+   bracket + `max()` clamp (no `if (T<tfloor)` guard). Removes the worst warp
+   divergence and makes the iteration count deterministic → strengthens the #47
+   y-reflection symmetry (mirror cells now follow an identical path). CPU-neutral
+   (the win is device divergence, not host throughput).
+
+2. **EOS caches made device-clean via host/device guard** (RealFluidCO2/EOS.H,
+   MLPx2/EOS.H). B3 RESOLVED without a CPU regression: both the auto-detect
+   (`co2_state_from_rho_e_cached`) and branch-locked (`co2_state_from_rho_e_phase_
+   cached`) MRU caches are now `#if __CUDA_ARCH__ …` forked — HOST keeps the
+   bit-exact ring (MEASURED ~2× on demo2, from cross-cell hits on uniform regions,
+   NOT just ctoprim clustering — the earlier "cache buys little" read was wrong),
+   DEVICE returns a pure solve (no mutable static). Both route through named pure
+   solves `co2_solve_rho_e` / `co2_solve_rho_e_phase`. The cache's MRU warm-start
+   seed stays OFF by default (box-independence).
+
+3. **ctoprim de-duplicated** (Hydro_ctoprim.H + `EOS::REY2_prim` in all three EOS
+   models). The five same-(ρ,e) calls (REY2T/P/Gam/dpde/dpdr) → one state solve,
+   fields read off it. Byte-identical; on device this is the cache's ctoprim job.
+
+4. **Flux P+c de-duplicated** (`EOS::REY2PCs_phase/_liquid/_vapor`; PS_umeth.cpp,
+   PS_hllc.H, PS_nscbc.H). P-then-c on the same (ρ,e,phase) → one branch-locked
+   solve. Byte-identical; device-clean 2→1.
+
+5. **#45 learned warm-start wired + accuracy-validated** (ps_warmstart_Tinit.H copied
+   into RealFluidCO2/; `ps_newton_solve_T_fixed` + `state_from_rho_e_phase_fixed` in
+   hem_pr_state.H; gated in `co2_solve_rho_e_phase`). Gate: HOST runtime
+   `CAMR.eos_warmstart_fixed` (default 0), DEVICE compile-time `PS_EOS_WARMSTART`
+   (default off), fixed count `PS_EOS_WS_NITER=3`. VALIDATED: with the learned seed
+   + fixed 3 iters, all 155 α₁-diagnostic points match the robust variable-iteration
+   solver to 10-digit print precision on demo2 (on-distribution). On HOST it is a net
+   SLOWDOWN (7.3→9.2 s, concentrated in the mass-transfer source's diverse-state
+   misses paying the 24×24 tanh MLP) — expected: it is a DEVICE play (no cache →
+   every cell solves; fixed count → no divergence; hardware tanh). Correctly off by
+   default on host. The warm-start is a pure function of (ρ,e,phase) with constexpr
+   weights → MPI-safe, bitwise-reproducible across decompositions, and thread-safe
+   (unlike the MRU cache).
+
+Still device-UNVERIFIED (host bit/accuracy-matched only): everything above. Device
+items to check on a GPU compile: `constexpr` weight arrays may need `__constant__`
+placement (runtime-indexed → address taken); `std::log`/`std::tanh` device overloads
+(HIP/SYCL); MLP register/occupancy pressure (48 doubles local → consider `float`,
+force unroll). The floor's auto-detect `REY2T` is NOT warm-started (the #45 net is
+phase-aware; the floor needs a phase-agnostic/guessed seed) — that is the increment
+that would actually attack the 54% on device.
+
 ## 3. Staged plan (updated for the separate-kernel decision)
 
-1. **B0+B1 (new device-native production kernel, PS_relax_device.H).** Write the
-   frozen production relaxation kernels (mode 0/2/3) device-clean: no getenv (knobs
-   as args), no std::function (device EOS functor forwarding to EOS::), HEM_HD
-   qualifier. Leave hem_pelanti_shyue.H (host/standalone) untouched. Validate:
-   device kernel bit-matches the host kernel under production env settings, then
-   A–C + zerod bit-match on host.
-2. **B3 (stateless seed).** Wire `ps_warmstart_Tinit` (#45) as the device Newton
-   seed; drop the static cache on the device path; fixed iteration count, no
-   convergence-check branch (feasibility already measured: k=3 -> 100% on the
-   sampled cloud).
-3. **B2 + B5 (port the loops).** Convert relax/sources/floor/resync/closure
-   MFIter+LoopOnCpu to MFIter+ParallelFor device lambdas. Audit captures ([=]),
-   remove host helpers. Validate A–C + zerod + a satjet step vs the host result
-   (bitwise on host; tolerance-match host-vs-device).
+1. **B0+B1 (new device-native production kernel, PS_relax_device.H).** [DONE, §2c]
+   Frozen production relaxation kernels (mode 0/2/3) device-clean; host bit-match
+   8/8. NOTE: profiling (§2d) shows relax is only 0.9% — this was the least
+   important kernel to have ported first.
+2. **B3 (stateless seed).** [DONE, §2d] Caches host/device-forked (host keeps the
+   ~2× cache; device = pure solve). `ps_warmstart_Tinit` wired + fixed-iter Newton,
+   accuracy-validated on host (n=3, 10-digit match on demo2). Device compile still
+   to verify (`__constant__`/device-math/registers).
+3. **B2 + B5 (port the loops).** [NEXT — REPRIORITIZED by §2d profiling] Convert the
+   MFIter+LoopOnCpu drivers to MFIter+ParallelFor device lambdas, in COST order:
+   **`ps_apply_floor` FIRST (54%)**, then `ps_apply_sources` (mass-transfer, 16%),
+   then `ps_dilute_energy_closure`/`ps_resync_phase_energy`. The EOS underneath is
+   now device-clean (§2d 2–4), so this is the mechanical LoopOnCpu→ParallelFor step
+   with a capture ([=]) audit. Also warm-start the auto-detect solve so the floor's
+   `REY2T` benefits on device (needs a phase-agnostic seed — #45 follow-up). Validate
+   A–C + zerod + a satjet step (bitwise on host; tolerance host-vs-device).
 4. **B4 (diagnostics).** Confirm all host-only diagnostics run on a host copy when
    enabled; assert they are never compiled into a device kernel.
 5. **Full-run validation** on GPU HW: satjet demo2 device vs host — regression on the

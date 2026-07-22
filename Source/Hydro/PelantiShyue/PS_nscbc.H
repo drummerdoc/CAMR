@@ -189,15 +189,12 @@ _wallis_c_at_cell(const amrex::Real s[NVAR],
     // these to build the Wallis frozen mixture c below, so any
     // per-phase inconsistency here would corrupt the boundary
     // impedance.
-    Real P_1, P_2;
-    EOS::REY2P_liquid(rho_1, e_1, Y, P_1);
-    EOS::REY2P_vapor (rho_2, e_2, Y, P_2);
+    // One branch-locked solve per phase -> both P and c (device-clean 2->1).
+    Real P_1, P_2, c1, c2;
+    EOS::REY2PCs_liquid(rho_1, e_1, Y, P_1, c1);
+    EOS::REY2PCs_vapor (rho_2, e_2, Y, P_2, c2);
     if (!std::isfinite(P_1) || P_1 <= Real(0.0)) P_1 = P_mix;
     if (!std::isfinite(P_2) || P_2 <= Real(0.0)) P_2 = P_mix;
-
-    Real c1, c2;
-    EOS::REY2Cs_liquid(rho_1, e_1, Y, c1);
-    EOS::REY2Cs_vapor (rho_2, e_2, Y, c2);
     if (!std::isfinite(c1) || c1 <= Real(0.0)) c1 = Real(1.0);
     if (!std::isfinite(c2) || c2 <= Real(0.0)) c2 = Real(1.0);
 

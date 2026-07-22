@@ -851,6 +851,39 @@ bool ps_newton_solve_T(const PRFluid& f, amrex::Real v_m,
     return false;   // max_iter reached — should not happen (diagnostic hook)
 }
 
+//  ps_newton_solve_T_fixed — FIXED-iteration, convergence-branch-free variant
+//  of ps_newton_solve_T (GPU-portability: #45 learned warm-start pairing).
+//  The robust solver above has a DATA-DEPENDENT trip count (it returns as soon
+//  as the dual tolerance is met), which diverges a warp.  Given a near-
+//  converged seed from ps_warmstart_Tinit, a small FIXED number of steps
+//  suffices over the whole visited (rho,e,phase) cloud (#45: n=3 -> 100%
+//  converged after on-distribution retrain).  Same per-step update (damped
+//  Newton on e_PR(T,v_m)=e_target) minus the early-out, so every lane does
+//  identical work — no divergence, deterministic (box-independent) result.
+//  The Newton is seed-independent at convergence, so with enough fixed steps
+//  this matches the robust solver to its tolerance; fewer steps trade a
+//  bounded truncation for uniform cost.
+AMREX_GPU_HOST_DEVICE
+AMREX_FORCE_INLINE
+void ps_newton_solve_T_fixed(const PRFluid& f, amrex::Real v_m,
+                             amrex::Real e_mol_target, amrex::Real& T, int niter)
+{
+    for (int it = 0; it < niter; ++it) {
+        amrex::Real e_dep, s_dep, cv_dep;
+        departureFunctions(f, T, v_m, e_dep, s_dep, cv_dep);
+        const amrex::Real e_mol        = e_ig_per_mole(f, T) + e_dep;
+        const amrex::Real cv_mol_total = R_gas * cv_ig_over_R(f, T) + cv_dep;
+        const amrex::Real r            = e_mol - e_mol_target;
+
+        amrex::Real dT = -r / cv_mol_total;
+        if (amrex::Math::abs(dT) > amrex::Real(0.3)*T)
+            dT = (dT > amrex::Real(0) ? amrex::Real(1) : amrex::Real(-1))
+               * amrex::Real(0.3)*T;
+        T += dT;
+        if (T < amrex::Real(1)) T = amrex::Real(1);
+    }
+}
+
 AMREX_GPU_HOST_DEVICE
 inline State state_from_rho_e(const PRFluid& f, amrex::Real rho, amrex::Real e_target,
                               amrex::Real T_init = amrex::Real(-1.0))
@@ -1000,6 +1033,27 @@ inline State state_from_rho_e_phase(const PRFluid& f, amrex::Real rho,
     // dome this is the metastable extrapolation of the PR cubic; the
     // PR EOS is mathematically smooth there even though the physical
     // saturated mixture would prefer two-phase equilibrium.
+    return state_from_T_v(f, T, v_m, phase);
+}
+
+//  state_from_rho_e_phase_fixed — branch-locked (rho,e)->State using a FIXED
+//  niter Newton seeded by T_seed (the #45 learned warm-start).  Device-
+//  appropriate companion to state_from_rho_e_phase: uniform trip count, no
+//  convergence branch.  Same post-Newton dispatch (state_from_T_v on the
+//  requested branch).
+AMREX_GPU_HOST_DEVICE
+AMREX_FORCE_INLINE
+State state_from_rho_e_phase_fixed(const PRFluid& f, amrex::Real rho,
+                                   amrex::Real e_target, Phase3 phase,
+                                   amrex::Real T_seed, int niter)
+{
+    const amrex::Real v_m = v_PR_from_rho(f, rho);
+    const amrex::Real e_mol_target = e_target * f.M;
+    amrex::Real T = (T_seed > amrex::Real(0.0) && std::isfinite(T_seed))
+                        ? T_seed
+                        : ((phase == Phase3::Liquid) ? amrex::Real(0.7)*f.pr.Tc
+                                                     : amrex::Real(1.0)*f.pr.Tc);
+    ps_newton_solve_T_fixed(f, v_m, e_mol_target, T, niter);
     return state_from_T_v(f, T, v_m, phase);
 }
 

@@ -42,6 +42,7 @@
 #include <AMReX_Array4.H>
 #include <AMReX_GpuQualifiers.H>
 #include <AMReX_Print.H>
+#include <AMReX_BLProfiler.H>
 #include <cmath>
 #include <cstdint>
 #include <string>
@@ -1153,6 +1154,9 @@ inline void
 ps_dilute_energy_closure(amrex::MultiFab& S_new, int nghost = 0)
 {
     using amrex::Real;
+    // EOS-heavy when enabled: 2 REY2PTS_phase + up to 2 RTY2E_* per touched
+    // cell.  Gated (CAMR.ps_dilute_closure); registers ~0 when off.
+    BL_PROFILE("PS::ps_dilute_energy_closure()");
     if (ps_dilute_closure() == 0) return;
     const Real a0 = ps_dilute_alpha0();
     const Real inv_a0sq = (a0 > Real(0.0)) ? Real(1.0)/(a0*a0) : Real(0.0);
@@ -1337,6 +1341,11 @@ inline void
 ps_apply_floor(amrex::MultiFab& S_new, int nghost = 0)
 {
     using amrex::Real;
+    // EOS-heavy when a floor is active: per two-phase cell it runs EOS::RYP2E
+    // (pressure floor) and a REY2T bisection (temperature floor).  Called from
+    // the reaction path AND from post_regrid / avgDown(state_indx), so this
+    // timer aggregates the floor's EOS cost across all three sites.
+    BL_PROFILE("PS::ps_apply_floor()");
     const Real pfloor = ps_pres_floor();
     const Real tfloor = ps_temp_floor();
     if (pfloor <= Real(0.0) && tfloor <= Real(0.0)) return;
@@ -1442,27 +1451,45 @@ ps_apply_floor(amrex::MultiFab& S_new, int nghost = 0)
                     // wrong branch and returns non-finite; the resulting
                     // isfinite cliff flips between mirror cells and reseeds
                     // the y-asymmetry (task #54).
+                    //
+                    // GPU-portability (de-divergence): the previous solve used
+                    // a DATA-DEPENDENT expand loop (`while (Tof < tfloor)`, up
+                    // to 50 doublings) followed by a conditional bisection.  On
+                    // a GPU that variable trip-count diverges the warp, and its
+                    // per-cell branchiness could make two mirror cells take
+                    // DIFFERENT iteration paths -> a round-off y-asymmetry (the
+                    // exact hidden-threshold failure mode we guard against).
+                    //
+                    // Replace it with a FIXED-iteration, branchless bisection.
+                    // REY2T(rho,.) is monotone increasing in e, so a bisection
+                    // on a bracket guaranteed to enclose e*(rho,tfloor) always
+                    // converges.  The bracket [ek-emar, ek+emar] is safe: the
+                    // internal energy needed to move any state to tfloor is
+                    // bounded by ~cv*tfloor, and emar = 4|ek| + 2e6 J/kg far
+                    // exceeds that for CO2 (and scales with |ek| so it stays
+                    // valid regardless of the energy reference offset).  We
+                    // ALWAYS compute e* and clamp with e_floor = max(e_floor,
+                    // e*): a warm cell has ek > e*, so max() leaves it exactly
+                    // unchanged -- no `if (T(ek) < tfloor)` guard needed.  Every
+                    // lane runs the SAME 46 iterations with select-based updates
+                    // -> convergent warp, deterministic (symmetry-safe) path.
                     auto Tof = [&](Real e) -> Real {
                         Real Tq; EOS::REY2T(rhok, e, Y, Tq);
                         return std::isfinite(Tq) ? Tq : Real(-1.0);  // cold
                     };
-                    if (Tof(ek) < tfloor) {
-                        Real e_lo = ek, e_hi = ek;
-                        Real step = std::max(std::abs(ek), Real(1.0e3));
-                        int g = 0;
-                        while (Tof(e_hi) < tfloor && g++ < 50) {
-                            e_lo = e_hi; e_hi += step; step *= Real(2.0);
-                        }
-                        if (Tof(e_hi) >= tfloor) {
-                            // 30 bisections -> ~1e-9 relative in energy, far
-                            // below round-off; more was pure cost (perf).
-                            for (int it = 0; it < 30; ++it) {
-                                const Real em = Real(0.5) * (e_lo + e_hi);
-                                if (Tof(em) < tfloor) e_lo = em; else e_hi = em;
-                            }
-                            if (e_hi > e_floor) e_floor = e_hi;
-                        }
+                    const Real emar = Real(4.0) * std::abs(ek) + Real(2.0e6);
+                    Real e_lo = ek - emar;   // T(e_lo) < tfloor  (very cold)
+                    Real e_hi = ek + emar;   // T(e_hi) > tfloor  (very hot)
+                    // 46 bisections: (2*emar)/2^46 is far below round-off in e.
+                    for (int it = 0; it < 46; ++it) {
+                        const Real em  = Real(0.5) * (e_lo + e_hi);
+                        const bool lo  = (Tof(em) < tfloor);   // still too cold
+                        e_lo = lo ? em : e_lo;                 // branchless
+                        e_hi = lo ? e_hi : em;                 // select
                     }
+                    // e_hi brackets e*(rho,tfloor) from above.  max() clamp is
+                    // a no-op for warm cells (ek > e*), raises cold ones.
+                    e_floor = std::max(e_floor, e_hi);
                 }
                 if (e_floor > ek) {
                     U(i,j,k, ue) = mk * (e_floor + kesp);
@@ -1610,6 +1637,9 @@ inline void
 ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
                     int nghost = 0, bool do_print = true)
 {
+    // EOS-heavy: per cell runs the branch-locked PR Newton (2-3 iters × 2
+    // phases).  This is the dominant physics cost of CAMR_advance.
+    BL_PROFILE("PS::ps_apply_relaxation()");
     // ---- GPU-port B2: fused device-kernel path (modes 0/2/3), gated. ----
     if (ps_relax_device() != 0) {
         const int relax_mode = ps_relax_mode();

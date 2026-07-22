@@ -162,17 +162,15 @@ Face face_from_state(int idir, const amrex::Real U[NVAR]) noexcept
     Y[0] = Real(1.0);
     for (int n = 1; n < NUM_SPECIES; ++n) Y[n] = Real(0.0);
 
-    // Branch-locked per-phase pressure + sound speed (task #185).
-    EOS::REY2P_liquid(f.rho_1, f.e_1, Y, f.P_1);
-    EOS::REY2P_vapor (f.rho_2, f.e_2, Y, f.P_2);
+    // Branch-locked per-phase pressure + sound speed (task #185).  One solve
+    // per phase yields both P and c (host cache deduped this; device did not).
+    Real c1, c2;
+    EOS::REY2PCs_liquid(f.rho_1, f.e_1, Y, f.P_1, c1);
+    EOS::REY2PCs_vapor (f.rho_2, f.e_2, Y, f.P_2, c2);
     constexpr Real P_floor = Real(1.0);
     if (!std::isfinite(f.P_1) || f.P_1 < P_floor) f.P_1 = P_floor;
     if (!std::isfinite(f.P_2) || f.P_2 < P_floor) f.P_2 = P_floor;
     f.P_mix = f.alpha_1 * f.P_1 + f.alpha_2 * f.P_2;
-
-    Real c1, c2;
-    EOS::REY2Cs_liquid(f.rho_1, f.e_1, Y, c1);
-    EOS::REY2Cs_vapor (f.rho_2, f.e_2, Y, c2);
     if (!std::isfinite(c1) || c1 <= Real(0.0)) c1 = Real(1.0);
     if (!std::isfinite(c2) || c2 <= Real(0.0)) c2 = Real(1.0);
 

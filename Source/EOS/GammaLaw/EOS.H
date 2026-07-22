@@ -346,6 +346,22 @@ namespace EOS{
     dpde = (gamma - 1.0) * R;
   }
 
+  //  Fused ctoprim entry (matches the RealFluidCO2 interface).  For the
+  //  gamma-law EOS every field is a cheap closed form, so this just forwards
+  //  to the individual wrappers — no shared solve to hoist.
+  AMREX_GPU_HOST_DEVICE
+  AMREX_FORCE_INLINE
+  void REY2_prim(amrex::Real R, amrex::Real E, amrex::Real* Y,
+                 amrex::Real& T, amrex::Real& P, amrex::Real& gam1,
+                 amrex::Real& dpde, amrex::Real& dpdr_e)
+  {
+    REY2T(R, E, Y, T);
+    REY2P(R, E, Y, P);
+    REY2Gam(R, E, Y, gam1);
+    REY2dpde(R, E, Y, dpde);
+    REY2dpdr_e(R, E, Y, dpdr_e);
+  }
+
   AMREX_GPU_HOST_DEVICE
   AMREX_FORCE_INLINE
   void RPE2dpdr_e(

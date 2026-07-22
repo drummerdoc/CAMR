@@ -133,6 +133,12 @@ namespace EOS {
   hem::State
   co2_state_from_rho_e_cached(amrex::Real rho, amrex::Real e)
   {
+      // Host/device split (see RealFluidCO2/EOS.H): the mutable static ring is
+      // host-only and relies on serial cross-cell reuse; the device pass calls
+      // the pure solve hook directly (device-clean).
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__) || defined(__SYCL_DEVICE_ONLY__)
+      return mlpx2_state_from_rho_e(rho, e);
+#else
       constexpr int NSLOTS = 4;
       static amrex::Real rho_cache[NSLOTS] = {amrex::Real(-1), amrex::Real(-1),
                                               amrex::Real(-1), amrex::Real(-1)};
@@ -151,6 +157,7 @@ namespace EOS {
       state_cache[next_slot] = st;
       next_slot = (next_slot + 1) % NSLOTS;
       return st;
+#endif
   }
 
   AMREX_GPU_HOST_DEVICE
@@ -159,6 +166,9 @@ namespace EOS {
   co2_state_from_rho_e_phase_cached(amrex::Real rho, amrex::Real e,
                                      hem::Phase3 phase)
   {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__) || defined(__SYCL_DEVICE_ONLY__)
+      return mlpx2_state_from_rho_e_phase(rho, e, phase);
+#else
       constexpr int NSLOTS = 4;
       const int p = (phase == hem::Phase3::Liquid) ? 0 : 1;
       static amrex::Real rho_cache[2][NSLOTS] =
@@ -181,6 +191,7 @@ namespace EOS {
       state_cache[p][next_slot[p]] = st;
       next_slot  [p] = (next_slot[p] + 1) % NSLOTS;
       return st;
+#endif
   }
 
   // ----------------------------------------------------------------
@@ -220,6 +231,20 @@ namespace EOS {
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void REY2dpdr_e(amrex::Real R, amrex::Real E, amrex::Real* /*Y*/, amrex::Real& dpdr_e)
   { hem::State s = co2_state_from_rho_e_cached(R, E); dpdr_e = s.P/s.rho; }
+
+  //  Fused ctoprim entry (one solve → all fields), matching the RealFluidCO2
+  //  interface.  Byte-identical fields to the individual wrappers; 5 solves→1.
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void REY2_prim(amrex::Real R, amrex::Real E, amrex::Real* /*Y*/,
+                 amrex::Real& T, amrex::Real& P, amrex::Real& gam1,
+                 amrex::Real& dpde, amrex::Real& dpdr_e)
+  {
+      const hem::State s = co2_state_from_rho_e_cached(R, E);
+      T = s.T; P = s.P;
+      gam1 = (s.rho*s.c*s.c)/s.P;
+      dpde = (gam1 - amrex::Real(1.0))*R;
+      dpdr_e = s.P/s.rho;
+  }
 
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void RTY2E(amrex::Real R, amrex::Real T, amrex::Real* /*Y*/, amrex::Real& E)
@@ -263,6 +288,18 @@ namespace EOS {
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void REY2Cs_vapor(amrex::Real R, amrex::Real E, amrex::Real* Y, amrex::Real& Cs)
   { REY2Cs_phase(R, E, Y, hem::Phase3::Vapor, Cs); }
+
+  //  Fused (rho,e,phase) -> P and c from ONE solve (matches RealFluidCO2).
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void REY2PCs_phase(amrex::Real R, amrex::Real E, amrex::Real* /*Y*/,
+                     hem::Phase3 phase, amrex::Real& P, amrex::Real& Cs)
+  { hem::State s = co2_state_from_rho_e_phase_cached(R, E, phase); P = s.P; Cs = s.c; }
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void REY2PCs_liquid(amrex::Real R, amrex::Real E, amrex::Real* Y, amrex::Real& P, amrex::Real& Cs)
+  { REY2PCs_phase(R, E, Y, hem::Phase3::Liquid, P, Cs); }
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void REY2PCs_vapor(amrex::Real R, amrex::Real E, amrex::Real* Y, amrex::Real& P, amrex::Real& Cs)
+  { REY2PCs_phase(R, E, Y, hem::Phase3::Vapor, P, Cs); }
 
   // ================================================================
   //  Inversion / initial-condition entry points (PR — EOS-agnostic

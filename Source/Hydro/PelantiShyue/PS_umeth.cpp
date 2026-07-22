@@ -491,20 +491,16 @@ ps_max_wave_speed_from_state(int idir, const Real U[NVAR]) noexcept
     Real Y[NUM_SPECIES];
     Y[0] = Real(1.0);
     for (int n = 1; n < NUM_SPECIES; ++n) Y[n] = Real(0.0);
-    // Per-phase P and c via branch-locked EOS (task #185).  We can
-    // get both from a single state_from_rho_e_phase call rather than
-    // the P-then-c(P,ρ) pair used before, but stick with two calls
-    // for consistency with the P-forward pattern used elsewhere.
-    Real P1, P2;
-    EOS::REY2P_liquid(rho_1, e1, Y, P1);
-    EOS::REY2P_vapor (rho_2, e2, Y, P2);
+    // Per-phase P and c via branch-locked EOS (task #185).  ONE solve per
+    // phase returns both (the state already carries P and c) — replaces the
+    // P-then-c pair, which the host EOS cache deduped but the device did not.
+    // Byte-identical result; device-clean 2->1 solves.
+    Real P1, P2, c1, c2;
+    EOS::REY2PCs_liquid(rho_1, e1, Y, P1, c1);
+    EOS::REY2PCs_vapor (rho_2, e2, Y, P2, c2);
     constexpr Real P_floor = Real(1.0);
     if (P1 < P_floor || !std::isfinite(P1)) P1 = P_floor;
     if (P2 < P_floor || !std::isfinite(P2)) P2 = P_floor;
-
-    Real c1, c2;
-    EOS::REY2Cs_liquid(rho_1, e1, Y, c1);
-    EOS::REY2Cs_vapor (rho_2, e2, Y, c2);
     if (!std::isfinite(c1) || c1 <= Real(0.0)) c1 = Real(1.0);
     if (!std::isfinite(c2) || c2 <= Real(0.0)) c2 = Real(1.0);
 
@@ -1477,6 +1473,11 @@ PS_umeth(const Box& bx,
         //      A⁻/A⁺ (non-conserved store), and (BL-2/BL-3a) raw waves/speeds.
         //      Loops over the grown wave box but writes flx/wpf only on
         //      the valid face box (guarded inside ps_wp_face). ----
+        //  EOS-heavy: ps_wp_face computes the P-S frozen HLLC wave speeds,
+        //  each of which needs a per-face state_from_rho_e_phase (PR).  NOTE:
+        //  on a GPU build these ParallelFors are async, so this timer only
+        //  reflects real kernel time in the serial/CPU (TinyProfiler) build.
+        BL_PROFILE_VAR("PS::wp_face_riemann()", ps_wp_face_prof);
         amrex::ParallelFor(wxbx,
         [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
             ps_wp_face(0, i, j, k, i-1, j, k, uin_arr, flx1, wp_fluct_x, wp_wave_x, store_w, xfbx, pk_ef);
@@ -1493,6 +1494,7 @@ PS_umeth(const Box& bx,
             ps_wp_face(2, i, j, k, i, j, k-1, uin_arr, flx3, wp_fluct_z, wp_wave_z, store_w, zfbx, pk_ef);
         });
 #endif
+        BL_PROFILE_VAR_STOP(ps_wp_face_prof);
 
         // ---- Pass 2 (BL-2): LeVeque van-Leer-limited correction fluxes. ----
         //  F̃_f = Σ_l ½|s_l|(1−|s_l|Δt/Δx) φ(θ_l) W_l   (per-component van

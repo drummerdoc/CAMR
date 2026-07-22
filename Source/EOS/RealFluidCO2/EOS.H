@@ -46,6 +46,14 @@
 // Bring in the SINTEF PR state machinery.  Both headers are
 // self-contained and device-inline.
 #include "hem_pr_state.H"
+// #45 learned Newton warm-start (branch-free MLP (log rho, e, phase)->T_init).
+#include "ps_warmstart_Tinit.H"
+
+// Fixed-iteration count for the warm-started branch-locked solve (#45: n=3
+// converged over the full visited cloud after on-distribution retraining).
+#ifndef PS_EOS_WS_NITER
+#define PS_EOS_WS_NITER 3
+#endif
 
 #define NUM_SPECIES 3
 
@@ -171,11 +179,86 @@ namespace EOS {
   //  builds the static becomes per-thread and starts fresh, which
   //  is semantically fine (cache is advisory).
   // ----------------------------------------------------------------
+
+  // Pure, device-clean (rho,e)->State solves — the single source of truth the
+  // host-only caches wrap, and what the device pass calls directly.  T_init=-1
+  // gives the deterministic phase-default seed (box-independent).
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  hem::State co2_solve_rho_e(amrex::Real rho, amrex::Real e,
+                             amrex::Real T_init = amrex::Real(-1.0))
+  { return hem::state_from_rho_e(co2_fluid(), rho, e, T_init); }
+
+  // Warm-start gate.  On the HOST it is a runtime toggle (CAMR.eos_warmstart_
+  // fixed, default 0) so the fixed-iteration path can be A/B'd against the
+  // robust solver without a rebuild.  On the DEVICE (where a ParmParse-backed
+  // static is illegal) it is the compile-time macro PS_EOS_WARMSTART.  The
+  // learned seed + fixed Newton is what makes the every-cell device solve
+  // affordable and branch-convergent once the caches fall away.
+#if !defined(__CUDA_ARCH__) && !defined(__HIP_DEVICE_COMPILE__) && !defined(__SYCL_DEVICE_ONLY__)
+  inline bool ps_eos_warmstart_fixed()
+  {
+      static const bool e = []() {
+          int v = 0; amrex::ParmParse pp("CAMR");
+          pp.query("eos_warmstart_fixed", v); return v != 0;
+      }();
+      return e;
+  }
+#endif
+
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  hem::State co2_solve_rho_e_phase(amrex::Real rho, amrex::Real e,
+                                   hem::Phase3 phase,
+                                   amrex::Real T_init = amrex::Real(-1.0))
+  {
+      const int ph = (phase == hem::Phase3::Liquid) ? 1 : 2;
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__) || defined(__SYCL_DEVICE_ONLY__)
+  #if defined(PS_EOS_WARMSTART)
+      const amrex::Real seed = (T_init > amrex::Real(0.0) && std::isfinite(T_init))
+                                 ? T_init
+                                 : amrex::Real(ps_warmstart_Tinit(double(rho), double(e), ph));
+      return hem::state_from_rho_e_phase_fixed(co2_fluid(), rho, e, phase, seed,
+                                               PS_EOS_WS_NITER);
+  #else
+      return hem::state_from_rho_e_phase(co2_fluid(), rho, e, phase, T_init);
+  #endif
+#else
+      if (ps_eos_warmstart_fixed()) {
+          const amrex::Real seed = (T_init > amrex::Real(0.0) && std::isfinite(T_init))
+                                     ? T_init
+                                     : amrex::Real(ps_warmstart_Tinit(double(rho), double(e), ph));
+          return hem::state_from_rho_e_phase_fixed(co2_fluid(), rho, e, phase, seed,
+                                                   PS_EOS_WS_NITER);
+      }
+      return hem::state_from_rho_e_phase(co2_fluid(), rho, e, phase, T_init);
+#endif
+  }
+
   AMREX_GPU_HOST_DEVICE
   AMREX_FORCE_INLINE
   hem::State
   co2_state_from_rho_e_cached(amrex::Real rho, amrex::Real e)
   {
+      // GPU-portability B3, host/device split.
+      //
+      // MEASURED: the 4-slot bit-exact cache is worth ~2x on CPU (satjet demo2
+      // 7.3s -> 16.1s with it gone) — NOT from ctoprim's 5-call cluster (that
+      // is now handled explicitly by EOS::REY2_prim) but from CROSS-CELL hits:
+      // large uniform regions share an identical (rho,e), so one cell solves
+      // and the rest hit.  Hits are bit-exact (a hit == a recompute), so this
+      // is deterministic and box-independent; only the (default-OFF) MRU warm-
+      // start seed was order-dependent, and it is kept off here.
+      //
+      // That cross-cell reuse relies on SERIAL traversal (cell N reusing cell
+      // N-1's slot).  On the device thousands of threads run concurrently with
+      // no shared mutable cache, so the cache neither compiles (mutable static)
+      // nor helps — a GPU build pays the full per-cell Newton regardless, which
+      // is what the learned warm-start (#45) + fixed-iteration solve address.
+      //
+      // So: keep the cache on the HOST (no CPU regression); on the DEVICE pass
+      // use a direct, deterministic solve (device-clean).
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__) || defined(__SYCL_DEVICE_ONLY__)
+      return co2_solve_rho_e(rho, e);
+#else
       constexpr int NSLOTS = 4;
       static amrex::Real rho_cache[NSLOTS] = {amrex::Real(-1), amrex::Real(-1),
                                               amrex::Real(-1), amrex::Real(-1)};
@@ -191,24 +274,9 @@ namespace EOS {
           }
       }
 
-      // Miss: warm-start the Newton from the most-recently-written
-      // cache slot (task #191, follow-up to #190).  In AMReX's
-      // ParallelFor iteration order adjacent cells are visited in
-      // sequence, so the MRU slot holds a spatial neighbour whose T
-      // is close to the current cell's true T.  O(1) — no metric
-      // computation.  Empirically the 4×log nearest-search added
-      // ~19% wall-clock overhead vs no cache, wiping out any Newton
-      // savings; MRU has zero overhead and captures the dominant
-      // spatial-locality case.  If the MRU entry is somehow bad
-      // (rho_cache < 0 at startup), pass T_init = -1 to fall back
-      // to the phase-default.
-      // Cross-cell warm-start is OFF BY DEFAULT (task: box-independence).
-      // Seeding from the MRU slot makes the converged EOS state depend on
-      // cell-traversal order → box-layout dependent (breaks AMReX
-      // box-independence) and relies on mutable static state that is not
-      // valid on GPU.  Default T_init = -1 (deterministic phase-default
-      // seed).  The MRU warm-start is a CPU-only performance option,
-      // opt-in via CAMR.eos_warmstart=1.
+      // Miss: optional MRU warm-start (CPU-only, OFF by default — it makes the
+      // converged state depend on cell-traversal order, breaking box-
+      // independence; opt-in via CAMR.eos_warmstart=1).  Default T_init=-1.
       static const bool s_warmstart = []() {
           int w = 0; amrex::ParmParse pp("CAMR");
           pp.query("eos_warmstart", w); return (w != 0);
@@ -217,12 +285,13 @@ namespace EOS {
       const amrex::Real T_init = (s_warmstart && rho_cache[mru] > amrex::Real(0))
                                   ? state_cache[mru].T
                                   : amrex::Real(-1.0);
-      hem::State st = hem::state_from_rho_e(co2_fluid(), rho, e, T_init);
+      hem::State st = co2_solve_rho_e(rho, e, T_init);
       rho_cache  [next_slot] = rho;
       e_cache    [next_slot] = e;
       state_cache[next_slot] = st;
       next_slot = (next_slot + 1) % NSLOTS;
       return st;
+#endif
   }
 
   // -----------------------------------------------------------------
@@ -247,6 +316,12 @@ namespace EOS {
   co2_state_from_rho_e_phase_cached(amrex::Real rho, amrex::Real e,
                                      hem::Phase3 phase)
   {
+      // Host/device split (see co2_state_from_rho_e_cached): the mutable static
+      // ring is host-only and relies on serial cross-cell reuse; the device
+      // pass calls the pure per-branch solve directly (device-clean).
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__) || defined(__SYCL_DEVICE_ONLY__)
+      return co2_solve_rho_e_phase(rho, e, phase);
+#else
       constexpr int NSLOTS = 4;
       // Two independent ring buffers — one per phase — so a phase-2
       // query never evicts a phase-1 entry we're about to reuse.
@@ -286,13 +361,13 @@ namespace EOS {
       const amrex::Real T_init = (s_warmstart && rho_cache[p][mru] > amrex::Real(0))
                                   ? state_cache[p][mru].T
                                   : amrex::Real(-1.0);
-      hem::State st = hem::state_from_rho_e_phase(co2_fluid(), rho, e,
-                                                    phase, T_init);
+      hem::State st = co2_solve_rho_e_phase(rho, e, phase, T_init);
       rho_cache  [p][next_slot[p]] = rho;
       e_cache    [p][next_slot[p]] = e;
       state_cache[p][next_slot[p]] = st;
       next_slot  [p] = (next_slot[p] + 1) % NSLOTS;
       return st;
+#endif
   }
 
   // ----------------------------------------------------------------
@@ -394,6 +469,27 @@ namespace EOS {
   void REY2dpdr_e(amrex::Real R, amrex::Real E, amrex::Real* /*Y*/, amrex::Real& dpdr_e)
   {
       hem::State s = co2_state_from_rho_e_cached(R, E);
+      dpdr_e = s.P / s.rho;
+  }
+
+  //  ρ, e → ALL ctoprim primitives from ONE state solve.
+  //  ctoprim previously issued five separate REY2T/P/Gam/dpde/dpdr calls on
+  //  the identical (ρ,e); the (now-removed) MRU cache collapsed them into a
+  //  single Newton.  This fused entry does that explicitly and cache-free:
+  //  solve once, read every field off the state.  Per-field formulas are
+  //  byte-identical to the individual wrappers above, so ctoprim output is
+  //  unchanged — only the solve count drops 5→1.  Device-clean.
+  AMREX_GPU_HOST_DEVICE
+  AMREX_FORCE_INLINE
+  void REY2_prim(amrex::Real R, amrex::Real E, amrex::Real* /*Y*/,
+                 amrex::Real& T, amrex::Real& P, amrex::Real& gam1,
+                 amrex::Real& dpde, amrex::Real& dpdr_e)
+  {
+      const hem::State s = co2_state_from_rho_e_cached(R, E);   // one solve
+      T      = s.T;
+      P      = s.P;
+      gam1   = (s.rho * s.c * s.c) / s.P;
+      dpde   = (gam1 - amrex::Real(1.0)) * R;
       dpdr_e = s.P / s.rho;
   }
 
@@ -638,6 +734,30 @@ namespace EOS {
   {
       REY2Cs_phase(R, E, Y, hem::Phase3::Vapor, Cs);
   }
+
+  //  Branch-locked (rho,e,phase) -> P AND sound speed c from ONE solve.
+  //  The flux path (PS_umeth wave-speed helper, PS_hllc, PS_nscbc) computes
+  //  P then c on the SAME (rho,e,phase) — two branch-locked solves the host
+  //  cache collapses to one, but the device pays 2x (no cache).  This fused
+  //  entry reads both fields off a single solve: byte-identical to the
+  //  REY2P_phase-then-REY2Cs_phase pair, device-clean 2->1.
+  AMREX_GPU_HOST_DEVICE
+  AMREX_FORCE_INLINE
+  void REY2PCs_phase(amrex::Real R, amrex::Real E, amrex::Real* /*Y*/,
+                     hem::Phase3 phase, amrex::Real& P, amrex::Real& Cs)
+  {
+      hem::State s = co2_state_from_rho_e_phase_cached(R, E, phase);
+      P  = s.P;
+      Cs = s.c;
+  }
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void REY2PCs_liquid(amrex::Real R, amrex::Real E, amrex::Real* Y,
+                      amrex::Real& P, amrex::Real& Cs)
+  { REY2PCs_phase(R, E, Y, hem::Phase3::Liquid, P, Cs); }
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void REY2PCs_vapor(amrex::Real R, amrex::Real E, amrex::Real* Y,
+                     amrex::Real& P, amrex::Real& Cs)
+  { REY2PCs_phase(R, E, Y, hem::Phase3::Vapor, P, Cs); }
 
   AMREX_GPU_HOST_DEVICE
   AMREX_FORCE_INLINE
