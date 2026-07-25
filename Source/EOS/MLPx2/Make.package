@@ -17,3 +17,10 @@
 # ../RealFluidCO2 to the include path in the exec build.  See README.md.
 
 CEXE_headers += EOS.H
+CEXE_headers += mlpx2_fwd_net.H
+CEXE_headers += hem_pr_state.H
+CEXE_headers += hem_saturation_amrex.H
+
+# Table data (bicubic PR EOS) compiled ONCE here; mlpx2_fwd_net.H only
+# declares the arrays extern, so the widely-included header stays small.
+CEXE_sources += mlpx2_table_data.cpp
