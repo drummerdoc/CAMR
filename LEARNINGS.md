@@ -957,3 +957,89 @@ grid under-serves where the solver actually goes -> the active-learning loop
 (harvest deployment dist -> retrain) is the fix. Enabled by #64 (physical minor/liquid
 branch). Files (co2-eos-cfd, uncommitted): eos_warmstart.cpp (efromrT mode),
 ws_deploy_eval.py, deploy_rT.csv, deploy_train.csv.
+
+## MLPx2 table EOS — surrogate arc, placement & refinement findings (session: eos-surrogate)
+GOAL: a fast, device-friendly, derivative-consistent EOS surrogate for the PS 6-eq
+solver, distilled from PR CO2. Backend lives in Source/EOS/MLPx2/ (USE_MLPX2_EOS,
+Eos_Model=MLPx2). Runtime gates: CAMR.eos_mlp (default 1), CAMR.eos_table_branch
+(default 1 = branch-locked phase solve; 0 = auto-detect table).
+
+### How MLPx2 works (the WORKING design — keep)
+(rho,e) -> bicubic (Catmull-Rom C1) table lookup. Two backends were tried; the TABLE
+won over the distilled net (net had a derivative-noise floor + non-uniform accuracy).
+CRITICAL DESIGN: the table stores a SMOOTH quantity T(rho,e) (+ s), then the per-phase
+state is reconstructed by handing T to the ANALYTIC PR state_from_T_v on the requested
+branch -> mutually-consistent P, c. This is NOT a workaround: the analytic reconstruction
+does real, irreplaceable work (see direct-P dead end). Auto path (A/C single-phase) uses
+TBL_T/TBL_S; branch-locked path (B-cases) uses TBL_TL/SL (liquid), TBL_TV/SV (vapor) —
+the metastable single-phase EXTRAPOLATION past the dome that PS relaxation/flux require.
+ACCURACY vs PR (same build, eos_mlp 1 vs 0): A/C single-phase ~1e-6 to 6e-6 (excellent);
+B-cases (cross-critical) ~0.4-0.5% P (CHECK, near-passing). Data is git-ignored
+(mlpx2_table_data.cpp ~7MB) + committed #error placeholder; `make tables` generates,
+`make clean-tables` restores placeholder (neither called by clean/realclean). Build FAILS
+early if tables not generated. See Make.CAMR MLPx2 block.
+
+### DEAD END / DON'T RETRY: direct (P,c) branch table
+HYPOTHESIS (wrong): B-case residual is T-error x (dP/dT) amplified in the stiff
+compressed liquid; table P,c DIRECTLY from PR to avoid the T->state_from_T_v step.
+RESULT: 30-60x WORSE — B4 P 4.7e-3 -> 1.6e-1, B9 3.9e-3 -> 2.4e-1. REVERTED.
+WHY: the branch tables are the METASTABLE extrapolation, where P(rho,e) carries the
+van-der-Waals / near-spinodal LOOP (non-monotonic, steep as ∂P/∂rho -> 0 and reverses).
+A coarse bicubic cannot represent a loop; the analytic PR reconstruction from a smooth T
+reproduces it exactly. => tabling a smooth quantity + analytic reconstruction is STRICTLY
+better than a direct-state table in the near-critical/metastable region. Do not re-try
+direct P,c (or any full-direct-state table) on the branch. Full revert done (gen_table.cpp
+3-col, build_table.py T/S branch, header no mlpx2_branch, EOS.H T-path).
+
+### B-case residual — FULLY DIAGNOSED: NOT a branch-table problem
+Two independent fixes both FAILED, exonerating the branch tables:
+ (1) Forced clamped-Hermite PATCH (refine branch T) exactly at the max-|dP| cell
+     (logrho~3.00, e~-1.3e5, alpha1=1.000 pure liquid) -> B4 4.75e-3 -> 4.70e-3 (no move).
+ (2) Direct (P,c) table (above) -> far worse.
+Neither better T resolution NOR direct P/c touches the ~0.5%. The residual-location
+diagnostic (table vs PR in one build, find max-|dP| cells, read their state) shows the
+error MANIFESTS in the stiff single-phase compressed liquid (logrho~2.97-3.00), but that
+is where accumulated error SHOWS UP (high sensitivity), NOT where it is GENERATED. A/C
+single-phase is ~800x better than B cross-critical, so the error is generated in the
+near-critical/two-phase crossing (auto-detect/mixture path or dynamics), not the branch
+tables. NEXT LEVER (if pursued): a GENERATION-localized diagnostic — instrument each EOS
+call along the trajectory (table vs PR at that cell's actual state) to find which call &
+regime leaks. Do NOT do more branch-table work for B-cases.
+
+### Coarse-base insight (data saving — actionable)
+A/C sit ~1e-6 vs 2e-3 tolerance = 3+ orders of margin; bicubic error ~h^2, so the 256^2
+base could drop to 64^2-128^2 with A/C still passing (~1e-4). The uniform 256^2 base is
+wasteful in the smooth single-phase regions. B-case residual is ORTHOGONAL to base
+resolution (structural/regime, per above), so coarsening the base neither hurts nor fixes
+them. => coarse base + (analytic reconstruction) is the right size/accuracy trade.
+
+### Residual-location diagnostic — KEEP as a permanent tool
+Verdict: keep it. Its value here was a NEGATIVE result — it (with the forced-patch test)
+proved the naive "refine the hotspot" fix won't work BEFORE we built an elaborate placement
+engine around it. But it measures MANIFESTATION, not GENERATION; do not wire it as a patch
+PLACEMENT driver on this evidence. The offline EOS-driven auto-placer (box where coarse
+table mis-fits PR, physical-T-masked) put the patch at logrho 3.15-3.30; the solver's
+actual sensitive band is logrho ~3.00 — "worst table error" != "where the solver is
+sensitive". Both are built (build_table.py: auto-placement + clamped Hermite patch with
+C0+C1 boundary clamp; --patch-box to force). The clamped-patch capability is CORRECT and
+worth keeping for a genuinely resolution-limited EOS, but PR B-cases are not that.
+
+### Architecture conclusion (MLPx2 vs a pure thermotabulation backend)
+The hybrid (table ONE smooth quantity + reconstruct the rest analytically) is more robust
+than a pure thermotabulation backend (table the full state directly) SPECIFICALLY near the
+critical point and in metastable extrapolations, where the state surfaces have loops
+(spinodal) and kinks (Wood-sound-speed cusp at the dome) that any finite table smooths
+away. Demonstrated, not assumed (direct-P dead end). The clamped-Hermite adaptive patch is
+the orthogonal "how-fine-where" layer over WHATEVER is tabled. For this fluid's hard region,
+smooth-table + analytic reconstruction is the design; a full direct-state table is not.
+
+### KEY FILES (MLPx2)
+Source/EOS/MLPx2/: EOS.H (backend; mlpx2_state_from_rho_e / _phase; OOD guard |x|>4sigma
+-> PR; guarded MRU cache host / pure device), mlpx2_fwd_net.H (committed stable interface:
+Catmull-Rom bicubic, mlpx2_fwd/_fwd_phase, clamped-Hermite patch mlpx2_patchT/_in_patch,
+extern decls), mlpx2_table_params.H + mlpx2_table_data.cpp (GENERATED, git-ignored),
+Make.package, hem_*.H (forwarders -> RealFluidCO2). tools/gen_table.cpp (PR grid evaluator,
+-DHEM_NO_AMREX), tools/build_table.py (generator: base 256^2 auto/L/V + EOS-driven
+auto-placement + clamped Hermite patch; --patch-box override; bakes CO2 norm+domain).
+Harness: Exec/CO2_RiemannSuite/run_ac_suite.py (table vs PR, OK<2e-3). Make.CAMR: MLPx2
+block + `tables`/`clean-tables` targets.
