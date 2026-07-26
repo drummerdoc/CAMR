@@ -1137,6 +1137,29 @@ NEW GERG SUITE REFERENCES: Exec/CO2_RiemannSuite/gerg_refs/g1_{A3-Lax-like_00296
 C3-Strong-shock-V_00300, B4-Cross-critical_00250, B9-Deep-Expansion_00247} (exact suite
 params replayed from c1 job_info; GERG exe). These are the regression targets for the
 stage-2 table fast path (table-vs-analytic via eos_diag pattern).
+HOST VERIFICATION (user-run, llvm/MPI): (1) RealFluidCO2 suite after EosDev/prob.H
+interface changes: A2/A4/A5/A6/C1/C2 = 0.00e+00 (BYTE-IDENTICAL to refs -> changes
+value-neutral, as designed); B9 1e-14 (round-off); A3 3e-11/C3 1e-10 (known FMA class);
+B4 1.54e-4/9.07e-4/1.91e-3 (= recorded Fix1 footprint, pre-existing); A1 2.19e-6 OK.
+PASS. (2) MLPx2 suite on host == sandbox-recorded values to ALL PRINTED DIGITS
+(llvm-Mac vs gnu-ARM!): A1 5.78e-6 -> #73 CLOSABLE (was auto-path dome defect).
+(3) GERG host build + B4 ran, plotfiles OK. (5) THERMOPACK CROSS-CHECK of gerg_co2_ref:
+P rel 0..1.3e-14 at 6 states INCL. the in-dome bare-surface point (both give raw
+-8.47e6 Pa at 230K/1100 - thermopack TV-interface does not flash) -> GERG evaluator
+oracle gap CLOSED. (4) satjet 2D MLPx2 build: user hit "UMY needs DIM=1 guards" -- NOT
+REPRODUCIBLE in sandbox with DIM=2 (builds clean); diagnosis: accidental DIM=1 build of
+the 2D-only PipeBreak case (prob.H/bcnormal legitimately use UMY); fix = make clean &&
+make DIM=2 Eos_Model=MLPx2. amr.v=1 gives STEP/TIME/DT lines (AMReX Amr verbose).
+(4b) SATJET 2D + TABLE BACKEND PASS (user host run, zoomNoMT steps 100-300): drop=0 at
+every step, dense-slug P p5/p50/p95 ~ 13.5-18.2 bar, Pmax 18-19, rho_min 20.1-20.3 —
+matches the validated PR-analytic signature; the gated auto path (2D bsplit) is stable.
+DIM=1-guard build error was indeed an accidental DIM=1 build (2D build fine).
+RENAME DECISION (user-approved scheme): RealFluidCO2 -> PR, MLPx2 -> PRTab, GERG stays,
+stage-2 tables -> GERGTab. Rule: <EOS> = analytic, <EOS>Tab = table-accelerated. Flags:
+eos_mlp -> eos_table, eos_mlp_auto -> eos_table_auto (DEPRECATED ALIASES kept: query new
+name then old). mlpx2_fwd_net.H -> prtab_bicubic.H; net-relic lam*.H headers removed from
+CAMR (training pipeline lives in co2-eos-cfd). Gate: post-rename PR + PRTab suites must
+reproduce golden outputs to every digit. "PRTab = formerly MLPx2" (renamed 2026-07).
 STAGE 2 REMAINING: bicubic T/s tables from guarded surfaces (gen_gerg_table dumps +
 hole-filling), eos_mlp-gated fast path in GERG/EOS.H, eos_diag port (reference = analytic
 guarded GERG), regression vs g1_ refs. Reference-offset item (arc step 2) largely moot for

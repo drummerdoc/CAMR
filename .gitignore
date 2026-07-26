@@ -66,3 +66,7 @@ Source/EOS/MLPx2/tools/_grid_*.tmp
 Source/EOS/MLPx2/mlpx2_fwd_net_lam*.H
 cvg*_0*
 mlpx2_diag.txt
+Exec/CO2_RiemannSuite/cvg*_0*
+Exec/CO2_RiemannSuite/rgr_*
+Exec/CO2_RiemannSuite/mlpx2_diag.txt
+Exec/CO2_RiemannSuite/*.old.*
