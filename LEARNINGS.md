@@ -1199,6 +1199,21 @@ by standalone compile of state_from_rho_e). (b) co2_pr.py entropy: switched to t
 (T,v)-based departure (old log(P...) form NaN'd on negative-P metastable states, killing the
 PR sat Newton at low T). (c) exact_riemann.py sat(): continuation seeding from nearest cached
 T (EOS-agnostic; GERG-tuned correlation seeds failed for PR at low T).
+FROZEN MODEL IMPLEMENTED + B9 MODEL-MATCH CONFIRMED (--model frozen in exact_riemann.py:
+adapter.state = raw branch surface, c floored at sqrt(2500), Fix1-style monotone-P extension
+past the dP/drho<2500 edge — extension never triggers in B9, states stay before the edge):
+B9 CAMR-128 vs exact-PR-frozen: rho 8.0e-3, u 3.6e-2 (collapsed from 6.2e-2/5.8e-1 vs HEM);
+star P* 5.676e5/u* 25.45 vs CAMR plateau 5.68e5/25.7 (0.1-1%). REMAINING P L1 0.20 is a
+DERIVED-FIELD COMPARISON ARTIFACT, root-caused: in the deep-metastable liquid plateau the
+plotfile 'pressure' (per-phase mixture rule, branch T1) and 'Temp' (auto-detect REY2T =
+EQUILIBRIUM T for a dome (rho,e)) are MUTUALLY INCONSISTENT surfaces — raw PR at CAMR's
+plotted (T=271.57, rho=909.4) gives 2.36e6, not the plotted 5.7e5 (implied branch T1~268.7,
+3K below plotted Temp). My exact-frozen (T,rho)->P also reports raw-P (1.83e6) at its state.
+=> to close the P comparison: reconstruct e1 = alpha1_rho1_E1/alpha1_rho1 from the plotfile
+and compare per-phase-consistent P1(rho1,e1) against the exact frozen P along the isentrope
+(or add a T1 derive). rho/u/star agreement already validates the frozen reference for
+convergence use; P-field comparison needs the consistent reconstruction. NOTE: GERG frozen
+model must use the GUARDED branch eval (gerg_co2_guard.H semantics), not bare python raw.
 CONVERGENCE DRIVER DONE (#13): CAMR Exec/CO2_RiemannSuite/convergence.py — runs CAMR1d per
 N (reuses plotfiles, prefix cvg<case>_<N>_), L1 vs exact CSV, rates, loglog plot + PR-vs-GERG
 pressure overlay (convergence_<case>.png). B4 results (eos_mlp=0): u rates 0.88/0.96,
