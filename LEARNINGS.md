@@ -1108,6 +1108,41 @@ Sandbox build note: CO2_RiemannSuite 1D MLPx2 objs cached; AMReX = sibling mount
 post-link rm + deletion of files from prior shell sessions fail on mount perms (run from
 fresh subdirs / fresh plot_file prefixes).
 
+## GERG CAMR BACKEND (stage 1, ANALYTIC) — BUILT + VALIDATED + REFS MINTED
+Eos_Model := GERG (Source/EOS/GERG/: EOS.H + gerg_co2{,_sat,_guard}.H copied from
+co2-eos-cfd; Make.package; Make.CAMR block -DUSE_GERG_EOS). Every EOS:: entry routes
+through the GUARDED evaluator; (rho,e)->T and (T,P)->rho are FIXED-COUNT (64) bisections
+on guarded surfaces (deterministic/warp-safe; stage-2 tables will replace hot paths).
+hem_pr_state.H included ONLY for the hem::Phase3/hem::State interface types (phase cache
+returns hem::State via g2hem converter for PS_ctoprim.H) — NO PR function called.
+Ideal-gas helpers (TY2Cv/T2Ei/T2Hi/HY2T) from gerg::alpha0, diffs from Tref=298.15.
+INTERFACE CHANGES (touch OTHER backends — RE-VERIFY PR/MLPx2 bit-identity on host):
+ (1) PS_relax_device.H EosDev::state_from_rho_e_phase now routes through EOS::REY2PTS_phase
+     + REY2Cs_phase (was direct hem::state_from_rho_e_phase(EOS::co2_fluid(),...)) —
+     EOS-agnostic; values identical for PR/MLPx2 (same solve; 2nd call = cache hit) but
+     UNVERIFIED bit-match, run A-C with RealFluidCO2 exe to confirm.
+ (2) Exec/CO2_RiemannSuite/prob.H ICs now EOS-agnostic: EOS::co2_sat_LV +
+     EOS::PYT2RE_liquid/vapor (was hem::satStateL/V + state_from_T_P_metastable — same
+     functions under RealFluidCO2, so PR ICs unchanged).
+BUILD GOTCHA: tmp_build_dir is SHARED across Eos_Model values and make does NOT track
+-D changes — switching EOS models can leave stale objects. Verified this build by OUTPUT
+(GERG IC densities); prefer make clean or per-EOS build dirs when switching.
+VALIDATION (sandbox, 1D, 128 cells): B4 GERG-CAMR vs exact-GERG-HEM: L1 rho 5.9e-3,
+u 3.1e-2, P 8.6e-3 (same magnitudes as PR-vs-exact-PR baseline); star u 7.549/7.567,
+P 5.1832e6/5.1836e6. 250 steps vs PR's 205 (stiffer liquid dt, physical). B9 (frozen
+model): clean, 0 dropouts, plateau u 21.8 (vs PR 25.4 — stiffer liquid, matches
+dP/(rho c) estimate), star consistent across contact to 0.05%; exact-GERG-frozen
+cross-check pending the guarded-branch python adapter.
+NEW GERG SUITE REFERENCES: Exec/CO2_RiemannSuite/gerg_refs/g1_{A3-Lax-like_00296,
+C3-Strong-shock-V_00300, B4-Cross-critical_00250, B9-Deep-Expansion_00247} (exact suite
+params replayed from c1 job_info; GERG exe). These are the regression targets for the
+stage-2 table fast path (table-vs-analytic via eos_diag pattern).
+STAGE 2 REMAINING: bicubic T/s tables from guarded surfaces (gen_gerg_table dumps +
+hole-filling), eos_mlp-gated fast path in GERG/EOS.H, eos_diag port (reference = analytic
+guarded GERG), regression vs g1_ refs. Reference-offset item (arc step 2) largely moot for
+the pure-GERG build (self-consistent ICs via EOS-agnostic prob.H); the +1.4088e5 J/kg
+constant remains relevant only for CROSS-EOS plotfile comparisons.
+
 ## GERG-2008 arc (session gerg-kickoff): next EOS behind the table interface
 DECISION: GERG-2008 pure-CO2 Helmholtz form (not full Span-Wagner) as the next reconstruction
 engine. Rationale: branch-free ~22-term polynomial/exp alpha_r (no SW non-analytic critical

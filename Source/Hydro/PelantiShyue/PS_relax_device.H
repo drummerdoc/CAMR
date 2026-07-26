@@ -77,19 +77,27 @@ struct EosDev {
     {
         const hem::Phase3 ph3 = (phase == 1) ? hem::Phase3::Liquid
                                              : hem::Phase3::Vapor;
-        const hem::State s = hem::state_from_rho_e_phase(
-            EOS::co2_fluid(), amrex::Real(rho), amrex::Real(e), ph3,
-            amrex::Real(-1.0));                       // T_init=-1: no warm-start
+        // EOS-AGNOSTIC: route through the EOS:: contract (REY2PTS_phase +
+        // REY2Cs_phase) exactly like the ps_make_camr_eos_api lambda.  For
+        // RealFluidCO2/MLPx2 this resolves to the same single solve as the
+        // previous direct hem::state_from_rho_e_phase call (second call is
+        // a cache hit on host / same pure solve on device) -> values
+        // bit-identical; and it makes the device relax path work for ANY
+        // backend (GERG has no hem::PRFluid).
+        amrex::Real P_, T_, S_, C_;
+        amrex::Real Yd[1] = {amrex::Real(1.0)};
+        EOS::REY2PTS_phase(amrex::Real(rho), amrex::Real(e), Yd, ph3, P_, T_, S_);
+        EOS::REY2Cs_phase (amrex::Real(rho), amrex::Real(e), Yd, ph3, C_);
         ph.rho   = rho;
         ph.e     = e;
-        ph.P     = double(s.P);
-        ph.T     = double(s.T);
-        ph.h     = e + double(s.P) / rho;             // MATCH lambda (not s.h)
-        ph.s     = double(s.s);
-        ph.g     = ph.h - double(s.T) * double(s.s);
-        ph.c     = double(s.c);
-        ph.valid = std::isfinite(s.P) && s.P > amrex::Real(0)
-                && std::isfinite(s.T) && s.T > amrex::Real(0);
+        ph.P     = double(P_);
+        ph.T     = double(T_);
+        ph.h     = e + double(P_) / rho;              // MATCH lambda (not s.h)
+        ph.s     = double(S_);
+        ph.g     = ph.h - double(T_) * double(S_);
+        ph.c     = double(C_);
+        ph.valid = std::isfinite(P_) && P_ > amrex::Real(0)
+                && std::isfinite(T_) && T_ > amrex::Real(0);
     }
 
     PS_HD double t_crit()   const { return double(EOS::T_crit()); }

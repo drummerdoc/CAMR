@@ -61,14 +61,13 @@ CAMR_riemann_side(int phase, amrex::Real T, amrex::Real P,
                   amrex::Real& rho_1, amrex::Real& e_1,
                   amrex::Real& rho_2, amrex::Real& e_2)
 {
-    const hem::PRFluid f = EOS::co2_fluid();
-
+    // EOS-AGNOSTIC (was direct hem/PR calls): saturation via
+    // EOS::co2_sat_LV, metastable branch states via EOS::PYT2RE_* --
+    // every backend (RealFluidCO2 / MLPx2 / GERG) provides these, so the
+    // ICs always live on the ACTIVE EOS surface.
     if (phase == PS_PHASE_TWOPHASE) {
         // Saturated liquid / vapor states at Psat(T).
-        hem::State Lst = hem::satStateL(f, T);
-        hem::State Vst = hem::satStateV(f, T);
-        rho_1 = Lst.rho;  e_1 = Lst.e;
-        rho_2 = Vst.rho;  e_2 = Vst.e;
+        EOS::co2_sat_LV(T, rho_1, e_1, rho_2, e_2);
 
         // Volume fraction of liquid from quality x (vapor mass frac).
         amrex::Real x = x_qual;
@@ -94,10 +93,8 @@ CAMR_riemann_side(int phase, amrex::Real T, amrex::Real P,
 
     // Both branches evaluated at (T,P); metastable continuation used
     // when the requested branch has no physical root there.
-    hem::State Lst = hem::state_from_T_P_metastable(f, T, P, hem::Phase3::Liquid);
-    hem::State Vst = hem::state_from_T_P_metastable(f, T, P, hem::Phase3::Vapor);
-    rho_1 = Lst.rho;  e_1 = Lst.e;
-    rho_2 = Vst.rho;  e_2 = Vst.e;
+    EOS::PYT2RE_liquid(P, nullptr, T, rho_1, e_1);
+    EOS::PYT2RE_vapor (P, nullptr, T, rho_2, e_2);
 
     alpha_1 = dom_liquid ? (amrex::Real(1) - alpha_trace) : alpha_trace;
 }

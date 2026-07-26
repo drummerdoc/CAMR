@@ -89,6 +89,15 @@ ifeq ($(Eos_Model),$(filter $(Eos_Model),MLPx2))
      endif
    endif
 endif
+ifeq ($(Eos_Model),$(filter $(Eos_Model),GERG))
+   DEFINES += -DUSE_GERG_EOS
+   EOS_DIR = GERG
+   # GERG-2008 pure-CO2 backend (analytic stage; guarded evaluator +
+   # generated saturation/edge splines, all committed headers -- no
+   # table-generation step needed yet).  hem_pr_state.H is included via
+   # -I Source/ ("EOS/RealFluidCO2/...") for the hem::Phase3 interface
+   # type ONLY -- no PR function is called (no cross-EOS fallback).
+endif
 Bdirs := $(CAMR_HOME)/Source
 Bdirs += $(CAMR_HOME)/Source/Hydro
 Bdirs += $(CAMR_HOME)/Source/Hydro/Godunov

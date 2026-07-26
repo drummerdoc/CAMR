@@ -1,0 +1,3 @@
+# GERG-2008 pure-CO2 EOS backend (header-only; analytic stage).
+# Tables (stage 2) will add generated data sources here, mirroring MLPx2.
+CEXE_headers += EOS.H gerg_co2.H gerg_co2_sat.H gerg_co2_guard.H
