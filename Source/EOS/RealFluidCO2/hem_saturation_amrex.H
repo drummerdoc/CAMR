@@ -55,9 +55,13 @@
   #include <cstdlib>
   #define AMREX_GPU_HOST_DEVICE
   #define AMREX_GPU_DEVICE
+  #define AMREX_FORCE_INLINE inline
   namespace amrex {
       using Real = double;
       namespace Math { inline double abs(double x) { return std::abs(x); } }
+      // newer hem code (max-packing clamp etc.) uses amrex::max/min
+      template <typename T> inline T max(const T& a, const T& b) { return a > b ? a : b; }
+      template <typename T> inline T min(const T& a, const T& b) { return a < b ? a : b; }
   }
 #endif
 

@@ -26,10 +26,10 @@ CASES = {
                    'prob.p_amb=5.0e6','prob.phase_L=1','prob.phase_R=0','prob.u_L=0','prob.u_R=0',
                    'prob.x_diaph=0.5','prob.x_qual_L=1.0','prob.x_qual_R=1.0','prob.alpha_trace=1.0e-6'],
              stop=7.33959e-4),
-  'B9': dict(args=['prob.T_L=270','prob.T_R=350','prob.p_L=10000000.0','prob.p_R=500000.0',
+  'B9': dict(args=['prob.T_L=280','prob.T_R=280','prob.p_L=12000000.0','prob.p_R=500000.0',
                    'prob.p_amb=5.0e5','prob.phase_L=1','prob.phase_R=0','prob.u_L=0','prob.u_R=0',
                    'prob.x_diaph=0.5','prob.x_qual_L=1.0','prob.x_qual_R=1.0','prob.alpha_trace=1.0e-6'],
-             stop=7.819e-4),
+             stop=7.818949e-4),
 }
 COMMON = ['CAMR.cfl=0.25','CAMR.do_mol=0','CAMR.ps_do_relax=1','CAMR.ps_flux=wp',
           'CAMR.ps_mt_tau=0','CAMR.ps_recon=1','CAMR.ps_wp_order=2',

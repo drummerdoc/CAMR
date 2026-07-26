@@ -1179,6 +1179,26 @@ differ from PR refs at O(10%) in u — new suite references are REQUIRED, not op
 BUILD NOTE: hem_pr_state.H HEM_NO_AMREX shim is STALE (misses amrex::max from the
 max-packing clamp + AMREX_FORCE_INLINE in newer code) => `make tables` (gen_table.cpp)
 is LATENTLY BROKEN — fix the shim when next touching MLPx2 table generation.
+EXACT-SOLUTION MODEL-MATCHING (critical, found via B9): the exact solver's equilibrium
+adapter = HEM limit (instantaneous P,T,g equilibrium; dome lever; Wood c). The B-SUITE AS
+CONFIGURED (ps_mt_tau=0 = MT OFF, mode-0) is the FROZEN model: no phase change, expansion
+rides the METASTABLE single-phase branch (no dome). B4: fan stays single-phase -> models
+coincide -> clean convergence. B9 (12MPa/280K -> 5bar, CORRECTED ICs from job_info — my
+first guess was wrong): fan dives deep into dome -> exact-HEM (P* 7.7e5, u* 88.4) vs CAMR
+frozen (P*~5.7e5, u*~26; mode-1 changes nothing) — u* ~26 matches the frozen liquid-branch
+integral dP/(rho c) ~ 19-26 m/s quantitatively. => B-case convergence refs MUST be
+model-matched: add --model frozen to exact_riemann.py (adapter.state=raw branch surface,
+dome logic off — trivial for PR; GERG frozen needs the GUARDED branch eval, not bare) OR
+run CAMR with instantaneous MT for HEM comparisons (check the coex-T gate doesn't block).
+B9 exact GERG-vs-PR (HEM, correct ICs): P* 1.02e6 vs 7.70e5 (33%!), u* 154.9 vs 88.4 (75%!),
+rho*L 100 vs 247 — the deep-blowdown regime is where EOS choice matters MOST (double-digit
+differences in the quantities that set running-fracture margins).
+ALSO FIXED THIS ROUND: (a) hem_saturation_amrex.H HEM_NO_AMREX shim: added amrex::max/min +
+AMREX_FORCE_INLINE (inside #else — inert for normal builds; unbreaks `make tables`; verified
+by standalone compile of state_from_rho_e). (b) co2_pr.py entropy: switched to the P-free
+(T,v)-based departure (old log(P...) form NaN'd on negative-P metastable states, killing the
+PR sat Newton at low T). (c) exact_riemann.py sat(): continuation seeding from nearest cached
+T (EOS-agnostic; GERG-tuned correlation seeds failed for PR at low T).
 CONVERGENCE DRIVER DONE (#13): CAMR Exec/CO2_RiemannSuite/convergence.py — runs CAMR1d per
 N (reuses plotfiles, prefix cvg<case>_<N>_), L1 vs exact CSV, rates, loglog plot + PR-vs-GERG
 pressure overlay (convergence_<case>.png). B4 results (eos_mlp=0): u rates 0.88/0.96,
