@@ -1005,6 +1005,7 @@ near-critical/two-phase crossing (auto-detect/mixture path or dynamics), not the
 tables. NEXT LEVER (if pursued): a GENERATION-localized diagnostic — instrument each EOS
 call along the trajectory (table vs PR at that cell's actual state) to find which call &
 regime leaks. Do NOT do more branch-table work for B-cases.
+[RESOLVED — diagnostic built & causal: see "B-case residual ROOT-CAUSED" below.]
 
 ### Coarse-base insight (data saving — actionable)
 A/C sit ~1e-6 vs 2e-3 tolerance = 3+ orders of margin; bicubic error ~h^2, so the 256^2
@@ -1043,3 +1044,66 @@ Make.package, hem_*.H (forwarders -> RealFluidCO2). tools/gen_table.cpp (PR grid
 auto-placement + clamped Hermite patch; --patch-box override; bakes CO2 norm+domain).
 Harness: Exec/CO2_RiemannSuite/run_ac_suite.py (table vs PR, OK<2e-3). Make.CAMR: MLPx2
 block + `tables`/`clean-tables` targets.
+
+### B-case residual ROOT-CAUSED (session eos-diag): AUTO path is the generator — branch tables CAUSALLY exonerated
+DIAGNOSTIC BUILT (CAMR.eos_diag=1, default 0; MLPx2/EOS.H): every call through the
+(rho,e[,phase]) caches ALSO runs full PR at the identical input; accumulates relP/relT/relc
+by call SITE x PATH (auto/branchL/branchV) x PR REGIME (1ph-vap/1ph-liq/two-phase/supercrit)
++ whitened-(rho,e) hist + worst-N samples + call-order windows; atexit dump ./mlpx2_diag.txt.
+Read-only & default-inert: diag-on vs diag-off plotfiles cmp-IDENTICAL. Host+serial only.
+B4 MEASURED (543,860 calls): branch path relP mean 1e-6..8e-6 (max 1e-3) = CLEAN. AUTO path:
+1ph-liq mean 0.28 / max 0.36 (71k calls, rho~1000 e~-1.3e5); two-phase mean 0.49 / max 0.90
+with c 313 vs 38 m/s (no Wood); near-dome vapor 0.12; supercrit 1.7e-6 (clean, by design).
+THREE mechanisms, all in mlpx2_state_from_rho_e (auto):
+ (1) auto-table T err ~8e-4 (branchL: 3e-7 — the auto T(rho,e) surface carries the DOME KINK,
+     contaminating the bicubic near the boundary) x liquid (dP/dT)_v stiffness -> 28% P.
+     "T-error x stiffness" was WRONG for branch tables, EXACTLY RIGHT for the auto table.
+ (2) NO DOME GATE: auto path always reconstructs state_from_T_v(...,Vapor) -> metastable
+     vapor instead of Psat/lever/Wood inside the dome (design TODO in_dome_gated never wired).
+ (3) same dome-kink contamination on the near-dome vapor side.
+AUTO-path dynamics entries: Hydro_ctoprim REY2_prim (mixture QPRES/QGAMC/QDPDE), Timestep.H
+REY2P, PS_relaxation.H T-floor bisection REY2T(rhok — per-phase rho through the AUTO call!),
+PS_umeth bsplit REY2P/REY2Gam (transverse, 2D only). Table-B4 even runs 158 steps vs 205
+(dt trajectory shifted via Timestep).
+CAUSAL TEST: new split gate CAMR.eos_mlp_auto (default 1; 0 = auto path->PR, branch path
+keeps table; default-inert, bit-identity verified). B4: P 4.75e-3 -> 9.3e-4, xmom 9.9e-3 ->
+2.0e-3, rho 3.6e-4 -> 1.54e-4 == EXACTLY the known Fix1-vs-prefix-ref footprint
+(9e-4/1.9e-3/1.5e-4) => branch-table contribution ~ZERO. B9: 3.9e-3 -> 4.0e-5 (100x, near
+A/C levels). A3/C3 unchanged (~4e-6). PROVEN: the ENTIRE B-case residual is auto-path
+generation.
+FIX (DONE, same session): DOME GATE + BRANCH PICK wired into mlpx2_state_from_rho_e:
+ - T_pred >= Tc: unchanged supercritical fast path (state_from_T_v Vapor, no Newton) —
+   A/C numbers bit-comparable to pre-gate.
+ - T_pred < Tc: classify rho against satStateL/satStateV(T_pred) (same test as
+   hem::classify_T_rho). IN-DOME: x from the volume lever, state via hem::state_from_T_x
+   (Psat/lever/equilibrium-Wood c — the SAME assembly PR auto-detect uses), so residual =
+   table T err through gentle dPsat/dT only. SINGLE-PHASE SUBCRITICAL: re-predict T from the
+   DETECTED phase's BRANCH table (kink-free, relT 3e-7 vs 8e-4 auto) and reconstruct on that
+   branch — kills both the (dP/dT)_v stiffness amplification AND the always-Vapor Fix1
+   spinodal-extension error (which was the dominant liquid-side mechanism). Degenerate
+   near-Tc sat states -> PR fallback.
+POST-FIX DIAGNOSTIC (B4): auto/1ph-liq 0.28 -> 7.8e-6 mean (36,000x); auto/two-phase 0.49 ->
+5.4e-3 mean. Residual pocket: near the VAPOR-side dome edge (rho~136, e~5.2e4) max 0.32-0.60
+over ~320+1.9k calls (classification flips + in-dome Psat(T_pred) vs true near-edge vapor P) —
+does NOT matter at profile level (below); table-regen without the kink would shrink it if ever
+needed.
+FULL SUITE, TABLE FULLY ON (run_ac_suite.py, tol 2e-3): ALL OK —
+ A1 5.8e-6 (!), A2 8.7e-6, A3 4.5e-6, A4 5.4e-6, A5 3.7e-6, A6 8.7e-6,
+ C1 9.7e-7, C2 1.2e-6, C3 1.9e-6,
+ B4 P 9.31e-4 xmom 1.97e-3 (== the Fix1-vs-prefix-ref floor: table contribution ~nil; was
+ 4.75e-3), B9 P 4.0e-5 (was 3.9e-3, 100x).
+NOTE #73: A1-Sod-strong's known 8.6% flag does NOT reproduce with the gated table build
+(now 5.8e-6) — A1's strong rarefaction crosses the dome, so it was plausibly the same
+auto-path defect; re-verify on host with exact ICs, then consider closing #73.
+COST NOTE: subcritical auto calls now pay 1 Psat + 2 state_from_T_P (classification; +
+state_from_T_x if in-dome) — still far cheaper than the PR T-Newton, and the supercritical
+hot path is untouched. If subcritical auto calls ever dominate a profile, replace the
+classification satStates with saturation-curve splines (co2-eos-cfd hem_sat_splines.H is the
+reference).
+FILES (UNCOMMITTED — commit on host): Source/EOS/MLPx2/EOS.H (diag machinery + site tags,
+eos_mlp_auto gate, dome gate + branch pick), LEARNINGS.md. Host follow-ups: rebuild + rerun
+suite on host amrex (sandbox used PeleLMeX-submodule amrex 26.06); 2D satjet sanity (bsplit
+transverse uses the auto path in 2D); A1/#73 adjudication.
+Sandbox build note: CO2_RiemannSuite 1D MLPx2 objs cached; AMReX = sibling mount "amrex";
+post-link rm + deletion of files from prior shell sessions fail on mount perms (run from
+fresh subdirs / fresh plot_file prefixes).

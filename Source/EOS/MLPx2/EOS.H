@@ -397,19 +397,55 @@ namespace EOS {
       const double xu = (double(e)   - mlpx2::U_M)   / mlpx2::U_S;
       if (std::abs(xr) > 4.0 || std::abs(xu) > 4.0)
           return hem::state_from_rho_e(f, rho, e);
-      // MLP forward: (rho,e) -> T_pred (s_pred unused on the single-phase
-      // supercritical fast path; it gates the dome, not needed for CO2_Sod).
+      // MLP forward: (rho,e) -> T_pred from the AUTO table (trained on the
+      // PR auto-detect surface, so inside the dome it approximates the
+      // equilibrium T(rho,e)).
       double T_pred, s_pred;
       mlpx2_fwd(double(rho), double(e), T_pred, s_pred);
       if (!std::isfinite(T_pred) || T_pred < 150.0 || T_pred > 1200.0)
           return hem::state_from_rho_e(f, rho, e);                    // guard -> PR
-      // Consistent thermodynamics at (rho, T_pred): ONE algebraic PR state
-      // eval (no Newton).  This is the MLPx2 design -- the net replaces the
-      // iterative T-solve; PR's closed-form state at the predicted T gives
-      // mutually-consistent P, c, s.  Supercritical: single real root, so
-      // the vapor branch IS the physical state.
       const amrex::Real v_m = hem::v_PR_from_rho(f, rho);
-      return hem::state_from_T_v(f, amrex::Real(T_pred), v_m, hem::Phase3::Vapor);
+
+      // Supercritical fast path (A/C hot path, unchanged): single real
+      // root, one algebraic PR state eval at (rho, T_pred), no Newton.
+      if (T_pred >= double(f.pr.Tc))
+          return hem::state_from_T_v(f, amrex::Real(T_pred), v_m, hem::Phase3::Vapor);
+
+      // ---- DOME GATE (subcritical) -------------------------------------
+      // The always-Vapor reconstruction is wrong below Tc: (a) inside the
+      // dome the PR auto-detect returns Psat/lever/equilibrium-c, and
+      // (b) a liquid-density query on the Vapor branch lands in Fix1's
+      // spinodal extension (B-case generation site; see LEARNINGS
+      // "B-case residual ROOT-CAUSED").  Classify against the saturation
+      // densities at T_pred, exactly as hem::classify_T_rho does.
+      const hem::State satL = hem::satStateL(f, amrex::Real(T_pred));
+      const hem::State satV = hem::satStateV(f, amrex::Real(T_pred), satL.P);
+      if (!(std::isfinite(double(satL.rho)) && std::isfinite(double(satV.rho))
+            && satL.rho > satV.rho))
+          return hem::state_from_rho_e(f, rho, e);        // degenerate near Tc -> PR
+
+      if (rho < satL.rho && rho > satV.rho) {
+          // In-dome: quality from the volume lever rule at T_pred, state
+          // assembled by the SAME routine the PR auto-detect uses
+          // (state_from_T_x: Psat, lever e/s/h, equilibrium/Wood c), so the
+          // only residual vs PR is the table's T error (gentle dPsat/dT
+          // amplification, not liquid stiffness).
+          const amrex::Real x = (amrex::Real(1.0)/rho - amrex::Real(1.0)/satL.rho)
+                              / (amrex::Real(1.0)/satV.rho - amrex::Real(1.0)/satL.rho);
+          return hem::state_from_T_x(f, amrex::Real(T_pred), x);
+      }
+
+      // Single-phase subcritical: reconstruct on the DETECTED branch (not
+      // Vapor).  Re-predict T from that branch's table -- the branch
+      // surfaces carry no dome kink (relT ~3e-7 vs ~8e-4 auto), which
+      // removes the (dP/dT)_v stiffness amplification in the liquid.
+      const bool liq = (rho >= satL.rho);
+      double T_br, s_br;
+      mlpx2_fwd_phase(double(rho), double(e), liq ? 1 : 2, T_br, s_br);
+      if (!std::isfinite(T_br) || T_br < 150.0 || T_br > 1200.0)
+          T_br = T_pred;                                   // fall back to auto T
+      return hem::state_from_T_v(f, amrex::Real(T_br), v_m,
+                                 liq ? hem::Phase3::Liquid : hem::Phase3::Vapor);
   }
 
   AMREX_GPU_HOST_DEVICE
