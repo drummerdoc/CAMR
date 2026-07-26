@@ -64,3 +64,5 @@ Source/EOS/MLPx2/mlpx2_table_params.H
 Source/EOS/MLPx2/tools/gen_table
 Source/EOS/MLPx2/tools/_grid_*.tmp
 Source/EOS/MLPx2/mlpx2_fwd_net_lam*.H
+cvg*_0*
+mlpx2_diag.txt

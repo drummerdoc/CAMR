@@ -1107,3 +1107,97 @@ transverse uses the auto path in 2D); A1/#73 adjudication.
 Sandbox build note: CO2_RiemannSuite 1D MLPx2 objs cached; AMReX = sibling mount "amrex";
 post-link rm + deletion of files from prior shell sessions fail on mount perms (run from
 fresh subdirs / fresh plot_file prefixes).
+
+## GERG-2008 arc (session gerg-kickoff): next EOS behind the table interface
+DECISION: GERG-2008 pure-CO2 Helmholtz form (not full Span-Wagner) as the next reconstruction
+engine. Rationale: branch-free ~22-term polynomial/exp alpha_r (no SW non-analytic critical
+terms -> GPU-safe: fixed op sequence, no guards/divergence), captures the PR->multiparameter
+accuracy step (SW<->GERG delta is the small residual), and is the pure-fluid limit of the
+mixture model (CCS impurities road). SW stays as offline truth oracle (CoolProp CO2 == SW;
+installed in sandbox: pip install CoolProp --break-system-packages; thermopack has NO
+linux-aarch64 wheel -> source-only in sandbox).
+KEY RESOURCES (user host): ~/src/SINTEF/thermotabulation = user's adaptive C1 tabulation
+project (piecewise-cubic simplicial-mesh tabulation of EOS callbacks incl GERG2008, forward
+(rho,U)->(T,p,c,s,betaL) + inverse, solid phase optional). Its libs/thermopack checkout is
+the coefficient source: src/gergdatadb.f90 CO2 entry (full-precision a/t/d/l_eos 22 terms,
+alpha0 n_id/t_id with cosh(4:5)/sinh(6:7) layout) + src/gerg.f90 alpha0Derivs_GERG (RR =
+Rgas_star 8.314510 / Rgas_fit 8.314472 prefactor). Saturation-boundary tracing to REUSE for
+dome/spline generation: thermotabulation src/table_generators/equilibrium/rhoU/
+(build_eq_multiregion + evaluators).
+DONE: co2-eos-cfd/src/eos_backends/gerg/gerg_co2_ref.py = executable spec (coefficients
+verbatim from gergdatadb.f90; per-mass state_TR + Maxwell psat Newton). VALIDATED: FD-vs-
+analytic derivs 1e-11; P(Tc,rhoc)=Pc to 1e-9; vs CoolProp-SW single-phase P rel 5e-5 (vapor/
+supercrit) to 3.8e-3 (stiff liquid at fixed (T,rho) — expected: ~0.05-0.1% density deviation
+x liquid stiffness; validation policy: table-vs-GERG must reference GERG, never SW); Maxwell
+Psat/rhoL/rhoV vs SW 1e-5..6e-4 across 220-300K, 4-5 Newton iters from Wagner-style seeds.
+NEXT (in order): (1) DONE — co2-eos-cfd/src/eos_backends/gerg/gerg_co2.H: header-only,
+branch-free, no-AMReX-dep (GERG_HD macro) state_TR(T,rho)->{P,e,s,h,g,cv,cp,c,dPdrho_T};
+NO guards inside (guard layer owns validity). Validated vs python spec: 144-pt grid across
+all regimes incl near-critical + in-dome bare surface, max rel ~7e-13 (gerg_selftest.cpp).
+(2) SAT SPLINES DONE — gen_sat_splines.py -> gerg_co2_sat.H (GENERATED): Hermite splines of
+rhoL/rhoV/Psat(T), 96 knots UNIFORM in theta=sqrt(1-T/Tc) (regularizes critical branch point;
+O(1) device index, no search), EXACT endpoint derivs (Clausius-Clapeyron + dP/dT|rho,
+dP/drho|T from evaluator; dPdT_rho added to State in .H and .py). Domain [T_trip, 304.0K];
+above -> supercritical by guard. DESIGN: spline ONLY the density curves; all sat properties
+evaluated analytically AT the splined densities -> consistency by construction. VALIDATED:
+off-knot rhoL/rhoV 1.3e-7, Psat 1.5e-8; runtime P(T,rhoL_spl) vs P(T,rhoV_spl) equal-pressure
+consistency 1e-9..1e-12 across dome incl 303.9K (C++ satchk). (3) GUARD LAYER DONE —
+gerg_co2_guard.H (kernel-facing API, TOTAL/branch-guarded/Newton-free/fixed-op):
+clampT [T_trip,T_max] + clampR [1e-6,1500]; state_TR_phase = raw surface to the PRECOMPUTED
+branch edge (dP/drho|T=CSQ_FLOOR=2500 traced offline into gerg_co2_sat.H splines RLE/RVE —
+the Fix1-march analog, NO runtime march), monotone C1 linear-P extension beyond, P_FLOOR
+1e3 Pa positive; state_from_T_x = splined sat rho + ALL properties analytic there +
+equilibrium (Wood) c from Clausius-Clapeyron + exact branch derivs (dv/dT|sat, ds/dT|sat
+per-mass); state_TR_auto = classify (spline compare) -> lever -> dispatch; NO cross-EOS
+fallback anywhere (single surface). VALIDATED (guardchk): isotherm monotonicity 0 violations
+(1400-pt sweeps, T=220..302K both branches), edge continuity <=9e-8, dome c~95-101 m/s <<
+cL,cV (Wood dip correct), lever exact, TOTALITY 40401-pt (T,rho) box sweep 0 bad.
+GUARD AMENDMENT (critical GERG-vs-PR difference found by table gen): the RAW GERG surface
+deep in the dome is VIOLENTLY unphysical (high-tau terms: e -> -1e8..-3e6 J/kg mid-dome at
+low T) — unlike PR's mild vdW loop. So the frozen-derivative extension must continue e AND s
+too (identities at the edge: de/drho|T=(P-T dPdT_rho)/rho^2, ds/drho|T=-dPdT_rho/rho^2),
+not just P. DONE in state_TR_phase. Consequence: e(T) at fixed rho is non-monotone in FAR
+extension zones (vapor branch ~50x past its edge) -> (rho,e) inversion ill-posed there ->
+those are TABLE HOLES by design (self-flagged), handled at runtime by the OOD guard (rare
+lanes may use the guarded analytic eval + FIXED-count bisection: deterministic, warp-safe).
+EXACT RIEMANN TOOLING (co2-eos-cfd/suite/exact_riemann.py, session gerg-kickoff cont.):
+EOS-agnostic exact solver (equilibrium adapter over any bare state_TR callback: Maxwell sat
+cache 1mK-quantized, dome lever + CC/Wood c, warm-Newton (rho,s)/(rho,P) inversions; RH
+shocks on equilibrium surface, isentrope-ODE fans THROUGH the dome; log-bisection star).
+CAVEAT: assumes classical wave structure (composite waves near dome not resolved — use
+fine-grid CAMR as arbiter). Precision ~1e-5. Companion co2_pr.py = python PR with CAMR
+params — matches hem_pr_state.H to ~1e-11 ONLY with full-precision constants
+(R=8.31446261815324, Om_a=0.45723552892138218, Om_b=0.07779607390388846 from
+hem_saturation_amrex.H — rounded 8.314/0.45724/0.0778 gives 1e-5 err). VALIDATED: B4
+exact-PR vs CAMR: IC rho_L 1005.9697 matches to 6 digits; L1(rho/u/P) 6.4e-3/3.4e-2/8.3e-3
+at N=128 -> 4.3e-3/1.8e-2/4.6e-3 at N=256 (converging to the exact solution at the expected
+~1st-order rate) => solver is a valid convergence reference.
+GERG-vs-PR PHYSICS (B4 exact): liquid rho_L 989.7 vs 1006.0 (1.6%), liquid c 665 vs 545
+(18% — PR's known liquid-c weakness), P* 5.18e6 vs 5.22e6, u* 7.57 vs 8.99 (17% contact
+velocity difference!). => EOS choice materially changes the B-case answer; GERG refs will
+differ from PR refs at O(10%) in u — new suite references are REQUIRED, not optional.
+BUILD NOTE: hem_pr_state.H HEM_NO_AMREX shim is STALE (misses amrex::max from the
+max-packing clamp + AMREX_FORCE_INLINE in newer code) => `make tables` (gen_table.cpp)
+is LATENTLY BROKEN — fix the shim when next touching MLPx2 table generation.
+CONVERGENCE DRIVER DONE (#13): CAMR Exec/CO2_RiemannSuite/convergence.py — runs CAMR1d per
+N (reuses plotfiles, prefix cvg<case>_<N>_), L1 vs exact CSV, rates, loglog plot + PR-vs-GERG
+pressure overlay (convergence_<case>.png). B4 results (eos_mlp=0): u rates 0.88/0.96,
+P 0.92/0.87 (clean ~1st order); DENSITY L1 is non-monotone 64->128 (rate -1.95) — NOT a bug:
+contact-cell ALIASING (interface vs cell-center alignment; single smeared contact cell
+contributes pointwise ~284 kg/m3). CAMR and exact agree on contact position (x=0.5066=u*t)
+to <1 cell; dome-crossing fan region converges cleanly. For density convergence use more N
+points or exclude +-2 cells at the contact. NO composite wave manifests in B4 (structure
+matches classical). Remaining: B9 + A/C cases, sonic-fan sampling untested, host N=512/1024
+sweep, MLPx2-table overlay.
+(rho,e) INVERSION + SURFACE SAMPLING DONE: gerg_invert.H (host/generator-side safeguarded
+bisection+Newton on the GUARDED surfaces — tables tabulate exactly what runtime evaluates);
+gen_gerg_table.cpp emits T/s(logrho,e) on auto+branchL+branchV, e-range from the bounded
+AUTO surface, self-flags non-round-tripping points. 128^2: coverage 71.8/68.2/70.8%, all
+valid points round-trip <=9.6e-7 (bisection-tolerance floor; tighten if table target <1e-6).
+(4)
+GUARD LAYER design (user's emphasized concern): validity box (T 216.592-1100, P<=800MPa,
+high-rho polynomial blowup clamp = Fix1-march analog PRECOMPUTED vs T, in-dome single-phase
+eval only within margin + monotone C1 extension beyond, sub-triple handling, GERG fallbacks
+NOT PR — never mix surfaces); (4) energy/entropy reference-offset reconciliation vs CAMR PR
+conventions at integration; (5) table regen + new suite refs from pure-GERG build, table-vs-
+GERG regression via eos_diag (harness unchanged).
