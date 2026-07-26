@@ -1209,11 +1209,42 @@ plotfile 'pressure' (per-phase mixture rule, branch T1) and 'Temp' (auto-detect 
 EQUILIBRIUM T for a dome (rho,e)) are MUTUALLY INCONSISTENT surfaces — raw PR at CAMR's
 plotted (T=271.57, rho=909.4) gives 2.36e6, not the plotted 5.7e5 (implied branch T1~268.7,
 3K below plotted Temp). My exact-frozen (T,rho)->P also reports raw-P (1.83e6) at its state.
-=> to close the P comparison: reconstruct e1 = alpha1_rho1_E1/alpha1_rho1 from the plotfile
-and compare per-phase-consistent P1(rho1,e1) against the exact frozen P along the isentrope
-(or add a T1 derive). rho/u/star agreement already validates the frozen reference for
-convergence use; P-field comparison needs the consistent reconstruction. NOTE: GERG frozen
-model must use the GUARDED branch eval (gerg_co2_guard.H semantics), not bare python raw.
+=> CLOSED via per-phase-consistent reconstruction: e1 = alpha1_rho1_E1/alpha1_rho1 (no ke
+subtraction needed at plateau u~25), branch-invert P1(rho1, e1 - OFFSET) with the ENERGY
+REFERENCE OFFSET CAMR-hem-minus-python-PR = +1.408822e5 J/kg (calibrated at the B9 left IC;
+constant — reconcile properly when wiring GERG into CAMR). RESULT: vapor side + star right
+of contact match exact-frozen to 4e-4 (5.6783e5 vs 5.6761e5); LIQUID PLATEAU remains 2x in P
+= CAMR 1.6K COOLER than the exact isentrope at same rho (dPdT~6.2e5 explains the P gap
+exactly). 1.6K PLATEAU — RESOLVED: IT WAS MY SOLVER'S ENTROPY BUG, CAMR WAS RIGHT. co2_pr.py's
+rewritten (T,v)-form entropy kept the cp0-based ideal integral (fixed-P form) with
+R ln(v-B) -> double-counted R ln T (ds/dT|v = cp0/T instead of (cp0-R)/T). Caught by
+PATH-INTEGRAL consistency (integrate analytic ds/de along a 2-leg path vs direct values:
+e closed to 0, s off by exactly R/M ln(280/270.685)=6.39 J/kg/K). The earlier ds/dT FD
+check had validated the ORIGINAL formula; never re-ran after the edit — LESSON: rerun the
+FULL consistency suite after ANY thermo-formula change, and path-integral tests catch what
+pointwise FD misses. FIXED (-R ln T term); all identities + path integrals now ~1e-11.
+POST-FIX: exact-frozen B9 plateau matches CAMR to 4-5 DIGITS (rho 909.391/909.389,
+P 5.6789e5/5.68e5, T 268.6925/268.69, u 25.54/25.7) => CAMR's frozen two-phase fan
+dynamics are ON THE TRUE ISENTROPE — strong validation of the wp scheme + per-phase
+energy handling in this regime (trace-phase bookkeeping exact: E1 includes ke; e2 sane).
+CORRECTED GERG-vs-PR (post-fix): B4 u* 7.57 vs 8.99 (17%) UNCHANGED (GERG + original-B4
+were never affected); B9-HEM u* 133.7 vs 150.8 (13%), P* 1.0242e6 vs 1.0248e6 (~equal!),
+rho*L 102.3 vs 104.7. The earlier "33%/75% deep-blowdown" numbers were bug-contaminated —
+real EOS effect is 13-17% in contact velocity, star pressures close. exact_B4_pr /
+exact_B9_pr / exact_B9_pr_frozen REGENERATED post-fix (B4 u* back to 8.9942 = pre-bug).
+DIAGNOSTIC HISTORY (kept for the eliminations, all still valid): N=128 vs 256 IDENTICAL to
+0.001K (not numerical entropy production); ps_do_relax=0 IDENTICAL to 4 digits (not the
+trace-phase P-relax constraint). So a converged, relaxation-independent energy-path
+difference between CAMR's fan and the exact isentrope: CAMR plateau e1 is ~1800 J/kg lower.
+(rho/u agree to 0.04%/1%; only the energy level differs.) NEXT DIAGNOSTICS (in order):
+(a) e_mix = rho_e/rho vs e1 = UE1/m1 at the plateau — if they differ, the per-phase energy
+split leaked into the trace phase (Abgrall-class: m2 tiny but e2 potentially huge — the #72
+pattern); (b) does UE1 include kinetic share (ke subtraction changes T by only 0.3K — minor
+but do it right); (c) independent total-energy budget of my exact fan (rules my side in/out);
+(d) no spinodal/Fix1 crossing involved (fan dPdrho stays ~6e4-1.4e5 > 2500 — checked).
+rho/u/star validation of the frozen reference stands regardless.
+NOTE: GERG frozen model must use the GUARDED branch eval (gerg_co2_guard.H semantics), not
+bare python raw.
 CONVERGENCE DRIVER DONE (#13): CAMR Exec/CO2_RiemannSuite/convergence.py — runs CAMR1d per
 N (reuses plotfiles, prefix cvg<case>_<N>_), L1 vs exact CSV, rates, loglog plot + PR-vs-GERG
 pressure overlay (convergence_<case>.png). B4 results (eos_mlp=0): u rates 0.88/0.96,
