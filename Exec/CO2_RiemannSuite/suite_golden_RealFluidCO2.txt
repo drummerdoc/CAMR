@@ -1,0 +1,12 @@
+case                   t          | max relative diff vs reference
+A1-Sod-strong          1.174e-03 | rho 2.19e-06  P 1.58e-06  xmom 6.41e-06  [t match Y] OK
+A2-Sod-weak            1.177e-03 | rho 0.00e+00  P 0.00e+00  xmom 0.00e+00  [t match Y] OK
+A3-Lax-like            8.186e-04 | rho 3.03e-11  P 3.44e-11  xmom 2.60e-11  [t match Y] OK
+A4-Double-rare         6.801e-04 | rho 0.00e+00  P 0.00e+00  xmom 0.00e+00  [t match Y] OK
+A5-Two-shock           6.801e-04 | rho 0.00e+00  P 0.00e+00  xmom 0.00e+00  [t match Y] OK
+A6-Near-vacuum         1.174e-03 | rho 0.00e+00  P 0.00e+00  xmom 0.00e+00  [t match Y] OK
+B4-Cross-critical      7.340e-04 | rho 1.54e-04  P 9.07e-04  xmom 1.91e-03  [t match Y] OK
+B9-Deep-Expansion      7.819e-04 | rho 2.49e-15  P 5.22e-14  xmom 4.79e-14  [t match Y] OK
+C1-Identity            1.145e-03 | rho 0.00e+00  P 0.00e+00  xmom 0.00e+00  [t match Y] OK
+C2-Acoustic-limit      1.337e-03 | rho 0.00e+00  P 0.00e+00  xmom 0.00e+00  [t match Y] OK
+C3-Strong-shock-V      4.770e-04 | rho 1.16e-10  P 4.71e-11  xmom 1.90e-10  [t match Y] OK
