@@ -34,6 +34,11 @@
 #include <AMReX_Arena.H>
 #include <AMReX_ParmParse.H>
 
+#include <cstdio>
+#include <cstdlib>
+#include <cmath>
+#include <vector>
+
 #include "PhysicsConstants.H"
 
 // Device-inline PR state machinery — serves BOTH the interim
@@ -77,6 +82,208 @@ namespace EOS {
           pp.query("eos_table_branch", v); return v != 0;
       }();
       return b;
+  }
+
+  // Split A/B gate (host runtime): CAMR.eos_mlp_auto = 1 (default) uses the
+  // table on the AUTO-detect (single-fluid) path; 0 forces PR there while the
+  // branch-locked per-phase path keeps the table.  Diagnostic lever: the
+  //  generation-localized diagnostic (below) indicts the auto path for the
+  // B-case residual; this flag is the causal test (auto->PR should collapse
+  // the residual to branch-table levels if that is right).
+  inline bool mlpx2_auto_enabled()
+  {
+      static const bool a = []() {
+          int v = 1; amrex::ParmParse pp("CAMR");
+          pp.query("eos_mlp_auto", v); return v != 0;
+      }();
+      return a;
+  }
+#endif
+
+  // ----------------------------------------------------------------
+  //  Call-site tags for the generation-localized diagnostic.  Always
+  //  defined (plain enum, zero cost); the recording machinery below
+  //  is host-only.
+  // ----------------------------------------------------------------
+  namespace mlpx2_diag {
+    enum Site : int { S_REY2T = 0, S_REY2P, S_REY2GAM, S_REY2DPDE,
+                      S_REY2DPDRE, S_PRIM, S_P_PHASE, S_PTS_PHASE,
+                      S_CS_PHASE, S_PCS_PHASE, S_OTHER, NSITES };
+  }
+
+#if !defined(__CUDA_ARCH__) && !defined(__HIP_DEVICE_COMPILE__) && !defined(__SYCL_DEVICE_ONLY__)
+  // =================================================================
+  //  Generation-localized table-vs-PR diagnostic  (CAMR.eos_diag=1,
+  //  default 0).  Purpose (LEARNINGS "next lever"): the B-case ~0.5%
+  //  residual MANIFESTS in the stiff compressed liquid but is
+  //  GENERATED elsewhere; find which EOS call & regime leaks.
+  //
+  //  Mechanism: at EVERY call routed through the (rho,e[,phase])
+  //  caches, ALSO run the full PR solve at the identical input and
+  //  accumulate |dP|/P, |dT|/T, |dc|/c by
+  //     call SITE  x  table PATH (auto/branchL/branchV)
+  //                x  PR REGIME (1ph-vap / 1ph-liq / two-phase / supercrit),
+  //  plus a whitened-(rho,e) histogram, the worst-N samples, and a
+  //  call-order window series (early vs sustained generation).
+  //  Dumped via atexit to ./mlpx2_diag.txt.
+  //
+  //  READ-ONLY: the returned state is untouched (diag-on does not
+  //  perturb the run); diag-off adds one static-bool branch per call
+  //  and is bit-identical.  Host + serial only (statics unguarded —
+  //  do not enable with OMP/MPI-parallel EOS sweeps).
+  // =================================================================
+  namespace mlpx2_diag {
+
+    inline const char* site_name(int s) {
+        static const char* n[NSITES] = {
+            "REY2T","REY2P","REY2Gam","REY2dpde","REY2dpdr_e","REY2_prim",
+            "REY2P_phase","REY2PTS_phase","REY2Cs_phase","REY2PCs_phase","other"};
+        return (s >= 0 && s < NSITES) ? n[s] : "?";
+    }
+    inline const char* path_name(int p) {
+        static const char* n[3] = {"auto","branchL","branchV"};
+        return (p >= 0 && p < 3) ? n[p] : "?";
+    }
+    inline const char* reg_name(int r) {
+        static const char* n[4] = {"1ph-vap","1ph-liq","two-phase","supercrit"};
+        return (r >= 0 && r < 4) ? n[r] : "?";
+    }
+
+    struct Cell {
+        long   n = 0;
+        double sP = 0, mxP = 0, sT = 0, mxT = 0, sc = 0, mxc = 0;
+        double mr = 0, me = 0;              // (rho,e) at max relP
+    };
+    struct Worst {
+        double err = -1; int site = 0, path = 0, reg = 0; long idx = 0;
+        double rho = 0, e = 0, Pm = 0, Pp = 0, Tm = 0, Tp = 0,
+               cm = 0, cp = 0, xp = 0;
+    };
+    static constexpr int  NB  = 24;         // hist bins per whitened axis
+    static constexpr int  NW  = 16;         // worst-sample slots
+    struct Tbl {
+        static constexpr long WIN = 32768;  // call-order window size
+        long ncalls = 0, nzero = 0;
+        Cell spr[NSITES][3][4];
+        Cell hist[3][NB][NB];
+        Worst worst[NW];
+        std::vector<double> wmean, wmax;
+        double wsum = 0, wmx = 0; long wn = 0;
+    };
+    inline Tbl& tbl() { static Tbl t; return t; }
+
+    inline void dump()
+    {
+        Tbl& t = tbl();
+        std::FILE* f = std::fopen("mlpx2_diag.txt", "w");
+        if (!f) return;
+        std::fprintf(f, "# MLPx2 generation-localized diagnostic (table vs PR at identical inputs)\n");
+        std::fprintf(f, "# eos_mlp %d  eos_table_branch %d\n",
+                     mlpx2_enabled() ? 1 : 0, mlpx2_table_branch() ? 1 : 0);
+        std::fprintf(f, "ncalls %ld  zero-err %ld  (zero-err = table==PR bitwise; includes OOD/guard fallbacks)\n",
+                     t.ncalls, t.nzero);
+
+        std::fprintf(f, "\n## site x path x regime   relP=|dP|/max(|P_PR|,1e5)  relT=|dT|/T  relc=|dc|/c\n");
+        std::fprintf(f, "%-14s %-8s %-10s %10s %11s %11s %11s %11s %11s %11s  %12s %12s\n",
+                     "site","path","regime","n","meanP","maxP","meanT","maxT",
+                     "meanc","maxc","rho@maxP","e@maxP");
+        for (int s = 0; s < NSITES; ++s)
+        for (int p = 0; p < 3; ++p)
+        for (int r = 0; r < 4; ++r) {
+            const Cell& c = t.spr[s][p][r]; if (!c.n) continue;
+            std::fprintf(f, "%-14s %-8s %-10s %10ld %11.4e %11.4e %11.4e %11.4e %11.4e %11.4e  %12.5e %12.5e\n",
+                         site_name(s), path_name(p), reg_name(r), c.n,
+                         c.sP/double(c.n), c.mxP, c.sT/double(c.n), c.mxT,
+                         c.sc/double(c.n), c.mxc, c.mr, c.me);
+        }
+
+        std::fprintf(f, "\n## worst-%d samples by relP\n", NW);
+        for (int w = 0; w < NW; ++w) {
+            const Worst& x = t.worst[w]; if (x.err < 0) continue;
+            std::fprintf(f, "call %10ld  %-12s %-8s %-10s relP %.4e  rho %.6e  e %.6e  "
+                            "P %.6e vs %.6e  T %.4f vs %.4f  c %.4f vs %.4f  x_PR %.4f\n",
+                         x.idx, site_name(x.site), path_name(x.path), reg_name(x.reg),
+                         x.err, x.rho, x.e, x.Pm, x.Pp, x.Tm, x.Tp, x.cm, x.cp, x.xp);
+        }
+
+        std::fprintf(f, "\n## hist (whitened rho,e in [-4,4]^2): path i j xr_c xu_c n meanP maxP\n");
+        for (int p = 0; p < 3; ++p)
+        for (int i = 0; i < NB; ++i)
+        for (int j = 0; j < NB; ++j) {
+            const Cell& c = t.hist[p][i][j]; if (!c.n) continue;
+            const double xr = -4.0 + (i + 0.5) * 8.0 / NB;
+            const double xu = -4.0 + (j + 0.5) * 8.0 / NB;
+            std::fprintf(f, "HIST %s %2d %2d %8.3f %8.3f %10ld %11.4e %11.4e\n",
+                         path_name(p), i, j, xr, xu, c.n, c.sP/double(c.n), c.mxP);
+        }
+
+        std::fprintf(f, "\n## call-order windows of %ld calls: k meanP maxP\n", Tbl::WIN);
+        for (size_t k = 0; k < t.wmean.size(); ++k)
+            std::fprintf(f, "WIN %4zu %11.4e %11.4e\n", k, t.wmean[k], t.wmax[k]);
+        if (t.wn > 0)
+            std::fprintf(f, "WIN tail(%ld) %11.4e %11.4e\n", t.wn, t.wsum/double(t.wn), t.wmx);
+        std::fclose(f);
+    }
+
+    inline void record(int site, int path, amrex::Real rho, amrex::Real e,
+                       const hem::State& m, const hem::State& p)
+    {
+        Tbl& t = tbl();
+        const double Pp = double(p.P), Pm = double(m.P);
+        const double dP = std::abs(Pm - Pp) / std::max(std::abs(Pp), 1.0e5);
+        const double dT = std::abs(double(m.T) - double(p.T))
+                          / std::max(std::abs(double(p.T)), 1.0);
+        const double dc = std::abs(double(m.c) - double(p.c))
+                          / std::max(std::abs(double(p.c)), 1.0);
+        int reg;
+        if      (double(p.T) >= 304.13)          reg = 3;   // supercritical
+        else if (p.x > 0.0 && p.x < 1.0)         reg = 2;   // two-phase (dome)
+        else if (p.x <= 0.0)                     reg = 1;   // 1ph liquid
+        else                                     reg = 0;   // 1ph vapor
+        if (site < 0 || site >= NSITES) site = S_OTHER;
+        if (path < 0 || path > 2)       path = 0;
+        ++t.ncalls; if (dP == 0.0) ++t.nzero;
+        auto upd = [&](Cell& c) {
+            ++c.n; c.sP += dP; c.sT += dT; c.sc += dc;
+            if (dT > c.mxT) c.mxT = dT;
+            if (dc > c.mxc) c.mxc = dc;
+            if (dP > c.mxP) { c.mxP = dP; c.mr = double(rho); c.me = double(e); }
+        };
+        upd(t.spr[site][path][reg]);
+        const double xr = (double(rho) - mlpx2::RHO_M) / mlpx2::RHO_S;
+        const double xu = (double(e)   - mlpx2::U_M)   / mlpx2::U_S;
+        const int bi = int((xr + 4.0) * (NB / 8.0));
+        const int bj = int((xu + 4.0) * (NB / 8.0));
+        if (bi >= 0 && bi < NB && bj >= 0 && bj < NB) upd(t.hist[path][bi][bj]);
+        int wmin = 0;
+        for (int w = 1; w < NW; ++w)
+            if (t.worst[w].err < t.worst[wmin].err) wmin = w;
+        if (dP > t.worst[wmin].err)
+            t.worst[wmin] = Worst{dP, site, path, reg, t.ncalls,
+                                  double(rho), double(e), Pm, Pp,
+                                  double(m.T), double(p.T),
+                                  double(m.c), double(p.c), double(p.x)};
+        t.wsum += dP; if (dP > t.wmx) t.wmx = dP; ++t.wn;
+        if (t.wn == Tbl::WIN) {
+            t.wmean.push_back(t.wsum / double(t.wn));
+            t.wmax.push_back(t.wmx);
+            t.wsum = 0; t.wmx = 0; t.wn = 0;
+        }
+    }
+  } // namespace mlpx2_diag
+
+  inline bool mlpx2_diag_enabled()
+  {
+      static const bool d = []() {
+          int v = 0; amrex::ParmParse pp("CAMR");
+          pp.query("eos_diag", v);
+          if (v != 0) {
+              mlpx2_diag::tbl();               // construct BEFORE atexit
+              std::atexit(&mlpx2_diag::dump);  // so dump runs before dtor
+          }
+          return v != 0;
+      }();
+      return d;
   }
 #endif
 
@@ -182,6 +389,7 @@ namespace EOS {
       const hem::PRFluid f = co2_fluid();
 #if !defined(__CUDA_ARCH__) && !defined(__HIP_DEVICE_COMPILE__) && !defined(__SYCL_DEVICE_ONLY__)
       if (!mlpx2_enabled()) return hem::state_from_rho_e(f, rho, e);  // A/B: pure PR
+      if (!mlpx2_auto_enabled()) return hem::state_from_rho_e(f, rho, e); // split A/B
 #endif
       // OOD guard: whiten (rho,e) and require it inside the training box
       // (|x| <= 4 sigma).  Outside -> PR (the net is untrustworthy there).
@@ -251,12 +459,14 @@ namespace EOS {
   AMREX_GPU_HOST_DEVICE
   AMREX_FORCE_INLINE
   hem::State
-  co2_state_from_rho_e_cached(amrex::Real rho, amrex::Real e)
+  co2_state_from_rho_e_cached(amrex::Real rho, amrex::Real e,
+                              int site = mlpx2_diag::S_OTHER)
   {
       // Host/device split (see RealFluidCO2/EOS.H): the mutable static ring is
       // host-only and relies on serial cross-cell reuse; the device pass calls
       // the pure solve hook directly (device-clean).
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__) || defined(__SYCL_DEVICE_ONLY__)
+      amrex::ignore_unused(site);
       return mlpx2_state_from_rho_e(rho, e);
 #else
       constexpr int NSLOTS = 4;
@@ -267,15 +477,24 @@ namespace EOS {
       static hem::State  state_cache[NSLOTS];
       static int         next_slot = 0;
 
+      hem::State st;
+      bool hit = false;
       for (int s = 0; s < NSLOTS; ++s) {
-          if (rho == rho_cache[s] && e == e_cache[s] && rho_cache[s] > amrex::Real(0))
-              return state_cache[s];
+          if (rho == rho_cache[s] && e == e_cache[s] && rho_cache[s] > amrex::Real(0)) {
+              st = state_cache[s]; hit = true; break;
+          }
       }
-      hem::State st = mlpx2_state_from_rho_e(rho, e);   // TODO(MLPx2) hook
-      rho_cache  [next_slot] = rho;
-      e_cache    [next_slot] = e;
-      state_cache[next_slot] = st;
-      next_slot = (next_slot + 1) % NSLOTS;
+      if (!hit) {
+          st = mlpx2_state_from_rho_e(rho, e);          // TODO(MLPx2) hook
+          rho_cache  [next_slot] = rho;
+          e_cache    [next_slot] = e;
+          state_cache[next_slot] = st;
+          next_slot = (next_slot + 1) % NSLOTS;
+      }
+      if (mlpx2_diag_enabled()) {                       // read-only diagnostic
+          const hem::State pr = hem::state_from_rho_e(co2_fluid(), rho, e);
+          mlpx2_diag::record(site, 0 /*auto*/, rho, e, st, pr);
+      }
       return st;
 #endif
   }
@@ -284,9 +503,11 @@ namespace EOS {
   AMREX_FORCE_INLINE
   hem::State
   co2_state_from_rho_e_phase_cached(amrex::Real rho, amrex::Real e,
-                                     hem::Phase3 phase)
+                                     hem::Phase3 phase,
+                                     int site = mlpx2_diag::S_OTHER)
   {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__) || defined(__SYCL_DEVICE_ONLY__)
+      amrex::ignore_unused(site);
       return mlpx2_state_from_rho_e_phase(rho, e, phase);
 #else
       constexpr int NSLOTS = 4;
@@ -300,16 +521,26 @@ namespace EOS {
       static hem::State  state_cache[2][NSLOTS];
       static int         next_slot [2] = {0, 0};
 
+      hem::State st;
+      bool hit = false;
       for (int s = 0; s < NSLOTS; ++s) {
           if (rho == rho_cache[p][s] && e == e_cache[p][s]
-              && rho_cache[p][s] > amrex::Real(0))
-              return state_cache[p][s];
+              && rho_cache[p][s] > amrex::Real(0)) {
+              st = state_cache[p][s]; hit = true; break;
+          }
       }
-      hem::State st = mlpx2_state_from_rho_e_phase(rho, e, phase); // TODO(MLPx2)
-      rho_cache  [p][next_slot[p]] = rho;
-      e_cache    [p][next_slot[p]] = e;
-      state_cache[p][next_slot[p]] = st;
-      next_slot  [p] = (next_slot[p] + 1) % NSLOTS;
+      if (!hit) {
+          st = mlpx2_state_from_rho_e_phase(rho, e, phase); // TODO(MLPx2)
+          rho_cache  [p][next_slot[p]] = rho;
+          e_cache    [p][next_slot[p]] = e;
+          state_cache[p][next_slot[p]] = st;
+          next_slot  [p] = (next_slot[p] + 1) % NSLOTS;
+      }
+      if (mlpx2_diag_enabled()) {                       // read-only diagnostic
+          const hem::State pr = hem::state_from_rho_e_phase(
+              co2_fluid(), rho, e, phase, amrex::Real(-1.0));
+          mlpx2_diag::record(site, (p == 0) ? 1 : 2 /*branchL/V*/, rho, e, st, pr);
+      }
       return st;
 #endif
   }
@@ -333,24 +564,26 @@ namespace EOS {
   // ================================================================
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void REY2T(amrex::Real R, amrex::Real E, amrex::Real* /*Y*/, amrex::Real& T)
-  { T = co2_state_from_rho_e_cached(R, E).T; }
+  { T = co2_state_from_rho_e_cached(R, E, mlpx2_diag::S_REY2T).T; }
 
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void REY2P(amrex::Real R, amrex::Real E, amrex::Real* /*Y*/, amrex::Real& P)
-  { P = co2_state_from_rho_e_cached(R, E).P; }
+  { P = co2_state_from_rho_e_cached(R, E, mlpx2_diag::S_REY2P).P; }
 
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void REY2Gam(amrex::Real R, amrex::Real E, amrex::Real* /*Y*/, amrex::Real& gam1)
-  { hem::State s = co2_state_from_rho_e_cached(R, E); gam1 = (s.rho*s.c*s.c)/s.P; }
+  { hem::State s = co2_state_from_rho_e_cached(R, E, mlpx2_diag::S_REY2GAM);
+    gam1 = (s.rho*s.c*s.c)/s.P; }
 
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void REY2dpde(amrex::Real R, amrex::Real E, amrex::Real* /*Y*/, amrex::Real& dpde)
-  { hem::State s = co2_state_from_rho_e_cached(R, E);
+  { hem::State s = co2_state_from_rho_e_cached(R, E, mlpx2_diag::S_REY2DPDE);
     const amrex::Real gam1 = (s.rho*s.c*s.c)/s.P; dpde = (gam1 - amrex::Real(1.0))*R; }
 
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void REY2dpdr_e(amrex::Real R, amrex::Real E, amrex::Real* /*Y*/, amrex::Real& dpdr_e)
-  { hem::State s = co2_state_from_rho_e_cached(R, E); dpdr_e = s.P/s.rho; }
+  { hem::State s = co2_state_from_rho_e_cached(R, E, mlpx2_diag::S_REY2DPDRE);
+    dpdr_e = s.P/s.rho; }
 
   //  Fused ctoprim entry (one solve → all fields), matching the RealFluidCO2
   //  interface.  Byte-identical fields to the individual wrappers; 5 solves→1.
@@ -359,7 +592,7 @@ namespace EOS {
                  amrex::Real& T, amrex::Real& P, amrex::Real& gam1,
                  amrex::Real& dpde, amrex::Real& dpdr_e)
   {
-      const hem::State s = co2_state_from_rho_e_cached(R, E);
+      const hem::State s = co2_state_from_rho_e_cached(R, E, mlpx2_diag::S_PRIM);
       T = s.T; P = s.P;
       gam1 = (s.rho*s.c*s.c)/s.P;
       dpde = (gam1 - amrex::Real(1.0))*R;
@@ -379,7 +612,7 @@ namespace EOS {
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void REY2P_phase(amrex::Real R, amrex::Real E, amrex::Real* /*Y*/,
                    hem::Phase3 phase, amrex::Real& P)
-  { P = co2_state_from_rho_e_phase_cached(R, E, phase).P; }
+  { P = co2_state_from_rho_e_phase_cached(R, E, phase, mlpx2_diag::S_P_PHASE).P; }
 
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void REY2P_liquid(amrex::Real R, amrex::Real E, amrex::Real* Y, amrex::Real& P)
@@ -393,13 +626,13 @@ namespace EOS {
   void REY2PTS_phase(amrex::Real R, amrex::Real E, amrex::Real* /*Y*/,
                      hem::Phase3 phase,
                      amrex::Real& P, amrex::Real& T, amrex::Real& S)
-  { hem::State s = co2_state_from_rho_e_phase_cached(R, E, phase);
+  { hem::State s = co2_state_from_rho_e_phase_cached(R, E, phase, mlpx2_diag::S_PTS_PHASE);
     P = s.P; T = s.T; S = s.s; }
 
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void REY2Cs_phase(amrex::Real R, amrex::Real E, amrex::Real* /*Y*/,
                     hem::Phase3 phase, amrex::Real& Cs)
-  { Cs = co2_state_from_rho_e_phase_cached(R, E, phase).c; }
+  { Cs = co2_state_from_rho_e_phase_cached(R, E, phase, mlpx2_diag::S_CS_PHASE).c; }
 
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void REY2Cs_liquid(amrex::Real R, amrex::Real E, amrex::Real* Y, amrex::Real& Cs)
@@ -413,7 +646,8 @@ namespace EOS {
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void REY2PCs_phase(amrex::Real R, amrex::Real E, amrex::Real* /*Y*/,
                      hem::Phase3 phase, amrex::Real& P, amrex::Real& Cs)
-  { hem::State s = co2_state_from_rho_e_phase_cached(R, E, phase); P = s.P; Cs = s.c; }
+  { hem::State s = co2_state_from_rho_e_phase_cached(R, E, phase, mlpx2_diag::S_PCS_PHASE);
+    P = s.P; Cs = s.c; }
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void REY2PCs_liquid(amrex::Real R, amrex::Real E, amrex::Real* Y, amrex::Real& P, amrex::Real& Cs)
   { REY2PCs_phase(R, E, Y, hem::Phase3::Liquid, P, Cs); }
