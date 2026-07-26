@@ -30,11 +30,11 @@ DEBUG = FALSE
 # CAMR
 USE_EB = FALSE
 
-# Phase 1 wiring:  RealFluidCO2 is a γ=1.4 clone of GammaLaw so this
+# Phase 1 wiring:  PR is a γ=1.4 clone of GammaLaw so this
 # case is numerically identical to Exec/Sod/ and exercises only the
 # new build-system routing.  Phase 2 replaces the shim with a real
 # Peng-Robinson CO2 EOS; the Exec inputs will then move to CO2 units.
-Eos_Model := RealFluidCO2
+Eos_Model := PR
 
 # GNU Make
 Bpack := ./Make.package

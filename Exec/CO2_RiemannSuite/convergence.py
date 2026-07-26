@@ -14,7 +14,7 @@ Usage:
   python3 convergence.py --case B4 --nlist 64,128            # run + accumulate
   python3 convergence.py --case B4 --nlist 64,128,256 --plot # reuse + plot
 Env: EXE (default ./CAMR1d.gnu.TPROF.PS.ex), EXACT_DIR (default: sibling
-co2-eos-cfd/suite, then '.').  CAMR runs use CAMR.eos_mlp=0 (pure PR) so
+co2-eos-cfd/suite, then '.').  CAMR runs use CAMR.eos_table=0 (pure PR) so
 the reference EOS matches exact_<case>_pr.csv; pass --exact-eos gerg and
 a GERG-built exe to converge against GERG instead.
 """
@@ -63,7 +63,7 @@ def run_case(case, N, exe):
     if pf: return pf
     c = CASES[case]
     cmd = [exe, 'inputs'] + COMMON + c['args'] + [
-        'amr.n_cell=%d' % N, 'stop_time=%.9e' % c['stop'], 'CAMR.eos_mlp=0',
+        'amr.n_cell=%d' % N, 'stop_time=%.9e' % c['stop'], 'CAMR.eos_table=0',
         'amr.plot_int=-1', 'amr.plot_per=%.9e' % c['stop'], 'amr.plot_file='+pref]
     print('  running N=%d ...' % N)
     subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

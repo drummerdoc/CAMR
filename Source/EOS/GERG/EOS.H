@@ -8,7 +8,7 @@
 //  Newton-free surface evals; saturation/edges from precomputed
 //  splines).  (rho,e)->T inversions are fixed-count bisections on the
 //  guarded surfaces (deterministic, warp-safe; the table fast path of
-//  stage 2 will replace them on the hot paths, exactly as MLPx2 does
+//  stage 2 will replace them on the hot paths, exactly as PRTab does
 //  for PR).
 //
 //  NO CROSS-EOS FALLBACK: PR machinery is included ONLY for the
@@ -27,7 +27,7 @@
 #include "PhysicsConstants.H"
 
 // hem::Phase3 interface type only (PS pipeline signature compatibility).
-#include "EOS/RealFluidCO2/hem_pr_state.H"
+#include "EOS/PR/hem_pr_state.H"
 
 #include "gerg_co2_guard.H"
 
@@ -119,7 +119,7 @@ namespace EOS {
       return 0.5*(lo + hi);
   }
 
-  // ---- (rho,e) -> State caches (host 4-slot rings, as MLPx2) ------
+  // ---- (rho,e) -> State caches (host 4-slot rings, as PRTab) ------
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   gerg::State co2_state_from_rho_e_cached(amrex::Real rho, amrex::Real e)
   {

@@ -1,25 +1,19 @@
 // =====================================================================
-//  gen_table.cpp  —  Peng-Robinson grid evaluator for the MLPx2 table EOS.
+//  gen_table.cpp  —  Peng-Robinson grid evaluator for the PRTab table EOS.
 //
 //  Reads "rho e" pairs (SI) on stdin, writes "T s ok" per line for the
 //  branch selected by argv[1]:  0 = auto-detect (state_from_rho_e),
 //  1 = LIQUID branch, 2 = VAPOR branch (state_from_rho_e_phase, incl. the
 //  metastable single-phase extrapolation the PS branch-locked calls need).
 //
-//  Compiles against CAMR's own RealFluidCO2 PR machinery (no external repo):
-//      g++ -O2 -std=c++17 -DHEM_NO_AMREX -I../../RealFluidCO2 gen_table.cpp -o gen_table
+//  Compiles against CAMR's own PR PR machinery (no external repo):
+//      g++ -O2 -std=c++17 -DHEM_NO_AMREX -I../../PR gen_table.cpp -o gen_table
 //  Driven by build_table.py (`make tables`).  The CO2 PR parameters MUST
-//  match EOS::co2_fluid() in RealFluidCO2/EOS.H.
+//  match EOS::co2_fluid() in PR/EOS.H.
 // =====================================================================
-// Complete the HEM_NO_AMREX shim for CAMR's PR headers, which use a few
-// amrex helpers beyond what hem_saturation_amrex.H's fallback provides
-// (AMREX_FORCE_INLINE is passed via -D; amrex::max/min added here).
-#ifdef HEM_NO_AMREX
-namespace amrex {
-  template<class T> inline T max(T a, T b){ return a < b ? b : a; }
-  template<class T> inline T min(T a, T b){ return a < b ? a : b; }
-}
-#endif
+// The HEM_NO_AMREX shim (amrex::max/min, AMREX_FORCE_INLINE) is now
+// complete inside hem_saturation_amrex.H itself — no local additions
+// (a duplicate template here makes amrex::max ambiguous).
 #include "hem_pr_state.H"
 #include <cstdio>
 #include <cmath>

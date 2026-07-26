@@ -23,7 +23,7 @@
 //  Preservation of EOS integrity: this uses the same
 //  hem::state_from_rho_e_phase calls the standalone driver uses,
 //  through the PsPhaseAPI callback constructed below with a lambda
-//  wrapping RealFluidCO2's EOS::REY2P.  No HEM-style reset, no
+//  wrapping PR's EOS::REY2P.  No HEM-style reset, no
 //  approximation to the physics — this is the P-S 2014
 //  mechanical-relaxation update as designed.
 //
@@ -165,7 +165,7 @@ ps_make_camr_eos_api()
 //  0/3) overheats the dilute phase when it acts on a METASTABLE state: a
 //  stretched liquid (P1 < Psat(T1)) or supersaturated vapor (P2 > Psat(T2)),
 //  or a spinodal branch (c <= 0).  Root cause (single-cell A/B vs standalone):
-//  CAMR's RealFluidCO2 EOS returns a valid EXTRAPOLATED value there, so the
+//  CAMR's PR EOS returns a valid EXTRAPOLATED value there, so the
 //  Newton deposits spurious PdV work into the trace phase; the standalone's PR
 //  backend returns INVALID for the same state, so its (identical) kernel simply
 //  refuses -> no overheat.  This guard reproduces that refusal on the CAMR side

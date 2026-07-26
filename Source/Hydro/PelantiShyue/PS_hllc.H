@@ -157,7 +157,7 @@ Face face_from_state(int idir, const amrex::Real U[NVAR]) noexcept
     f.e_1 = f.E_1 - ke_spec;
     f.e_2 = f.E_2 - ke_spec;
 
-    // Species-array carrier (pure CO₂ in the current RealFluidCO2 shim).
+    // Species-array carrier (pure CO₂ in the current PR shim).
     Real Y[NUM_SPECIES];
     Y[0] = Real(1.0);
     for (int n = 1; n < NUM_SPECIES; ++n) Y[n] = Real(0.0);

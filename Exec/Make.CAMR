@@ -36,9 +36,9 @@ endif
 	@echo SUCCESS
 
 # ---------------------------------------------------------------------
-#  MLPx2 table EOS generation.
+#  PRTab table EOS generation.
 #
-#  The bicubic PR table (mlpx2_table_data.cpp, ~6 MB) is NOT committed; the
+#  The bicubic PR table (prtab_table_data.cpp, ~6 MB) is NOT committed; the
 #  repo carries only a tiny #error placeholder, so a build before the table
 #  is generated fails early with a clear message.  Generate all three
 #  branches (auto + liquid + vapor) with:   make tables
@@ -47,18 +47,18 @@ endif
 #      make clean-tables
 #  Neither is invoked by `make clean` / `make realclean`.
 # ---------------------------------------------------------------------
-MLPX2_TOOLS  := $(CAMR_HOME)/Source/EOS/MLPx2/tools
-MLPX2_DATA   := $(CAMR_HOME)/Source/EOS/MLPx2/mlpx2_table_data.cpp
-MLPX2_PARAMS := $(CAMR_HOME)/Source/EOS/MLPx2/mlpx2_table_params.H
+PRTAB_TOOLS  := $(CAMR_HOME)/Source/EOS/PRTab/tools
+PRTAB_DATA   := $(CAMR_HOME)/Source/EOS/PRTab/prtab_table_data.cpp
+PRTAB_PARAMS := $(CAMR_HOME)/Source/EOS/PRTab/prtab_table_params.H
 
 .PHONY: tables clean-tables
 tables:
-	@echo "Generating MLPx2 PR-EOS tables (auto + liquid + vapor)..."
-	python3 $(MLPX2_TOOLS)/build_table.py
+	@echo "Generating PRTab PR-EOS tables (auto + liquid + vapor)..."
+	python3 $(PRTAB_TOOLS)/build_table.py
 
 clean-tables:
-	@$(RM) $(MLPX2_DATA) $(MLPX2_PARAMS) $(MLPX2_TOOLS)/gen_table $(MLPX2_TOOLS)/_grid_*.tmp
-	@echo "removed generated MLPx2 tables (rerun 'make tables' to regenerate)"
+	@$(RM) $(PRTAB_DATA) $(PRTAB_PARAMS) $(PRTAB_TOOLS)/gen_table $(PRTAB_TOOLS)/_grid_*.tmp
+	@echo "removed generated PRTab tables (rerun 'make tables' to regenerate)"
 
 ifeq ($(Eos_Model),$(filter $(Eos_Model),GammaLaw))
    DEFINES += -DUSE_GAMMALAW_EOS
@@ -68,24 +68,24 @@ ifeq ($(Eos_Model),$(filter $(Eos_Model),TableEOS))
    DEFINES += -DUSE_TABLE_EOS
    EOS_DIR = TableEOS
 endif
-ifeq ($(Eos_Model),$(filter $(Eos_Model),RealFluidCO2))
-   DEFINES += -DUSE_REALFLUID_CO2_EOS
-   EOS_DIR = RealFluidCO2
+ifeq ($(Eos_Model),$(filter $(Eos_Model),PR))
+   DEFINES += -DUSE_PR_EOS
+   EOS_DIR = PR
 endif
-ifeq ($(Eos_Model),$(filter $(Eos_Model),MLPx2))
-   DEFINES += -DUSE_MLPX2_EOS
-   EOS_DIR = MLPx2
-   # NOTE: do NOT add RealFluidCO2 to the include path — it would shadow
-   # MLPx2/EOS.H (both are named EOS.H, and an earlier -I wins), silently
-   # compiling the PR backend.  MLPx2 carries its own copies of the PR
+ifeq ($(Eos_Model),$(filter $(Eos_Model),PRTab))
+   DEFINES += -DUSE_PRTAB_EOS
+   EOS_DIR = PRTab
+   # NOTE: do NOT add PR to the include path — it would shadow
+   # PRTab/EOS.H (both are named EOS.H, and an earlier -I wins), silently
+   # compiling the PR backend.  PRTab carries its own copies of the PR
    # fallback headers (hem_pr_state.H, hem_saturation_amrex.H).
    #
-   # The generated tables (mlpx2_table_data.cpp / _params.H) are git-ignored.
+   # The generated tables (prtab_table_data.cpp / _params.H) are git-ignored.
    # FAIL EARLY with a clear message if they are absent — EXCEPT when the goal
    # is to generate/clean them (else `make tables` would block itself).
    ifeq (,$(filter tables clean-tables,$(MAKECMDGOALS)))
-     ifeq (,$(wildcard $(MLPX2_DATA)))
-       $(error MLPx2 EOS tables not generated -- run: make tables  (needs g++ + python3/numpy/scipy))
+     ifeq (,$(wildcard $(PRTAB_DATA)))
+       $(error PRTab EOS tables not generated -- run: make tables  (needs g++ + python3/numpy/scipy))
      endif
    endif
 endif
@@ -95,7 +95,7 @@ ifeq ($(Eos_Model),$(filter $(Eos_Model),GERG))
    # GERG-2008 pure-CO2 backend (analytic stage; guarded evaluator +
    # generated saturation/edge splines, all committed headers -- no
    # table-generation step needed yet).  hem_pr_state.H is included via
-   # -I Source/ ("EOS/RealFluidCO2/...") for the hem::Phase3 interface
+   # -I Source/ ("EOS/PR/...") for the hem::Phase3 interface
    # type ONLY -- no PR function is called (no cross-EOS fallback).
 endif
 Bdirs := $(CAMR_HOME)/Source

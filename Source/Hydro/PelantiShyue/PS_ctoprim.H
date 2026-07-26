@@ -130,7 +130,7 @@ ps_augment_primitives(int i, int j, int k,
     // on P < 0.  If EITHER per-phase EOS call went bad, keep the
     // mixture pressure the stock ctoprim already computed (it's a
     // single-fluid EOS evaluation on (ρ, e), which is always sane
-    // for RealFluidCO2 within its calibrated range).  This is a
+    // for PR within its calibrated range).  This is a
     // gentler recovery than clamping to 1 Pa which would create a
     // huge pressure gradient at the recovered cell.
     constexpr amrex::Real P_floor = amrex::Real(1.0);   // 1 Pa

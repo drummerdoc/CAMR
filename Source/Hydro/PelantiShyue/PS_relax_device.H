@@ -30,7 +30,7 @@
 #include "IndexDefines.H"
 #include "EOS.H"
 #include "hem_pelanti_shyue.H"          // hem::V6, hem::PsPhase, hem::PSR_* enums
-#include "EOS/RealFluidCO2/hem_pr_state.H"  // hem::State, hem::state_from_rho_e_phase
+#include "EOS/PR/hem_pr_state.H"  // hem::State, hem::state_from_rho_e_phase
 #include <AMReX_GpuQualifiers.H>
 #include <cmath>
 #include <limits>
@@ -79,7 +79,7 @@ struct EosDev {
                                              : hem::Phase3::Vapor;
         // EOS-AGNOSTIC: route through the EOS:: contract (REY2PTS_phase +
         // REY2Cs_phase) exactly like the ps_make_camr_eos_api lambda.  For
-        // RealFluidCO2/MLPx2 this resolves to the same single solve as the
+        // PR/PRTab this resolves to the same single solve as the
         // previous direct hem::state_from_rho_e_phase call (second call is
         // a cache hit on host / same pure solve on device) -> values
         // bit-identical; and it makes the device relax path work for ANY

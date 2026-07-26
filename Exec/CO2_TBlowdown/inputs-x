@@ -56,7 +56,7 @@ CAMR.fixed_dt = 0
 # fires spuriously.  Setting allow_negative_energy = 1 skips the
 # assertion; downstream code paths continue to enforce physical
 # positivity of density, pressure, and sound speed.  Safe for the
-# RealFluidCO2 backend.
+# PR backend.
 CAMR.allow_negative_energy = 1
 
 CAMR.do_mol = 0

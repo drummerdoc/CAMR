@@ -346,7 +346,7 @@ namespace EOS{
     dpde = (gamma - 1.0) * R;
   }
 
-  //  Fused ctoprim entry (matches the RealFluidCO2 interface).  For the
+  //  Fused ctoprim entry (matches the PR interface).  For the
   //  gamma-law EOS every field is a cheap closed form, so this just forwards
   //  to the individual wrappers — no shared solve to hoist.
   AMREX_GPU_HOST_DEVICE

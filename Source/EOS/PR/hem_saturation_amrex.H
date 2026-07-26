@@ -55,7 +55,9 @@
   #include <cstdlib>
   #define AMREX_GPU_HOST_DEVICE
   #define AMREX_GPU_DEVICE
+  #ifndef AMREX_FORCE_INLINE
   #define AMREX_FORCE_INLINE inline
+  #endif
   namespace amrex {
       using Real = double;
       namespace Math { inline double abs(double x) { return std::abs(x); } }

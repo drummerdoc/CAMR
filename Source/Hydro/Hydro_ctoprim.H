@@ -76,7 +76,7 @@ hydro_ctoprim(
 
         // One EOS state solve fills all five primitives (T, p, gam1, dpde,
         // dpdr_e).  These were five separate same-(rho,e) calls that the
-        // RealFluidCO2 MRU cache collapsed into one solve; with that cache
+        // PR MRU cache collapsed into one solve; with that cache
         // removed for GPU-portability, the fused entry does the single solve
         // explicitly — byte-identical output, EOS-agnostic (every model
         // implements REY2_prim).

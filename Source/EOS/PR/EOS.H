@@ -1,7 +1,7 @@
 #ifndef EOS_H
 #define EOS_H
 // =====================================================================
-//  RealFluidCO2 EOS backend for CAMR   —   Phase 2
+//  PR EOS backend for CAMR   —   Phase 2
 //
 //  Single-phase real-fluid Peng-Robinson CO₂ EOS wired into CAMR's
 //  namespace EOS { … } contract.
@@ -1031,7 +1031,7 @@ namespace EOS {
   void RTY2WDOT(amrex::Real /*R*/, amrex::Real /*T*/,
                 amrex::Real* /*Y*/, amrex::Real* /*WDOT*/)
   {
-      amrex::Error("RTY2WDOT not physically possible for RealFluidCO2 EoS");
+      amrex::Error("RTY2WDOT not physically possible for PR EoS");
   }
 
   AMREX_GPU_HOST_DEVICE
@@ -1039,7 +1039,7 @@ namespace EOS {
   void RTY2JAC(amrex::Real /*R*/, amrex::Real /*T*/,
                amrex::Real* /*Y*/, amrex::Real* /*JAC*/, const int /*HP*/)
   {
-      amrex::Error("RTY2JAC not supported with RealFluidCO2 EoS");
+      amrex::Error("RTY2JAC not supported with PR EoS");
   }
 
   AMREX_GPU_HOST_DEVICE
@@ -1047,7 +1047,7 @@ namespace EOS {
   void RTY2C(amrex::Real /*R*/, amrex::Real /*T*/,
              amrex::Real* /*Y*/, amrex::Real* /*acti*/)
   {
-      amrex::Error("RTY2C not supported with RealFluidCO2 EoS");
+      amrex::Error("RTY2C not supported with PR EoS");
   }
 
 }

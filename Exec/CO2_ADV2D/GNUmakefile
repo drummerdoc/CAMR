@@ -1,5 +1,5 @@
 # CO2_XC2D — 2D diagonal cross-critical CO2 Riemann problem.
-# Copy of CO2_B4's build config (2D, gnu, PS hydro, RealFluidCO2 EOS).
+# Copy of CO2_B4's build config (2D, gnu, PS hydro, PR EOS).
 CAMR_HOME      ?= ../..
 AMREX_HOME     ?= ../../../amrex
 
@@ -25,7 +25,7 @@ DEBUG = FALSE
 
 USE_EB = FALSE
 
-Eos_Model := RealFluidCO2
+Eos_Model := PR
 
 Bpack := ./Make.package
 Blocs := .

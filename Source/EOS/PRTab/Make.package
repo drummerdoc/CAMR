@@ -1,0 +1,26 @@
+# PRTab EOS backend (SCOPING SKELETON — new files only).
+#
+# This mirrors PR/Make.package.  The PRTab/EOS.H stub currently
+# forwards every namespace EOS entry point to the device-inline PR
+# machinery in hem_pr_state.H (so a build is bit-identical to
+# PR), with TODO(PRTab) markers where MLP inference will replace
+# the PR solve.
+#
+# When the device-inline MLP inference is added, list its headers here,
+# e.g.:
+#     CEXE_headers += prtab_inference.H
+#     CEXE_headers += prtab_weights.H   (or a device weight-buffer loader)
+#
+# NOTE: hem_pr_state.H and hem_saturation_amrex.H currently live in
+# ../PR/.  They must be made visible to this dir before PRTab
+# can build standalone — either copy them in (and list them below) or add
+# ../PR to the include path in the exec build.  See README.md.
+
+CEXE_headers += EOS.H
+CEXE_headers += prtab_bicubic.H
+CEXE_headers += hem_pr_state.H
+CEXE_headers += hem_saturation_amrex.H
+
+# Table data (bicubic PR EOS) compiled ONCE here; prtab_bicubic.H only
+# declares the arrays extern, so the widely-included header stays small.
+CEXE_sources += prtab_table_data.cpp

@@ -63,7 +63,7 @@ CAMR_riemann_side(int phase, amrex::Real T, amrex::Real P,
 {
     // EOS-AGNOSTIC (was direct hem/PR calls): saturation via
     // EOS::co2_sat_LV, metastable branch states via EOS::PYT2RE_* --
-    // every backend (RealFluidCO2 / MLPx2 / GERG) provides these, so the
+    // every backend (PR / PRTab / GERG) provides these, so the
     // ICs always live on the ACTIVE EOS surface.
     if (phase == PS_PHASE_TWOPHASE) {
         // Saturated liquid / vapor states at Psat(T).

@@ -32,7 +32,7 @@ DEBUG = FALSE
 
 # CAMR
 USE_EB = FALSE
-Eos_Model := RealFluidCO2
+Eos_Model := PR
 
 # GNU Make
 Bpack := ./Make.package

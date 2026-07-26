@@ -221,7 +221,7 @@ ps_physical_flux(int i, int j, int k,
 //        c_frozen² = α₁ Y₁ c₁² + α₂ Y₂ c₂²
 //  where Y_k = α_k ρ_k / ρ_mix is the mass fraction of phase k.
 //
-//  Requires EOS::RPY2Cs to be device-inline (RealFluidCO2 and
+//  Requires EOS::RPY2Cs to be device-inline (PR and
 //  GammaLaw both satisfy this).
 // =====================================================================
 AMREX_GPU_HOST_DEVICE
@@ -320,7 +320,7 @@ ps_max_wave_speed(int i, int j, int k,
 //  This is essentially PS_ctoprim's ps_augment_primitives, unrolled
 //  to a local-array signature.  It duplicates the EOS::REY2P and
 //  RPY2Cs work of ctoprim per face; the (ρ, e) → State cache in the
-//  RealFluidCO2 backend catches the redundant back-to-back solves
+//  PR backend catches the redundant back-to-back solves
 //  when adjacent faces share a phase state.  Two EOS calls per phase
 //  per face is the intrinsic cost of 2nd-order in space.
 //
