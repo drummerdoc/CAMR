@@ -268,7 +268,7 @@ amrex::Real local_small_den = 1.e-20;
 
 #ifdef USE_PS_HYDRO
 void
-CAMR_dervfrac1(
+CAMR_der_ps_alpha1(
   const amrex::Box& bx,
   amrex::FArrayBox& derfab,
   int /*dcomp*/,

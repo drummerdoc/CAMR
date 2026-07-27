@@ -180,7 +180,7 @@ void CAMR_derspec(
 // (with the standard ghost FillPatch) so AMR can refine on the phase/flash
 // front.  This is NOT the EB fluid volume fraction "vfrac"; it is the PS
 // six-equation alpha_1 (datfab component 0 = UALPHA1).
-void CAMR_dervfrac1(
+void CAMR_der_ps_alpha1(
   const amrex::Box& bx,
   amrex::FArrayBox& derfab,
   int dcomp,

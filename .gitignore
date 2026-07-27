@@ -70,3 +70,4 @@ Exec/CO2_RiemannSuite/cvg*_0*
 Exec/CO2_RiemannSuite/rgr_*
 Exec/CO2_RiemannSuite/prtab_diag.txt
 Exec/CO2_RiemannSuite/*.old.*
+Source/EOS/GERGTab/gergtab_table_*

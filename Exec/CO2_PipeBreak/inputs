@@ -102,7 +102,7 @@ amr.grid_eff        = 0.9
 #      CO2 | ambient), across which PRESSURE is continuous, so a pressure tag
 #      cannot see it; density jumps there (and at shocks), so logden is the
 #      comprehensive "follow the growing jet head" criterion.
-#  (b) atag: vfrac1 (=alpha_1) < 0.95 — the flashing two-phase plume.
+#  (b) atag: ps_alpha1 (=alpha_1) < 0.95 — the flashing two-phase plume.
 # Both are DERIVES: tagging a raw STATE var (density, alpha_1) segfaults the
 # tagger; and value_less (not adjacent_difference) is used for alpha_1 (the
 # adjacent_difference tagger on the derive hit an AMReX heap bug).
@@ -112,7 +112,7 @@ amr.refinement_indicators = ldtag atag
 amr.ldtag.field_name = logden
 amr.ldtag.adjacent_difference_greater = 0.15   # ~1.4x density jump (log10)
 amr.ldtag.max_level = 2
-amr.atag.field_name = vfrac1
+amr.atag.field_name = ps_alpha1
 amr.atag.value_less = 0.95
 amr.atag.max_level = 2
 

@@ -18,7 +18,7 @@ struct TaggingParm
   amrex::Real tempgrad = 1.0e10;
   amrex::Real ftracerr = 1.0e10;
   amrex::Real ftracgrad = 1.0e10;
-  amrex::Real vfracerr = 1.0e10;
+  amrex::Real alphaerr = 1.0e10;
 
   int max_denerr_lev = 10;
   int max_dengrad_lev = 10;
@@ -31,7 +31,7 @@ struct TaggingParm
   int max_tempgrad_lev = 10;
   int max_ftracerr_lev = 10;
   int max_ftracgrad_lev = 10;
-  int max_vfracerr_lev = 10;
+  int max_alphaerr_lev = 10;
 };
 
 AMREX_GPU_DEVICE

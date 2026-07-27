@@ -235,8 +235,16 @@ bcnormal(
                 s_ext[UALPHA1] = a1;
                 s_ext[UM1RHO1] = m1;
                 s_ext[UM2RHO2] = m2;
-                s_ext[UE1    ] = m1 * prob_parm.res_eL;
-                s_ext[UE2    ] = m2 * prob_parm.res_eV;
+                // PS convention: the per-phase energy slots carry the
+                // (mass-proportional) KINETIC share, so UE1+UE2 == UEDEN.
+                // Omitting it (old code: m_k * e_k only) makes the moving
+                // ghost internally inconsistent by 0.5*un^2 per unit mass
+                // -> a permanent one-cell state discontinuity at the inlet
+                // face (i=0 pressure offset), growing with un^2 and
+                // EOS-amplified (found with GERG; present for PR too).
+                const amrex::Real ke_sp = amrex::Real(0.5) * un * un;
+                s_ext[UE1    ] = m1 * (prob_parm.res_eL + ke_sp);
+                s_ext[UE2    ] = m2 * (prob_parm.res_eV + ke_sp);
                 return;   // dome-consistent ghost is complete; skip R/W blend
             } else if (prob_parm.res_alpha1 < amrex::Real(1.0)) {
                 // ---- SATURATED TWO-PHASE reservoir (rung 4): fixed saturated

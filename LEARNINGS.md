@@ -1160,7 +1160,176 @@ eos_mlp -> eos_table, eos_mlp_auto -> eos_table_auto (DEPRECATED ALIASES kept: q
 name then old). mlpx2_fwd_net.H -> prtab_bicubic.H; net-relic lam*.H headers removed from
 CAMR (training pipeline lives in co2-eos-cfd). Gate: post-rename PR + PRTab suites must
 reproduce golden outputs to every digit. "PRTab = formerly MLPx2" (renamed 2026-07).
-STAGE 2 REMAINING: bicubic T/s tables from guarded surfaces (gen_gerg_table dumps +
+RENAME EXECUTED + COMMITTED (user host, gates run). CANONICAL NAMES NOW: Eos_Model =
+PR | PRTab | GERG (stage-2: GERGTab); dirs Source/EOS/{PR,PRTab,GERG}; flags
+CAMR.eos_table / eos_table_auto (deprecated aliases eos_mlp / eos_mlp_auto still read);
+bicubic module = prtab_bicubic.H; generated = prtab_table_{params.H,data.cpp}.
+ALL OLDER MENTIONS of RealFluidCO2/MLPx2/mlpx2_*/eos_mlp IN THIS FILE ARE HISTORICAL —
+map them through the table above when following old instructions. Rename fallout fixed:
+gen_table.cpp local amrex::max shim removed (header owns the HEM_NO_AMREX shim);
+AMREX_FORCE_INLINE define guarded (#ifndef) vs build_table.py's -D.
+## GERGTab (stage 2) — BUILT + REGRESSED (sandbox; session gergtab)
+Eos_Model := GERGTab. ARCHITECTURE (2 deliberate departures from PRTab):
+ (1) TABULATION TARGET = the backend's OWN fixed-count-bisection T(rho,e) inversion
+     (64 iters, MUST match GERG/EOS.H) on each guarded surface — a TOTAL function =>
+     NO holes/filling; out-of-domain or masked queries fall back to the IDENTICAL
+     analytic bisection (no accuracy cliff). Tables: T ONLY (s/P/c come free from the
+     analytic reconstruction at (T,rho)).
+ (2) VALIDITY MASKS: guarded surfaces are only C1 at extension seams/dome boundary;
+     bicubic degrades h^4->h^2 there. MEASURED failure without masks: branch-L relT 1e-3
+     near the seam -> relP 0.43 via liquid stiffness -> B4 profile err 1.7e-2 (u).
+     (First suspects — auto-path dome kink [PRTab lesson, gate added: auto table
+     classifies, branch tables serve single-phase] and trace-phase far-extension calls
+     [exonerated: their e is OUT of table domain -> analytic anyway] — were NOT the
+     dominant mechanism; the seam was. eos_table_auto=0 A/B isolated it to branch path;
+     actual-state sweeps localized it.) FIX: generator flags curvature spikes (|D2 T| >
+     8x p90), dilates by the 4x4 stencil, emits GT_OK* masks; runtime lookup returns
+     false near seams -> analytic bisection. Coverage 82.7-88.9% of the box.
+FILES: Source/EOS/GERGTab/{EOS.H (shim -> EOS/GERG/EOS.H), gergtab_bicubic.H,
+tools/gen_gergtab.cpp (self-contained: generates AND emits params/data incl. masks;
+`make gergtab-tables`, ~7s at 256^2), Make.package}; hooks in GERG/EOS.H under
+USE_GERGTAB_EOS (auto: classify-via-auto-table -> branch table for single-phase ->
+mask fallbacks; phase: mask-gated lookup); Make.CAMR GERGTab block + gergtab-tables
+target + fail-early guard. Flags: CAMR.eos_table / eos_table_auto (aliases honored).
+REGRESSION vs g1_* analytic refs (128 cells, identical step counts): eos_table=0 =
+value-identical (1e-13, codegen ulps). Table ON: B4 3.8e-8/1.5e-5/2.4e-7 (rho/u/P
+maxrel), B9 4.6e-9/5.0e-6/2.2e-8, A3 ~4e-7, C3 ~2e-7 => indistinguishable from
+analytic at profile level. (Ungated first cut: 2.4e-3/1.7e-2/1.2e-2 — masks close it.)
+HOST SPEED (user, B4 128-cell, llvm/Mac): GERG 8.77s vs GERGTab 5.84s total = 1.5x.
+Modest by Amdahl: T-inversion ~64x cheaper per call but (a) hydro/flux/relax cost is
+common, (b) analytic reconstruction at (T,rho) runs after every table hit (only the
+T-solve is accelerated), (c) B4's fan sits IN the mask-fallback seam bands (worst case
+for the table). Expect better on single-phase cases (A3/C3, ~no fallbacks) and in 2D
+bulk-dominated runs. If more speed is ever needed: cache/spline the classification
+satStates in state_TR_auto, or widen table validity by smoothing the extension seam (C2).
+EOS_DIAG PORTED (CAMR.eos_diag=1 -> gergtab_diag.txt; GERG/EOS.H gdiag namespace,
+site tags on all cache callers, reference = g_T_bisect_* analytic; NEW vs PRTab: per-bin
+FALLBACK FRACTION column). Verified: diag-on == diag-off BIT-IDENTICAL; port's cache
+restructure value-neutral vs pre-port exe (1e-15). FIRST DUMP FINDINGS (B4, 860k calls):
+ (a) 1.5x-speedup EXPLAINED: 1ph-LIQUID is 100% FALLBACK — at 256^2 the liquid band is
+     only ~8 e-nodes wide and the +-2-dilated seam masks swallow it entirely; table
+     serves only vapor/supercritical (0% fallback, err ~1e-7). SPEEDUP LEVER: finer
+     e-grid (NE=1024 or non-uniform) to un-mask the liquid band.
+ (b) small mask leak: branchL/two-phase table-served calls max relP 3.8e-3 (rho 143,
+     e -1.6e5; 23% of 679 calls) — near-seam nodes under the 8x-p90 threshold; tighten
+     to ~4x if it ever matters (profile impact currently nil).
+ (c) all other bins 1e-7..2.5e-6 per call — consistent with 1e-6 profile parity.
+SATJET-2D GERGTAB OSCILLATIONS (user host run, satjet_demo2, centerline density, first
+100 steps; absent in PR): PRIME SUSPECT identified from the eos_diag leaky bin — branch-
+table service of IN-DOME states (near-seam leakage relP up to 3.8e-3) with cell-to-cell
+table/fallback SWITCHING in the dense two-phase inlet slug = classic 2-dx noise seed for
+this jet. FIX IMPLEMENTED (GERG/EOS.H g_T_from_e_phase): after a successful branch-table
+lookup, REJECT table service if the state is in-dome at the looked-up T (two sat-spline
+evals decide) -> exact bisection for all in-dome branch traffic. VERIFIED: diag branchL/
+two-phase bin now 0.0 error at all sites; B4 regression unchanged (2.4e-7). NOTE diag
+fall%% column still shows raw-lookup usability (not the in-dome rejection) — bookkeeping
+only. USER TO CONFIRM on host: rebuild GERGTab, rerun satjet_demo2, check centerline;
+also the two discriminating runs if not fixed: eos_table=0 (table-vs-physics) and
+eos_diag=1 (which bin). If oscillations persist with eos_table=0 -> GERG-physics/guard
+issue, not the table (then suspect: auto in-dome path or relaxation interplay).
+DOC: co2_surrogate_eos_writeup.md REVISED (1857->1711 lines, agent-assisted): section 6
+retitled to tabulated-EOS + analytic reconstruction (settled design), MLP arc compressed
+to history + future-work (mixtures), all names/statuses current, pandoc+pdflatex build
+verified (32-pp PDF regenerated).
+SATJET ROUND 2 (residual ~2e-3 P jitter in the two-phase slug, L2 centerline, all
+fields; confirmed in plt_sj2_00080): source = RAW auto-table service of IN-DOME states
+(the one path still returning bicubic values; B4's thin trajectory had shown that bin
+clean — 2D slug coverage did not). ARCHITECTURAL FIX: TABLE-SEEDED NEWTON POLISH
+(g_polish_auto/_phase in GERG/EOS.H): table T = SEED only; 2 damped-Newton steps on the
+ANALYTIC surface with FD slope (in-dome equilibrium de/dT > frozen-mix cv — an
+analytic-cv Newton would OVERSHOOT; FD slope is robust), dT clamped +-2K, residual
+guard (1e-6 rel e) -> bisection. Returned values now LIVE ON THE ANALYTIC SURFACE:
+all table-map roughness (kink ringing, table/fallback switching jumps) eliminated by
+construction. Cost ~5 guarded evals/call vs 64 (bisection). B4 REGRESSION: polished
+table vs g1 analytic ref = 3e-15/6e-13/1e-13 (rho/u/P) — ROUND-OFF-IDENTICAL to
+analytic. => the polish supersedes accuracy-motivated mask tightening (masks retained
+as Newton-seed quality gates). USER TO CONFIRM: rebuild GERGTab, rerun satjet_demo2.
+If jitter STILL remains, it is NOT the table (table==analytic to 1e-13): next suspects
+are the analytic GERG surface's C1 dome-boundary/Wood-c jump interacting with the
+scheme, or relaxation/MT interplay — compare directly vs eos_table=0 and vs PR run.
+SATJET ROUND 3 (small residual oscillation appearing as flow evolves; y=0.444 lip shear
+layer, x<0.035, plt_sj2_00070): LOCALIZED to per-phase LIQUID states at rho1=m1/alpha1 ~
+576-640 at T~241K = ~350 kg/m3 PAST the GERG liquid edge (~930 at 241K) -> P1 rides the
+HARD P_FLOOR clamp = FLAT P1(rho1), ZERO restoring stiffness -> mode-1 relaxation has no
+gradient; shear-layer rho1 variation passes straight into P_mix (+-0.07 bar observed).
+GERG-SPECIFIC because its liquid edge sits at much HIGHER density than PR's spinodal —
+same shear excursions land far deeper into the extension. FIX: soft_floor() in
+gerg_co2_guard.H — softplus positive floor (P->P for P>>P_FLOOR, ->P_FLOOR^+ smoothly,
+dP/drho>0 EVERYWHERE; width=P_FLOOR) replacing both hard clamps (raw dip guard +
+extension). B4 regression INERT (1e-13, no suite states near 0.1 bar per-phase).
+GOTCHA hit: GERG_HD macro already contains 'inline' — 'GERG_HD inline' = duplicate
+(and the failed build's stale exe initially masqueraded as a passing test AGAIN — check
+compile-error count BEFORE trusting run output). NOTE: co2-eos-cfd copies of the gerg
+headers now lag CAMR's (soft_floor not synced) — sync when convenient. USER: rebuild 2D
+GERGTab + recommended `make gergtab-tables` (guard change shifts the tabulated surface;
+polish absorbs seed drift so not strictly required), rerun satjet. If residue remains:
+next lever is the per-phase transport consistency itself (#64-family), not the EOS.
+NAMING SCRUB: "vfrac" ambiguity vs AMReX-EB removed. CAMR has TWO distinct vfracs:
+(a) EB-style fluid volume fraction in Hydro kernel signatures + the standard "vfrac"
+dernull derive — KEPT (that IS the AMReX-EB name doing its job); (b) the PS PHASE
+fraction leakage — RENAMED: derive vfrac1 -> ps_alpha1 (CAMR_dervfrac1 ->
+CAMR_der_ps_alpha1), tagging params vfracerr/vfracgrad -> alphaerr/alphagrad (+max_lev),
+inputs amr.atag.field_name = vfrac1 -> ps_alpha1 (all Exec/CO2_PipeBreak inputs.satjet_*
++ inputs). Old plotfiles' job_info retain the historical name (not edited). Compile
+verified. NOTE: post-processing/atag scripts referencing derive "vfrac1" must switch to
+"ps_alpha1"; state field alpha_1 unchanged.
+SATJET ROUND 6 (post-BC-fix, step 30): solution much improved; tiny P wiggle in y=0.56
+slice traced to the STARTUP EXPANSION FRONT straddling the L1-L2 coarse-fine interface
+at step 30 (by step 40 the front exits L2 and the wiggle is buried — one-time transient,
+non-growing = acceptable-class; #84 resync/floor hardening already covers the C-F path).
+IF WANTED: carry refinement with the front while strong via pressure-gradient tagging —
+Tagging.cpp supports it: tagging.pressgrad = <~10-20% of the front jump in Pa> +
+tagging.max_pressgrad_lev = 2 (demo2 currently tags den/vfrac only); or widen
+amr.n_error_buf 2 -> 4-6 to keep the C-F interface off the feature. ACCEPTANCE TEST:
+wiggle amplitude at matched time vs PR baseline + confirm non-growth over the run.
+SATJET ROUND 5 — i=0 ROOT CAUSE FOUND (BC BUG, not BC well-posedness): both tests
+(res_u=150 supersonic AND res_char_inflow=1) left the i=0 discontinuity -> ghost state
+itself inconsistent. bcnormal's MOVING dome-consistent reservoir ghost set UE1/UE2 =
+m_k*e_k (INTERNAL only) while UEDEN = rhoe + ke -> violates the PS invariant
+UE1+UE2 == UEDEN (per-phase slots carry the mass-proportional KINETIC share; verified
+convention in the B9 bookkeeping round). Every ghost flux under-carries per-phase energy
+by 0.5*un^2*m_k -> permanent one-cell blend at i=0, regime-independent, grows with un^2
+(consistent: res_u=150 test made it similar/worse). PR less sensitive (same deficit,
+softer P-response) — bug PRESENT FOR PR TOO. FIXED in Exec/CO2_PipeBreak/prob.H
+(UE1/UE2 += m_k*0.5*un^2; compile-checked). The stagnant ghost branches (ke=0) were
+consistent. res_char_inflow remains the RIGHT inlet for subsonic (GERG) operation —
+retest both PR and GERG after this fix; expect i=0 offset gone in both, and re-examine
+whether any residual slug oscillation survives (this same inconsistency was a standing
+noise source at the face).
+SATJET ROUND 4 UPDATES: PR baseline confirmed NO i=0 offset (supports the subsonic-
+Dirichlet hypothesis). Finding-2 RESOLVED AS CONFIG: run was ps_relax_mode=2 (finite-rate
+thermal) — T1!=T2 by 42K is the model, not a failure. THE CHARACTERISTIC INLET ALREADY
+EXISTS: prob.res_char_inflow=1 (bcnormal, tasks #41/#59) fixes P=Psat + composition and
+takes u_b from the outgoing acoustic invariant (u_int + (Psat-P_int)/(rho c), inflow-
+clamped) — exactly the subsonic-well-posed inlet; demo2 was running the fixed-res_u
+branch. TESTS: (A) supersonic push: prob.res_u=150 (>> GERG c_eq~100) — offset should
+vanish (jet changes, only the OFFSET presence is the diagnostic); (B) the real fix:
+prob.res_char_inflow=1 at the original operating point — expect no i=0 offset, inflow
+velocity self-selected by pressure ratio. If (B) is clean, make it the demo2 default.
+SATJET ROUND 4 (i=0 column P offset +0.65 bar over i=1, whole inlet face, step 50):
+derive VERIFIED honest (per-phase reconstruction == plotted P to 6 digits) -> the i=0
+STATE carries it. TWO FINDINGS:
+ (1) SUBSONIC-INFLOW OVER-SPECIFICATION HYPOTHESIS (GERG-specific by c-regime flip):
+     injected slug u ~ 37-42 m/s; GERG equilibrium (Wood) c ~ 95-100 m/s -> inflow
+     SUBSONIC -> the all-Dirichlet reservoir ghost is over-specified (one characteristic
+     exits; P must float) -> standing face-pressure offset + chatter source. PR's Wood
+     c ~ 38-40 at the same states -> SUPERSONIC-ish -> Dirichlet proper. FIX DIRECTION:
+     characteristic/NSCBC-style inlet (PS_nscbc.H machinery exists) or partial-P
+     extrapolation in bcnormal for subsonic injection. CHECK FIRST: compare i=0 offset
+     in the PR baseline plotfiles (should be absent/small).
+ (2) T1-T2 ~ 42K PERSISTENT DISEQUILIBRIUM in the slug (T1 286.3/T2 244.0 at i=0..2,
+     j=252) despite demo2 nominally ps_relax_mode=1 (instantaneous P+T eq). Verify
+     job_info actually has relax_mode=1 in this run; if yes, GERG mode-1 joint-eq
+     Newton likely FAILS-and-exits on extension-zone liquid states (rho1~650 < edge)
+     -> cells left thermally unequalized. Investigate ps_pt_equilibrium_relax_cell
+     convergence with GERG callbacks in the extension zone.
+REMAINING/OPTIONAL: NE refinement now purely a SPEED lever (accuracy decoupled by the
+polish); A3/C3 + 2D timing brackets; commit (.gitignore gergtab_table_* done).
+PITFALLS logged: dropped #endif -> silent stale-exe rerun (identical error numbers =
+the tell); accuracy sweeps must probe the ACTUAL state distribution (first sweep used
+the wrong e-band: said 1e-5 where reality was 1e-3).
+
+STAGE 2 (older notes, superseded by the section above): bicubic T/s tables from guarded surfaces (gen_gerg_table dumps +
 hole-filling), eos_mlp-gated fast path in GERG/EOS.H, eos_diag port (reference = analytic
 guarded GERG), regression vs g1_ refs. Reference-offset item (arc step 2) largely moot for
 the pure-GERG build (self-consistent ICs via EOS-agnostic prob.H); the +1.4088e5 J/kg

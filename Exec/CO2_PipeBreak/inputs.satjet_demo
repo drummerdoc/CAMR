@@ -78,13 +78,13 @@ amr.blocking_factor = 16
 amr.max_grid_size   = 64
 amr.n_error_buf     = 2 2 2 2
 amr.grid_eff        = 0.9
-# Refine the jet head (density jump) AND the two-phase plume (vfrac1<0.95).
+# Refine the jet head (density jump) AND the two-phase plume (ps_alpha1<0.95).
 amr.refinement_indicators = ldtag atag
 amr.ldtag.field_name = logden
 amr.ldtag.adjacent_difference_greater = 0.15
 amr.ldtag.max_level = 2
-amr.atag.field_name = vfrac1
-# vfrac1 == alpha_1 (liquid volume fraction).  Refine where LIQUID IS PRESENT
+amr.atag.field_name = ps_alpha1
+# ps_alpha1 == alpha_1 (liquid volume fraction).  Refine where LIQUID IS PRESENT
 # (the two-phase plume, alpha_1 > 1e-3), NOT value_less=0.95 -- with a vapor-rich
 # reservoir alpha_1<=0.05 EVERYWHERE, so value_less=0.95 tagged the whole domain
 # and drove level 2 to cover everything (uniform 1024x512, no real AMR).

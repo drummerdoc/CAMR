@@ -301,10 +301,10 @@ CAMR::variableSetUp()
   // Pelanti-Shyue phase-1 volume fraction as a proper derive, so AMR can
   // refine on the phase/flash front (tagging the raw alpha_1 STATE variable
   // segfaults; the derive path does the required ghost FillPatch).  Named
-  // vfrac1 to distinguish it from the EB fluid volume fraction "vfrac".
+  // ps_alpha1 to distinguish it from the EB fluid volume fraction "vfrac".
   derive_lst.add(
-    "vfrac1", amrex::IndexType::TheCellType(), 1, CAMR_dervfrac1, the_same_box);
-  // Register the FULL state (URHO..NVAR), NOT just UALPHA1: when vfrac1 is
+    "ps_alpha1", amrex::IndexType::TheCellType(), 1, CAMR_der_ps_alpha1, the_same_box);
+  // Register the FULL state (URHO..NVAR), NOT just UALPHA1: when ps_alpha1 is
   // used as an AMR error indicator with a GRADIENT criterion
   // (amr.*.adjacent_difference_greater), AMReX FillPatches this derive's
   // source with 1 ghost cell, and the PS physical-BC fill (CAMRHypFill /
@@ -312,7 +312,7 @@ CAMR::variableSetUp()
   // the buffer.  A single-component (UALPHA1,1) buffer therefore overruns ->
   // heap corruption / run-killing noise on derefine.  Carrying the full state
   // (like "logden"/"pressure") makes the boundary fill in-bounds.  #79.
-  derive_lst.addComponent("vfrac1", desc_lst, State_Type, URHO, NVAR);
+  derive_lst.addComponent("ps_alpha1", desc_lst, State_Type, URHO, NVAR);
 #endif
 
   //

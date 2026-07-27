@@ -62,12 +62,12 @@ amr.blocking_factor = 16
 amr.max_grid_size   = 64
 amr.n_error_buf     = 2 2 2 2
 amr.grid_eff        = 0.9
-# Refine the jet head (density jump) AND the two-phase plume (vfrac1<0.95).
+# Refine the jet head (density jump) AND the two-phase plume (ps_alpha1<0.95).
 amr.refinement_indicators = ldtag atag
 amr.ldtag.field_name = logden
 amr.ldtag.adjacent_difference_greater = 0.15
 amr.ldtag.max_level = 2
-amr.atag.field_name = vfrac1
+amr.atag.field_name = ps_alpha1
 amr.atag.value_less = 0.95
 amr.atag.max_level = 2
 

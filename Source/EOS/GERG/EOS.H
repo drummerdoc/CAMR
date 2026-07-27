@@ -31,9 +31,40 @@
 
 #include "gerg_co2_guard.H"
 
+#ifdef USE_GERGTAB_EOS
+#include "gergtab_bicubic.H"   // GERGTab build: table fast path (resolved
+                               // via -I Source/EOS/GERGTab, see Make.CAMR)
+#endif
+
 #define NUM_SPECIES 3
 
 namespace EOS {
+
+#ifdef USE_GERGTAB_EOS
+  // Runtime gates (host; device = compile-time on), PRTab conventions:
+  //   CAMR.eos_table      = 1 : table T-inversion on all hot paths; 0 : analytic
+  //   CAMR.eos_table_auto = 1 : table on the AUTO path too; 0 : analytic auto
+#if !defined(__CUDA_ARCH__) && !defined(__HIP_DEVICE_COMPILE__) && !defined(__SYCL_DEVICE_ONLY__)
+  inline bool gergtab_enabled()
+  {
+      static const bool e = []() {
+          int v = 1; amrex::ParmParse pp("CAMR");
+          pp.query("eos_table", v); pp.query("eos_mlp", v);   // deprecated alias
+          return v != 0;
+      }();
+      return e;
+  }
+  inline bool gergtab_auto_enabled()
+  {
+      static const bool a = []() {
+          int v = 1; amrex::ParmParse pp("CAMR");
+          pp.query("eos_table_auto", v); pp.query("eos_mlp_auto", v);
+          return v != 0;
+      }();
+      return a;
+  }
+#endif
+#endif
 
   // Legacy shim for prob.H files that still do  et = P/(gamma-1).
   static constexpr amrex::Real gamma = 1.4;
@@ -73,8 +104,10 @@ namespace EOS {
   // ---- fixed-count inversions on the GUARDED surfaces -------------
   //  e is monotone-increasing in T on each guarded surface (cv>0;
   //  larger effective cv on the equilibrium surface in the dome).
+  //  The pure-bisection forms are standalone so the eos_diag reference
+  //  can call them directly (they ARE the analytic backend).
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-  double g_T_from_e_auto(double rho, double e)
+  double g_T_bisect_auto(double rho, double e)
   {
       double lo = gerg::T_trip, hi = gerg::T_max;
       for (int it = 0; it < 64; ++it) {
@@ -84,7 +117,7 @@ namespace EOS {
       return 0.5*(lo + hi);
   }
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-  double g_T_from_e_phase(double rho, double e, gerg::Phase ph)
+  double g_T_bisect_phase(double rho, double e, gerg::Phase ph)
   {
       double lo = gerg::T_trip, hi = gerg::T_max;
       for (int it = 0; it < 64; ++it) {
@@ -92,6 +125,113 @@ namespace EOS {
           if (gerg::state_TR_phase(m, rho, ph).e > e) hi = m; else lo = m;
       }
       return 0.5*(lo + hi);
+  }
+
+#ifdef USE_GERGTAB_EOS
+  //  Table-seeded Newton POLISH: the table provides only the SEED; 2
+  //  damped-Newton steps on the ANALYTIC surface (FD slope — in-dome the
+  //  equilibrium de/dT exceeds the frozen-mix cv, so an analytic-cv
+  //  Newton would overshoot) land T on the analytic surface to ~1e-9.
+  //  This removes ALL table-map roughness (bicubic kink ringing,
+  //  table/fallback switching jumps) from the returned values — found
+  //  necessary in 2D: satjet centerline showed ~2e-3 P jitter from the
+  //  raw auto-table service of in-dome states.  Residual guard ->
+  //  bisection.  Cost ~5 guarded evals vs 64 (bisection).
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  double g_polish_auto(double rho, double e, double T)
+  {
+      for (int it = 0; it < 2; ++it) {
+          const gerg::State s0 = gerg::state_TR_auto(T, rho);
+          const gerg::State s1 = gerg::state_TR_auto(T + 0.1, rho);
+          const double slope = std::max((s1.e - s0.e)/0.1, 100.0);
+          double dT = (e - s0.e)/slope;
+          if (dT >  2.0) dT =  2.0;
+          if (dT < -2.0) dT = -2.0;
+          T += dT;
+          if (T < gerg::T_trip) T = gerg::T_trip;
+          if (T > gerg::T_max)  T = gerg::T_max;
+      }
+      if (std::fabs(gerg::state_TR_auto(T, rho).e - e) >
+          1.0e-6*std::max(std::fabs(e), 1.0e4))
+          return g_T_bisect_auto(rho, e);
+      return T;
+  }
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  double g_polish_phase(double rho, double e, gerg::Phase ph, double T)
+  {
+      for (int it = 0; it < 2; ++it) {
+          const gerg::State s0 = gerg::state_TR_phase(T, rho, ph);
+          const gerg::State s1 = gerg::state_TR_phase(T + 0.1, rho, ph);
+          const double slope = std::max((s1.e - s0.e)/0.1, 100.0);
+          double dT = (e - s0.e)/slope;
+          if (dT >  2.0) dT =  2.0;
+          if (dT < -2.0) dT = -2.0;
+          T += dT;
+          if (T < gerg::T_trip) T = gerg::T_trip;
+          if (T > gerg::T_max)  T = gerg::T_max;
+      }
+      if (std::fabs(gerg::state_TR_phase(T, rho, ph).e - e) >
+          1.0e-6*std::max(std::fabs(e), 1.0e4))
+          return g_T_bisect_phase(rho, e, ph);
+      return T;
+  }
+#endif
+
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  double g_T_from_e_auto(double rho, double e)
+  {
+#ifdef USE_GERGTAB_EOS
+#if !defined(__CUDA_ARCH__) && !defined(__HIP_DEVICE_COMPILE__) && !defined(__SYCL_DEVICE_ONLY__)
+      const bool use_tab = gergtab_enabled() && gergtab_auto_enabled()
+                        && gergtab::in_domain(rho, e);
+#else
+      const bool use_tab = gergtab::in_domain(rho, e);
+#endif
+      if (use_tab) {
+          // PRTab lesson: the AUTO table carries the dome kink -- use it
+          // only to CLASSIFY, then take T from the smooth BRANCH table
+          // for single-phase states.  Every lookup is mask-gated: near
+          // seams/kinks it returns false and we drop to the identical
+          // analytic bisection below (exact, no accuracy cliff).
+          double T0;
+          if (gergtab::T_auto(rho, e, T0)) {
+              if (T0 >= gerg::SAT_T_HI) return g_polish_auto(rho, e, T0);
+              double Tb;
+              if (rho >= gerg::rhoL_sat(T0)) {
+                  if (gergtab::T_liq(rho, e, Tb)) return g_polish_auto(rho, e, Tb);
+              } else if (rho <= gerg::rhoV_sat(T0)) {
+                  if (gergtab::T_vap(rho, e, Tb)) return g_polish_auto(rho, e, Tb);
+              } else {
+                  return g_polish_auto(rho, e, T0);          // in-dome
+              }
+          }
+      }
+#endif
+      return g_T_bisect_auto(rho, e);
+  }
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  double g_T_from_e_phase(double rho, double e, gerg::Phase ph)
+  {
+#ifdef USE_GERGTAB_EOS
+#if !defined(__CUDA_ARCH__) && !defined(__HIP_DEVICE_COMPILE__) && !defined(__SYCL_DEVICE_ONLY__)
+      if (gergtab_enabled())
+#endif
+      {
+          double Tt;
+          const bool ok = (ph == gerg::Phase::Liquid)
+                        ? gergtab::T_liq(rho, e, Tt) : gergtab::T_vap(rho, e, Tt);
+          // Reject table service for IN-DOME branch states: they sit
+          // against the extension seam where near-seam leakage reaches
+          // relP ~4e-3 (eos_diag branchL/two-phase bin), and cell-to-cell
+          // table/fallback switching there seeds 2-dx noise in 2D jets
+          // (satjet centerline oscillations).  Two spline evals decide;
+          // in-dome branch traffic goes to the exact bisection.
+          if (ok && !(Tt < gerg::SAT_T_HI &&
+                      rho < gerg::rhoL_sat(Tt) && rho > gerg::rhoV_sat(Tt)))
+              return g_polish_phase(rho, e, ph, Tt);
+      }
+#endif
+      return g_T_bisect_phase(rho, e, ph);
   }
   //  P is monotone-increasing in T at fixed rho on the auto surface
   //  (dPsat/dT>0 in the dome; dP/dT|rho>0 single-phase).
@@ -119,21 +259,138 @@ namespace EOS {
       return 0.5*(lo + hi);
   }
 
+  // ----------------------------------------------------------------
+  //  Call-site tags for the generation-localized diagnostic (always
+  //  defined; recording machinery below is host-only + GERGTab-only).
+  // ----------------------------------------------------------------
+  namespace gdiag {
+    enum Site : int { S_REY2T = 0, S_REY2P, S_REY2GAM, S_REY2DPDE,
+                      S_REY2DPDRE, S_PRIM, S_P_PHASE, S_PTS_PHASE,
+                      S_CS_PHASE, S_PCS_PHASE, S_OTHER, NSITES };
+  }
+
+#if defined(USE_GERGTAB_EOS) && !defined(__CUDA_ARCH__) && !defined(__HIP_DEVICE_COMPILE__) && !defined(__SYCL_DEVICE_ONLY__)
+  // =================================================================
+  //  eos_diag for GERGTab (port of the PRTab generation-localized
+  //  diagnostic; CAMR.eos_diag=1, default 0).  At every call through
+  //  the caches, ALSO computes the ANALYTIC state (pure bisection --
+  //  the eos_table=0 backend) and accumulates rel dP/dT/dc by call
+  //  SITE x PATH (auto/branchL/branchV) x REGIME, plus -- new vs
+  //  PRTab -- the FALLBACK FRACTION (how much traffic the mask/domain
+  //  gates actually route to analytic in a real run).  Read-only;
+  //  diag-off adds one static-bool branch.  Host + serial only.
+  //  Dump: atexit -> ./gergtab_diag.txt
+  // =================================================================
+  namespace gdiag {
+    inline const char* site_name(int s) {
+        static const char* n[NSITES] = {
+            "REY2T","REY2P","REY2Gam","REY2dpde","REY2dpdr_e","REY2_prim",
+            "REY2P_phase","REY2PTS_phase","REY2Cs_phase","REY2PCs_phase","other"};
+        return (s >= 0 && s < NSITES) ? n[s] : "?";
+    }
+    inline const char* path_name(int p)
+    { static const char* n[3] = {"auto","branchL","branchV"}; return n[p]; }
+    inline const char* reg_name(int r)
+    { static const char* n[4] = {"1ph-vap","1ph-liq","two-phase","supercrit"}; return n[r]; }
+
+    struct Cell {
+        long n = 0, nfall = 0;
+        double sP = 0, mxP = 0, sT = 0, mxT = 0, sc = 0, mxc = 0;
+        double mr = 0, me = 0;
+    };
+    struct Tbl { long ncalls = 0; Cell c[NSITES][3][4]; };
+    inline Tbl& tbl() { static Tbl t; return t; }
+
+    inline void dump()
+    {
+        Tbl& t = tbl();
+        std::FILE* f = std::fopen("gergtab_diag.txt", "w");
+        if (!f) return;
+        std::fprintf(f, "# GERGTab eos_diag: table-path vs analytic-bisection, per call\n");
+        std::fprintf(f, "ncalls %ld\n", t.ncalls);
+        std::fprintf(f, "%-14s %-8s %-10s %10s %8s %11s %11s %11s %11s  %12s %12s\n",
+                     "site","path","regime","n","fall%","meanP","maxP","meanT","maxT",
+                     "rho@maxP","e@maxP");
+        for (int s = 0; s < NSITES; ++s)
+        for (int p = 0; p < 3; ++p)
+        for (int r = 0; r < 4; ++r) {
+            const Cell& c = t.c[s][p][r]; if (!c.n) continue;
+            std::fprintf(f, "%-14s %-8s %-10s %10ld %7.2f%% %11.4e %11.4e %11.4e %11.4e  %12.5e %12.5e\n",
+                         site_name(s), path_name(p), reg_name(r), c.n,
+                         100.0*c.nfall/double(c.n),
+                         c.sP/double(c.n), c.mxP, c.sT/double(c.n), c.mxT, c.mr, c.me);
+        }
+        std::fclose(f);
+    }
+
+    inline void record(int site, int path, double rho, double e,
+                       const gerg::State& tab, const gerg::State& ana, bool fell)
+    {
+        Tbl& t = tbl();
+        const double dP = std::fabs(tab.P - ana.P)/std::max(std::fabs(ana.P), 1.0e5);
+        const double dT = std::fabs(tab.T - ana.T)/std::max(ana.T, 1.0);
+        const double dc = std::fabs(tab.c - ana.c)/std::max(ana.c, 1.0);
+        int reg;
+        if      (ana.T >= gerg::SAT_T_HI)                          reg = 3;
+        else if (rho <  gerg::rhoL_sat(ana.T) &&
+                 rho >  gerg::rhoV_sat(ana.T))                     reg = 2;
+        else if (rho >= gerg::rhoL_sat(ana.T))                     reg = 1;
+        else                                                       reg = 0;
+        if (site < 0 || site >= NSITES) site = S_OTHER;
+        Cell& c = t.c[site][path][reg];
+        ++t.ncalls; ++c.n; if (fell) ++c.nfall;
+        c.sP += dP; c.sT += dT; c.sc += dc;
+        if (dT > c.mxT) c.mxT = dT;
+        if (dc > c.mxc) c.mxc = dc;
+        if (dP > c.mxP) { c.mxP = dP; c.mr = rho; c.me = e; }
+    }
+  } // namespace gdiag
+
+  inline bool gergtab_diag_enabled()
+  {
+      static const bool d = []() {
+          int v = 0; amrex::ParmParse pp("CAMR");
+          pp.query("eos_diag", v);
+          if (v != 0) { gdiag::tbl(); std::atexit(&gdiag::dump); }
+          return v != 0;
+      }();
+      return d;
+  }
+#endif
+
   // ---- (rho,e) -> State caches (host 4-slot rings, as PRTab) ------
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-  gerg::State co2_state_from_rho_e_cached(amrex::Real rho, amrex::Real e)
+  gerg::State co2_state_from_rho_e_cached(amrex::Real rho, amrex::Real e,
+                                          int site = gdiag::S_OTHER)
   {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__) || defined(__SYCL_DEVICE_ONLY__)
+      amrex::ignore_unused(site);
       return gerg::state_TR_auto(g_T_from_e_auto(rho, e), rho);
 #else
       constexpr int NS = 4;
       static amrex::Real rc[NS] = {-1,-1,-1,-1}, ec[NS] = {0,0,0,0};
       static gerg::State sc[NS];
       static int nxt = 0;
+      gerg::State st; bool hit = false;
       for (int s = 0; s < NS; ++s)
-          if (rho == rc[s] && e == ec[s] && rc[s] > amrex::Real(0)) return sc[s];
-      gerg::State st = gerg::state_TR_auto(g_T_from_e_auto(rho, e), rho);
-      rc[nxt] = rho; ec[nxt] = e; sc[nxt] = st; nxt = (nxt+1)%NS;
+          if (rho == rc[s] && e == ec[s] && rc[s] > amrex::Real(0)) {
+              st = sc[s]; hit = true; break;
+          }
+      if (!hit) {
+          st = gerg::state_TR_auto(g_T_from_e_auto(rho, e), rho);
+          rc[nxt] = rho; ec[nxt] = e; sc[nxt] = st; nxt = (nxt+1)%NS;
+      }
+#ifdef USE_GERGTAB_EOS
+      if (gergtab_diag_enabled()) {                    // read-only diagnostic
+          const gerg::State ana = gerg::state_TR_auto(g_T_bisect_auto(rho, e), rho);
+          double Tt;                                    // top-level table usability
+          const bool usable = gergtab_enabled() && gergtab_auto_enabled()
+                            && gergtab::T_auto(rho, e, Tt);
+          gdiag::record(site, 0 /*auto*/, rho, e, st, ana, !usable);
+      }
+#else
+      amrex::ignore_unused(site);
+#endif
       return st;
 #endif
   }
@@ -153,10 +410,12 @@ namespace EOS {
 
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   hem::State co2_state_from_rho_e_phase_cached(amrex::Real rho, amrex::Real e,
-                                               hem::Phase3 phase)
+                                               hem::Phase3 phase,
+                                               int site = gdiag::S_OTHER)
   {
       const gerg::Phase gp = g_phase(phase);
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__) || defined(__SYCL_DEVICE_ONLY__)
+      amrex::ignore_unused(site);
       return g2hem(gerg::state_TR_phase(g_T_from_e_phase(rho, e, gp), rho, gp), phase);
 #else
       constexpr int NS = 4;
@@ -165,12 +424,30 @@ namespace EOS {
       static amrex::Real ec[2][NS] = {{0,0,0,0},{0,0,0,0}};
       static hem::State  sc[2][NS];
       static int nxt[2] = {0,0};
+      hem::State st; bool hit = false;
       for (int s = 0; s < NS; ++s)
-          if (rho == rc[p][s] && e == ec[p][s] && rc[p][s] > amrex::Real(0))
-              return sc[p][s];
-      hem::State st = g2hem(gerg::state_TR_phase(g_T_from_e_phase(rho, e, gp), rho, gp), phase);
-      rc[p][nxt[p]] = rho; ec[p][nxt[p]] = e; sc[p][nxt[p]] = st;
-      nxt[p] = (nxt[p]+1)%NS;
+          if (rho == rc[p][s] && e == ec[p][s] && rc[p][s] > amrex::Real(0)) {
+              st = sc[p][s]; hit = true; break;
+          }
+      if (!hit) {
+          st = g2hem(gerg::state_TR_phase(g_T_from_e_phase(rho, e, gp), rho, gp), phase);
+          rc[p][nxt[p]] = rho; ec[p][nxt[p]] = e; sc[p][nxt[p]] = st;
+          nxt[p] = (nxt[p]+1)%NS;
+      }
+#ifdef USE_GERGTAB_EOS
+      if (gergtab_diag_enabled()) {                    // read-only diagnostic
+          const gerg::State ana =
+              gerg::state_TR_phase(g_T_bisect_phase(rho, e, gp), rho, gp);
+          const gerg::State tab = gerg::state_TR_phase(st.T, rho, gp);
+          double Tt;
+          const bool usable = gergtab_enabled() &&
+              ((gp == gerg::Phase::Liquid) ? gergtab::T_liq(rho, e, Tt)
+                                           : gergtab::T_vap(rho, e, Tt));
+          gdiag::record(site, (p == 0) ? 1 : 2, rho, e, tab, ana, !usable);
+      }
+#else
+      amrex::ignore_unused(site);
+#endif
       return st;
 #endif
   }
@@ -190,33 +467,33 @@ namespace EOS {
   // ================================================================
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void REY2T(amrex::Real R, amrex::Real E, amrex::Real*, amrex::Real& T)
-  { T = co2_state_from_rho_e_cached(R, E).T; }
+  { T = co2_state_from_rho_e_cached(R, E, gdiag::S_REY2T).T; }
 
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void REY2P(amrex::Real R, amrex::Real E, amrex::Real*, amrex::Real& P)
-  { P = co2_state_from_rho_e_cached(R, E).P; }
+  { P = co2_state_from_rho_e_cached(R, E, gdiag::S_REY2P).P; }
 
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void REY2Gam(amrex::Real R, amrex::Real E, amrex::Real*, amrex::Real& gam1)
-  { gerg::State s = co2_state_from_rho_e_cached(R, E);
+  { gerg::State s = co2_state_from_rho_e_cached(R, E, gdiag::S_REY2GAM);
     gam1 = (s.rho*s.c*s.c)/s.P; }
 
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void REY2dpde(amrex::Real R, amrex::Real E, amrex::Real*, amrex::Real& dpde)
-  { gerg::State s = co2_state_from_rho_e_cached(R, E);
+  { gerg::State s = co2_state_from_rho_e_cached(R, E, gdiag::S_REY2DPDE);
     const amrex::Real gam1 = (s.rho*s.c*s.c)/s.P;
     dpde = (gam1 - amrex::Real(1.0))*R; }
 
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void REY2dpdr_e(amrex::Real R, amrex::Real E, amrex::Real*, amrex::Real& dpdr_e)
-  { gerg::State s = co2_state_from_rho_e_cached(R, E); dpdr_e = s.P/s.rho; }
+  { gerg::State s = co2_state_from_rho_e_cached(R, E, gdiag::S_REY2DPDRE); dpdr_e = s.P/s.rho; }
 
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void REY2_prim(amrex::Real R, amrex::Real E, amrex::Real*,
                  amrex::Real& T, amrex::Real& P, amrex::Real& gam1,
                  amrex::Real& dpde, amrex::Real& dpdr_e)
   {
-      const gerg::State s = co2_state_from_rho_e_cached(R, E);
+      const gerg::State s = co2_state_from_rho_e_cached(R, E, gdiag::S_PRIM);
       T = s.T; P = s.P;
       gam1 = (s.rho*s.c*s.c)/s.P;
       dpde = (gam1 - amrex::Real(1.0))*R;
@@ -244,7 +521,7 @@ namespace EOS {
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void REY2P_phase(amrex::Real R, amrex::Real E, amrex::Real*,
                    hem::Phase3 phase, amrex::Real& P)
-  { P = co2_state_from_rho_e_phase_cached(R, E, phase).P; }
+  { P = co2_state_from_rho_e_phase_cached(R, E, phase, gdiag::S_P_PHASE).P; }
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void REY2P_liquid(amrex::Real R, amrex::Real E, amrex::Real* Y, amrex::Real& P)
   { REY2P_phase(R, E, Y, hem::Phase3::Liquid, P); }
@@ -256,13 +533,13 @@ namespace EOS {
   void REY2PTS_phase(amrex::Real R, amrex::Real E, amrex::Real*,
                      hem::Phase3 phase,
                      amrex::Real& P, amrex::Real& T, amrex::Real& S)
-  { hem::State s = co2_state_from_rho_e_phase_cached(R, E, phase);
+  { hem::State s = co2_state_from_rho_e_phase_cached(R, E, phase, gdiag::S_PTS_PHASE);
     P = s.P; T = s.T; S = s.s; }
 
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void REY2Cs_phase(amrex::Real R, amrex::Real E, amrex::Real*,
                     hem::Phase3 phase, amrex::Real& Cs)
-  { Cs = co2_state_from_rho_e_phase_cached(R, E, phase).c; }
+  { Cs = co2_state_from_rho_e_phase_cached(R, E, phase, gdiag::S_CS_PHASE).c; }
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void REY2Cs_liquid(amrex::Real R, amrex::Real E, amrex::Real* Y, amrex::Real& Cs)
   { REY2Cs_phase(R, E, Y, hem::Phase3::Liquid, Cs); }
@@ -273,7 +550,7 @@ namespace EOS {
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void REY2PCs_phase(amrex::Real R, amrex::Real E, amrex::Real*,
                      hem::Phase3 phase, amrex::Real& P, amrex::Real& Cs)
-  { hem::State s = co2_state_from_rho_e_phase_cached(R, E, phase);
+  { hem::State s = co2_state_from_rho_e_phase_cached(R, E, phase, gdiag::S_PCS_PHASE);
     P = s.P; Cs = s.c; }
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void REY2PCs_liquid(amrex::Real R, amrex::Real E, amrex::Real* Y, amrex::Real& P, amrex::Real& Cs)

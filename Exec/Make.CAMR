@@ -89,6 +89,27 @@ ifeq ($(Eos_Model),$(filter $(Eos_Model),PRTab))
      endif
    endif
 endif
+GERGTAB_TOOLS := $(CAMR_HOME)/Source/EOS/GERGTab/tools
+GERGTAB_DATA  := $(CAMR_HOME)/Source/EOS/GERGTab/gergtab_table_data.cpp
+.PHONY: gergtab-tables clean-gergtab-tables
+gergtab-tables:
+	@echo "Generating GERGTab T(rho,e) tables (auto + liquid + vapor)..."
+	cd $(GERGTAB_TOOLS) && g++ -O2 -std=c++17 gen_gergtab.cpp -o gen_gergtab && ./gen_gergtab 256
+clean-gergtab-tables:
+	@$(RM) $(GERGTAB_DATA) $(CAMR_HOME)/Source/EOS/GERGTab/gergtab_table_params.H $(GERGTAB_TOOLS)/gen_gergtab
+	@echo "removed generated GERGTab tables (rerun 'make gergtab-tables')"
+
+ifeq ($(Eos_Model),$(filter $(Eos_Model),GERGTab))
+   DEFINES += -DUSE_GERGTAB_EOS
+   EOS_DIR = GERGTab
+   # Physics lives in Source/EOS/GERG (included by path); this dir owns the
+   # bicubic module + generated tables.  Fail early if tables are absent.
+   ifeq (,$(filter gergtab-tables clean-gergtab-tables,$(MAKECMDGOALS)))
+     ifeq (,$(wildcard $(GERGTAB_DATA)))
+       $(error GERGTab tables not generated -- run: make gergtab-tables  (needs host g++))
+     endif
+   endif
+endif
 ifeq ($(Eos_Model),$(filter $(Eos_Model),GERG))
    DEFINES += -DUSE_GERG_EOS
    EOS_DIR = GERG

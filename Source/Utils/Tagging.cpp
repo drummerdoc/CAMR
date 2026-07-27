@@ -28,6 +28,6 @@ CAMR::read_tagging_params()
   pp.query("tempgrad", tagging_parm->tempgrad);
   pp.query("max_tempgrad_lev", tagging_parm->max_tempgrad_lev);
 
-  pp.query("vfracerr", tagging_parm->vfracerr);
-  pp.query("max_vfracerr_lev", tagging_parm->max_vfracerr_lev);
+  pp.query("alphaerr", tagging_parm->alphaerr);
+  pp.query("max_alphaerr_lev", tagging_parm->max_alphaerr_lev);
 }

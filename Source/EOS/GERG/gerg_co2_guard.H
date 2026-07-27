@@ -29,6 +29,21 @@
 namespace gerg {
 
 constexpr double P_FLOOR   = 1.0e3;    // Pa, positive per-phase floor
+
+// Smooth, strictly monotone positive floor (softplus): P -> P for
+// P >> P_FLOOR, P -> P_FLOOR^+ from above as P -> -inf, dP/din > 0
+// ALWAYS.  A hard clamp creates a FLAT P(rho) region in deep branch
+// extensions with ZERO restoring stiffness -- the P+T relaxation then
+// has no gradient to work against and shear-layer rho_k variation
+// passes straight into P_mix jitter (satjet 2D, per-phase liquid at
+// rho1 ~350 kg/m3 past the edge).  Width = P_FLOOR keeps the blend
+// local; states with P > ~10*P_FLOOR are numerically untouched.
+GERG_HD double soft_floor(double P)
+{
+    const double x = (P - P_FLOOR)/P_FLOOR;
+    if (x > 40.0) return P;                      // exp underflow guard
+    return P_FLOOR*(1.0 + std::log1p(std::exp(x)));
+}
 constexpr double RHO_MIN   = 1.0e-6;   // kg/m3
 constexpr double RHO_MAX   = 1500.0;   // kg/m3 (GERG CO2 validity edge)
 
@@ -61,8 +76,8 @@ GERG_HD State state_TR_phase(double T, double rho, Phase ph)
     const bool raw = liq ? (rho >= re) : (rho <= re);
     if (raw) {
         State s = state_TR(T, rho);
-        if (s.P < P_FLOOR) {                          // metastable dip guard
-            s.P = P_FLOOR;
+        if (s.P < 10.0*P_FLOOR) {                     // metastable dip guard
+            s.P = soft_floor(s.P);                    // smooth, monotone
             if (!(s.dPdrho_T > CSQ_FLOOR)) { s.dPdrho_T = CSQ_FLOOR; s.c = std::sqrt(CSQ_FLOOR); }
         }
         return s;
@@ -80,7 +95,9 @@ GERG_HD State state_TR_phase(double T, double rho, Phase ph)
     State s = es;
     s.rho = rho;
     double P = es.P + CSQ_FLOOR*(rho - re);
-    if (P < P_FLOOR) P = P_FLOOR;
+    P = soft_floor(P);              // smooth monotone floor: dP/drho > 0
+                                    // everywhere (no flat zero-stiffness
+                                    // region for the relaxation to wander)
     s.P = P;
     s.e = es.e + dedr*(rho - re);
     s.s = es.s + dsdr*(rho - re);
