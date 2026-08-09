@@ -71,3 +71,13 @@ Exec/CO2_RiemannSuite/rgr_*
 Exec/CO2_RiemannSuite/prtab_diag.txt
 Exec/CO2_RiemannSuite/*.old.*
 Source/EOS/GERGTab/gergtab_table_*
+
+# backend working dirs (run data) and session scratch
+Exec/CO2_PipeBreak/PR/
+Exec/CO2_PipeBreak/GERG/
+Exec/CO2_PipeBreak/GERGTab/
+Exec/CO2_PipeBreak/PRTab/
+Exec/CO2_RiemannSuite/rung/
+_snap_*.tgz
+_to_delete/
+*.pepperbak

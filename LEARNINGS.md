@@ -3,11 +3,156 @@
 Terse/dense on purpose. Not for humans. Replace obsolete lines; keep <300. Companion: `Exec/CO2_PipeBreak/BASELINE.md` (verified single/two-phase ladder, still valid).
 
 ## Project
-6-eq Pelanti-Shyue (PS) two-phase compressible, CAMR/AMReX, `ps_flux=wp` (Berger-LeVeque wave-prop), Peng-Robinson real-fluid EOS (RealFluidCO2). Invariant: every per-cell operator continuous in state (round-off stays round-off, no amplification to asymmetry/nonphysical). Deliverable style: honest (not over-optimistic), fluid-agnostic, symmetry-preserving, brief commits.
-Run env: user builds+runs on their Mac; I cannot run their HW. Exe `CAMR2d.llvm.MPI.PS.ex`; typical `mpiexec -np 6 ./CAMR2d.llvm.MPI.PS.ex inputs.X`. I analyze plotfiles from sandbox mount.
+6-eq Pelanti-Shyue (PS) two-phase compressible, CAMR/AMReX, `ps_flux=wp` (Berger-LeVeque wave-prop). EOS backends: PR | PRTab | GERG | GERGTab (`Eos_Model=`); satjet runs GERGTab. Rule: `<EOS>` = analytic, `<EOS>Tab` = table-accelerated. Invariant: every per-cell operator continuous in state (round-off stays round-off, no amplification to asymmetry/nonphysical). Deliverable style: honest (not over-optimistic), fluid-agnostic, symmetry-preserving, brief commits.
+Run env: user builds+runs on their Mac (llvm/MPI, `mpiexec -np 6 ./CAMR2d.llvm.TPROF.MPI.PS.ex inputs.X`). I ALSO build+run in the sandbox now (gnu, SERIAL only — no MPI, apt blocked): clone amrex to /tmp then `make -j4 DIM=2 USE_MPI=FALSE COMP=gnu Eos_Model=GERGTab AMREX_HOME=/tmp/amrex` over chained 45s calls. I read all plotfiles directly from the shared mount — the user never needs to paste data. Tools: `Exec/CO2_PipeBreak/plt.py` (1-D+2-D reader), `gergstats.cpp` (per-cell per-phase P/T/c + branch/dome flags).
 
-## CURRENT FOCUS: satjet dense two-phase inlet-slug pressure ring
-Showcase = saturated CO2 blowdown (`inputs.satjet_demo`, 3-level AMR). Zoom repro = `inputs.satjet_zoom` (320x400 uniform, 0.24x0.30 m, gap yc=0.5 half=0.05 taper=0.02, T_res=280 res_alpha1=0.05, MT off variants). Persistent defect: cell-to-cell (2Δ) pressure speckle in the dense two-phase inlet slug; downstream jet plume is clean. User standard: must be smooth/clean, understand root cause, no band-aids.
+## CURRENT FOCUS: satjet GERGTab — c-cliff fixed (gated), perf banked, inlet still ill-posed
+Showcase = saturated CO2 blowdown `inputs.satjet_demo2` (2x1 m, 3-level AMR, GERGTab,
+res_char_inflow=1, ps_relax_mode=2). State: the finest-level 2-dx pressure oscillation in the
+near-inlet lip shear layer is FIXED by `GERG_EXT_C=1` (growth 4.3->26.3 bar arrested at 4.7);
+one 3-level step went 495.9 s -> 13.2 s. `GERG_EXT_C` is now DEFAULT ON (set =0 only to
+reproduce pre-2026-08 results or to bisect). Read the session block below first; it contains one
+catastrophic dead end that must not be reintroduced.
+User standard: must be smooth/clean, understand root cause, no band-aids, honest reporting.
+
+## SESSION gerg-perf-and-c-cliff (latest): 40x speedup banked; c-cliff FIXED on the 2nd attempt
+RUN ENV UPDATE: I can now BUILD AND RUN in the sandbox — `git clone --depth 1 amrex /tmp/amrex`
+then `make -j4 DIM=2 USE_MPI=FALSE COMP=gnu Eos_Model=GERGTab AMREX_HOME=/tmp/amrex`
+(chained 45s calls; AMReX objs persist; only the post-link `rm AMReX_buildInfo.cpp`
+fails on mount perms — ignore, the link already succeeded). NO MPI in the sandbox
+(apt blocked) so MPI-specific behaviour is still host-only. Reader: `Exec/CO2_PipeBreak/plt.py`
+(2-D and 1-D AMReX plotfiles, name-indexed, per-level). `gergstats.cpp` = per-cell per-phase
+P/T/c + branch-extension + in-dome flags from a plotfile row dump. USE THESE, don't rewrite.
+DISCIPLINE NOTE: my probe runs inherited `amr.plot_file=plt_sj2_`/`check_file=chk_sj2_` from
+inputs.satjet_demo2 via sed and CLOBBERED the production series (`.old.<pid>` litter). Always
+override BOTH prefixes to a scratch name when running in the live output dir.
+
+### PERFORMANCE: 495.9 s -> 13.2 s for one 3-level step (measured, serial sandbox)
+All four were per-cell EOS work hidden behind missing timers. Added BL_PROFILE to
+clean_state/expand_state/construct_hydro_source/ps_resync_phase_energy/ps_apply_vanish_fold.
+1. `ps_apply_floor` 486.4 s = 98.5% of the step. The T-floor solved e*(rho_k,tfloor) by a
+   46-step bisection on e whose predicate was the 64-step (rho,e)->T bisection = 2944 guarded
+   evals per phase per cell. But REY2T is monotone in e, so e* IS the auto-surface energy at
+   (tfloor,rho_k) -- a DIRECT call. New `EOS::RTY2PE_auto` (GERG one-liner; PR/PRTab dome lever
+   + branch). Verified equal to the nested bisection to 2.07e-13. Also returns P so the P-floor
+   is skipped exactly when it cannot bind (P(tfloor,rho)>=pfloor <=> e_pf<=e_tf; crossing at
+   rho~2.5 kg/m3, so always skipped in practice). 486 s -> 0.035 s.
+2. `g_T_from_e_auto` used the AUTO table only to CLASSIFY then demanded a BRANCH-table seed;
+   if the branch mask failed (66-91% here, NE=256 masks the ~8-node liquid band) it dropped the
+   whole call to 64-step bisection, discarding an auto seed available 99.9% of the time. Table is
+   a SEED ONLY (`T_*_seed`, mask ignored, `lookup(...,OK=nullptr)`); polish lands on the analytic
+   surface. 12.8x. Verified vs exact bisection: auto 1.0e-8 K, liq 4.6e-8, vap 9.4e-8.
+   Swept 48400 (rho,e) states: 0 auto/vapour discrepancies >0.01 K, 1 liquid (0.48 K at rho=1.57).
+3. `clean_state` ends in `computeTemp(S,S.nGrow())` = 1 mixture + 2 per-phase inversions per cell
+   over the GROWN box, called 5x per CAMR_advance (7x with expand_state) ~= 49 full-domain sweeps
+   per 3-level step, to refresh a DIAGNOSTIC slot. New `clean_state(S, bool refresh_temp=true)`;
+   intermediates pass false; ONE guaranteed `clean_state(S_new,true)` before `return dt_new`
+   (the last clean_state in the step is inside apply_ps_reaction, so without it plotfiles carry
+   stale Temp). `expand_state` also false — PS ctoprim recomputes T (PS_umeth "T recomputed at
+   ctoprim", flx[UTEMP]=0). `CAMR.lazy_temp=0` reverts. A/B: 0.053 -> 0.021 s, nothing else moved.
+4. `ps_source_masstransfer` 82-86% of a step on a degraded state. `ps_mass_transfer_finite_cell`
+   ran the FULL equilibrium Gibbs-Newton for every gate-passing cell, and inside EVERY Gibbs
+   iteration a nested pressure-relaxation Newton: 21.6 inner iters per outer, 277 inner/cell.
+   DEFAULT CHANGED to nesting OFF (`PS_MT_NEST_PR=1` restores): outer 12.8->4.18 iters,
+   itmax 25->6, eqfail 26%->0% ON ALL LEVELS, 2.19 s -> 0.014 s (155x), 3-level step 5.1x.
+   Nesting-ON was NOT the trustworthy option: marginally converged and SILENTLY returning
+   failure (dm_eq=0, MT skipped) on ~1/4 of cells. dm_eq DOES change (flash_rate L1 rel 1.2;
+   per-phase mass 0.25% L1/step; rho and alpha1 bit-identical). TRAP, measured: CAPPING the
+   inner relax (PS_MT_NEST_PR=3 or 5) gives 99-100% eqfail = MT silently disabled while looking
+   fast. Also: `ps_mt_tau=1e3` does NOT disable MT cost (frac~5e-9 but the solve still ran);
+   the real off-switch is `ps_mt_tau=0`. A `frac<1e-12` early-out was added.
+NOT the bottleneck (measured, so don't re-chase): `ps_apply_relaxation` is a HEALTHY Newton —
+100% convergence, #41 bracketing fallback fires 0 times, 2.1-2.7 iters on every level. Its 25%
+is 3 genuinely distinct EOS evaluations per iteration; the host cache already collapses the
+`residual`/`fully_valid` duplicate pair, so de-duplication buys ~0.3% (measured, `eval_rv` kept
+for clarity only). One-sided FD (`PS_PR_FD1=1`) buys 10% but perturbs the Newton trajectory —
+left OFF. Remaining profile: wp_face_riemann 41% (NEVER AUDITED), ctoprim 12%, MT 7%,
+clean_state 7%. MPI load imbalance untested (ROUNDROBIN, loadbalance_with_workestimates=0).
+
+### THE c CLIFF: first fix CATASTROPHIC, second fix WORKS (`GERG_EXT_C`, NOW DEFAULT ON)
+DIAGNOSIS (solid, re-confirmed twice). `state_TR_phase` extension hard-set
+c = sqrt(CSQ_FLOOR) = 50 m/s while just inside the edge the raw surface reports the true
+isentropic c (174 vapour, 211-359 liquid) => a 3.5x (vap) / 7x (liq) DISCONTINUITY at an
+infinitesimal density change. c feeds the Wood mixture speed -> HLLC wave speeds, so cells
+straddling the edge switch upwind dissipation on/off. satjet level-2 evidence (ok_00130):
+extension cells mean |d2 P| 4.41 bar / c_mix 45 m/s vs 0.30 bar / 170 m/s on the raw branch;
+92% of cells with |d2P|>3 bar are past the edge; L2 max|d2P| grows 4.3 -> 26.3 bar over steps
+105-130 while L0/L1 stay flat. Reverting the fix reproduced this exactly => causal, not
+correlation.
+ATTEMPT 1 — DO NOT REINTRODUCE. Set c = c_edge throughout the extension (froze gamma at the
+edge value). CATASTROPHIC: pressure collapsed to P_FLOOR domain-wide and rho -> 1e15 at the lip
+within 2 steps of restart. Deterministic, rank-independent (np=1 and np=8 bit-identical), and
+my gnu/serial build tolerated it while llvm did not — so a single-toolchain validation missed
+it entirely. Bisection cost ~8 host runs; only `git stash` of Source/ finally partitioned it.
+ATTEMPT 2 (SHIPPED, DEFAULT ON as of the from-scratch validation; `GERG_EXT_C=0` reverts). The extension surface is
+P = P_edge + CSQ_FLOOR*(rho-re) at fixed T with cv and dP/dT|rho FROZEN at the edge, so its own
+isentropic speed is not a free choice — it follows from the identity
+    c^2 = (dP/drho)_T + T*(dP/dT)_rho^2 / (rho^2 * cv)
+(verified to reproduce state_TR's own c to 1.3e-14 over 3133 raw states). Applied to the
+CONSTRUCTED surface it lands on the edge value to 4.4e-7 (continuous) and decays into the vapour
+extension 174 -> 151 -> 124 -> 95 -> 76 -> 50. The thermal term is CAPPED at its edge value
+because UNCAPPED the liquid extension's c GROWS as 1/rho^2 (342 -> 847 at rho/re=0.4) — further
+in the direction that already failed. Cap costs nothing: at alpha1~0.05 the liquid contributes
+~1e-10 to the Wood harmonic sum vs the vapour's ~9e-7. `gerg::c_extension()` + `ext_c_enabled()`
+in gerg_co2_guard.H; worst c jump across the edge 86.2% -> 0.93%.
+VALIDATION (host, 6-rank, restart chk_sj2_00100 to step 130, cA_=off vs cB_=on):
+L2 max|d2P| OFF 4.32/5.54/8.31/10.90/22.69/26.34 -> ON 4.59/4.62/4.64/4.67/4.68/4.69 = GROWTH
+ARRESTED. L0/L1 unchanged. Pmax identical, Pmin 15.36 vs 13.22 (BETTER), Tmax identical,
+0 dropouts, dt marginally LARGER (no CFL cost). A-C suite (1D, GERGTab, REFGLOB='gerg_refs/g1_*'):
+off = <=3.8e-7 vs refs (clean control), on = BIT-IDENTICAL to off — and provably inert, because
+0 cells in any g1_ reference sit in a branch extension. So A-C confirms nothing else broke; it
+does NOT validate the fix. The satjet run is the only real test.
+CAVEAT: the residual 4.69 bar of L2 |d2P| is near-lip structure INHERITED from chk_sj2_00100
+(written by the old code). Whether it decays from a clean start is UNKNOWN — needs a fresh run.
+TOOLING: `run_ac_suite.py` was hardcoded to the PR refs (`c1_*`); now takes `REFGLOB` and a
+prefix-agnostic case_name. A GERG build MUST use `gerg_refs/g1_*` or it silently compares
+against a different thermodynamic surface.
+
+### CROSS-BACKEND CARRY-THROUGH (what the GERGTab work does/doesn't cover)
+`RTY2PE_auto` (the ps_apply_floor nested-bisection fix) is in PR, PRTab, GERG; GERGTab inherits
+it (GERGTab/EOS.H is a 9-line shim `#include`ing EOS/GERG/EOS.H). GammaLaw lacks it and should —
+it has no per-phase entries, so PS+GammaLaw doesn't build. BUT the PR/PRTab versions have NEVER
+been exercised by a run (satjet is GERGTab); only a standalone check (T round-trips to 1.4e-7 K
+over rho=5..1008). The generic work (clean_state/lazy_temp, MT nesting default, timers,
+ps_apply_floor restructure) is in Source/CAMR*.cpp + Source/Hydro/PelantiShyue so it is global —
+but likewise measured ONLY under GERGTab; the MT nesting change alters dm_eq and PR's Gibbs
+surface differs, so PR could show different convergence than the 4.18 iters / 0% eqfail measured.
+The c cliff IS structurally present in PR/PRTab and is NOT fixed there (task #11) — do not port
+blind, see the task for why.
+
+### OPEN (priority order)
+1. #10 DIP-GUARD P/c MISMATCH: raw branch, P softplus-floored flat at ~P_FLOOR while c keeps the
+   raw value (653-853 m/s at T=230, rho=1050-1120). Same species as the extension cliff, opposite
+   direction, deliberately untouched. Only fires where P < 0.01 bar. Needs its own design + A-C.
+2. SUBSONIC INLET is ill-posed, only CAPPED not cured. `res_char_inflow=1` applies the (u-c)
+   invariant at M=1.05-1.5 (frozen mixture c 185, equilibrium 154, inlet u 195-231 core / 355 lip).
+   Because the boundary pins STATIC P=Psat while the jet expands, (Psat-P_int) is one-signed =>
+   u_b ratchets +0.15-0.22 m/s EVERY step, M 1.01 -> 1.27 over 170 steps, injected stagnation
+   pressure ~84 bar against a 41.6 bar reservoir. Fixed impedance/P_int to the two-phase mixture
+   (was the single-fluid equilibrium surface, ~20% off in c, 30% in P) and added
+   `prob.res_mach_max` (default 1.0) capping u_b at the reservoir Wood speed. PROPER fix = a
+   STAGNATION inlet (impose h0,s0, one outgoing invariant) so P_b falls as u rises.
+3. wp_face_riemann = 41% of the step, never audited.
+4. TAGGING: `amr.atag.adjacent_difference_greater=0.1` on ps_alpha1 CAN NEVER FIRE (alpha1 maxes
+   at res_alpha1=0.05; observed max adjacent diff 0.035) — the alpha tag has been dead all along,
+   which is why the jet CORE derefines while the lip edges refine. Use `value_greater=1.0e-3`.
+   And `pgtag` on pressure with a 3e5 threshold TAGS THE OUTFLOW WALLS: the non-reflecting BC
+   sets P_ghost=0.5*(P_int+P_amb+n*rho*c*u_n), and adjacent_difference includes the GHOST, so it
+   fires once P_int drops ~6 bar below p_amb or rho*c*|v_n| > 6 bar. Gradient tags and
+   non-reflecting BCs don't mix — confine pgtag with in_box_lo/hi or drop it.
+5. MPI load imbalance: ROUNDROBIN + loadbalance_with_workestimates=0, EOS cost concentrated in
+   the jet. Never tested. Also `amr.regrid_int` 2->4 changed nothing (LeastUsedCPUs is barrier
+   absorption, not regrid frequency).
+
+### METHOD LESSONS (cost me ~10 host runs this session)
+* A standalone continuity/accuracy sweep is NOT validation for a thermodynamic-surface change.
+  Attempt 1 passed every standalone check I ran and still destroyed the run in 2 steps.
+* Single-toolchain validation is not validation. gnu/serial tolerated a change that llvm killed.
+* Before counting EOS call sites, CHECK THE HOST CACHE — it already collapses repeat (rho,e,phase)
+  calls, which invalidated a "2x" estimate down to 0.3%.
+* When a flag bisection comes back all-negative, the unflagged changes are the suspects. Three of
+  mine had no off-switch; that's what cost the time. Gate every behaviour change.
+* `git stash` (not flag-by-flag) is the cheapest partition of "is it mine at all". Do it FIRST.
 
 ## DIAGNOSIS CHAIN (this session's core conclusions — solid)
 1. Slug (x<0.02, y∈[0.44,0.57]) at t~2e-4: relative odd-even (2nd-diff/|f|, mean): P 0.63, e1(liq spec int energy) 0.25, e2 0.12, rho1/rho2 ~0.08, alpha1 0.018 (SMOOTH). Plume (x∈[0.03,0.06]) P-oe 0.0015 (clean). => pure per-phase INTERNAL-ENERGY ring, amplified by stiff EOS into P. NOT a shear/velocity instability, NOT alpha transport.
