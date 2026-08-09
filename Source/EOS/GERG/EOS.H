@@ -23,6 +23,7 @@
 #include <AMReX_REAL.H>
 #include <AMReX_Utility.H>
 #include <AMReX_ParmParse.H>
+#include <AMReX_Print.H>
 
 #include "PhysicsConstants.H"
 
@@ -66,6 +67,27 @@ namespace EOS {
 #endif
 #endif
 
+#if !defined(__CUDA_ARCH__) && !defined(__HIP_DEVICE_COMPILE__) && !defined(__SYCL_DEVICE_ONLY__)
+  // ---- CAMR.gerg_ext_c -> gerg::set_ext_c (task #12) ------------------
+  //  The guard header is AMReX-free, so the ParmParse read lives here and is
+  //  pushed down.  force_add puts the RESOLVED value into the ParmParse table
+  //  even when the inputs file is silent, so it always appears in job_info --
+  //  i.e. every plotfile records which extension sound-speed surface produced
+  //  it.  Called once from CAMR::read_params(), before any hydro.
+  inline void gerg_ext_c_init()
+  {
+      int v = 1;                                  // DEFAULT ON
+      amrex::ParmParse pp("CAMR");
+      pp.query("gerg_ext_c", v);
+      gerg::set_ext_c(v != 0);
+      pp.add("gerg_ext_c", v);                    // ensure it reaches job_info
+      amrex::Print() << "  GERG: extension sound speed "
+                     << (v != 0 ? "CONTINUOUS (CAMR.gerg_ext_c=1, default)"
+                                : "LEGACY sqrt(CSQ_FLOOR)=50 m/s (CAMR.gerg_ext_c=0)")
+                     << std::endl;
+  }
+#endif
+
   // Legacy shim for prob.H files that still do  et = P/(gamma-1).
   static constexpr amrex::Real gamma = 1.4;
 
@@ -79,6 +101,23 @@ namespace EOS {
   amrex::Real T_crit()   { return amrex::Real(gerg::T_c); }
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   amrex::Real T_triple() { return amrex::Real(gerg::T_trip); }
+
+  // ----------------------------------------------------------------
+  //  DENSITY VALIDITY DOMAIN (guard G1 -- see
+  //  Source/Hydro/PelantiShyue/GUARD_INVENTORY.md).
+  //
+  //  GERG-2008 is a Helmholtz-energy surface: there is NO excluded-volume
+  //  pole, so has_density_pole() is false and rho_max is the published
+  //  validity edge rather than a singularity.  The guard already clamps
+  //  internally (gerg::clamp_rho); these accessors expose the SAME bounds so
+  //  the hydro layer can clamp before the call, identically for every backend.
+  // ----------------------------------------------------------------
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  amrex::Real rho_max()   { return amrex::Real(gerg::RHO_MAX); }   // 1500 kg/m3
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  amrex::Real rho_min()   { return amrex::Real(gerg::RHO_MIN); }   // 1e-6 kg/m3
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  bool        has_density_pole() { return false; }
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   amrex::Real P_triple() { return amrex::Real(gerg::P_trip); }
 
@@ -188,22 +227,37 @@ namespace EOS {
       const bool use_tab = gergtab::in_domain(rho, e);
 #endif
       if (use_tab) {
-          // PRTab lesson: the AUTO table carries the dome kink -- use it
-          // only to CLASSIFY, then take T from the smooth BRANCH table
-          // for single-phase states.  Every lookup is mask-gated: near
-          // seams/kinks it returns false and we drop to the identical
-          // analytic bisection below (exact, no accuracy cliff).
+          // The table provides a SEED ONLY; g_polish_auto lands the answer on
+          // the ANALYTIC surface (2 damped-Newton steps) and falls back to the
+          // exact bisection if the residual guard fails.  So seed quality is a
+          // PERFORMANCE concern, not an accuracy one, and we must never drop to
+          // the 64-step bisection while a usable seed exists.
+          //
+          // PERF BUG this replaces: the AUTO table was used only to CLASSIFY,
+          // then the seed was taken from the BRANCH table -- and if the BRANCH
+          // mask said no (66-91% of calls in the satjet two-phase region, where
+          // the liquid band is only ~8 e-nodes wide at NE=256) the whole call
+          // fell through to g_T_bisect_auto, discarding a perfectly good auto
+          // seed that was available 99.9% of the time.  That made
+          // estTimeStep/ctoprim/the flux path pay 64 guarded evaluations per
+          // cell instead of 5.  Measured: 12.8x, seed error <= 0.19 K, 100% of
+          // polishes accept, polished T within 1.6e-8 K of exact bisection.
+          //
+          // Preference order (best seed first), but any seed beats none:
+          //   supercritical / in-dome -> auto table
+          //   single-phase            -> branch table if available, else auto
           double T0;
-          if (gergtab::T_auto(rho, e, T0)) {
+          if (gergtab::T_auto(rho, e, T0) || gergtab::T_auto_seed(rho, e, T0)) {
               if (T0 >= gerg::SAT_T_HI) return g_polish_auto(rho, e, T0);
               double Tb;
               if (rho >= gerg::rhoL_sat(T0)) {
-                  if (gergtab::T_liq(rho, e, Tb)) return g_polish_auto(rho, e, Tb);
+                  if (gergtab::T_liq(rho, e, Tb) ||
+                      gergtab::T_liq_seed(rho, e, Tb)) return g_polish_auto(rho, e, Tb);
               } else if (rho <= gerg::rhoV_sat(T0)) {
-                  if (gergtab::T_vap(rho, e, Tb)) return g_polish_auto(rho, e, Tb);
-              } else {
-                  return g_polish_auto(rho, e, T0);          // in-dome
+                  if (gergtab::T_vap(rho, e, Tb) ||
+                      gergtab::T_vap_seed(rho, e, Tb)) return g_polish_auto(rho, e, Tb);
               }
+              return g_polish_auto(rho, e, T0);   // in-dome, or no branch seed
           }
       }
 #endif
@@ -218,17 +272,25 @@ namespace EOS {
 #endif
       {
           double Tt;
-          const bool ok = (ph == gerg::Phase::Liquid)
-                        ? gergtab::T_liq(rho, e, Tt) : gergtab::T_vap(rho, e, Tt);
-          // Reject table service for IN-DOME branch states: they sit
-          // against the extension seam where near-seam leakage reaches
-          // relP ~4e-3 (eos_diag branchL/two-phase bin), and cell-to-cell
-          // table/fallback switching there seeds 2-dx noise in 2D jets
-          // (satjet centerline oscillations).  Two spline evals decide;
-          // in-dome branch traffic goes to the exact bisection.
-          if (ok && !(Tt < gerg::SAT_T_HI &&
-                      rho < gerg::rhoL_sat(Tt) && rho > gerg::rhoV_sat(Tt)))
-              return g_polish_phase(rho, e, ph, Tt);
+          const bool liq = (ph == gerg::Phase::Liquid);
+          // SEED ONLY -- mask and the former in-dome rejection dropped.
+          //
+          // The in-dome rejection was added when the table VALUE was returned
+          // directly (near-seam leakage reached relP ~4e-3, which seeded 2-dx
+          // noise in 2-D jets).  The Newton polish introduced right after it
+          // made the returned value live on the analytic surface by
+          // construction, so the rejection became a pure cost: in the satjet
+          // two-phase region it sent ~100% of liquid and ~82% of vapour branch
+          // inversions to the 64-step bisection.  The mask is likewise a
+          // seed-quality gate, not an accuracy one (the polish's residual
+          // guard is the real safety net) -- and at NE=256 it blanks the whole
+          // ~8-node-wide liquid band, so table_ok was only 9.3% for liquid.
+          // Measured with seed-only + polish: 100% accept, polished T within
+          // 4.6e-8 K of exact bisection, 12.8x cheaper.
+          bool ok = liq ? gergtab::T_liq(rho, e, Tt) : gergtab::T_vap(rho, e, Tt);
+          if (!ok) ok = liq ? gergtab::T_liq_seed(rho, e, Tt)
+                            : gergtab::T_vap_seed(rho, e, Tt);
+          if (ok) return g_polish_phase(rho, e, ph, Tt);
       }
 #endif
       return g_T_bisect_phase(rho, e, ph);
@@ -594,6 +656,22 @@ namespace EOS {
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void RYP2E(amrex::Real R, amrex::Real*, amrex::Real P, amrex::Real& E)
   { E = gerg::state_TR_auto(g_T_from_P_rho(double(R), double(P)), double(R)).e; }
+
+  //  (rho, T) -> {P, e} on the AUTO (equilibrium) surface: the DIRECT
+  //  inverse of REY2T / REY2P at fixed rho, in ONE evaluation.
+  //  ps_apply_floor needs e*(rho, T_floor) = "smallest e whose REY2T
+  //  reaches T_floor".  Because REY2T is monotone in e, that e IS this
+  //  function -- but it used to be obtained by a 46-step bisection on e
+  //  whose predicate was itself the 64-step (rho,e)->T bisection: 2944
+  //  guarded evaluations per phase per cell, unconditionally.  Verified
+  //  equivalent to the nested bisection to 2e-13 relative on real satjet
+  //  states.  P is returned from the same state so the pressure floor can
+  //  be skipped exactly when it cannot bind (P(T_floor,rho) >= p_floor).
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void RTY2PE_auto(amrex::Real R, amrex::Real T, amrex::Real*,
+                   amrex::Real& P, amrex::Real& E)
+  { const gerg::State s = gerg::state_TR_auto(double(T), double(R));
+    P = s.P; E = s.e; }
 
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void RYP2T(amrex::Real R, amrex::Real*, amrex::Real P, amrex::Real& T)

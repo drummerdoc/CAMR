@@ -317,6 +317,29 @@ namespace EOS {
   amrex::Real T_crit()   { return co2_fluid().pr.Tc; }
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   amrex::Real T_triple() { return amrex::Real(216.592); }
+
+  // ----------------------------------------------------------------
+  //  DENSITY VALIDITY DOMAIN (guard G1 -- see
+  //  Source/Hydro/PelantiShyue/GUARD_INVENTORY.md).
+  //
+  //  PRTab tabulates T(rho,e) and reconstructs the rest through the SAME PR
+  //  cubic, so it inherits PR's hard pole at rho = M/b exactly.  Kept
+  //  numerically identical to PR/EOS.H (this backend carries its own copies
+  //  of the PR headers by design -- see the note in Make.CAMR).
+  // ----------------------------------------------------------------
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  amrex::Real rho_pole()
+  {
+      const hem::PRFluid f = co2_fluid();
+      const amrex::Real b = hem::PR_Omega_b * hem::R_gas * f.pr.Tc / f.pr.Pc;
+      return f.M / b;
+  }
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  amrex::Real rho_max()   { return amrex::Real(0.98) * rho_pole(); }
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  amrex::Real rho_min()   { return amrex::Real(1.0e-6); }
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  bool        has_density_pole() { return true; }
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   amrex::Real P_triple() { return amrex::Real(5.1795e5); }
 
@@ -350,6 +373,31 @@ namespace EOS {
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void RTY2E_vapor(amrex::Real R, amrex::Real T, amrex::Real* Y, amrex::Real& E)
   { RTY2E_phase(R, T, Y, hem::Phase3::Vapor, E); }
+
+  //  (rho, T) -> {P, e} on the AUTO (dome-aware) surface -- direct inverse
+  //  of REY2T/REY2P at fixed rho.  Removes the nested bisection in
+  //  ps_apply_floor; see the GERG/PR backends for the rationale.
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void RTY2PE_auto(amrex::Real R, amrex::Real T, amrex::Real* /*Y*/,
+                   amrex::Real& P, amrex::Real& E)
+  {
+      const hem::PRFluid f = co2_fluid();
+      const hem::State sL = hem::satStateL(f, T);
+      const hem::State sV = hem::satStateV(f, T);
+      if (sL.rho > sV.rho && R < sL.rho && R > sV.rho) {
+          const amrex::Real vL = amrex::Real(1.0)/sL.rho;
+          const amrex::Real vV = amrex::Real(1.0)/sV.rho;
+          const amrex::Real x  = (amrex::Real(1.0)/R - vL)/(vV - vL);
+          E = (amrex::Real(1.0) - x)*sL.e + x*sV.e;
+          P = amrex::Real(0.5)*(sL.P + sV.P);
+          return;
+      }
+      const hem::Phase3 ph = (R >= sL.rho) ? hem::Phase3::Liquid
+                                           : hem::Phase3::Vapor;
+      const amrex::Real v_m = hem::v_PR_from_rho(f, R);
+      const hem::State s = hem::state_from_T_v(f, T, v_m, ph);
+      P = s.P; E = s.e;
+  }
 
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void co2_sat_LV(amrex::Real T, amrex::Real& rhoL, amrex::Real& eL,

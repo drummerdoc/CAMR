@@ -29,6 +29,42 @@ ifeq ($(USE_PS_HYDRO), TRUE)
   USERSuffix += .PS
 endif
 
+# ---------------------------------------------------------------------
+#  Put the EOS backend into the executable name AND the object directory.
+#
+#  Without this, PR / PRTab / GERG / GERGTab all produce the SAME filename
+#  (CAMR2d.llvm.TPROF.MPI.PS.ex).  Two consequences, both of which cost real
+#  time during the 2026-08 pipe-break debugging:
+#
+#   1. A binary built for one backend can be run for another with nothing to
+#      show for it but wrong physics.  Hand-copying executables into
+#      per-backend subfolders to avoid this is itself error-prone.
+#
+#   2. More seriously, AMReX derives the OBJECT directory from the same
+#      suffix, so every backend shared one set of .o files while being
+#      compiled with different -DUSE_*_EOS defines.  Make compares only
+#      timestamps, so switching Eos_Model without `make realclean` silently
+#      reused objects built for the previous backend.
+#
+#  TWO THINGS MATTER HERE, both learned the hard way:
+#
+#   * Use `:=` concatenation, NOT `+=`.  On a non-empty variable `+=` inserts
+#     a SPACE, giving USERSuffix = ".PS .PR", which splits every derived path
+#     ("tmp_build_dir/s/2d.llvm.TPROF.MPI.PS" / ".PR.EXE/AMReX_Config.H").
+#     `+=` looked fine for .EB/.PS only because USERSuffix was empty then.
+#
+#   * This must come BEFORE `all: $(executable)` below.  Prerequisites are
+#     expanded when the rule is read, so a later change to USERSuffix leaves
+#     `all` depending on the OLD name while the rules build the NEW one.
+#     Eos_Model is set in the Exec GNUmakefile before this file is included,
+#     so it is already available here.
+#
+#  Result: CAMR2d.llvm.TPROF.MPI.PS.PR.ex, ...PS.GERGTab.ex, etc.
+# ---------------------------------------------------------------------
+ifneq ($(Eos_Model),)
+  USERSuffix := $(USERSuffix).$(Eos_Model)
+endif
+
 all: $(executable)
 ifneq ($(KEEP_BUILDINFO_CPP),TRUE)
 	$(SILENT) $(RM) AMReX_buildInfo.cpp
@@ -113,12 +149,14 @@ endif
 ifeq ($(Eos_Model),$(filter $(Eos_Model),GERG))
    DEFINES += -DUSE_GERG_EOS
    EOS_DIR = GERG
+   # (suffix added below, after all backends have been selected)
    # GERG-2008 pure-CO2 backend (analytic stage; guarded evaluator +
    # generated saturation/edge splines, all committed headers -- no
    # table-generation step needed yet).  hem_pr_state.H is included via
    # -I Source/ ("EOS/PR/...") for the hem::Phase3 interface
    # type ONLY -- no PR function is called (no cross-EOS fallback).
 endif
+
 Bdirs := $(CAMR_HOME)/Source
 Bdirs += $(CAMR_HOME)/Source/Hydro
 Bdirs += $(CAMR_HOME)/Source/Hydro/Godunov

@@ -108,6 +108,49 @@ namespace EOS {
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   amrex::Real P_triple() { return amrex::Real(5.1795e5); }    // triple-point P [Pa]
 
+  // ----------------------------------------------------------------
+  //  DENSITY VALIDITY DOMAIN (guard G1 -- see
+  //  Source/Hydro/PelantiShyue/GUARD_INVENTORY.md).
+  //
+  //  Peng-Robinson has a HARD POLE: P = RT/(v_m - b) - a/(...) diverges as
+  //  the molar volume approaches the covolume b from above.  The density at
+  //  which that happens is rho = M/b, and it is an exact analytic property
+  //  of the EOS, not a tuned number.  For CO2: b = Omega_b R Tc / Pc =
+  //  2.6666e-5 m3/mol, giving rho_max = 1650.4 kg/m3.
+  //
+  //  WHY THIS IS EXPOSED.  The six-equation solver forms per-phase densities
+  //  as rho_k = m_k / alpha_k, which is unbounded above as a phase vanishes.
+  //  Measured in the CO2 pipe-break case, roughly 3.6% of level-2 cells --
+  //  ~1300 cells, EVERY step -- carried a trace liquid phase at rho_1 within
+  //  0.4% of this pole, returning phase pressures above 1e10 Pa.  The
+  //  pre-existing in-EOS guard clamps v_m to b*1.000001, which bounds the
+  //  pressure at 7.5e13 Pa: it prevents the NaN, not the garbage.
+  //
+  //  GERG already clamps rho into [1e-6, 1500] before evaluating (its own
+  //  published validity edge); PR had no equivalent.  Exposing the bound here
+  //  lets the hydro layer clamp BEFORE the call, fluid- and EOS-agnostically.
+  //
+  //  rho_max is returned with a safety factor so the clamp lands where the
+  //  cubic is still well conditioned rather than exactly on the singularity.
+  // ----------------------------------------------------------------
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  amrex::Real rho_pole()                                     // EXACT pole [kg/m3]
+  {
+      const hem::PRFluid f = co2_fluid();
+      const amrex::Real b = hem::PR_Omega_b * hem::R_gas * f.pr.Tc / f.pr.Pc;
+      return f.M / b;
+  }
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  // NOTE (2026-08-09, FINDINGS Addendum 5): rho_min/rho_max are backend
+  // METADATA and diagnostics (ps_validate_state V6 rho_domain); the
+  // flux-path enforcement clamp that consumed them was removed -- see
+  // PS_guards.H G1 removal note.
+  amrex::Real rho_max()   { return amrex::Real(0.98) * rho_pole(); }  // ~1617 for CO2
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  amrex::Real rho_min()   { return amrex::Real(1.0e-6); }
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  bool        has_density_pole() { return true; }
+
   // Saturation pressure P_sat(T) [Pa] — the fluid's own saturation curve,
   // sourced from the EOS so the flash/relaxation stay fluid-agnostic (task
   // #53).  For CO2 this is the Span-Wagner correlation (accurate); wired onto
@@ -527,6 +570,38 @@ namespace EOS {
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void RTY2E_vapor(amrex::Real R, amrex::Real T, amrex::Real* Y, amrex::Real& E)
   { RTY2E_phase(R, T, Y, hem::Phase3::Vapor, E); }
+
+  //  (rho, T) -> {P, e} on the AUTO (equilibrium/dome-aware) surface: the
+  //  DIRECT inverse of REY2T / REY2P at fixed rho.  See the GERG backend
+  //  for the rationale -- ps_apply_floor used to obtain e*(rho, T_floor)
+  //  by a 46-step bisection on e whose predicate was itself the (rho,e)->T
+  //  inversion (a NESTED bisection, thousands of EOS evaluations per phase
+  //  per cell, unconditionally).  Dome-aware: outside the coexistence
+  //  densities take the corresponding branch; inside, lever-rule the
+  //  saturated end states at the SAME T (P = Psat there).
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void RTY2PE_auto(amrex::Real R, amrex::Real T, amrex::Real* /*Y*/,
+                   amrex::Real& P, amrex::Real& E)
+  {
+      const hem::PRFluid f = co2_fluid();
+      const hem::State sL = hem::satStateL(f, T);
+      const hem::State sV = hem::satStateV(f, T);
+      if (sL.rho > sV.rho && R < sL.rho && R > sV.rho) {
+          // Inside the dome: equilibrium mixture at T.  Mass quality from
+          // the specific-volume lever rule.
+          const amrex::Real vL = amrex::Real(1.0)/sL.rho;
+          const amrex::Real vV = amrex::Real(1.0)/sV.rho;
+          const amrex::Real x  = (amrex::Real(1.0)/R - vL)/(vV - vL);
+          E = (amrex::Real(1.0) - x)*sL.e + x*sV.e;
+          P = amrex::Real(0.5)*(sL.P + sV.P);          // = Psat(T)
+          return;
+      }
+      const hem::Phase3 ph = (R >= sL.rho) ? hem::Phase3::Liquid
+                                           : hem::Phase3::Vapor;
+      const amrex::Real v_m = hem::v_PR_from_rho(f, R);
+      const hem::State s = hem::state_from_T_v(f, T, v_m, ph);
+      P = s.P; E = s.e;
+  }
 
   // ================================================================
   //  Everything below is either forwarded to the six hot functions,
