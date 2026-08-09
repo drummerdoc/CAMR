@@ -48,6 +48,20 @@ struct PsSourceDials {
     // ~R_specific*T ~ 5e4 J/kg for CO2.
     amrex::Real mt_gref            = amrex::Real(0.0);
     int         triple_point_action = 0;
+    // B3 (STANDALONE_LESSONS_GAP, standalone task #222): re-establish
+    // mechanical equilibrium after a source moves mass.  The P-S closure
+    // assumes INSTANTANEOUS pressure relaxation, so P1=P2 must be
+    // re-established after every operator that disturbs it; flash and MT
+    // both do, and nothing downstream restored it.  Measured consequence
+    // at tau->0 (FINDINGS_hem_limit.md addendum A3-A5): cells stalled at
+    // the flash seed (alpha pinned at 0.98, P1=5.7 vs P2=25.6 bar) while
+    // the 0-D kernels drive the same state to ~32 bar -- the alpha DOF
+    // was blocked and the HEM evaporation wave never formed.  Applied
+    // per cell, ONLY where the source bitwise-changed the state, so
+    // un-nucleated metastable cells keep their metastable state.
+    // Default ON; CAMR.ps_src_p_reproject=0 recovers the previous
+    // behaviour bit-for-bit.
+    int         src_p_reproject     = 1;
 
     bool any_enabled() const {
         return (flash_tau > amrex::Real(0.0)) ||
@@ -65,6 +79,7 @@ inline const PsSourceDials& ps_source_dials()
         pp.query("ps_mt_tau",              v.mt_tau);
         pp.query("ps_mt_gref",             v.mt_gref);
         pp.query("ps_triple_point_action", v.triple_point_action);
+        pp.query("ps_src_p_reproject",     v.src_p_reproject);
         return v;
     }();
     return d;
@@ -108,6 +123,11 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
         // EOS-heavy: Wagner Psat metastability trigger + PR state per cell.
         BL_PROFILE_VAR("PS::ps_source_flash()", ps_src_flash);
         const amrex::Real tau = dials.flash_tau;
+        const PsPres l_pr = ps_presence_params();   // S4 (one host read)
+        // S3: the flash seed level is the presence design's alpha_birth
+        // (default 2e-2 == the kernel's historical alpha_seed_target 0.02,
+        // so legacy behaviour is value-identical; single-sourcing only).
+        const amrex::Real l_seed = ps_presence_params().alpha_birth;
         for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
             const amrex::Box bx = mfi.growntilebox(nghost);
             amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
@@ -136,7 +156,27 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                 Uv[3] = std::sqrt(px*px + py*py + pz*pz);   // |ρu|
                 Uv[4] = U(i,j,k, UE1);
                 Uv[5] = U(i,j,k, UE2);
-                if (hem::ps_flash_source_cell(Uv, eos, double(dt), double(tau))) {
+                // S4 (design §5): under presence the flash is the SINGLE-PHASE
+                // nucleator only; a both-independent cell is MT/relaxation
+                // territory (mid-range: no flash).  Legacy: kernel's own
+                // 0.9/0.1 dominance gate applies unchanged.
+                if (l_pr.enabled != 0 &&
+                    ps_regime(a1, m1, l_pr) == PsRegime::Independent &&
+                    ps_regime(amrex::Real(1.0) - a1, m2, l_pr) == PsRegime::Independent) {
+                    return;
+                }
+                const hem::V6 Uv_pre = Uv;
+                if (hem::ps_flash_source_cell(Uv, eos, double(dt), double(tau),
+                                              double(l_seed))) {   // S3: birth at alpha_birth
+                    // B3 reproject: the flash moved mass; restore P1=P2
+                    // (alpha-adjusting; preserves m_k and mixture rho-E).
+                    // Bitwise change test = exact, not a tolerance.
+                    if (dials.src_p_reproject != 0 &&
+                        (Uv[0] != Uv_pre[0] || Uv[1] != Uv_pre[1] ||
+                         Uv[4] != Uv_pre[4])) {
+                        if (ps_mech_kernel() == 1) { hem::ps_pelanti_relax_cell(Uv, eos); }
+                        else                        { hem::ps_pressure_relax_cell(Uv, eos); }
+                    }
                     U(i,j,k, UALPHA1) = Uv[0];
                     U(i,j,k, UM1RHO1) = Uv[1];
                     U(i,j,k, UM2RHO2) = Uv[2];
@@ -173,6 +213,7 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
         BL_PROFILE_VAR("PS::ps_source_masstransfer()", ps_src_mt);
         const amrex::Real tau  = dials.mt_tau;
         const amrex::Real gref = dials.mt_gref;
+        const PsPres l_pr = ps_presence_params();   // S4 (one host read)
         for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
             const amrex::Box bx = mfi.growntilebox(nghost);
             amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
@@ -201,8 +242,28 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                 Uv[3] = std::sqrt(px*px + py*py + pz*pz);   // |ρu|
                 Uv[4] = U(i,j,k, UE1);
                 Uv[5] = U(i,j,k, UE2);
+                // S4 (design §5): MT acts only where BOTH phases are
+                // INDEPENDENT — corridor phases are transport-only and pure
+                // cells have nothing to transfer.  The kernel's own legacy
+                // cuts (alpha_mt_thr 5e-3 etc.) are then automatically
+                // satisfied (alpha_cond = 1e-2 > 5e-3) and inert.
+                if (l_pr.enabled != 0 &&
+                    !(ps_regime(a1, m1, l_pr) == PsRegime::Independent &&
+                      ps_regime(amrex::Real(1.0) - a1, m2, l_pr) == PsRegime::Independent)) {
+                    return;
+                }
+                const hem::V6 Uv_pre = Uv;
                 if (hem::ps_mass_transfer_finite_cell(Uv, eos, double(dt), double(tau),
                                                       1.0e-6, double(gref))) {
+                    // B3 reproject: only when MT actually transferred mass
+                    // (the kernel returns true on its internal gates too,
+                    // with Uv untouched -- the bitwise test excludes those,
+                    // so gated metastable cells are NOT relaxed here).
+                    if (dials.src_p_reproject != 0 &&
+                        (Uv[1] != Uv_pre[1] || Uv[4] != Uv_pre[4])) {
+                        if (ps_mech_kernel() == 1) { hem::ps_pelanti_relax_cell(Uv, eos); }
+                        else                        { hem::ps_pressure_relax_cell(Uv, eos); }
+                    }
                     U(i,j,k, UALPHA1) = Uv[0];
                     U(i,j,k, UM1RHO1) = Uv[1];
                     U(i,j,k, UM2RHO2) = Uv[2];
@@ -211,6 +272,27 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                 }
             });
         }
+        // ---- MT cost/convergence report (CAMR.ps_mt_diag = 1) -----------
+        // Answers: is the equilibrium Gibbs-Newton converging cheaply, or
+        // burning max_iter (=30) on most cells?  Printed per call (once per
+        // level per subcycle) so a run killed mid-step still yields data.
+        static const int mt_diag = []() -> int {
+            int v = 0; amrex::ParmParse pp("CAMR");
+            pp.query("ps_mt_diag", v); return v; }();
+        if (mt_diag != 0) {
+            hem::PsMtStats& st = hem::ps_mt_stats();
+            const double per = (st.eqsolve > 0)
+                             ? double(st.iters)/double(st.eqsolve) : 0.0;
+            amrex::Print() << "[ps_mt_diag] seen=" << st.seen
+                           << " gated=" << st.gated
+                           << " eqsolve=" << st.eqsolve
+                           << " eqfail=" << st.eqfail
+                           << " iters=" << st.iters
+                           << " iters/eqsolve=" << per
+                           << " itmax=" << st.itmax << " pr_iters=" << st.pr_iters << " pr/gibbs=" << (st.iters>0?double(st.pr_iters)/double(st.iters):0.0) << std::endl;
+            st.reset();
+        }
+
         static int s_prev_mt = 0;
         const int nmt = hem::ps_mass_transfer_count();
         if (nmt > s_prev_mt) {

@@ -39,6 +39,7 @@
 #include "IndexDefines.H"
 #include "EOS.H"
 #include "hem_pelanti_shyue.H"
+#include "PS_presence.H"   // S3: fold threshold single-sourcing
 #include <AMReX_Array4.H>
 #include <AMReX_GpuQualifiers.H>
 #include <AMReX_Print.H>
@@ -211,6 +212,30 @@ inline bool ps_cell_metastable(hem::PsPhaseAPI const& eos,
     return false;
 }
 
+
+// -----------------------------------------------------------------
+//  ps_presence_relax_gate (S4, design §5).  Returns true when the cell
+//  should be relaxed under presence semantics: BOTH phases INDEPENDENT.
+//  A single-phase cell (other phase ABSENT/CORRIDOR) has nothing to
+//  relax — its corridor phase is transport-only bookkeeping, and its
+//  metastability, if any, is the FLASH source's business (the
+//  nucleator), never the relaxation's.  This is what retires the #88
+//  metastable guard under presence: "don't drag an un-nucleated cell
+//  to the dome" is enforced by never relaxing single-phase cells, and
+//  a nucleated (both-independent) cell always equilibrates — the
+//  distinction #88 could not make (FINDINGS_hem_limit.md addendum 2,
+//  guard-on throttles / guard-off over-develops).
+// -----------------------------------------------------------------
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+bool ps_presence_relax_gate(amrex::Real a1, amrex::Real m1, amrex::Real m2,
+                            const PsPres& pr) noexcept
+{
+    if (pr.enabled == 0) return true;   // legacy paths decide for themselves
+    const amrex::Real a2 = amrex::Real(1.0) - a1;
+    return ps_regime(a1, m1, pr) == PsRegime::Independent
+        && ps_regime(a2, m2, pr) == PsRegime::Independent;
+}
+
 // -----------------------------------------------------------------
 //  Per-cell wrapper: unpack CAMR conservative slots into the V6 the
 //  standalone routine expects, run the Pelanti mechanical
@@ -270,6 +295,10 @@ ps_mechanical_relax_cell(int i, int j, int k,
         ++diag.n_skip_mk;
         return;
     }
+    // S4 presence gate (design §5); replaces #88 below when enabled.
+    const PsPres& prS4 = ps_presence_params();
+    if (prS4.enabled != 0 &&
+        !ps_presence_relax_gate(alpha1_in, m1, m2, prS4)) { return; }
 
     // Mixture momentum magnitude → V6[3] = ρ_mix · |u| so that
     // ½ (V6[3]/ρ_mix)² = ½|u|² is what the standalone uses for
@@ -292,7 +321,10 @@ ps_mechanical_relax_cell(int i, int j, int k,
 
     // #88 metastable guard: refuse to alpha-adjusting-relax a metastable cell
     // (stretched liquid / supersat vapor / spinodal) -- see ps_cell_metastable.
-    if (ps_relax_metastable_guard() != 0) {
+    if (prS4.enabled == 0 && ps_relax_metastable_guard() != 0) {
+        // #88 — LEGACY ONLY.  Under presence the gate above already
+        // guarantees a genuinely two-phase (nucleated) cell, which must
+        // equilibrate; refusing it was the measured B9 throttle.
         const Real ke = Real(0.5) * (p_mag/rho_mix) * (p_mag/rho_mix);
         const double rho1 = double(m1/alpha1_in), rho2 = double(m2/(Real(1.0)-alpha1_in));
         const double e1 = double(U(i,j,k,UE1)/m1) - double(ke);
@@ -385,6 +417,11 @@ ps_pt_equilibrium_relax_cell(int i, int j, int k,
     const Real m1 = U(i,j,k, UM1RHO1);
     const Real m2 = U(i,j,k, UM2RHO2);
     if (m1 <= Real(0.0) || m2 <= Real(0.0)) return;
+    {   // S4 presence gate (design §5)
+        const PsPres& prS4g = ps_presence_params();
+        if (prS4g.enabled != 0 &&
+            !ps_presence_relax_gate(alpha1_in, m1, m2, prS4g)) { return; }
+    }
 
     const Real px = U(i,j,k, UMX);
 #if (AMREX_SPACEDIM >= 2)
@@ -444,6 +481,11 @@ ps_ptg_relax_cell(int i, int j, int k,
     const Real m1 = U(i,j,k, UM1RHO1);
     const Real m2 = U(i,j,k, UM2RHO2);
     if (m1 <= Real(0.0) || m2 <= Real(0.0)) return;
+    {   // S4 presence gate (design §5)
+        const PsPres& prS4g = ps_presence_params();
+        if (prS4g.enabled != 0 &&
+            !ps_presence_relax_gate(alpha1_in, m1, m2, prS4g)) { return; }
+    }
 
     const Real px = U(i,j,k, UMX);
 #if (AMREX_SPACEDIM >= 2)
@@ -474,6 +516,132 @@ ps_ptg_relax_cell(int i, int j, int k,
 
     U(i,j,k, UE1) = Uv[4];
     U(i,j,k, UE2) = Uv[5];
+}
+
+
+inline int ps_mech_kernel();   // fwd decl (defined with the cached flags)
+
+// -----------------------------------------------------------------
+//  ps_canonical_relax_cell (ps_relax_mode=4): the canonical-chain
+//  relaxation leg (FINDINGS_hem_limit.md addendum, 2026-08-08).
+//
+//  alpha-ADJUSTING mechanical relaxation FIRST (the P-S 2014 closure:
+//  instantaneous pressure equilibrium with alpha free -- the validated
+//  mode-0 kernel ps_pressure_relax_cell), THEN finite-rate ISOCHORIC
+//  thermal relaxation (T1 -> T2 at rate 1/theta, at the alpha the
+//  mechanical pass chose).
+//
+//  Why not mode 2: its Picard alternates two FIXED-alpha projections
+//  (iso-P and thermal) that fight over the single energy-split DOF --
+//  the gap-item-B5 under-determination, measured T1=T2 to 2e-8 with
+//  dP/P = 0.76.  Here each equation owns its own DOF: P1=P2 owns
+//  alpha, the thermal rate owns the energy split.  Both kernels
+//  pre-exist and are individually validated; no new thresholds.
+//
+//  The #88 metastable guard applies to the mechanical pass exactly as
+//  in mode 0: metastability is model physics -- an un-nucleated cell
+//  must not be dragged toward the dome; the flash source is the
+//  nucleator, and the post-source reproject (PS_sources.H, gap B3)
+//  owns equilibration once mass has actually moved.
+// -----------------------------------------------------------------
+inline void
+ps_canonical_relax_cell(int i, int j, int k,
+                        amrex::Array4<amrex::Real> const& U,
+                        hem::PsPhaseAPI const& eos,
+                        amrex::Real dt, amrex::Real theta)
+{
+    using amrex::Real;
+    constexpr Real alpha_floor = Real(1.0e-6);
+    const Real alpha1_in = U(i,j,k, UALPHA1);
+    if (!std::isfinite(alpha1_in)) return;
+    if (alpha1_in < alpha_floor || alpha1_in > Real(1.0) - alpha_floor) return;
+
+    const Real m1 = U(i,j,k, UM1RHO1);
+    const Real m2 = U(i,j,k, UM2RHO2);
+    if (m1 <= Real(0.0) || m2 <= Real(0.0)) return;
+    {   // S4 presence gate (design §5)
+        const PsPres& prS4g = ps_presence_params();
+        if (prS4g.enabled != 0 &&
+            !ps_presence_relax_gate(alpha1_in, m1, m2, prS4g)) { return; }
+    }
+
+    const Real px = U(i,j,k, UMX);
+#if (AMREX_SPACEDIM >= 2)
+    const Real py = U(i,j,k, UMY);
+#else
+    const Real py = Real(0.0);
+#endif
+#if (AMREX_SPACEDIM == 3)
+    const Real pz = U(i,j,k, UMZ);
+#else
+    const Real pz = Real(0.0);
+#endif
+    const Real p_mag = std::sqrt(px*px + py*py + pz*pz);
+    const Real rho_mix = m1 + m2;
+
+    // #88 metastable guard, exactly as the mode-0 wrapper applies it —
+    // LEGACY ONLY (S4): under presence the regime gate above owns this.
+    if (ps_presence_params().enabled == 0 && ps_relax_metastable_guard() != 0) {
+        const Real ke = Real(0.5) * (p_mag/rho_mix) * (p_mag/rho_mix);
+        const double rho1 = double(m1/alpha1_in);
+        const double rho2 = double(m2/(Real(1.0)-alpha1_in));
+        const double e1 = double(U(i,j,k,UE1)/m1) - double(ke);
+        const double e2 = double(U(i,j,k,UE2)/m2) - double(ke);
+        if (ps_cell_metastable(eos, rho1, e1, rho2, e2)) return;
+    }
+
+    hem::V6 Uv;
+    Uv[0] = alpha1_in;
+    Uv[1] = m1;
+    Uv[2] = m2;
+    Uv[3] = p_mag;
+    Uv[4] = U(i,j,k, UE1);
+    Uv[5] = U(i,j,k, UE2);
+
+    // Mechanical first (alpha-adjusting; preserves m_k and mixture rho-E).
+    // Kernel per CAMR.ps_mech_kernel (B1 A/B; see ps_mech_kernel above).
+    if (ps_mech_kernel() == 1) {
+        if (!hem::ps_pelanti_relax_cell(Uv, eos)) return;
+    } else {
+        int reason = hem::PSR_OK;
+        if (!hem::ps_pressure_relax_cell(Uv, eos, hem::PsPressureRelaxParams{},
+                                         &reason)) {
+            return;   // leave the cell as-is; same failure policy as mode 0
+        }
+    }
+    // Thermal second (isochoric at the NEW alpha; theta<=0 -> instantaneous),
+    // gated by the task-#35 two-phase-coexistence test, applied here for the
+    // same reason MT and the flash source already apply it: at a
+    // cross-critical material contact (e.g. B4, liquid against SUPERCRITICAL
+    // vapor at T_R = 350 K > Tc) the two "phases" are two different
+    // single-phase fluids, not a coexisting pair, and driving T1 -> T2 there
+    // has no physical basis.  Measured consequence of omitting this gate:
+    // with alpha free (this mode), thermal equilibration walks the smeared
+    // contact cells toward the dome and collapses B4's star velocity
+    // (u-err 0.13 -> 0.44 at theta = 1e-4).  Bounds are EOS-derived
+    // (t_triple/t_crit), fluid-agnostic, shared with the MT/flash gates --
+    // no new constants.
+    {
+        const double a1n = Uv[0];
+        const double r1n = Uv[1] / a1n, r2n = Uv[2] / (1.0 - a1n);
+        const double ken = 0.5 * (Uv[3]/rho_mix) * (Uv[3]/rho_mix);
+        const double e1n = Uv[4]/Uv[1] - ken, e2n = Uv[5]/Uv[2] - ken;
+        hem::PsPhase q1{}, q2{};
+        eos.state_from_rho_e_phase(1, r1n, e1n, q1);
+        eos.state_from_rho_e_phase(2, r2n, e2n, q2);
+        const double Ttr = eos.t_triple(), Tcr = eos.t_crit();
+        const bool coexist = q1.valid && q2.valid &&
+                             q1.T > Ttr && q1.T < Tcr &&
+                             q2.T > Ttr && q2.T < Tcr;
+        if (coexist) {
+            hem::ps_iso_thermal_relax_cell_finite(Uv, eos, double(dt),
+                                                  double(theta));
+        }
+    }
+
+    U(i,j,k, UALPHA1) = Real(Uv[0]);
+    U(i,j,k, UE1)     = Real(Uv[4]);
+    U(i,j,k, UE2)     = Real(Uv[5]);
 }
 
 
@@ -529,6 +697,11 @@ ps_pmech_finite_relax_cell(int i, int j, int k,
     const Real m1 = U(i,j,k, UM1RHO1);
     const Real m2 = U(i,j,k, UM2RHO2);
     if (m1 <= Real(0.0) || m2 <= Real(0.0)) return;
+    {   // S4 presence gate (design §5)
+        const PsPres& prS4g = ps_presence_params();
+        if (prS4g.enabled != 0 &&
+            !ps_presence_relax_gate(alpha1_in, m1, m2, prS4g)) { return; }
+    }
 
     const Real px = U(i,j,k, UMX);
 #if (AMREX_SPACEDIM >= 2)
@@ -656,6 +829,25 @@ ps_pmech_finite_relax_cell(int i, int j, int k,
 // reproduces mode 0.  Retains thermal non-equilibrium (T_gas != T_liquid)
 // while damping the #72 per-phase energy runaway; lets the finite-rate MT
 // source keep a Gibbs driving force (cells are not re-pinned on the dome).
+// S4/B1: mechanical-kernel selector for the canonical chain and the B3
+// reproject.  0 (default) = ps_pressure_relax_cell (the validated mode-0
+// kernel).  1 = ps_pelanti_relax_cell — the COTT acoustic-impedance-weighted
+// Δα solve (hem_pelanti_shyue.H:2512; standalone-measured B1 −33 %, B5 −47 %,
+// recommended there as the in-dome default).  The impedance weighting bounds
+// the per-step α excursion by the PHYSICAL partition of the interface
+// pressure jump — the model-derived answer to the flash-front over-drive
+// (no tuned damper).  Gap item B1: this kernel was dead in CAMR.
+inline int ps_mech_kernel()
+{
+    static const int v = []() -> int {
+        int val = 0;
+        amrex::ParmParse pp("CAMR");
+        pp.query("ps_mech_kernel", val);
+        return val;
+    }();
+    return v;
+}
+
 inline int ps_relax_mode()
 {
     static const int m = []() -> int {
@@ -1060,6 +1252,67 @@ inline amrex::Real ps_temp_floor()
 
 
 // -----------------------------------------------------------------
+//  ps_resync_mixture_mass  —  enforce URHO == UM1RHO1 + UM2RHO2.
+//
+//  The P-S state stores mixture mass TWICE and nothing kept the two
+//  copies consistent.  PS_reconstruction.H documents the assumption
+//  ("the slight inconsistency ... e.g. URHO =? UM1RHO1 + UM2RHO2 is
+//  smaller than the MUSCL truncation error"): each conservative slot is
+//  reconstructed independently, so the face states do not satisfy the
+//  algebraic relation and the resulting fluxes advance the two copies
+//  apart.  Independent coarse-fine interpolation adds to it, exactly as
+//  it does for the energy split in ps_resync_phase_energy below.
+//
+//  MEASURED (CO2 pipe-break, CAMR.ps_diag_mass=1): the drift is
+//  introduced ONLY across the hydro/C-F interval -- through the whole
+//  reaction sequence (floor, fold, P/T relaxation, mass transfer, flash)
+//  it is bit-stable.  It grows monotonically in every run: 0.4% peak at
+//  ps_mt_tau=1e-3, 1.5% at 1e-5 across 10x more cells, then 100% in a
+//  runaway that put rho_mix at 1.7e6 kg/m3 and collapsed dt to 4e-12.
+//
+//  DIRECTION: opposite to the energy resync.  There, UEDEN is the trusted
+//  conserved mixture quantity and the phase split is rescaled to match.
+//  For mass it is the other way round -- global conservation identifies
+//  the PHASE PAIR as trustworthy: with a steady inlet, sum(m1+m2) grew
+//  smoothly through the blow-up (95.29 -> 96.11 kg/m, in line with every
+//  prior interval) while sum(URHO) gained 35% from nowhere
+//  (95.29 -> 128.53).  So re-derive URHO from the phases, never the
+//  reverse -- rescaling the phases onto a corrupt URHO would have
+//  amplified 41 kg/m3 to 1.7e6.
+//
+//  Call BEFORE ps_resync_phase_energy so momentum/velocity downstream
+//  (u = mom/URHO) sees the corrected mixture density.
+//  Env/ParmParse escape hatch: CAMR.ps_resync_mass=0 restores the old
+//  behaviour for A/B.
+// -----------------------------------------------------------------
+inline void
+ps_resync_mixture_mass(amrex::MultiFab& S_new, int nghost = 0)
+{
+    BL_PROFILE("PS::ps_resync_mixture_mass()");
+    using amrex::Real;
+    static const int enabled = []{
+        int v = 1; amrex::ParmParse pp("CAMR");
+        pp.query("ps_resync_mass", v); return v; }();
+    if (enabled == 0) return;
+    for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
+        const amrex::Box bx = mfi.growntilebox(nghost);
+        amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
+        amrex::LoopOnCpu(bx, [=] (int i, int j, int k) noexcept
+        {
+            const Real m1 = U(i,j,k, UM1RHO1);
+            const Real m2 = U(i,j,k, UM2RHO2);
+            const Real s  = m1 + m2;
+            // Only act on a well-posed phase pair; otherwise leave the
+            // cell alone for the floor/fold pass that follows.
+            if (!std::isfinite(s) || !(s > Real(0.0))) return;
+            if (!(m1 >= Real(0.0)) || !(m2 >= Real(0.0)))  return;
+            U(i,j,k, URHO) = s;
+        });
+    }
+}
+
+
+// -----------------------------------------------------------------
 //  ps_resync_phase_energy  —  enforce UE1 + UE2 == UEDEN (task #58).
 //  UEDEN (total energy) is the conserved / refluxed mixture quantity;
 //  the per-phase split UE1/UE2 is auxiliary.  After INDEPENDENT
@@ -1075,7 +1328,14 @@ inline amrex::Real ps_temp_floor()
 inline void
 ps_resync_phase_energy(amrex::MultiFab& S_new, int nghost = 0)
 {
+    BL_PROFILE("PS::ps_resync_phase_energy()");
     using amrex::Real;
+    // Physical bound on per-phase SPECIFIC energy |UE_k|/m_k [J/kg].  CO2 runs
+    // ~1e5-1e6 including kinetic; 1e9 is ~3 orders of generous headroom.
+    // <= 0 disables the ratio-sanity test (pre-fix behaviour).  See below.
+    static const Real e_cap = []() -> Real {
+        double v = 1.0e9; amrex::ParmParse pp("CAMR");
+        pp.query("ps_phase_e_cap", v); return Real(v); }();
     for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
         const amrex::Box bx = mfi.growntilebox(nghost);
         amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
@@ -1085,17 +1345,37 @@ ps_resync_phase_energy(amrex::MultiFab& S_new, int nghost = 0)
             const Real ue2 = U(i,j,k, UE2);
             const Real ued = U(i,j,k, UEDEN);
             if (!std::isfinite(ued)) return;
+            const Real m1 = U(i,j,k, UM1RHO1);
+            const Real m2 = U(i,j,k, UM2RHO2);
+            const Real mm = m1 + m2;
+            // Is the interpolated SPLIT itself credible?  UE_k and m_k are
+            // advanced/interpolated independently, so in a trace-phase cell
+            // (m_k -> 0) the implied specific energy UE_k/m_k can be absurd
+            // while UE1+UE2 stays finite.  MEASURED in the CO2 pipe-break at
+            // t=2.6556e-3: |UE1|/m1 = 1.4e15 J/kg arriving across the hydro/C-F
+            // interval on a cell with alpha_1 = 1.6e-5, which the alpha-floor
+            // fold then COPIED into the healthy phase (E1 == E2 == 2.6e12) and
+            // the EOS turned into P = 5e10 bar and dt = 1e-12.
+            //
+            // Rescaling by ued/(ue1+ue2) PRESERVES that ratio, so it cannot
+            // repair this -- it just renormalises a garbage split.  Divert to
+            // the mass-fraction branch below, which is the same treatment the
+            // degenerate-sum case already gets.
+            bool split_ok = true;
+            if (e_cap > Real(0.0)) {
+                if (m1 > Real(0.0) && std::abs(ue1) > e_cap * m1) split_ok = false;
+                if (m2 > Real(0.0) && std::abs(ue2) > e_cap * m2) split_ok = false;
+            }
             const Real s = ue1 + ue2;
-            if (std::isfinite(s) && std::abs(s) > Real(0.0)) {
+            if (split_ok && std::isfinite(s) && std::abs(s) > Real(0.0)) {
                 const Real f = ued / s;                 // preserve split ratio
                 U(i,j,k, UE1) = ue1 * f;
                 U(i,j,k, UE2) = ue2 * f;
             } else {
-                // Degenerate split (zero / non-finite sum): fall back to a
-                // mass-fraction split of the trusted total energy.
-                const Real m1 = U(i,j,k, UM1RHO1);
-                const Real m2 = U(i,j,k, UM2RHO2);
-                const Real mm = m1 + m2;
+                // Degenerate or incredible split: fall back to a mass-fraction
+                // split of the trusted total energy.  Total energy is exact;
+                // the split becomes a thermal-equilibrium assumption, which is
+                // the right call for a trace-phase cell whose split was noise.
                 if (std::isfinite(mm) && mm > Real(0.0)) {
                     U(i,j,k, UE1) = ued * (m1 / mm);
                     U(i,j,k, UE2) = ued * (m2 / mm);
@@ -1364,15 +1644,12 @@ ps_apply_floor(amrex::MultiFab& S_new, int nghost = 0)
             if (m1 <= Real(0.0) || m2 <= Real(0.0)) return;
             const Real rho_mix = m1 + m2;
 
-            // Perf pre-filter (task #45): the temperature floor only matters
-            // for cells at/near tfloor.  UTEMP (already stored, ~the dominant-
-            // phase T) changes < CFL per step, so if it is comfortably above
-            // tfloor the per-phase T-floor cannot trigger this step -- skip its
-            // (iterative) EOS work.  Generous 25 K margin; only skip when UTEMP
-            // is finite and clearly warm, otherwise fall through and floor.
-            const Real Tmix = U(i,j,k, UTEMP);
-            const bool skip_tfloor =
-                std::isfinite(Tmix) && (Tmix > tfloor + Real(25.0));
+            // NOTE (perf, task #45 superseded): there used to be a UTEMP-based
+            // pre-filter here to skip the temperature floor's ITERATIVE EOS
+            // work for warm cells.  Both the filter and the iteration are gone
+            // -- the floor energy is now a single direct EOS evaluation (see
+            // below), which is cheaper than the pre-filter's own cost and does
+            // not depend on UTEMP being up to date at this call site.
 
             const Real px = U(i,j,k, UMX);
 #if (AMREX_SPACEDIM >= 2)
@@ -1420,7 +1697,47 @@ ps_apply_floor(amrex::MultiFab& S_new, int nghost = 0)
                 // mirror cells and injected a finite, non-conservative
                 // asymmetry that grew every step.
                 Real e_floor = ek;
-                if (pfloor > Real(0.0)) {
+
+                // ---- TEMPERATURE FLOOR: ONE direct EOS evaluation ----------
+                // We need e*(rho_k, tfloor) = the smallest e whose auto-detect
+                // temperature REY2T(rho_k, e) reaches tfloor.  REY2T is
+                // monotone increasing in e at fixed rho, so e* is EXACTLY the
+                // auto-surface energy at (tfloor, rho_k) -- i.e. the direct
+                // inverse, RTY2PE_auto.
+                //
+                // This replaces a NESTED bisection: a 46-step bisection on e
+                // whose predicate called REY2T, itself a 64-step bisection on
+                // T => 2944 guarded EOS evaluations per phase per cell, run
+                // unconditionally whenever the UTEMP pre-filter did not fire.
+                // Measured 1859 us per phase per cell (GERG); it was 98.5% of
+                // total runtime in a TinyProfile of one satjet step
+                // (ps_apply_floor 486 s of 496 s).  The direct call is 0.62 us
+                // -- ~3000x -- and agrees with the bisection to 2e-13 relative.
+                //
+                // Symmetry (task #54) is preserved: RTY2PE_auto is a smooth,
+                // always-finite, monotone function of rho_k and the correction
+                // is still the continuous clamp e_new = max(ek, e_tf, e_pf), so
+                // two mirror cells differing by round-off get corrections
+                // differing by round-off.  It is also branchless and
+                // fixed-op (better for GPU than the loop it replaces).
+                bool have_Ptf = false;
+                Real P_tf = Real(0.0);
+                if (tfloor > Real(0.0)) {
+                    Real e_tf;
+                    EOS::RTY2PE_auto(rhok, tfloor, Y, P_tf, e_tf);
+                    have_Ptf = std::isfinite(P_tf);
+                    if (std::isfinite(e_tf) && e_tf > e_floor) e_floor = e_tf;
+                }
+
+                // ---- PRESSURE FLOOR ---------------------------------------
+                // Skip when it provably cannot bind.  e_pf <= e_tf exactly
+                // when P(tfloor, rho_k) >= pfloor, and P_tf came free from the
+                // call above.  For CO2 with pfloor=1 bar / tfloor=216.6 K the
+                // crossing is at rho ~ 2.5 kg/m3, so every real two-phase cell
+                // (rho_k ~ 25-900) skips the RYP2E inversion (64 guarded evals
+                // per phase per cell, ~40 us, previously unconditional).
+                const bool skip_pfloor = have_Ptf && (P_tf >= pfloor);
+                if (pfloor > Real(0.0) && !skip_pfloor) {
                     // Pressure floor via the phase-DETECTED base-PR inverse
                     // (state_from_P_rho): smooth and continuous in rho_k, hence
                     // symmetry-safe.  NOTE: this hits the auto-detect pressure,
@@ -1438,59 +1755,6 @@ ps_apply_floor(amrex::MultiFab& S_new, int nghost = 0)
                     EOS::RYP2E(rhok, Y, pfloor, e_pf);
                     if (std::isfinite(e_pf) && e_pf > e_floor) e_floor = e_pf;
                 }
-                if (tfloor > Real(0.0) && !skip_tfloor) {
-                    // Temperature floor: find the smallest e whose PHASE-
-                    // DETECTED temperature T(rho_k,e) reaches tfloor, by a
-                    // bounded monotone bisection on the auto-detect REY2T.
-                    // T increases monotonically with e at fixed rho, so the
-                    // crossing energy is a continuous function of rho_k.
-                    //
-                    // The branch-locked RTY2E (Vapor branch) must NOT be used
-                    // here: for the dense phase 1 expanded toward vapor
-                    // density at the orifice lip, the Vapor branch is the
-                    // wrong branch and returns non-finite; the resulting
-                    // isfinite cliff flips between mirror cells and reseeds
-                    // the y-asymmetry (task #54).
-                    //
-                    // GPU-portability (de-divergence): the previous solve used
-                    // a DATA-DEPENDENT expand loop (`while (Tof < tfloor)`, up
-                    // to 50 doublings) followed by a conditional bisection.  On
-                    // a GPU that variable trip-count diverges the warp, and its
-                    // per-cell branchiness could make two mirror cells take
-                    // DIFFERENT iteration paths -> a round-off y-asymmetry (the
-                    // exact hidden-threshold failure mode we guard against).
-                    //
-                    // Replace it with a FIXED-iteration, branchless bisection.
-                    // REY2T(rho,.) is monotone increasing in e, so a bisection
-                    // on a bracket guaranteed to enclose e*(rho,tfloor) always
-                    // converges.  The bracket [ek-emar, ek+emar] is safe: the
-                    // internal energy needed to move any state to tfloor is
-                    // bounded by ~cv*tfloor, and emar = 4|ek| + 2e6 J/kg far
-                    // exceeds that for CO2 (and scales with |ek| so it stays
-                    // valid regardless of the energy reference offset).  We
-                    // ALWAYS compute e* and clamp with e_floor = max(e_floor,
-                    // e*): a warm cell has ek > e*, so max() leaves it exactly
-                    // unchanged -- no `if (T(ek) < tfloor)` guard needed.  Every
-                    // lane runs the SAME 46 iterations with select-based updates
-                    // -> convergent warp, deterministic (symmetry-safe) path.
-                    auto Tof = [&](Real e) -> Real {
-                        Real Tq; EOS::REY2T(rhok, e, Y, Tq);
-                        return std::isfinite(Tq) ? Tq : Real(-1.0);  // cold
-                    };
-                    const Real emar = Real(4.0) * std::abs(ek) + Real(2.0e6);
-                    Real e_lo = ek - emar;   // T(e_lo) < tfloor  (very cold)
-                    Real e_hi = ek + emar;   // T(e_hi) > tfloor  (very hot)
-                    // 46 bisections: (2*emar)/2^46 is far below round-off in e.
-                    for (int it = 0; it < 46; ++it) {
-                        const Real em  = Real(0.5) * (e_lo + e_hi);
-                        const bool lo  = (Tof(em) < tfloor);   // still too cold
-                        e_lo = lo ? em : e_lo;                 // branchless
-                        e_hi = lo ? e_hi : em;                 // select
-                    }
-                    // e_hi brackets e*(rho,tfloor) from above.  max() clamp is
-                    // a no-op for warm cells (ek > e*), raises cold ones.
-                    e_floor = std::max(e_floor, e_hi);
-                }
                 if (e_floor > ek) {
                     U(i,j,k, ue) = mk * (e_floor + kesp);
                     floored = true;
@@ -1504,6 +1768,22 @@ ps_apply_floor(amrex::MultiFab& S_new, int nghost = 0)
     }
 }
 
+
+// -----------------------------------------------------------------
+//  FOLD-MASS AUDIT (S0, DESIGN_ps_presence_discrete.md §3): every fold
+//  event and the phase mass it moved, keyed by CAUSE, so the phase-
+//  removal churn is visible (conservative bookkeeping made observable;
+//  the ps_diag_mass pattern).  Host-only statics like ps_guard counters.
+//  Read+reset alongside the PS-MASS report in CAMR_advance.cpp.
+// -----------------------------------------------------------------
+#if !defined(AMREX_USE_GPU)
+struct PsFoldAudit {
+    long   n_vanish = 0, n_tfloor = 0;
+    double m_vanish = 0.0, m_tfloor = 0.0;   // |phase mass folded| [kg/m3 cell units]
+    void reset() { *this = PsFoldAudit{}; }
+};
+inline PsFoldAudit& ps_fold_audit() { static PsFoldAudit a; return a; }
+#endif
 
 // -----------------------------------------------------------------
 //  ps_apply_vanish_fold  —  grid-level wrapper for the standalone's
@@ -1522,6 +1802,99 @@ ps_apply_floor(amrex::MultiFab& S_new, int nghost = 0)
 //  matching pre-#189 behaviour).  Standalone winning B4 config
 //  uses 1e-8.
 // -----------------------------------------------------------------
+// -----------------------------------------------------------------
+//  ps_apply_tfloor_fold  --  grid-level driver for hem::ps_apply_tfloor_fold.
+//
+//  STANDALONE LESSON NOT PREVIOUSLY CARRIED ACROSS (gap item A2, see
+//  STANDALONE_LESSONS_GAP.md).  The per-cell helper has existed in
+//  hem_pelanti_shyue.H:261 since the port, but nothing in CAMR ever called it
+//  -- the definition was the only reference in the entire Source/ tree, so it
+//  was dead code.  In the standalone it runs EVERY RK stage inside
+//  clamp_cons6 (ppm_1d_ps_wp.cpp:1298-1300).
+//
+//  Why it is needed (cott_algorithm_reconciliation.md, "Symptom 1"): a trace
+//  phase in an expansion fan gets cooled below any physical temperature, the
+//  branch-locked EOS then returns an invalid state, and the mixture sound
+//  speed goes NaN.  Folding that phase away eliminates the crash.  Together
+//  with ps_apply_vanish_fold these are the ONLY phase-removal mechanisms;
+//  without this one CAMR can only remove a phase on volume fraction, never on
+//  temperature.
+//
+//  Ordering: call AFTER ps_apply_vanish_fold, per the helper's own docstring
+//  ("place this AFTER ps_apply_vanish_fold in clamp so we don't double-count").
+//
+//  Gated by CAMR.ps_temp_floor (default 0 = disabled), reusing the existing
+//  parameter rather than adding another knob.  NOTE this is the same parameter
+//  ps_apply_floor uses to RAISE e_k; the two are complementary -- raising the
+//  energy keeps a phase that can be saved, folding removes one that cannot.
+// -----------------------------------------------------------------
+inline void
+ps_apply_tfloor_fold(amrex::MultiFab& S_new, int nghost = 0)
+{
+    // OWN parameter, default 0 = DISABLED -- matching the standalone, where
+    // ps_t_floor_default() reads PS_T_FLOOR with default 0.0 and the helper's
+    // first line is `if (T_floor <= 0.0) return false;`.  It is called every RK
+    // stage there but with a zero threshold, i.e. it is opt-in, not always-on.
+    //
+    // DO NOT bind this to CAMR.ps_temp_floor.  That parameter belongs to
+    // ps_apply_floor, which RAISES e_k to satisfy a temperature floor; it is a
+    // different operation with different semantics.  Binding the fold to it
+    // (216.6 K in the pipe-break inputs) fired the fold on every mixed cell
+    // whose phase temperature dipped, collapsing cells to a PURE phase
+    // (U[0] -> 0 or 1) at mixture densities where no single-phase state
+    // exists: measured 1132 cells at rho_mix = 120 kg/m3 and T = 216.6 K
+    // labelled pure vapour, where saturated vapour is ~14 and saturated liquid
+    // ~1225 kg/m3.  Such a cell is necessarily two-phase and no energy
+    // adjustment can repair it, which is why moving ps_apply_floor after the
+    // folds did not help.
+    static const amrex::Real fold_T = []() -> amrex::Real {
+        amrex::Real v = amrex::Real(0.0);
+        amrex::ParmParse pp("CAMR");
+        pp.query("ps_tfloor_fold", v);
+        return v;
+    }();
+    const amrex::Real tfloor = fold_T;
+    if (tfloor <= amrex::Real(0.0)) return;
+    BL_PROFILE("PS::ps_apply_tfloor_fold()");
+    const hem::PsPhaseAPI eos = ps_make_camr_eos_api();
+    const double T_floor = double(tfloor);
+
+    for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
+        const amrex::Box bx = mfi.growntilebox(nghost);
+        amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
+        amrex::LoopOnCpu(bx, [=] (int i, int j, int k) noexcept
+        {
+            hem::V6 Uv;
+            Uv[0] = double(U(i, j, k, UALPHA1));
+            Uv[1] = double(U(i, j, k, UM1RHO1));
+            Uv[2] = double(U(i, j, k, UM2RHO2));
+            // UNLIKE the vanish fold, this helper READS V6[3] (it forms
+            // u_mix = U[3]/rho_mix to strip kinetic energy before the EOS
+            // query), so the real normal momentum must be passed.
+            Uv[3] = double(U(i, j, k, UMX));
+            Uv[4] = double(U(i, j, k, UE1));
+            Uv[5] = double(U(i, j, k, UE2));
+            const double m1_pre = Uv[1], m2_pre = Uv[2];
+            amrex::ignore_unused(m1_pre, m2_pre);
+            if (hem::ps_apply_tfloor_fold(Uv, eos, T_floor)) {
+#if !defined(AMREX_USE_GPU)
+                ++ps_fold_audit().n_tfloor;
+                ps_fold_audit().m_tfloor +=
+                    (Uv[1] == 0.0) ? m1_pre : m2_pre;
+#endif
+                U(i, j, k, UALPHA1) = amrex::Real(Uv[0]);
+                U(i, j, k, UM1RHO1) = amrex::Real(Uv[1]);
+                U(i, j, k, UM2RHO2) = amrex::Real(Uv[2]);
+                U(i, j, k, UE1    ) = amrex::Real(Uv[4]);
+                U(i, j, k, UE2    ) = amrex::Real(Uv[5]);
+                // URHO / UEINT / UEDEN unchanged: the fold moves mass and
+                // energy BETWEEN phases within the cell, conserving both.
+            }
+        });
+    }
+}
+
+
 inline void
 ps_apply_vanish_fold(amrex::MultiFab& S_new, int nghost = 0)
 {
@@ -1531,8 +1904,17 @@ ps_apply_vanish_fold(amrex::MultiFab& S_new, int nghost = 0)
         pp.query("ps_alpha_vanish", v);
         return v;
     }();
-    if (alpha_vanish_cached <= amrex::Real(0.0)) return;
-    const double alpha_vanish = double(alpha_vanish_cached);
+    // S3 (design §3): under presence semantics the vanish fold is not
+    // optional — phase DEATH is part of the model's discrete state, and its
+    // threshold is the presence classifier's alpha_vanish (single-sourced).
+    // Legacy behaviour (fold only if CAMR.ps_alpha_vanish > 0, at that
+    // value) is untouched when presence is disabled.
+    const PsPres& prS3 = ps_presence_params();
+    const amrex::Real a_v = (prS3.enabled != 0) ? prS3.alpha_vanish
+                                                : alpha_vanish_cached;
+    if (a_v <= amrex::Real(0.0)) return;
+    BL_PROFILE("PS::ps_apply_vanish_fold()");
+    const double alpha_vanish = double(a_v);
 
     for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
         const amrex::Box bx = mfi.growntilebox(nghost);
@@ -1551,7 +1933,15 @@ ps_apply_vanish_fold(amrex::MultiFab& S_new, int nghost = 0)
             Uv[3] = 0.0;
             Uv[4] = double(U(i, j, k, UE1));
             Uv[5] = double(U(i, j, k, UE2));
+            const double m1_pre = Uv[1], m2_pre = Uv[2];
+            amrex::ignore_unused(m1_pre, m2_pre);
             if (hem::ps_apply_vanish_fold(Uv, alpha_vanish)) {
+#if !defined(AMREX_USE_GPU)
+                ++ps_fold_audit().n_vanish;
+                // the folded phase's mass = whichever partial mass went to 0
+                ps_fold_audit().m_vanish +=
+                    (Uv[1] == 0.0) ? m1_pre : m2_pre;
+#endif
                 U(i, j, k, UALPHA1) = amrex::Real(Uv[0]);
                 U(i, j, k, UM1RHO1) = amrex::Real(Uv[1]);
                 U(i, j, k, UM2RHO2) = amrex::Real(Uv[2]);
@@ -1580,7 +1970,8 @@ inline void
 ps_relax_cell_device(amrex::Array4<amrex::Real> const& U, int i, int j, int k,
                      const EOS_T& eos, int relax_mode,
                      amrex::Real dt, amrex::Real theta, amrex::Real tau_p,
-                     int metastable_guard, amrex::Real band)
+                     int metastable_guard, amrex::Real band,
+                     const PsPres& pr)
 {
     using amrex::Real;
     constexpr Real afl = Real(1.0e-6);
@@ -1588,6 +1979,8 @@ ps_relax_cell_device(amrex::Array4<amrex::Real> const& U, int i, int j, int k,
     if (!std::isfinite(a1) || a1 < afl || a1 > Real(1.0) - afl) return;
     const Real m1 = U(i,j,k, UM1RHO1), m2 = U(i,j,k, UM2RHO2);
     if (m1 <= Real(0.0) || m2 <= Real(0.0)) return;
+    // S4 presence gate (by-value params; §12.2 rule 1 — no host reads here).
+    if (pr.enabled != 0 && !ps_presence_relax_gate(a1, m1, m2, pr)) return;
     const Real px = U(i,j,k, UMX);
 #if (AMREX_SPACEDIM >= 2)
     const Real py = U(i,j,k, UMY);
@@ -1647,7 +2040,10 @@ ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
             const ps_dev::EosDev eos_d;
             const amrex::Real theta = ps_theta_tau();
             const amrex::Real tau_p = ps_p_tau();
-            const int   mguard = ps_relax_metastable_guard();
+            const PsPres pres_d = ps_presence_params();   // host read, captured
+            // #88 is LEGACY-ONLY under presence (S4): the regime gate owns it.
+            const int   mguard = (pres_d.enabled != 0)
+                               ? 0 : ps_relax_metastable_guard();
             const amrex::Real band = amrex::Real(ps_relax_metastable_band());
             auto const& ma = S_new.arrays();
             // ONE fused launch over ALL boxes (box_no loop is internal).
@@ -1655,9 +2051,24 @@ ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
                 [=] AMREX_GPU_DEVICE (int bno, int i, int j, int k) noexcept
                 {
                     ps_relax_cell_device(ma[bno], i, j, k, eos_d, relax_mode,
-                                         dt, theta, tau_p, mguard, band);
+                                         dt, theta, tau_p, mguard, band,
+                                         pres_d);
                 });
             return;   // device path: host-only relax diagnostics are skipped
+        }
+        // Mode 4 (canonical chain) has NO device twin yet.  Fail LOUD rather
+        // than silently running the host MFIter loop against device-resident
+        // data (the PS_sources scaffold policy: an un-wired dial must never be
+        // mistaken for a working feature).  The twin is a composition of
+        // existing ps_dev kernels (ps_pressure_relax_cell + coexistence gate
+        // via EosDev.t_triple/t_crit + ps_iso_thermal_relax_cell_finite) --
+        // see DESIGN_ps_presence_discrete.md §12.  Priority is low (relax is
+        // 0.9%% of step cost, GPU_portability_design.md §2d) but availability
+        // must be explicit.
+        if (relax_mode == 4) {
+            amrex::Abort("CAMR.ps_relax_device=1 with ps_relax_mode=4: the "
+                         "canonical chain has no device kernel yet; run with "
+                         "ps_relax_device=0 or port the ps_dev twin first.");
         }
         // mode 1 (and any other) falls through to the host MFIter path below.
     }
@@ -1682,7 +2093,9 @@ ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
         // (device kernels can't call std::function).
         amrex::LoopOnCpu(bx, [=] (int i, int j, int k) noexcept
         {
-            if (relax_mode == 3) {
+            if (relax_mode == 4) {
+                ps_canonical_relax_cell(i, j, k, U, eos, dt, theta);
+            } else if (relax_mode == 3) {
                 ps_pmech_finite_relax_cell(i, j, k, U, eos, dt, tau_p, theta);
             } else if (relax_mode == 2) {
                 ps_ptg_relax_cell(i, j, k, U, eos, dt, theta);
@@ -1692,6 +2105,34 @@ ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
                 ps_mechanical_relax_cell(i, j, k, U, eos);
             }
         });
+    }
+
+    // ---- relaxation cost/convergence report (CAMR.ps_prdiag = 1) ----
+    // Companion to CAMR.ps_mt_diag.  nt_* = Newton, fb_* = the #41
+    // validity-guarded bracketing fallback (65 samples x 2 per-phase EOS
+    // inversions + up to 60 bisections per cell -- the expensive path).
+    {
+        static const int rx_diag = []() -> int {
+            int v = 0; amrex::ParmParse pp("CAMR");
+            pp.query("ps_prdiag", v); return v; }();
+        if (rx_diag != 0) {
+            hem::PsPrStats& st = hem::ps_pr_stats();
+            const long solved = st.seen - st.trivial;
+            amrex::Print() << "[ps_prdiag] seen=" << st.seen
+                           << " trivial=" << st.trivial
+                           << " solved=" << solved
+                           << " nt_iters=" << st.nt_iters
+                           << " nt_ok=" << st.nt_ok
+                           << " fb=" << st.fb
+                           << " fb_samples=" << st.fb_samples
+                           << " fb_bisect=" << st.fb_bisect
+                           << " fb_ok=" << st.fb_ok
+                           << " refused=" << st.refused
+                           << " nt_iters/solved="
+                           << (solved > 0 ? double(st.nt_iters)/double(solved) : 0.0)
+                           << std::endl;
+            st.reset();
+        }
     }
 
     // Strang pre-half-step calls pass do_print=false to skip the global

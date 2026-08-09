@@ -71,6 +71,36 @@ using V6 = std::array<double, 6>;
 inline int& ps_llf_fallback_count()       { static int n = 0; return n; }
 inline int& ps_pressure_relax_count()     { static int n = 0; return n; }
 inline int& ps_mass_transfer_count()      { static int n = 0; return n; }
+
+// ---- MT cost/convergence instrumentation (CAMR.ps_mt_diag) --------------
+//  ps_source_masstransfer showed up as 82-86% of a step once it was timed.
+//  The question this answers: is the equilibrium Newton CONVERGING cheaply
+//  (expensive physics) or burning max_iter on most cells (convergence bug)?
+//  seen      : cells entering ps_mass_transfer_finite_cell
+//  gated     : returned early (trace phase / dome / coexistence gate)
+//  eqsolve   : reached the implicit equilibrium solve
+//  eqfail    : that solve returned false (no commit)
+//  iters     : TOTAL Gibbs-Newton iterations executed across all cells
+//  itmax     : worst single-cell iteration count
+struct PsMtStats {
+    long seen = 0, gated = 0, eqsolve = 0, eqfail = 0, iters = 0, itmax = 0;
+    long pr_iters = 0;      // INNER pressure-relax Newton iterations
+    void reset() { seen = gated = eqsolve = eqfail = iters = itmax = 0;
+                   pr_iters = 0; }
+};
+inline PsMtStats& ps_mt_stats() { static PsMtStats s; return s; }
+
+// ---- iso-pressure-relaxation instrumentation (CAMR.ps_relax_diag) -------
+//  Same question as PsMtStats, for ps_iso_pressure_relax_cell: is the Newton
+//  converging, or falling through to the #41 validity-guarded bracketing
+//  scan (65 samples x 2 per-phase EOS inversions, plus up to 60 bisections)?
+struct PsPrStats {
+    long seen = 0, trivial = 0, nt_iters = 0, nt_ok = 0;
+    long fb = 0, fb_samples = 0, fb_bisect = 0, fb_ok = 0, refused = 0;
+    void reset() { seen = trivial = nt_iters = nt_ok = 0;
+                   fb = fb_samples = fb_bisect = fb_ok = refused = 0; }
+};
+inline PsPrStats& ps_pr_stats() { static PsPrStats s; return s; }
 inline int& ps_temperature_relax_count()  { static int n = 0; return n; }
 
 
@@ -1877,6 +1907,7 @@ inline bool ps_pressure_relax_cell(V6& U, const PsPhaseAPI& eos,
     double e_2      = e2;
 
     for (int iter = 0; iter < p.max_iter; ++iter) {
+        ++ps_mt_stats().pr_iters;   // CAMR.ps_mt_diag: the nesting multiplier
         // Query per-phase P at current state.
         PsPhase ph1, ph2;
         ph1.alpha = alpha; ph2.alpha = 1.0 - alpha;
@@ -2068,11 +2099,12 @@ inline bool ps_iso_pressure_relax_cell(V6& U, const PsPhaseAPI& eos,
                                             ps_single_phase_threshold_default())
 {
     if (!eos.valid()) return false;
-
+    ++ps_pr_stats().seen;                              // CAMR.ps_relax_diag
     double alpha1 = U[0];
-    if (!std::isfinite(alpha1)) return false;
+    if (!std::isfinite(alpha1)) { ++ps_pr_stats().trivial; return false; }
     // Skip trivially-single-phase cells (no minority phase to relax).
-    if (alpha1 < single_phase_thr || alpha1 > 1.0 - single_phase_thr) return true;
+    if (alpha1 < single_phase_thr || alpha1 > 1.0 - single_phase_thr) {
+        ++ps_pr_stats().trivial; return true; }
 
     const double m1 = U[1];
     const double m2 = U[2];
@@ -2127,6 +2159,30 @@ inline bool ps_iso_pressure_relax_cell(V6& U, const PsPhaseAPI& eos,
         P1o = p1.P; P2o = p2.P; Pref = std::max(1.0e4, std::abs(p1.P));
         return true;
     };
+    // FUSED evaluation (perf): residual(e1) and fully_valid(e1) each did the
+    // SAME two per-phase EOS inversions on the SAME e1 in every Newton
+    // iteration -- 4 of the 8 inversions per iteration were a duplicate pair.
+    // This returns both results from one pair.  EXACTLY equivalent: residual
+    // returned NaN precisely when !p1.valid||!p2.valid, which is also
+    // fully_valid's first rejection.  (Measured: 25.7 us/iteration = 8 x 3.1 us
+    // per-phase inversion; ps_apply_relaxation was 25% of a 3-level step.)
+    auto eval_rv = [&](double e1v, double& r, double& P1o, double& P2o,
+                       double& Pref) -> bool {
+        const double e2 = e2_of_e1(e1v);
+        PsPhase p1{}, p2{}; p1.alpha = alpha1; p2.alpha = alpha2;
+        eos.state_from_rho_e_phase(1, rho_1, e1v, p1);
+        eos.state_from_rho_e_phase(2, rho_2, e2,  p2);
+        if (!p1.valid || !p2.valid) {
+            r = std::numeric_limits<double>::quiet_NaN();
+            return false;
+        }
+        r = p1.P - p2.P;
+        if (!std::isfinite(p1.P) || !std::isfinite(p2.P)) return false;
+        if (!(p1.P > P_pos_floor) || !(p2.P > P_pos_floor)) return false;
+        if (!(p1.c > 0.0) || !(p2.c > 0.0)) return false;
+        P1o = p1.P; P2o = p2.P; Pref = std::max(1.0e4, std::abs(p1.P));
+        return true;
+    };
     auto commit = [&](double e1v) {
         const double e2 = e2_of_e1(e1v);
         U[4] = m1 * (e1v + 0.5 * u * u);
@@ -2141,16 +2197,31 @@ inline bool ps_iso_pressure_relax_cell(V6& U, const PsPhaseAPI& eos,
     // Newton with FD derivative + step cap.  On breakdown (non-finite,
     // singular slope) we BREAK to the bracketing fallback rather than fail.
     for (int iter = 0; iter < max_iter; ++iter) {
-        const double r = residual(e1);
+        ++ps_pr_stats().nt_iters;                      // CAMR.ps_prdiag
+        double r, P1, P2, P_ref;
+        const bool fv = eval_rv(e1, r, P1, P2, P_ref);   // fused: 2 inversions
         if (!std::isfinite(r)) break;
-        double P1, P2, P_ref;
-        const bool fv = fully_valid(e1, P1, P2, P_ref);
-        if (fv && std::abs(r) < tol_rel * P_ref) { commit(e1); return true; }
+        if (fv && std::abs(r) < tol_rel * P_ref) {
+            ++ps_pr_stats().nt_ok; commit(e1); return true; }
         const double de = 1.0e-4 * std::max(1.0e3, std::abs(e1));
+        // FD derivative.  Central (default) costs 2 residuals = 4 inversions;
+        // PS_PR_FD1=1 uses a ONE-SIDED difference reusing the r already
+        // computed above (2 inversions).  One-sided changes the Newton
+        // TRAJECTORY (same root, same tolerance) -> A/B + B4/B9 before
+        // making it the default.
+        static const bool fd_one_sided = []{
+            const char* v = std::getenv("PS_PR_FD1");
+            return v && v[0] == '1'; }();
         const double rp = residual(e1 + de);
-        const double rm = residual(e1 - de);
-        if (!std::isfinite(rp) || !std::isfinite(rm)) break;
-        const double drde = (rp - rm) / (2.0 * de);
+        double drde;
+        if (fd_one_sided) {
+            if (!std::isfinite(rp)) break;
+            drde = (rp - r) / de;
+        } else {
+            const double rm = residual(e1 - de);
+            if (!std::isfinite(rp) || !std::isfinite(rm)) break;
+            drde = (rp - rm) / (2.0 * de);
+        }
         if (!std::isfinite(drde) || std::abs(drde) < 1.0e-20) break;
         double step = -r / drde;
         const double cap = 0.20 * std::max(1.0e3, std::abs(e1));
@@ -2170,26 +2241,32 @@ inline bool ps_iso_pressure_relax_cell(V6& U, const PsPhaseAPI& eos,
     {
         const double Escale = std::max({std::abs(e1_init), std::abs(e2_init), 1.0e5});
         const int NS = 64;
+        ++ps_pr_stats().fb;                            // CAMR.ps_relax_diag
         bool have_prev = false; double e_prev = 0.0, r_prev = 0.0;
         for (int s = 0; s <= NS; ++s) {
+            ++ps_pr_stats().fb_samples;
             const double es = e1_init + (2.0 * (double(s) / NS) - 1.0) * Escale;
             double P1, P2, Pref;
             if (!fully_valid(es, P1, P2, Pref)) { have_prev = false; continue; }
             const double rs = P1 - P2;
-            if (std::abs(rs) < tol_rel * Pref) { commit(es); return true; }
+            if (std::abs(rs) < tol_rel * Pref) {
+                ++ps_pr_stats().fb_ok; commit(es); return true; }
             if (have_prev && ((r_prev < 0.0) != (rs < 0.0))) {
                 double a = e_prev, b = es, ra = r_prev;
                 for (int it = 0; it < 60; ++it) {
+                    ++ps_pr_stats().fb_bisect;
                     const double mid = 0.5 * (a + b);
                     double Pa, Pb, Pr;
                     if (!fully_valid(mid, Pa, Pb, Pr)) break;   // validity broke inside bracket
                     const double rmid = Pa - Pb;
-                    if (std::abs(rmid) < tol_rel * Pr) { commit(mid); return true; }
+                    if (std::abs(rmid) < tol_rel * Pr) {
+                        ++ps_pr_stats().fb_ok; commit(mid); return true; }
                     if ((ra < 0.0) != (rmid < 0.0)) b = mid; else { a = mid; ra = rmid; }
                 }
             }
             e_prev = es; r_prev = rs; have_prev = true;
         }
+        ++ps_pr_stats().refused;
         return false;   // no stable P1=P2 at this alpha -> leave unchanged (safe)
     }
 }
@@ -2792,6 +2869,8 @@ inline bool ps_mass_transfer_relax_cell(
     double g1_cur = s0.p1.g;
     double g2_cur = s0.p2.g;
     for (int iter = 0; iter < mt_p.max_iter; ++iter) {
+        { PsMtStats& st = ps_mt_stats(); ++st.iters;
+          if (iter + 1 > st.itmax) st.itmax = iter + 1; }   // CAMR.ps_mt_diag
         const double g_diff = g1_cur - g2_cur;
         const double g_scale = std::max({std::abs(g1_cur),
                                           std::abs(g2_cur), 1.0});
@@ -2914,9 +2993,11 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
 {
     if (tau_g <= 0.0 || dt <= 0.0) return false;
     if (!eos.valid()) return false;
+    ++ps_mt_stats().seen;                                  // CAMR.ps_mt_diag
     double alpha1 = U[0];
-    if (!std::isfinite(alpha1)) return false;
-    if (alpha1 <= alpha_floor || alpha1 >= 1.0 - alpha_floor) return true;
+    if (!std::isfinite(alpha1)) { ++ps_mt_stats().gated; return false; }
+    if (alpha1 <= alpha_floor || alpha1 >= 1.0 - alpha_floor) {
+        ++ps_mt_stats().gated; return true; }
 
     // Skip cells where either phase is in the deep-trace regime.  In
     // those cells the trace phase's rho_k = m_k / α_k is enormously
@@ -3019,12 +3100,74 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
         return v && std::strcmp(v, "1") == 0;
     }();
     if (!mt_explicit) {
+        // ---- TWO EXACT PRE-SCREENS before the equilibrium solve ----------
+        // The implicit target dm_eq is obtained from ps_mass_transfer_relax_cell,
+        // a Gibbs-Newton (~12 iterations measured) each of whose iterations runs
+        // a nested pressure-relaxation Newton, each of THOSE doing per-phase EOS
+        // inversions: ~1200 guarded EOS evaluations per cell.  It used to run
+        // unconditionally for every gate-passing cell, which made
+        // ps_source_masstransfer 82-86% of a step.  Both screens below are
+        // EXACT (they skip only cases where dm is already zero), not tolerances.
+        //
+        // (a) tau_g screen.  dm = frac * dm_eq with frac = 1 - exp(-dt/tau_g).
+        //     For tau_g >> dt (the documented "MT off" setting, e.g. 1e3 with
+        //     dt ~ 5e-6) frac ~ 5e-9 and dm is numerically zero -- yet the
+        //     solve still ran, so CAMR.ps_mt_tau did NOT actually switch MT
+        //     off.  Compute frac FIRST and bail when it cannot matter.
+        const double frac = -std::expm1(-dt / tau_g);   // 1 - exp(-dt/tau)
+        if (!(frac > 1.0e-12)) return true;             // MT effectively off
+        //
+        // (b) Gibbs-equilibrium screen, using the SOLVER'S OWN convergence
+        //     test on the CURRENT state.  If it already passes, the Newton
+        //     would converge at iteration 0 with dm_eq = 0, so the whole solve
+        //     is provably a no-op.  Measured: 23-26% of solves were returning
+        //     failure (dm_eq = 0, work discarded) and many more converged to
+        //     ~zero transfer.
+        {
+            const PsMassTransferParams mt_ref;          // default tol_g_rel
+            const double g_scale = std::max({std::abs(p1.g), std::abs(p2.g), 1.0});
+            if (std::abs(g_diff) < mt_ref.tol_g_rel * g_scale) return true;
+        }
+
         V6 Ueq = U;
         PsMassTransferParams mt_eq;
         mt_eq.dome_gate = false;   // dome gate already enforced above
-        ps_mass_transfer_relax_cell(Ueq, eos, mt_eq);
+        // A/B lever (PS_MT_NEST_PR=0): drop the nested pressure relaxation
+        // from the equilibrium-TARGET solve.  Measured nesting multiplier is
+        // ~21.6 inner Newton iterations per outer Gibbs iteration.
+        // DEFAULT CHANGED (measured): the nested pressure relaxation inside
+        // the equilibrium-target solve is BOTH the entire cost and the reason
+        // the outer Gibbs Newton does not converge.  Measured on the satjet
+        // restart, per MT call:
+        //   nesting ON  : 21.6 inner Newton iters per outer Gibbs iter
+        //                 (277 inner iters/cell), outer 12.8 iters, itmax 25
+        //                 of max_iter 30, and 26% of solves RETURN FAILURE
+        //                 (dm_eq = 0 -> MT silently skipped on those cells).
+        //                 ps_source_masstransfer = 2.19 s = 81% of the step.
+        //   nesting OFF : outer 4.2 iters, itmax 6, 0% failures,
+        //                 ps_source_masstransfer = 0.014 s  (155x cheaper,
+        //                 5.1x on the whole step).
+        // Physically it is also redundant: ps_apply_relaxation has just driven
+        // the cell to mechanical equilibrium immediately before
+        // ps_apply_sources runs, and re-relaxing inside every Gibbs iteration
+        // makes the outer residual non-smooth -- which is what costs the
+        // iterations and the failures.  dm_eq DOES change (flash_rate differs
+        // at order unity; per-phase mass by 0.25% L1 after one step), but the
+        // nesting-off value is the one that is actually converged.
+        //   PS_MT_NEST_PR = 0 (default) : nested relaxation OFF
+        //                 = 1           : restore the old full nesting
+        //                 = N > 1       : cap at N iters -- DO NOT USE: measured
+        //                   99-100% eqfail, i.e. it silently disables MT while
+        //                   looking fast and "converging" in 1 outer iteration.
+        static const int nest_pr = []{
+            const char* v = std::getenv("PS_MT_NEST_PR");
+            return (v && *v) ? std::atoi(v) : 0; }();
+        PsPressureRelaxParams pr_eq;
+        if (nest_pr == 0)      mt_eq.nest_pressure_relax = false;
+        else if (nest_pr > 1)  pr_eq.max_iter = nest_pr;
+        ++ps_mt_stats().eqsolve;                           // CAMR.ps_mt_diag
+        if (!ps_mass_transfer_relax_cell(Ueq, eos, mt_eq, pr_eq)) ++ps_mt_stats().eqfail;
         const double dm_eq = m1 - Ueq[1];               // mass leaving phase 1
-        const double frac  = -std::expm1(-dt / tau_g);  // 1 - exp(-dt/tau)
         dm = frac * dm_eq;
     } else if (g_ref > 0.0) {
         // NON-DIMENSIONALISED explicit driving force (legacy task #32 fix).
