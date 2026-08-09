@@ -31,6 +31,8 @@
 #ifdef USE_PS_HYDRO
 
 #include "IndexDefines.H"
+#include "PS_guards.H"      // single-source phase-pressure sanity (G3)
+#include "PS_presence.H"    // S2: presence-discrete regimes
 #include <AMReX_Array4.H>
 #include <AMReX_GpuQualifiers.H>
 
@@ -39,7 +41,8 @@ AMREX_FORCE_INLINE
 void
 ps_augment_primitives(int i, int j, int k,
                       amrex::Array4<const amrex::Real> const& u,
-                      amrex::Array4<amrex::Real> const& q)
+                      amrex::Array4<amrex::Real> const& q,
+                      const PsPres& pr)
 {
     // Read the extended conservative slots (populated by CAMR_initdata
     // under the same #ifdef guard).
@@ -53,9 +56,16 @@ ps_augment_primitives(int i, int j, int k,
     // matches the standalone driver's default PS_ALPHA_TRACE = 1e-6.
     constexpr amrex::Real alpha_floor = amrex::Real(1.0e-6);
     amrex::Real a1 = alpha_1;
-    if (a1 < alpha_floor)          a1 = alpha_floor;
-    if (a1 > amrex::Real(1.0) - alpha_floor) a1 = amrex::Real(1.0) - alpha_floor;
+    if (pr.enabled) {   // S2 presence: exact alpha; 0/1 legal (ABSENT)
+        if (a1 < amrex::Real(0.0)) a1 = amrex::Real(0.0);
+        if (a1 > amrex::Real(1.0)) a1 = amrex::Real(1.0);
+    } else {
+        if (a1 < alpha_floor)          a1 = alpha_floor;
+        if (a1 > amrex::Real(1.0) - alpha_floor) a1 = amrex::Real(1.0) - alpha_floor;
+    }
     const amrex::Real a2 = amrex::Real(1.0) - a1;
+    const PsRegime rg1 = pr.enabled ? ps_regime(a1, m1rho1, pr) : PsRegime::Independent;
+    const PsRegime rg2 = pr.enabled ? ps_regime(a2, m2rho2, pr) : PsRegime::Independent;
 
     // Per-phase densities ρ_k = (α_k ρ_k) / α_k .  LLF diffusion in
     // the trace phase (α₂ ≈ 1e-6 initially) can drive α_k ρ_k
@@ -65,10 +75,24 @@ ps_augment_primitives(int i, int j, int k,
     // (Phase 4d) which redistributes mass between phases; here we
     // just guarantee positivity.
     constexpr amrex::Real rho_floor = amrex::Real(1.0e-6);
-    amrex::Real rho1 = m1rho1 / a1;
-    amrex::Real rho2 = m2rho2 / a2;
-    if (rho1 < rho_floor || !std::isfinite(rho1)) rho1 = rho_floor;
-    if (rho2 < rho_floor || !std::isfinite(rho2)) rho2 = rho_floor;
+    // G1: clamp into the EOS validity domain (see PS_guards.H).  Was
+    // floor-only, which left rho_k free to reach the PR hard-sphere pole.
+    const amrex::Real rho_mix_c = u(i,j,k, URHO);
+    amrex::Real rho1, rho2;
+    if (pr.enabled) {   // S2: never divide for an ABSENT phase
+        rho1 = (rg1 == PsRegime::Absent) ? rho_mix_c
+             : ps_guard::clamp_phase_density(m1rho1 / amrex::max(a1, amrex::Real(1.0e-300)),
+                                             EOS::rho_min(), EOS::rho_max());
+        rho2 = (rg2 == PsRegime::Absent) ? rho_mix_c
+             : ps_guard::clamp_phase_density(m2rho2 / amrex::max(a2, amrex::Real(1.0e-300)),
+                                             EOS::rho_min(), EOS::rho_max());
+    } else {
+        rho1 = ps_guard::clamp_phase_density(m1rho1 / a1,
+                                EOS::rho_min(), EOS::rho_max());
+        rho2 = ps_guard::clamp_phase_density(m2rho2 / a2,
+                                EOS::rho_min(), EOS::rho_max());
+    }
+    amrex::ignore_unused(rho_floor);
 
     // Per-phase specific internal energies e_k = E_k − ½ u²
     // (per-phase kinetic energy uses the mixture velocity, which
@@ -120,9 +144,39 @@ ps_augment_primitives(int i, int j, int k,
     Y[0] = amrex::Real(1.0);
     for (int n = 1; n < NUM_SPECIES; ++n) Y[n] = amrex::Real(0.0);
 
+    // G5 SLAVED TRACE PHASE (see PS_guards.H).  Below the threshold the trace
+    // phase is not an independent degree of freedom: query the HOST branch only
+    // and give the trace phase the host's pressure.  The branch-locked EOS is
+    // never evaluated at the trace phase's undefined (rho_k, e_k), so there is
+    // nothing for the pressure ceiling to catch.  Subsumes PS_P_CLIP.
     amrex::Real P1, P2;
-    EOS::REY2P_liquid(rho1, e1, Y, P1);
-    EOS::REY2P_vapor (rho2, e2, Y, P2);
+    if (pr.enabled) {
+        // S2 presence dispatch (mirrors PS_hllc face_from_state): the host
+        // phase defines the cell; corridor/absent phases take its pressure
+        // by DEFINITION (transport-only corridor, design §1).
+        const bool host_is_1 = (a1 >= a2);
+        if (host_is_1) {
+            EOS::REY2P_liquid(rho1, e1, Y, P1);
+            if (rg2 == PsRegime::Independent) { EOS::REY2P_vapor(rho2, e2, Y, P2); }
+            else                              { P2 = P1; }
+        } else {
+            EOS::REY2P_vapor(rho2, e2, Y, P2);
+            if (rg1 == PsRegime::Independent) { EOS::REY2P_liquid(rho1, e1, Y, P1); }
+            else                              { P1 = P2; }
+        }
+    } else {
+        const int slaved = ps_guard::slaved_phase(a1, a2);
+        if (slaved == 1) {                     // phase 1 trace -> slave to vapour
+            EOS::REY2P_vapor(rho2, e2, Y, P2);
+            P1 = P2;
+        } else if (slaved == 2) {              // phase 2 trace -> slave to liquid
+            EOS::REY2P_liquid(rho1, e1, Y, P1);
+            P2 = P1;
+        } else {
+            EOS::REY2P_liquid(rho1, e1, Y, P1);
+            EOS::REY2P_vapor (rho2, e2, Y, P2);
+        }
+    }
 
     // Pressure floor — real-fluid PR can return negative P for
     // deeply compressed or two-phase-envelope-adjacent states.
@@ -133,13 +187,18 @@ ps_augment_primitives(int i, int j, int k,
     // for PR within its calibrated range).  This is a
     // gentler recovery than clamping to 1 Pa which would create a
     // huge pressure gradient at the recovered cell.
-    constexpr amrex::Real P_floor = amrex::Real(1.0);   // 1 Pa
-    amrex::Real P_stock = q(i,j,k, QPRES);              // mixture EOS result
-    if (P_stock < P_floor || !std::isfinite(P_stock)) P_stock = P_floor;
-    bool P1_bad = (P1 < P_floor) || !std::isfinite(P1);
-    bool P2_bad = (P2 < P_floor) || !std::isfinite(P2);
-    if (P1_bad) P1 = P_stock;
-    if (P2_bad) P2 = P_stock;
+    // SINGLE-SOURCE (see PS_guards.H).  This test used to be local and
+    // one-sided -- it caught P too small / non-finite but not absurdly large --
+    // and was duplicated in three other functions with three different bodies.
+    const amrex::Real P_stock = ps_guard::sanitize_stock_pressure(q(i,j,k, QPRES));
+    bool P1_bad = false, P2_bad = false;
+    if (pr.enabled) {   // slaved pressures ARE the host's; test independents only
+        if (rg1 == PsRegime::Independent) P1_bad = ps_guard::sanitize_phase_pressure(P1, P_stock);
+        if (rg2 == PsRegime::Independent) P2_bad = ps_guard::sanitize_phase_pressure(P2, P_stock);
+    } else {
+        P1_bad = ps_guard::sanitize_phase_pressure(P1, P_stock);
+        P2_bad = ps_guard::sanitize_phase_pressure(P2, P_stock);
+    }
 
     // Write the extended primitive slots.
     q(i,j,k, QALPHA1) = a1;
@@ -176,7 +235,8 @@ ps_augment_primitives(int i, int j, int k,
 AMREX_GPU_HOST_DEVICE
 AMREX_FORCE_INLINE
 amrex::Real
-ps_mixture_pressure_from_cons(const amrex::Real U[NVAR], amrex::Real P_stock)
+ps_mixture_pressure_from_cons(const amrex::Real U[NVAR], amrex::Real P_stock,
+                              const PsPres& pr)
 {
     using amrex::Real;
     constexpr Real alpha_floor = Real(1.0e-6);
@@ -184,8 +244,13 @@ ps_mixture_pressure_from_cons(const amrex::Real U[NVAR], amrex::Real P_stock)
     constexpr Real P_floor     = Real(1.0);
 
     Real a1 = U[UALPHA1];
-    if (a1 < alpha_floor)             a1 = alpha_floor;
-    if (a1 > Real(1.0) - alpha_floor) a1 = Real(1.0) - alpha_floor;
+    if (pr.enabled) {   // S2 presence: exact alpha
+        if (a1 < Real(0.0)) a1 = Real(0.0);
+        if (a1 > Real(1.0)) a1 = Real(1.0);
+    } else {
+        if (a1 < alpha_floor)             a1 = alpha_floor;
+        if (a1 > Real(1.0) - alpha_floor) a1 = Real(1.0) - alpha_floor;
+    }
     const Real a2 = Real(1.0) - a1;
 
     const Real rho   = (std::isfinite(U[URHO]) && U[URHO] > rho_floor) ? U[URHO] : rho_floor;
@@ -205,9 +270,16 @@ ps_mixture_pressure_from_cons(const amrex::Real U[NVAR], amrex::Real P_stock)
     const Real E_mix   = U[UEINT] * inv_r;
 
     const Real m1 = U[UM1RHO1], m2 = U[UM2RHO2];
-    Real rho1 = m1 / a1, rho2 = m2 / a2;
-    if (rho1 < rho_floor || !std::isfinite(rho1)) rho1 = rho_floor;
-    if (rho2 < rho_floor || !std::isfinite(rho2)) rho2 = rho_floor;
+    const PsRegime rg1 = pr.enabled ? ps_regime(a1, m1, pr) : PsRegime::Independent;
+    const PsRegime rg2 = pr.enabled ? ps_regime(a2, m2, pr) : PsRegime::Independent;
+    // G1 (see PS_guards.H) -- was floor-only.  S2: never divide when ABSENT.
+    Real rho1 = (pr.enabled && rg1 == PsRegime::Absent) ? rho
+              : ps_guard::clamp_phase_density(m1 / amrex::max(a1, Real(1.0e-300)),
+                                              EOS::rho_min(), EOS::rho_max());
+    Real rho2 = (pr.enabled && rg2 == PsRegime::Absent) ? rho
+              : ps_guard::clamp_phase_density(m2 / amrex::max(a2, Real(1.0e-300)),
+                                              EOS::rho_min(), EOS::rho_max());
+    amrex::ignore_unused(rho_floor);
     const Real e1 = (m1 > Real(1.0e-12)) ? U[UE1] / m1 - ke_spec : E_mix;
     const Real e2 = (m2 > Real(1.0e-12)) ? U[UE2] / m2 - ke_spec : E_mix;
 
@@ -215,13 +287,22 @@ ps_mixture_pressure_from_cons(const amrex::Real U[NVAR], amrex::Real P_stock)
     Y[0] = Real(1.0);
     for (int n = 1; n < NUM_SPECIES; ++n) Y[n] = Real(0.0);
     Real P1, P2;
+    if (pr.enabled) {
+        const Real P_ss = ps_guard::sanitize_stock_pressure(P_stock);
+        if (rg1 == PsRegime::Independent) { EOS::REY2P_liquid(rho1, e1, Y, P1);
+                                            ps_guard::sanitize_phase_pressure(P1, P_ss); }
+        else                              { P1 = P_ss; }
+        if (rg2 == PsRegime::Independent) { EOS::REY2P_vapor(rho2, e2, Y, P2);
+                                            ps_guard::sanitize_phase_pressure(P2, P_ss); }
+        else                              { P2 = P_ss; }
+        return a1 * P1 + a2 * P2;   // exact alpha: ABSENT contributes 0
+    }
     EOS::REY2P_liquid(rho1, e1, Y, P1);
     EOS::REY2P_vapor (rho2, e2, Y, P2);
 
-    if (P_stock < P_floor || !std::isfinite(P_stock)) P_stock = P_floor;
-    const bool P1_bad = (P1 < P_floor) || !std::isfinite(P1);
-    const bool P2_bad = (P2 < P_floor) || !std::isfinite(P2);
-    return (!P1_bad && !P2_bad) ? (a1 * P1 + a2 * P2) : P_stock;
+    // SINGLE-SOURCE (see PS_guards.H) -- was a second, one-sided copy.
+    return ps_guard::mixture_pressure(a1, P1, a2, P2,
+                                      ps_guard::sanitize_stock_pressure(P_stock));
 }
 
 // ---------------------------------------------------------------------
@@ -345,7 +426,10 @@ ps_flash_rate_from_cons(const amrex::Real U[NVAR], amrex::Real tau_g, amrex::Rea
     const Real uz = Real(0.0);
 #endif
     const Real ke = Real(0.5) * (ux*ux + uy*uy + uz*uz);
-    const Real rho1 = m1 / a1, rho2 = m2 / a2;
+    // G1 (see PS_guards.H).  This site previously had NO density guard at
+    // all -- it fed m_k/alpha_k straight to the branch-locked EOS.
+    const Real rho1 = ps_guard::clamp_phase_density(m1 / a1, EOS::rho_min(), EOS::rho_max());
+    const Real rho2 = ps_guard::clamp_phase_density(m2 / a2, EOS::rho_min(), EOS::rho_max());
     const Real e1 = U[UE1] / m1 - ke;
     const Real e2 = U[UE2] / m2 - ke;
 

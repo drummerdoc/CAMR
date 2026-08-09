@@ -43,7 +43,9 @@
 #ifdef USE_PS_HYDRO
 
 #include "EOS.H"
-#include "PS_hllc.H"        // Task #187: Pelanti 2022 HLLC flux
+#include "PS_hllc.H"
+#include "PS_presence.H"   // S1 presence params (threaded, no defaults)        // Task #187: Pelanti 2022 HLLC flux
+#include "PS_guards.H"      // single-source phase-pressure sanity (G3)
 #include "PS_ctoprim.H"
 #include "PS_reconstruction.H"
 
@@ -111,7 +113,7 @@ ps_physical_flux(int i, int j, int k,
                  Array4<const Real> const& U,
                  Array4<const Real> const& q,
                  Real F[NVAR],
-                 int pk_ef = 0) noexcept   // #85: 1 -> per-phase P_k energy flux
+                 int pk_ef, const PsPres& pr) noexcept   // #85: 1 -> per-phase P_k energy flux
 {
     // Guard every cell read.  Ghost cells or LLF-diffused cells
     // could carry NaN if the previous step drifted; keeping every
@@ -166,8 +168,13 @@ ps_physical_flux(int i, int j, int k,
     Real alpha_1 = ps_finite_or(q(i,j,k, QALPHA1), Real(1.0));
     // Clamp α₁ into [α_floor, 1−α_floor] so α₂ = 1−α₁ is also positive.
     constexpr Real alpha_floor = Real(1.0e-6);
-    if (alpha_1 < alpha_floor)              alpha_1 = alpha_floor;
-    if (alpha_1 > Real(1.0) - alpha_floor)  alpha_1 = Real(1.0) - alpha_floor;
+    if (pr.enabled) {   // S2 presence: exact alpha (QALPHA1 already exact)
+        if (alpha_1 < Real(0.0)) alpha_1 = Real(0.0);
+        if (alpha_1 > Real(1.0)) alpha_1 = Real(1.0);
+    } else {
+        if (alpha_1 < alpha_floor)              alpha_1 = alpha_floor;
+        if (alpha_1 > Real(1.0) - alpha_floor)  alpha_1 = Real(1.0) - alpha_floor;
+    }
     const Real alpha_2 = Real(1.0) - alpha_1;
     const Real P1      = amrex::max(ps_finite_or(q(i,j,k, QP1), P_mix), Real(1.0));
     const Real P2      = amrex::max(ps_finite_or(q(i,j,k, QP2), P_mix), Real(1.0));
@@ -230,7 +237,8 @@ Real
 ps_max_wave_speed(int i, int j, int k,
                   int idir,
                   Array4<const Real> const& U,
-                  Array4<const Real> const& q) noexcept
+                  Array4<const Real> const& q,
+                  const PsPres& pr) noexcept
 {
     Real un = ps_finite_or(q(i,j,k, QU), Real(0.0));
 #if (AMREX_SPACEDIM >= 2)
@@ -243,8 +251,13 @@ ps_max_wave_speed(int i, int j, int k,
     const Real rho_mix = amrex::max(ps_finite_or(U(i,j,k, URHO), Real(1.0)), Real(1.0e-6));
     Real alpha_1 = ps_finite_or(q(i,j,k, QALPHA1), Real(1.0));
     constexpr Real alpha_floor = Real(1.0e-6);
-    if (alpha_1 < alpha_floor)              alpha_1 = alpha_floor;
-    if (alpha_1 > Real(1.0) - alpha_floor)  alpha_1 = Real(1.0) - alpha_floor;
+    if (pr.enabled) {   // S2 presence: exact alpha
+        if (alpha_1 < Real(0.0)) alpha_1 = Real(0.0);
+        if (alpha_1 > Real(1.0)) alpha_1 = Real(1.0);
+    } else {
+        if (alpha_1 < alpha_floor)              alpha_1 = alpha_floor;
+        if (alpha_1 > Real(1.0) - alpha_floor)  alpha_1 = Real(1.0) - alpha_floor;
+    }
     const Real alpha_2 = Real(1.0) - alpha_1;
     const Real rho_1   = amrex::max(ps_finite_or(q(i,j,k, QRHO1), Real(1.0)), Real(1.0e-6));
     const Real rho_2   = amrex::max(ps_finite_or(q(i,j,k, QRHO2), Real(1.0)), Real(1.0e-6));
@@ -296,10 +309,20 @@ ps_max_wave_speed(int i, int j, int k,
 
     Real c_mix;
     if (rho_mix > Real(1.0e-30)) {
-        const Real Y1 = alpha_1 * rho_1_safe / rho_mix;
-        const Real Y2 = alpha_2 * rho_2_safe / rho_mix;
-        const Real c2_frozen = alpha_1 * Y1 * c1 * c1
-                             + alpha_2 * Y2 * c2 * c2;
+        Real c2_frozen;
+        if (pr.enabled) {
+            // S2: correct Wallis form (task #199; this was the second of the
+            // three remaining wrong copies -- extra alpha factor removed in
+            // the presence branch only, so ungated dt is untouched).
+            const Real Y1 = alpha_1 * rho_1_safe / rho_mix;
+            const Real Y2 = Real(1.0) - Y1;
+            c2_frozen = Y1 * c1 * c1 + Y2 * c2 * c2;
+        } else {
+            const Real Y1 = alpha_1 * rho_1_safe / rho_mix;
+            const Real Y2 = alpha_2 * rho_2_safe / rho_mix;
+            c2_frozen = alpha_1 * Y1 * c1 * c1
+                      + alpha_2 * Y2 * c2 * c2;
+        }
         c_mix = (c2_frozen > Real(0.0)) ? std::sqrt(c2_frozen)
                                         : amrex::max(c1, c2);
     } else {
@@ -331,7 +354,7 @@ AMREX_GPU_HOST_DEVICE
 AMREX_FORCE_INLINE
 void
 ps_physical_flux_from_state(int idir, const Real U[NVAR], Real F[NVAR],
-                            int pk_ef = 0) noexcept   // #85: 1 -> per-phase P_k energy flux
+                            int pk_ef, const PsPres& pr) noexcept   // #85 / S1
 {
     // Derive mixture primitives.
     const Real rho    = amrex::max(ps_finite_or(U[URHO], Real(1.0e-6)), Real(1.0e-6));
@@ -358,17 +381,38 @@ ps_physical_flux_from_state(int idir, const Real U[NVAR], Real F[NVAR],
     // Derive per-phase primitives.
     Real alpha_1 = ps_finite_or(U[UALPHA1], Real(1.0));
     constexpr Real alpha_floor = Real(1.0e-6);
-    if (alpha_1 < alpha_floor)              alpha_1 = alpha_floor;
-    if (alpha_1 > Real(1.0) - alpha_floor)  alpha_1 = Real(1.0) - alpha_floor;
+    if (pr.enabled) {   // S1: exact alpha; 0/1 legal (ABSENT)
+        if (alpha_1 < Real(0.0)) alpha_1 = Real(0.0);
+        if (alpha_1 > Real(1.0)) alpha_1 = Real(1.0);
+    } else {
+        if (alpha_1 < alpha_floor)              alpha_1 = alpha_floor;
+        if (alpha_1 > Real(1.0) - alpha_floor)  alpha_1 = Real(1.0) - alpha_floor;
+    }
     const Real alpha_2 = Real(1.0) - alpha_1;
 
     const Real m1 = amrex::max(ps_finite_or(U[UM1RHO1], Real(0.0)), Real(0.0));
     const Real m2 = amrex::max(ps_finite_or(U[UM2RHO2], Real(0.0)), Real(0.0));
     constexpr Real rho_floor = Real(1.0e-6);
-    Real rho_1 = (m1 > Real(0.0)) ? m1 / alpha_1 : rho_floor;
-    Real rho_2 = (m2 > Real(0.0)) ? m2 / alpha_2 : rho_floor;
-    if (rho_1 < rho_floor || !std::isfinite(rho_1)) rho_1 = rho_floor;
-    if (rho_2 < rho_floor || !std::isfinite(rho_2)) rho_2 = rho_floor;
+    // G1: clamp into the EOS validity domain (see PS_guards.H).  Was
+    // floor-only, leaving rho_k free to reach the PR hard-sphere pole.
+    const PsRegime rg1 = pr.enabled ? ps_regime(alpha_1, m1, pr) : PsRegime::Independent;
+    const PsRegime rg2 = pr.enabled ? ps_regime(alpha_2, m2, pr) : PsRegime::Independent;
+    Real rho_1, rho_2;
+    if (pr.enabled) {   // S1: never divide for an ABSENT phase
+        rho_1 = (rg1 == PsRegime::Absent) ? rho
+              : ps_guard::clamp_phase_density(m1 / amrex::max(alpha_1, Real(1.0e-300)),
+                                              EOS::rho_min(), EOS::rho_max());
+        rho_2 = (rg2 == PsRegime::Absent) ? rho
+              : ps_guard::clamp_phase_density(m2 / amrex::max(alpha_2, Real(1.0e-300)),
+                                              EOS::rho_min(), EOS::rho_max());
+    } else {
+        rho_1 = ps_guard::clamp_phase_density(
+                     (m1 > Real(0.0)) ? m1 / alpha_1 : rho_floor,
+                     EOS::rho_min(), EOS::rho_max());
+        rho_2 = ps_guard::clamp_phase_density(
+                     (m2 > Real(0.0)) ? m2 / alpha_2 : rho_floor,
+                     EOS::rho_min(), EOS::rho_max());
+    }
 
     const Real ke_spec = Real(0.5) * (ux*ux + uy*uy + uz*uz);
     const Real E1_tot = ps_finite_or(U[UE1], Real(0.0));
@@ -385,18 +429,33 @@ ps_physical_flux_from_state(int idir, const Real U[NVAR], Real F[NVAR],
     // detect because it's a single-fluid EOS query on the mixture
     // (ρ, e), which is well-defined even inside the saturation dome.
     Real P1, P2, P_stock;
-    EOS::REY2P_liquid(rho_1, e1,    Y, P1);
-    EOS::REY2P_vapor (rho_2, e2,    Y, P2);
     EOS::REY2P       (rho,   e_mix, Y, P_stock);
-    constexpr Real P_floor = Real(1.0);
-    if (P_stock < P_floor || !std::isfinite(P_stock)) P_stock = P_floor;
-    const bool P1_bad = (P1 < P_floor) || !std::isfinite(P1);
-    const bool P2_bad = (P2 < P_floor) || !std::isfinite(P2);
-    if (P1_bad) P1 = P_stock;
-    if (P2_bad) P2 = P_stock;
-    const Real P_mix = (!P1_bad && !P2_bad)
-        ? (alpha_1 * P1 + alpha_2 * P2)
-        : P_stock;
+    P_stock = ps_guard::sanitize_stock_pressure(P_stock);
+    Real P_mix;
+    if (pr.enabled) {
+        // S1: branch-locked queries ONLY for independent phases; a
+        // corridor/absent phase's pressure IS the mixture's (definition,
+        // not repair — replaces the A6 e_mix-into-branch-locked-EOS path
+        // for those phases in this function).
+        if (rg1 == PsRegime::Independent) {
+            EOS::REY2P_liquid(rho_1, e1, Y, P1);
+            ps_guard::sanitize_phase_pressure(P1, P_stock);
+        } else { P1 = P_stock; }
+        if (rg2 == PsRegime::Independent) {
+            EOS::REY2P_vapor(rho_2, e2, Y, P2);
+            ps_guard::sanitize_phase_pressure(P2, P_stock);
+        } else { P2 = P_stock; }
+        P_mix = alpha_1 * P1 + alpha_2 * P2;   // exact alpha: ABSENT -> 0
+    } else {
+        EOS::REY2P_liquid(rho_1, e1, Y, P1);
+        EOS::REY2P_vapor (rho_2, e2, Y, P2);
+        // SINGLE-SOURCE (see PS_guards.H) -- was a third, one-sided copy.
+        const bool P1_bad = ps_guard::sanitize_phase_pressure(P1, P_stock);
+        const bool P2_bad = ps_guard::sanitize_phase_pressure(P2, P_stock);
+        P_mix = (!P1_bad && !P2_bad)
+            ? (alpha_1 * P1 + alpha_2 * P2)
+            : P_stock;
+    }
 
     // ---- Assemble the flux exactly as ps_physical_flux does --------
     for (int n = 0; n < NVAR; ++n) F[n] = Real(0.0);
@@ -448,7 +507,8 @@ ps_physical_flux_from_state(int idir, const Real U[NVAR], Real F[NVAR],
 AMREX_GPU_HOST_DEVICE
 AMREX_FORCE_INLINE
 Real
-ps_max_wave_speed_from_state(int idir, const Real U[NVAR]) noexcept
+ps_max_wave_speed_from_state(int idir, const Real U[NVAR],
+                             const PsPres& pr) noexcept
 {
     const Real rho    = amrex::max(ps_finite_or(U[URHO], Real(1.0)), Real(1.0e-6));
     const Real inv_r  = Real(1.0) / rho;
@@ -469,17 +529,38 @@ ps_max_wave_speed_from_state(int idir, const Real U[NVAR]) noexcept
 
     Real alpha_1 = ps_finite_or(U[UALPHA1], Real(1.0));
     constexpr Real alpha_floor = Real(1.0e-6);
-    if (alpha_1 < alpha_floor)              alpha_1 = alpha_floor;
-    if (alpha_1 > Real(1.0) - alpha_floor)  alpha_1 = Real(1.0) - alpha_floor;
+    if (pr.enabled) {   // S1: exact alpha; 0/1 legal (ABSENT)
+        if (alpha_1 < Real(0.0)) alpha_1 = Real(0.0);
+        if (alpha_1 > Real(1.0)) alpha_1 = Real(1.0);
+    } else {
+        if (alpha_1 < alpha_floor)              alpha_1 = alpha_floor;
+        if (alpha_1 > Real(1.0) - alpha_floor)  alpha_1 = Real(1.0) - alpha_floor;
+    }
     const Real alpha_2 = Real(1.0) - alpha_1;
 
     const Real m1 = amrex::max(ps_finite_or(U[UM1RHO1], Real(0.0)), Real(0.0));
     const Real m2 = amrex::max(ps_finite_or(U[UM2RHO2], Real(0.0)), Real(0.0));
     constexpr Real rho_floor = Real(1.0e-6);
-    Real rho_1 = (m1 > Real(0.0)) ? m1 / alpha_1 : rho_floor;
-    Real rho_2 = (m2 > Real(0.0)) ? m2 / alpha_2 : rho_floor;
-    if (rho_1 < rho_floor || !std::isfinite(rho_1)) rho_1 = rho_floor;
-    if (rho_2 < rho_floor || !std::isfinite(rho_2)) rho_2 = rho_floor;
+    // G1: clamp into the EOS validity domain (see PS_guards.H).  Was
+    // floor-only, leaving rho_k free to reach the PR hard-sphere pole.
+    const PsRegime rg1 = pr.enabled ? ps_regime(alpha_1, m1, pr) : PsRegime::Independent;
+    const PsRegime rg2 = pr.enabled ? ps_regime(alpha_2, m2, pr) : PsRegime::Independent;
+    Real rho_1, rho_2;
+    if (pr.enabled) {   // S1: never divide for an ABSENT phase
+        rho_1 = (rg1 == PsRegime::Absent) ? rho
+              : ps_guard::clamp_phase_density(m1 / amrex::max(alpha_1, Real(1.0e-300)),
+                                              EOS::rho_min(), EOS::rho_max());
+        rho_2 = (rg2 == PsRegime::Absent) ? rho
+              : ps_guard::clamp_phase_density(m2 / amrex::max(alpha_2, Real(1.0e-300)),
+                                              EOS::rho_min(), EOS::rho_max());
+    } else {
+        rho_1 = ps_guard::clamp_phase_density(
+                     (m1 > Real(0.0)) ? m1 / alpha_1 : rho_floor,
+                     EOS::rho_min(), EOS::rho_max());
+        rho_2 = ps_guard::clamp_phase_density(
+                     (m2 > Real(0.0)) ? m2 / alpha_2 : rho_floor,
+                     EOS::rho_min(), EOS::rho_max());
+    }
 
     const Real ke_spec = Real(0.5) * (ux*ux + uy*uy + uz*uz);
     const Real E1_tot = ps_finite_or(U[UE1], Real(0.0));
@@ -496,17 +577,57 @@ ps_max_wave_speed_from_state(int idir, const Real U[NVAR]) noexcept
     // P-then-c pair, which the host EOS cache deduped but the device did not.
     // Byte-identical result; device-clean 2->1 solves.
     Real P1, P2, c1, c2;
-    EOS::REY2PCs_liquid(rho_1, e1, Y, P1, c1);
-    EOS::REY2PCs_vapor (rho_2, e2, Y, P2, c2);
-    constexpr Real P_floor = Real(1.0);
-    if (P1 < P_floor || !std::isfinite(P1)) P1 = P_floor;
-    if (P2 < P_floor || !std::isfinite(P2)) P2 = P_floor;
+    if (pr.enabled) {
+        // S1: host (larger alpha) always queried on its own branch; a
+        // corridor/absent phase takes the host's c (continuous — the A3
+        // c = 1 m/s discontinuity cannot occur on this path).
+        const bool host_is_1 = (alpha_1 >= alpha_2);
+        if (host_is_1) {
+            EOS::REY2PCs_liquid(rho_1, e1, Y, P1, c1);
+            if (rg2 == PsRegime::Independent) { EOS::REY2PCs_vapor(rho_2, e2, Y, P2, c2); }
+            else                              { P2 = P1; c2 = c1; }
+        } else {
+            EOS::REY2PCs_vapor(rho_2, e2, Y, P2, c2);
+            if (rg1 == PsRegime::Independent) { EOS::REY2PCs_liquid(rho_1, e1, Y, P1, c1); }
+            else                              { P1 = P2; c1 = c2; }
+        }
+    } else {
+        EOS::REY2PCs_liquid(rho_1, e1, Y, P1, c1);
+        EOS::REY2PCs_vapor (rho_2, e2, Y, P2, c2);
+    }
+    // SINGLE-SOURCE floor (see PS_guards.H) -- was a fourth copy.
+    //
+    // DELIBERATELY FLOOR-ONLY HERE.  The other three sites apply the G3 upper
+    // bound relative to the stock single-fluid mixture pressure, but this
+    // function has no P_stock: obtaining one costs an extra EOS::REY2P per
+    // face per direction in the wave-speed hot path.  Since the result feeds
+    // c_mix and therefore dt, inventing a different criterion here would
+    // perturb the timestep of every run for no measured benefit.
+    //
+    // This site is instead protected AT SOURCE by G1 (clamp rho_k into the
+    // EOS validity domain before the branch-locked call) -- see
+    // GUARD_INVENTORY.md Part 4.  Once G1 lands, rho_k can no longer reach
+    // the PR hard-sphere pole and P1/c1 cannot blow up here in the first
+    // place.  Revisit this comment when G1 is in.
+    if (P1 < ps_guard::P_FLOOR_PA || !std::isfinite(P1)) P1 = ps_guard::P_FLOOR_PA;
+    if (P2 < ps_guard::P_FLOOR_PA || !std::isfinite(P2)) P2 = ps_guard::P_FLOOR_PA;
     if (!std::isfinite(c1) || c1 <= Real(0.0)) c1 = Real(1.0);
     if (!std::isfinite(c2) || c2 <= Real(0.0)) c2 = Real(1.0);
 
-    const Real Y1 = alpha_1 * rho_1 / rho;
-    const Real Y2 = alpha_2 * rho_2 / rho;
-    const Real c2_frozen = alpha_1 * Y1 * c1 * c1 + alpha_2 * Y2 * c2 * c2;
+    Real c2_frozen;
+    if (pr.enabled) {
+        // S1: the CORRECT Wallis form (task #199 — this copy was one of the
+        // three still carrying the erroneous extra alpha factor, feeding dt).
+        // Mass fractions from the conserved masses directly: exact for
+        // ABSENT (m = 0), well-conditioned everywhere else.
+        const Real Y1 = m1 / rho;
+        const Real Y2 = Real(1.0) - Y1;
+        c2_frozen = Y1 * c1 * c1 + Y2 * c2 * c2;
+    } else {
+        const Real Y1 = alpha_1 * rho_1 / rho;
+        const Real Y2 = alpha_2 * rho_2 / rho;
+        c2_frozen = alpha_1 * Y1 * c1 * c1 + alpha_2 * Y2 * c2 * c2;
+    }
     const Real c_mix = (c2_frozen > Real(0.0)) ? std::sqrt(c2_frozen)
                                                 : amrex::max(c1, c2);
     return std::abs(un) + c_mix;
@@ -594,18 +715,18 @@ ps_ctu_flux_from_states(int idir, int i, int j, int k,
                         amrex::Array4<amrex::Real> const& flx_out,
                         bool want_defect,
                         amrex::Array4<amrex::Real> const& wp_out,
-                        int pk_ef = 0) noexcept   // #85: per-phase P_k energy flux
+                        int pk_ef, const PsPres& l_pres) noexcept   // #85 / S1
 {
     using amrex::Real;
     Real FL[NVAR], FR[NVAR];
-    ps_physical_flux_from_state(idir, UL, FL, pk_ef);
-    ps_physical_flux_from_state(idir, UR, FR, pk_ef);
-    const Real lamL = ps_max_wave_speed_from_state(idir, UL);
-    const Real lamR = ps_max_wave_speed_from_state(idir, UR);
+    ps_physical_flux_from_state(idir, UL, FL, pk_ef, l_pres);
+    ps_physical_flux_from_state(idir, UR, FR, pk_ef, l_pres);
+    const Real lamL = ps_max_wave_speed_from_state(idir, UL, l_pres);
+    const Real lamR = ps_max_wave_speed_from_state(idir, UR, l_pres);
     bool hllc_ok = false;
     Real F_hllc[NVAR];
     if (use_hllc != 0) {
-        hllc_ok = PS_HLLC::hllc_flux(idir, UL, UR, FL, FR, F_hllc, pk_ef);
+        hllc_ok = PS_HLLC::hllc_flux(idir, UL, UR, FL, FR, F_hllc, pk_ef, l_pres);
     }
     if (hllc_ok) {
         for (int n = 0; n < NVAR; ++n) {
@@ -624,7 +745,7 @@ ps_ctu_flux_from_states(int idir, int i, int j, int k,
     if (want_defect) {
         Real d1 = Real(0.0), d2 = Real(0.0);
         if (hllc_ok) {
-            PS_HLLC::wp_phase_energy_defect(idir, UL, UR, d1, d2, pk_ef);
+            PS_HLLC::wp_phase_energy_defect(idir, UL, UR, d1, d2, pk_ef, l_pres);
         }
         wp_out(i,j,k, 0) = ps_finite_or(d1, Real(0.0));
         wp_out(i,j,k, 1) = ps_finite_or(d2, Real(0.0));
@@ -708,7 +829,7 @@ ps_wp_face(int idir, int i, int j, int k, int iL, int jL, int kL,
            amrex::Array4<amrex::Real> const& wv,   // wave/speed store (BL-2); unused if store_waves=false
            bool store_waves,
            amrex::Box vbox,                 // flx/wpf written only here; waves may extend into ghost faces
-           int pk_ef = 0) noexcept          // #85: per-phase P_k energy flux
+           int pk_ef, const PsPres& l_pres) noexcept          // #85: per-phase P_k energy flux
 {
     using amrex::Real;
     const bool in_valid = vbox.contains(amrex::IntVect(AMREX_D_DECL(i,j,k)));
@@ -718,11 +839,11 @@ ps_wp_face(int idir, int i, int j, int k, int iL, int jL, int kL,
         UR[n] = ps_finite_or(uin(i,  j,  k,  n), Real(0.0));
     }
     Real FL[NVAR], FR[NVAR];
-    ps_physical_flux_from_state(idir, UL, FL, pk_ef);
-    ps_physical_flux_from_state(idir, UR, FR, pk_ef);
+    ps_physical_flux_from_state(idir, UL, FL, pk_ef, l_pres);
+    ps_physical_flux_from_state(idir, UR, FR, pk_ef, l_pres);
 
     PS_HLLC::Fluctuations flu;
-    const bool ok = PS_HLLC::fluctuations(idir, UL, UR, flu, pk_ef);
+    const bool ok = PS_HLLC::fluctuations(idir, UL, UR, flu, pk_ef, l_pres);
 
     Real Am[NVAR], Ap[NVAR], flx_loc[NVAR];
     if (ok) {
@@ -740,8 +861,8 @@ ps_wp_face(int idir, int i, int j, int k, int iL, int jL, int kL,
             flx_loc[n] = Real(0.5) * ((FL[n] + Am[n]) + (FR[n] - Ap[n]));
         }
     } else {
-        const Real lamL    = ps_max_wave_speed_from_state(idir, UL);
-        const Real lamR    = ps_max_wave_speed_from_state(idir, UR);
+        const Real lamL    = ps_max_wave_speed_from_state(idir, UL, l_pres);
+        const Real lamR    = ps_max_wave_speed_from_state(idir, UR, l_pres);
         const Real lam_raw = amrex::max(lamL, lamR);
         const Real lam     = std::isfinite(lam_raw) ? lam_raw : Real(0.0);
         for (int n = 0; n < NVAR; ++n) {
@@ -952,7 +1073,7 @@ ps_shear_diss_face(int d, int i, int j, int k,
                    amrex::Array4<const amrex::Real> const& uin,
                    amrex::Array4<amrex::Real> const& flx,
                    const int* domlo, const int* domhi,
-                   amrex::Real coef) noexcept
+                   amrex::Real coef, const PsPres& l_pres) noexcept
 {
     using amrex::Real;
     if (coef <= Real(0.0)) return;
@@ -966,7 +1087,7 @@ ps_shear_diss_face(int d, int i, int j, int k,
     for(int n=0;n<NVAR;++n){ UL[n]=ps_finite_or(uin(i-di,j-dj,k-dk,n),Real(0.0));
                              UR[n]=ps_finite_or(uin(i,   j,   k,   n),Real(0.0)); }
     Real rL=UL[URHO],rR=UR[URHO]; rL=(rL>Real(1e-30))?rL:Real(1e-30); rR=(rR>Real(1e-30))?rR:Real(1e-30);
-    const Real lamL=ps_max_wave_speed_from_state(d,UL), lamR=ps_max_wave_speed_from_state(d,UR);
+    const Real lamL=ps_max_wave_speed_from_state(d, UL, l_pres), lamR=ps_max_wave_speed_from_state(d, UR, l_pres);
     const Real scale=Real(0.25)*(rL+rR)*(lamL+lamR);   // ≈ ρ c (acoustic impedance)
     Real m1=Real(0.5)*(amrex::max(UL[UM1RHO1],Real(0.0))+amrex::max(UR[UM1RHO1],Real(0.0)));
     Real m2=Real(0.5)*(amrex::max(UL[UM2RHO2],Real(0.0))+amrex::max(UR[UM2RHO2],Real(0.0)));
@@ -1183,6 +1304,11 @@ PS_umeth(const Box& bx,
                      pp.query("ps_pk_energy_flux", v); c = v; }
         return c;
     }();
+
+    // S1: presence-discrete params (DESIGN_ps_presence_discrete.md).  One
+    // host-side ParmParse read, captured by value into every kernel below —
+    // the GPU-clean pattern (§12.2).  Default disabled = bit-identical.
+    const PsPres l_pres = ps_presence_params();
 
     // ps_flux=wp (Berger-LeVeque fluctuation interior, mode 2) is handled by
     // the self-contained block after the scratch-FAB declarations below: it
@@ -1480,18 +1606,18 @@ PS_umeth(const Box& bx,
         BL_PROFILE_VAR("PS::wp_face_riemann()", ps_wp_face_prof);
         amrex::ParallelFor(wxbx,
         [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
-            ps_wp_face(0, i, j, k, i-1, j, k, uin_arr, flx1, wp_fluct_x, wp_wave_x, store_w, xfbx, pk_ef);
+            ps_wp_face(0, i, j, k, i-1, j, k, uin_arr, flx1, wp_fluct_x, wp_wave_x, store_w, xfbx, pk_ef, l_pres);
         });
 #if (AMREX_SPACEDIM >= 2)
         amrex::ParallelFor(wybx,
         [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
-            ps_wp_face(1, i, j, k, i, j-1, k, uin_arr, flx2, wp_fluct_y, wp_wave_y, store_w, yfbx, pk_ef);
+            ps_wp_face(1, i, j, k, i, j-1, k, uin_arr, flx2, wp_fluct_y, wp_wave_y, store_w, yfbx, pk_ef, l_pres);
         });
 #endif
 #if (AMREX_SPACEDIM == 3)
         amrex::ParallelFor(wzbx,
         [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
-            ps_wp_face(2, i, j, k, i, j, k-1, uin_arr, flx3, wp_fluct_z, wp_wave_z, store_w, zfbx, pk_ef);
+            ps_wp_face(2, i, j, k, i, j, k-1, uin_arr, flx3, wp_fluct_z, wp_wave_z, store_w, zfbx, pk_ef, l_pres);
         });
 #endif
         BL_PROFILE_VAR_STOP(ps_wp_face_prof);
@@ -1631,12 +1757,12 @@ PS_umeth(const Box& bx,
 #if (AMREX_SPACEDIM >= 2)
         if (shear_diss > Real(0.0)) {
             amrex::ParallelFor(xfbx, [=] AMREX_GPU_DEVICE (int i,int j,int k) noexcept {
-                ps_shear_diss_face(0, i,j,k, uin_arr, flx1, domlo,domhi, shear_diss); });
+                ps_shear_diss_face(0, i,j,k, uin_arr, flx1, domlo,domhi, shear_diss, l_pres); });
             amrex::ParallelFor(yfbx, [=] AMREX_GPU_DEVICE (int i,int j,int k) noexcept {
-                ps_shear_diss_face(1, i,j,k, uin_arr, flx2, domlo,domhi, shear_diss); });
+                ps_shear_diss_face(1, i,j,k, uin_arr, flx2, domlo,domhi, shear_diss, l_pres); });
 #if (AMREX_SPACEDIM == 3)
             amrex::ParallelFor(zfbx, [=] AMREX_GPU_DEVICE (int i,int j,int k) noexcept {
-                ps_shear_diss_face(2, i,j,k, uin_arr, flx3, domlo,domhi, shear_diss); });
+                ps_shear_diss_face(2, i,j,k, uin_arr, flx3, domlo,domhi, shear_diss, l_pres); });
 #endif
         }
 
@@ -1766,20 +1892,20 @@ PS_umeth(const Box& bx,
                 ps_ppm_reconstruct(i, j, k, 0, uin_arr, UL_face, UR_face);
             else
                 ps_muscl_reconstruct(i, j, k, 0, uin_arr, UL_face, UR_face);
-            ps_physical_flux_from_state(0, UL_face, FL, pk_ef);
-            ps_physical_flux_from_state(0, UR_face, FR, pk_ef);
-            lamL = ps_max_wave_speed_from_state(0, UL_face);
-            lamR = ps_max_wave_speed_from_state(0, UR_face);
+            ps_physical_flux_from_state(0, UL_face, FL, pk_ef, l_pres);
+            ps_physical_flux_from_state(0, UR_face, FR, pk_ef, l_pres);
+            lamL = ps_max_wave_speed_from_state(0, UL_face, l_pres);
+            lamR = ps_max_wave_speed_from_state(0, UR_face, l_pres);
         } else {
             // First-order: L = cell(i-1), R = cell(i).
             for (int n = 0; n < NVAR; ++n) {
                 UL_face[n] = ps_finite_or(uin_arr(i-1, j, k, n), Real(0.0));
                 UR_face[n] = ps_finite_or(uin_arr(i,   j, k, n), Real(0.0));
             }
-            ps_physical_flux(i-1, j, k, 0, uin_arr, q, FL, pk_ef);
-            ps_physical_flux(i,   j, k, 0, uin_arr, q, FR, pk_ef);
-            lamL = ps_max_wave_speed(i-1, j, k, 0, uin_arr, q);
-            lamR = ps_max_wave_speed(i,   j, k, 0, uin_arr, q);
+            ps_physical_flux(i-1, j, k, 0, uin_arr, q, FL, pk_ef, l_pres);
+            ps_physical_flux(i,   j, k, 0, uin_arr, q, FR, pk_ef, l_pres);
+            lamL = ps_max_wave_speed(i-1, j, k, 0, uin_arr, q, l_pres);
+            lamR = ps_max_wave_speed(i,   j, k, 0, uin_arr, q, l_pres);
         }
         // Task #187: dispatch to HLLC first if requested; on any
         // pathology fall back to LLF for that specific face.
@@ -1797,7 +1923,7 @@ PS_umeth(const Box& bx,
         bool hllc_ok = false;
         Real F_hllc[NVAR];
         if (use_hllc != 0) {
-            hllc_ok = PS_HLLC::hllc_flux(0, UL_face, UR_face, FL, FR, F_hllc, pk_ef);
+            hllc_ok = PS_HLLC::hllc_flux(0, UL_face, UR_face, FL, FR, F_hllc, pk_ef, l_pres);
         }
         if (hllc_ok) {
             for (int n = 0; n < NVAR; ++n) {
@@ -1827,7 +1953,7 @@ PS_umeth(const Box& bx,
         Real defect_UE2 = Real(0.0);
         if (hllc_ok) {
             PS_HLLC::wp_phase_energy_defect(0, UL_face, UR_face,
-                                              defect_UE1, defect_UE2, pk_ef);
+                                              defect_UE1, defect_UE2, pk_ef, l_pres);
         }
         wp_corr_x(i,j,k, 0) = ps_finite_or(defect_UE1, Real(0.0));
         wp_corr_x(i,j,k, 1) = ps_finite_or(defect_UE2, Real(0.0));
@@ -1846,24 +1972,24 @@ PS_umeth(const Box& bx,
                 ps_ppm_reconstruct(i, j, k, 1, uin_arr, UL_face, UR_face);
             else
                 ps_muscl_reconstruct(i, j, k, 1, uin_arr, UL_face, UR_face);
-            ps_physical_flux_from_state(1, UL_face, FL, pk_ef);
-            ps_physical_flux_from_state(1, UR_face, FR, pk_ef);
-            lamL = ps_max_wave_speed_from_state(1, UL_face);
-            lamR = ps_max_wave_speed_from_state(1, UR_face);
+            ps_physical_flux_from_state(1, UL_face, FL, pk_ef, l_pres);
+            ps_physical_flux_from_state(1, UR_face, FR, pk_ef, l_pres);
+            lamL = ps_max_wave_speed_from_state(1, UL_face, l_pres);
+            lamR = ps_max_wave_speed_from_state(1, UR_face, l_pres);
         } else {
             for (int n = 0; n < NVAR; ++n) {
                 UL_face[n] = ps_finite_or(uin_arr(i, j-1, k, n), Real(0.0));
                 UR_face[n] = ps_finite_or(uin_arr(i, j,   k, n), Real(0.0));
             }
-            ps_physical_flux(i, j-1, k, 1, uin_arr, q, FL, pk_ef);
-            ps_physical_flux(i, j,   k, 1, uin_arr, q, FR, pk_ef);
-            lamL = ps_max_wave_speed(i, j-1, k, 1, uin_arr, q);
-            lamR = ps_max_wave_speed(i, j,   k, 1, uin_arr, q);
+            ps_physical_flux(i, j-1, k, 1, uin_arr, q, FL, pk_ef, l_pres);
+            ps_physical_flux(i, j,   k, 1, uin_arr, q, FR, pk_ef, l_pres);
+            lamL = ps_max_wave_speed(i, j-1, k, 1, uin_arr, q, l_pres);
+            lamR = ps_max_wave_speed(i, j,   k, 1, uin_arr, q, l_pres);
         }
         bool hllc_ok = false;
         Real F_hllc[NVAR];
         if (use_hllc != 0) {
-            hllc_ok = PS_HLLC::hllc_flux(1, UL_face, UR_face, FL, FR, F_hllc, pk_ef);
+            hllc_ok = PS_HLLC::hllc_flux(1, UL_face, UR_face, FL, FR, F_hllc, pk_ef, l_pres);
         }
         if (hllc_ok) {
             for (int n = 0; n < NVAR; ++n) {
@@ -1887,7 +2013,7 @@ PS_umeth(const Box& bx,
         Real defect_UE2 = Real(0.0);
         if (hllc_ok) {
             PS_HLLC::wp_phase_energy_defect(1, UL_face, UR_face,
-                                              defect_UE1, defect_UE2, pk_ef);
+                                              defect_UE1, defect_UE2, pk_ef, l_pres);
         }
         wp_corr_y(i,j,k, 0) = ps_finite_or(defect_UE1, Real(0.0));
         wp_corr_y(i,j,k, 1) = ps_finite_or(defect_UE2, Real(0.0));
@@ -1907,24 +2033,24 @@ PS_umeth(const Box& bx,
                 ps_ppm_reconstruct(i, j, k, 2, uin_arr, UL_face, UR_face);
             else
                 ps_muscl_reconstruct(i, j, k, 2, uin_arr, UL_face, UR_face);
-            ps_physical_flux_from_state(2, UL_face, FL, pk_ef);
-            ps_physical_flux_from_state(2, UR_face, FR, pk_ef);
-            lamL = ps_max_wave_speed_from_state(2, UL_face);
-            lamR = ps_max_wave_speed_from_state(2, UR_face);
+            ps_physical_flux_from_state(2, UL_face, FL, pk_ef, l_pres);
+            ps_physical_flux_from_state(2, UR_face, FR, pk_ef, l_pres);
+            lamL = ps_max_wave_speed_from_state(2, UL_face, l_pres);
+            lamR = ps_max_wave_speed_from_state(2, UR_face, l_pres);
         } else {
             for (int n = 0; n < NVAR; ++n) {
                 UL_face[n] = ps_finite_or(uin_arr(i, j, k-1, n), Real(0.0));
                 UR_face[n] = ps_finite_or(uin_arr(i, j, k,   n), Real(0.0));
             }
-            ps_physical_flux(i, j, k-1, 2, uin_arr, q, FL, pk_ef);
-            ps_physical_flux(i, j, k,   2, uin_arr, q, FR, pk_ef);
-            lamL = ps_max_wave_speed(i, j, k-1, 2, uin_arr, q);
-            lamR = ps_max_wave_speed(i, j, k,   2, uin_arr, q);
+            ps_physical_flux(i, j, k-1, 2, uin_arr, q, FL, pk_ef, l_pres);
+            ps_physical_flux(i, j, k,   2, uin_arr, q, FR, pk_ef, l_pres);
+            lamL = ps_max_wave_speed(i, j, k-1, 2, uin_arr, q, l_pres);
+            lamR = ps_max_wave_speed(i, j, k,   2, uin_arr, q, l_pres);
         }
         bool hllc_ok = false;
         Real F_hllc[NVAR];
         if (use_hllc != 0) {
-            hllc_ok = PS_HLLC::hllc_flux(2, UL_face, UR_face, FL, FR, F_hllc, pk_ef);
+            hllc_ok = PS_HLLC::hllc_flux(2, UL_face, UR_face, FL, FR, F_hllc, pk_ef, l_pres);
         }
         if (hllc_ok) {
             for (int n = 0; n < NVAR; ++n) {
@@ -1946,7 +2072,7 @@ PS_umeth(const Box& bx,
         Real defect_UE2 = Real(0.0);
         if (hllc_ok) {
             PS_HLLC::wp_phase_energy_defect(2, UL_face, UR_face,
-                                              defect_UE1, defect_UE2, pk_ef);
+                                              defect_UE1, defect_UE2, pk_ef, l_pres);
         }
         wp_corr_z(i,j,k, 0) = ps_finite_or(defect_UE1, Real(0.0));
         wp_corr_z(i,j,k, 1) = ps_finite_or(defect_UE2, Real(0.0));
@@ -1990,13 +2116,13 @@ PS_umeth(const Box& bx,
             Real UL[NVAR], UR[NVAR];
             ps_ctu_recon(0, i, j, k, uin_arr, use_muscl, UL, UR);
             ps_ctu_flux_from_states(0, i, j, k, UL, UR, use_hllc,
-                                    fx_pre, /*want_defect=*/false, fx_pre, pk_ef);
+                                    fx_pre, /*want_defect=*/false, fx_pre, pk_ef, l_pres);
         });
         amrex::ParallelFor(fy_pre_box, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
             Real UL[NVAR], UR[NVAR];
             ps_ctu_recon(1, i, j, k, uin_arr, use_muscl, UL, UR);
             ps_ctu_flux_from_states(1, i, j, k, UL, UR, use_hllc,
-                                    fy_pre, /*want_defect=*/false, fy_pre, pk_ef);
+                                    fy_pre, /*want_defect=*/false, fy_pre, pk_ef, l_pres);
         });
 
         // --- S3/S4 x-faces: transverse-y correct, then final Riemann. ---
@@ -2007,7 +2133,7 @@ PS_umeth(const Box& bx,
             ps_ctu_transverse_correct(UL, fy_pre, i-1, j, k, cdtdy, /*tdir=*/1);
             ps_ctu_transverse_correct(UR, fy_pre, i,   j, k, cdtdy, /*tdir=*/1);
             ps_ctu_flux_from_states(0, i, j, k, UL, UR, use_hllc,
-                                    flx1, /*want_defect=*/true, wp_corr_x, pk_ef);
+                                    flx1, /*want_defect=*/true, wp_corr_x, pk_ef, l_pres);
         });
 
         // --- S3/S4 y-faces: transverse-x correct, then final Riemann. ---
@@ -2018,7 +2144,7 @@ PS_umeth(const Box& bx,
             ps_ctu_transverse_correct(UL, fx_pre, i, j-1, k, cdtdx, /*tdir=*/0);
             ps_ctu_transverse_correct(UR, fx_pre, i, j,   k, cdtdx, /*tdir=*/0);
             ps_ctu_flux_from_states(1, i, j, k, UL, UR, use_hllc,
-                                    flx2, /*want_defect=*/true, wp_corr_y, pk_ef);
+                                    flx2, /*want_defect=*/true, wp_corr_y, pk_ef, l_pres);
         });
 #else
         amrex::Abort("PS-CTU (CAMR.ps_ctu=1) is not available in 1D; "
@@ -2148,8 +2274,8 @@ PS_umeth(const Box& bx,
                     UR_full[n] = ps_finite_or(uin_arr(fRi, fRj, fRk, n), Real(0.0));
                 }
             }
-            const PS_HLLC::Face fL = PS_HLLC::face_from_state(d, UL_full);
-            const PS_HLLC::Face fR = PS_HLLC::face_from_state(d, UR_full);
+            const PS_HLLC::Face fL = PS_HLLC::face_from_state(d, UL_full, l_pres);
+            const PS_HLLC::Face fR = PS_HLLC::face_from_state(d, UR_full, l_pres);
             const PS_HLLC::WaveSpeeds w = PS_HLLC::wave_speeds(fL, fR);
             if (w.valid) return w.S_M;
             const Real uLc = u_cell(fLi - i, fLj - j, fLk - k, d);

@@ -408,7 +408,16 @@ protected:
   static void error_setup ();
 
   void expand_state(amrex::MultiFab& S, const amrex::Real time, const int ng);
-  void clean_state(amrex::MultiFab& S);
+  //  refresh_temp: recompute the UTEMP DIAGNOSTIC slot (computeTemp) as well
+  //  as the state hygiene.  computeTemp is a per-cell EOS inversion over the
+  //  whole GROWN box -- 1 mixture (rho,e)->T plus 2 branch-locked per-phase
+  //  inversions in genuine two-phase cells (task #52) -- and clean_state is
+  //  called 5x per CAMR_advance (plus twice more via expand_state).  UTEMP
+  //  does not feed the conserved evolution, so the intermediate calls pass
+  //  false and only the final state gets a refresh.  reset_internal_energy
+  //  (which IS state hygiene) still runs every time.
+  //  CAMR.lazy_temp = 0 restores the old unconditional behaviour.
+  void clean_state(amrex::MultiFab& S, bool refresh_temp = true);
 #ifdef CAMR_USE_MOVING_EB
   void ZeroingOutForPlotting(amrex::MultiFab& S);
 #endif

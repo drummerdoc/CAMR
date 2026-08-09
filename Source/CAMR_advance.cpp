@@ -3,12 +3,17 @@
 #ifdef USE_PS_HYDRO
 #include "PS_relaxation.H"
 #include "PS_sources.H"
+#include "PS_validate.H"   // S0: gated invariant tripwire (CAMR.ps_validate)
 // PS_alpha_transport.H — preserved in-tree but no longer used; the
 // wave-propagation form inside PS_umeth (Phase 4c-β3 second pass)
 // obsoletes the conservative-flux + post-consup cancellation.
 #endif
 
 #include <cmath>
+#include <AMReX_ParallelDescriptor.H>        // ReduceRealMax/ReduceLongSum in the PS-MASS probe
+#ifdef USE_PS_HYDRO
+#include "Hydro/PelantiShyue/PS_guards.H"    // guard audit counters
+#endif
 
 using std::string;
 
@@ -112,7 +117,7 @@ CAMR::CAMR_advance (Real time,
     // trusted to respect the consistency between certain state variables
     // (e.g. UEINT and UEDEN) that we demand in every zone.
 
-    clean_state(get_old_data(State_Type));
+    clean_state(get_old_data(State_Type), false);   // UTEMP refreshed at the end of the step
 
     MultiFab& S_old = get_old_data(State_Type);
     amrex::ignore_unused(S_old);
@@ -163,24 +168,144 @@ CAMR::CAMR_advance (Real time,
                        << ": alpha1 in [" << S.min(UALPHA1, 0) << ", "
                        << S.max(UALPHA1, 0) << "]\n";
     };
+    // ---- MASS-CONSISTENCY PROBE (CAMR.ps_diag_mass=1) --------------------
+    // The P-S state stores mixture mass TWICE: URHO, and the phase pair
+    // (UM1RHO1, UM2RHO2).  Nothing enforces URHO == UM1RHO1 + UM2RHO2 -- the
+    // reconstruction header assumes the drift stays below MUSCL truncation
+    // error.  Measured from plotfiles it does not: 0.4% max in the baseline
+    // pipe-break run, 1.5% at ps_mt_tau=1e-5, then 100% at the blow-up that
+    // collapsed dt to 4e-12.  This probe reports the drift at each stage of
+    // the reaction sequence so the responsible operator can be identified.
+    // Purely diagnostic -- reads the state, changes nothing.
+    auto diag_mass = [&](amrex::MultiFab& S, const char* label) {
+        // S0 invariant tripwire (CAMR.ps_validate; default 0 = silent no-op).
+        // Runs at every diag point INDEPENDENTLY of ps_diag_mass's gate.
+        ps_validate_state(S, label);
+        static int dgm = -1;
+        if (dgm < 0) { int t = 0; amrex::ParmParse pp("CAMR");
+                       pp.query("ps_diag_mass", t); dgm = t; }
+        if (dgm == 0) return;
+        amrex::Real worst = 0.0, mmax = 0.0, e1max = 0.0, e2max = 0.0;
+        amrex::Long nbad = 0;
+        for (amrex::MFIter mfi(S); mfi.isValid(); ++mfi) {
+            const amrex::Box bx = mfi.validbox();
+            amrex::Array4<amrex::Real> const& U = S.array(mfi);
+            amrex::LoopOnCpu(bx, [&] (int i, int j, int k) noexcept
+            {
+                const amrex::Real r  = U(i,j,k, URHO);
+                const amrex::Real m1 = U(i,j,k, UM1RHO1);
+                const amrex::Real m2 = U(i,j,k, UM2RHO2);
+                const amrex::Real s  = m1 + m2;
+                // mass / specific-energy extrema: catch CREATION, not just drift
+                if (std::isfinite(s) && s > mmax) mmax = s;
+                if (m1 > 0.0) { const amrex::Real e = std::abs(U(i,j,k, UE1)) / m1;
+                                if (std::isfinite(e) && e > e1max) e1max = e; }
+                if (m2 > 0.0) { const amrex::Real e = std::abs(U(i,j,k, UE2)) / m2;
+                                if (std::isfinite(e) && e > e2max) e2max = e; }
+                if (!std::isfinite(r) || !std::isfinite(s) || std::abs(r) <= 0.0) return;
+                const amrex::Real rel = std::abs(r - s) / std::abs(r);
+                if (rel > worst) worst = rel;
+                if (rel > 1.0e-3) ++nbad;
+            });
+        }
+        amrex::ParallelDescriptor::ReduceRealMax(worst);
+        amrex::ParallelDescriptor::ReduceRealMax(mmax);
+        amrex::ParallelDescriptor::ReduceRealMax(e1max);
+        amrex::ParallelDescriptor::ReduceRealMax(e2max);
+        amrex::ParallelDescriptor::ReduceLongSum(nbad);
+        amrex::Print() << "[PS-MASS] L" << level << " step "
+                       << parent->levelSteps(level) << " " << label
+                       << ": drift = " << worst << " (n>1e-3 " << nbad
+                       << ")  max(m1+m2) = " << mmax
+                       << "  max|E1| = " << e1max
+                       << "  max|E2| = " << e2max << "\n";
+#if !defined(AMREX_USE_GPU)
+        // Guard audit: distinguishes "never reached" from "reached, never
+        // trips".  Reported at the same cadence and then reset, so the numbers
+        // are per-interval rather than cumulative.
+        {
+            amrex::Long gs = ps_guard::n_seen();
+            amrex::Long gl = ps_guard::n_reject_low();
+            amrex::Long gh = ps_guard::n_reject_high();
+            amrex::ParallelDescriptor::ReduceLongSum(gs);
+            amrex::ParallelDescriptor::ReduceLongSum(gl);
+            amrex::ParallelDescriptor::ReduceLongSum(gh);
+            amrex::Long rl = ps_guard::n_rho_clamp_lo();
+            amrex::Long rh = ps_guard::n_rho_clamp_hi();
+            amrex::ParallelDescriptor::ReduceLongSum(rl);
+            amrex::ParallelDescriptor::ReduceLongSum(rh);
+            amrex::Print() << "[PS-GUARD] L" << level << " step "
+                           << parent->levelSteps(level) << " " << label
+                           << ": phase-P seen = " << gs
+                           << "  rej_low = " << gl
+                           << "  rej_high = " << gh
+                           << " | rho_clamp_lo = " << rl
+                           << "  rho_clamp_hi = " << rh;
+            amrex::Long sl = ps_guard::n_slaved();
+            amrex::ParallelDescriptor::ReduceLongSum(sl);
+            amrex::Print() << " | slaved = " << sl << "\n";
+            ps_guard::reset_counts();
+            ps_guard::reset_rho_counts();
+            ps_guard::reset_slaved();
+            // S0 fold-mass audit (same cadence/reset as the guard audit).
+            {
+                PsFoldAudit& fa = ps_fold_audit();
+                long nv = fa.n_vanish, nt = fa.n_tfloor;
+                amrex::Real mv = fa.m_vanish, mt = fa.m_tfloor;
+                amrex::ParallelDescriptor::ReduceLongSum(nv);
+                amrex::ParallelDescriptor::ReduceLongSum(nt);
+                amrex::ParallelDescriptor::ReduceRealSum(mv);
+                amrex::ParallelDescriptor::ReduceRealSum(mt);
+                if (nv + nt > 0) {
+                    amrex::Print() << "[PS-FOLD] L" << level << " step "
+                                   << parent->levelSteps(level) << " " << label
+                                   << ": vanish n=" << nv << " m=" << mv
+                                   << " | tfloor n=" << nt << " m=" << mt << "\n";
+                }
+                fa.reset();
+            }
+        }
+#endif
+    };
     auto apply_ps_reaction = [&](amrex::MultiFab& S, amrex::Real dt_r,
                                  int ng, bool do_print) {
+        diag_mass(S, "A enter (post-hydro/C-F)");
+        ps_resync_mixture_mass(S, ng);  // URHO==UM1RHO1+UM2RHO2 after hydro/C-F (see header)
+        diag_mass(S, "A2 post mass resync");
         ps_resync_phase_energy(S, ng);  // task #58: UE1+UE2==UEDEN after C-F interp/regrid
         ps_dilute_energy_closure(S, ng); // #64: thermal-eq closure of vanishing-phase e_k (gated)
-        ps_apply_floor(S, ng);          // positivity floor (task #50)
+        // ORDER: folds BEFORE floors, matching the standalone's clamp_cons6
+        // (ppm_1d_ps_wp.cpp:1295-1300).  CAMR previously ran the floor FIRST,
+        // so a cell whose phase had just been folded away was never repaired.
+        //
+        // MEASURED consequence of the wrong order: with the A2 T-floor fold
+        // newly wired in, 1132 cells (2.75% of level 2, growing) sat at the
+        // 0.01 bar pressure floor -- 76% of them with alpha_1 driven to 1e-6
+        // and the cell's whole 120 kg/m3 labelled vapour at 216.59 K.  CO2
+        // vapour has no root at that density and temperature, so the pressure
+        // floored.  ps_apply_floor is precisely what raises e_k to satisfy the
+        // temperature floor and would have repaired them -- it just ran too
+        // early to see them.
         ps_apply_vanish_fold(S, ng);
-        clean_state(S);
+        ps_apply_tfloor_fold(S, ng);   // gap item A2: was dead code; see
+                                       // STANDALONE_LESSONS_GAP.md.  Must
+                                       // follow the vanish fold.
+        ps_apply_floor(S, ng);          // positivity floor (task #50)
+        clean_state(S, false);   // intermediate: skip the UTEMP diagnostic sweep
+        diag_mass(S, "B post floor/fold/clean");
         diag_a1(S, "reaction pre-relax");   // entering: reflects hydro/advection/C-F
         ps_report_temps(S, "pre-relax (post-hydro)", geom, ng);  // #88 diag
         if (ps_do_relax_cached != 0) {
             ps_apply_relaxation(S, dt_r, ng, do_print);   // dt for finite-rate thermal (mode 2)
-            clean_state(S);
+            clean_state(S, false); // intermediate: skip the UTEMP diagnostic sweep
         }
+        diag_mass(S, "C post relaxation (P/T/MT)");
         diag_a1(S, "reaction post-relax");  // jump here => MT/relaxation is the driver
         ps_report_temps(S, "post-relax", geom, ng);              // #88 diag
         ps_report_energy_overshoot(S, "post-relax", ng);         // #64 decision diagnostic (gated)
         ps_harvest_states(S, ng);            // #42 active-learning EOS state harvest (gated)
         ps_apply_sources(S, dt_r, ng);
+        diag_mass(S, "D post sources (flash)");
         diag_a1(S, "reaction post-sources");// jump here => flash/source is the driver
         ps_report_temps(S, "post-sources", geom, ng);            // #88 diag
     };
@@ -232,6 +357,14 @@ CAMR::CAMR_advance (Real time,
 
         // S^{n+1,*} = S^n + dt * dSdt^{n}
         MultiFab::Saxpy(S_new, dt, hydro_source, 0, 0, NVAR, 0);
+#ifdef USE_PS_HYDRO
+        // S3 / gap A5: the stage-1 intermediate reaches the stage-2 flux —
+        // fold vanished phases on it (the standalone clamps after BOTH RK
+        // stages, ppm_1d_ps_wp.cpp:1549/:1587).  Presence-gated inside the
+        // wrapper; legacy do_mol runs are unchanged unless ps_alpha_vanish
+        // was already set.
+        if (ps_hydro != 0) { ps_apply_vanish_fold(S_new, 0); }
+#endif
 
         expand_state(Sborder, cur_time, numGrow());
         construct_hydro_source(Sborder, new_hydro_source, cur_time, dt);
@@ -249,7 +382,7 @@ CAMR::CAMR_advance (Real time,
     }
 
     // Sync up state after old sources and hydro source.
-    clean_state(S_new);
+    clean_state(S_new, false);   // intermediate: skip the UTEMP diagnostic sweep
 
 
     // "new source" is actually the correction to the old source we've already added
@@ -313,6 +446,15 @@ CAMR::CAMR_advance (Real time,
     if (do_react) {
         react(S_new);
     }
+
+    // Final UTEMP refresh for the completed new-time state.  The intermediate
+    // clean_state calls above pass refresh_temp=false (the UTEMP diagnostic
+    // sweep is a per-cell EOS inversion over the grown box and the conserved
+    // evolution never reads it), and the LAST clean_state in the step is the
+    // one inside apply_ps_reaction -- so without this the plotfile/derive/
+    // tagging path would see a stale Temp.  One sweep per advance instead of
+    // ~7.  Idempotent; cheap.
+    clean_state(S_new, true);
 
     return dt_new;
 }

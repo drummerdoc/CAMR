@@ -70,6 +70,14 @@ CAMR::read_params()
 
 #include "CAMR_queries.H"
 
+#if defined(USE_GERG_EOS) || defined(USE_GERGTAB_EOS)
+  // CAMR.gerg_ext_c -> gerg::set_ext_c, once, before any hydro.  Also
+  // force-adds the resolved value to the ParmParse table so it appears in
+  // job_info -- i.e. every plotfile records which extension sound-speed
+  // surface produced it.  See Source/EOS/GERG/gerg_co2_guard.H.
+  EOS::gerg_ext_c_init();
+#endif
+
   // ---------------------------------------------------------------------
   //  Pelanti-Shyue solver dispatch consistency check.
   //
@@ -845,6 +853,12 @@ CAMR::post_regrid(int /*lbase*/, int /*new_finest*/)
   if (ps_hydro != 0) {
     amrex::MultiFab& S_new = get_new_data(State_Type);
     ps_resync_phase_energy(S_new, 0);
+    // S3 (design §3): regrid interpolation can manufacture sub-alpha_vanish
+    // phase slivers at new fine cells; fold them to exact zero before any
+    // flux sees them.  No-op unless presence is enabled (the fold wrapper
+    // resolves its own threshold; audit counters record the churn by the
+    // PS-FOLD report).
+    ps_apply_vanish_fold(S_new, 0);
     ps_apply_floor(S_new, 0);
   }
 #endif
@@ -1267,6 +1281,7 @@ CAMR::avgDown(int state_indx)
     // two-phase state into the next hydro.  No-op on interior cells.
     if (ps_hydro != 0 && state_indx == State_Type) {
         ps_resync_phase_energy(S_crse, 0);
+        ps_apply_vanish_fold(S_crse, 0);   // S3: avgDown slivers -> exact zero
         ps_apply_floor(S_crse, 0);
     }
 #endif
@@ -1575,16 +1590,26 @@ CAMR::build_fine_mask()
 void
 CAMR::expand_state(amrex::MultiFab& S, const amrex::Real time, const int ng)
 {
+    BL_PROFILE("CAMR::expand_state()");
     AMREX_ALWAYS_ASSERT(S.nGrow() >= ng);
 
     AmrLevel::FillPatch(*this,S,ng,time,State_Type,0,S.nComp());
 
-    clean_state(S);
+    // refresh_temp = false: this is Sborder, the ghost-filled working copy fed
+    // to the hydro, and it is the WIDEST MultiFab in the step (numGrow ghosts)
+    // -- so its UTEMP sweep was the most expensive single one.  The hydro does
+    // not read it: PS ctoprim recomputes T from the conserved state
+    // (PS_umeth.cpp "T recomputed at ctoprim"; flx[UTEMP] is set to 0).
+    clean_state(S, false);
 }
 
 void
-CAMR::clean_state(amrex::MultiFab& S)
+CAMR::clean_state(amrex::MultiFab& S, bool refresh_temp)
 {
+  // Timed: called 5x per CAMR_advance (and again inside expand_state), so it
+  // was a large untimed contributor to CAMR_advance's EXCLUSIVE time.
+  BL_PROFILE("CAMR::clean_state()");
+
   // Enforce a minimum density.
   enforce_min_density(S);
 
@@ -1630,7 +1655,25 @@ CAMR::clean_state(amrex::MultiFab& S)
 #endif
 
   int ng = S.nGrow();
-  computeTemp(S,ng);
+
+  // computeTemp = reset_internal_energy (state hygiene, ALWAYS needed) plus a
+  // per-cell EOS inversion that fills the UTEMP DIAGNOSTIC slot.  The latter
+  // costs 1 mixture (rho,e)->T inversion per cell over the whole grown box,
+  // plus 2 branch-locked per-phase inversions in genuine two-phase cells
+  // (task #52) -- and clean_state runs 5x per CAMR_advance (7x counting
+  // expand_state), i.e. ~49 full-domain sweeps per 3-level coarse step, to
+  // refresh a field the conserved evolution never reads.  Skip the UTEMP part
+  // on the intermediate calls.  CAMR.lazy_temp = 0 restores the old behaviour.
+  static const bool lazy_temp = []() {
+      int v = 1; amrex::ParmParse pp("CAMR");
+      pp.query("lazy_temp", v);
+      return v != 0;
+  }();
+  if (refresh_temp || !lazy_temp) {
+      computeTemp(S, ng);
+  } else {
+      reset_internal_energy(S, ng);
+  }
 }
 
 #ifdef CAMR_USE_MOVING_EB

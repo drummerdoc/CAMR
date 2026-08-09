@@ -20,16 +20,21 @@ struct PCHypFillExtDir
   int         use_nscbc;
   amrex::Real nscbc_sigma;
   int         nscbc_order;    // 1 or 2 — R+ extrapolation order.
+  PsPres      pres;           // S2: presence params, captured HOST-side at
+                              // functor construction (§12.2 rule 1 — never
+                              // read ParmParse/statics inside operator()).
 
   AMREX_GPU_HOST
-  constexpr explicit PCHypFillExtDir(const ProbParmDevice* d_prob_parm,
-                                     int         use_nscbc_,
-                                     amrex::Real nscbc_sigma_,
-                                     int         nscbc_order_)
+  explicit PCHypFillExtDir(const ProbParmDevice* d_prob_parm,
+                           int         use_nscbc_,
+                           amrex::Real nscbc_sigma_,
+                           int         nscbc_order_,
+                           const PsPres& pres_)
     : lprobparm(d_prob_parm)
     , use_nscbc(use_nscbc_)
     , nscbc_sigma(nscbc_sigma_)
     , nscbc_order(nscbc_order_)
+    , pres(pres_)
   {
   }
 
@@ -104,6 +109,7 @@ struct PCHypFillExtDir
           s_Nm2[n] = dest(ivNm2, n);
         }
         PS_NSCBC::Params params;
+        params.pres = pres;   // S2 (functor member, host-captured POD)
         params.P_amb        = lprobparm->p_amb;
         params.sigma        = nscbc_sigma;
         params.L_ref        = prob_hi[idir] - prob_lo[idir];
@@ -208,7 +214,8 @@ CAMR_bcfill_hyp(
   }
 
   amrex::GpuBndryFuncFab<PCHypFillExtDir> hyp_bndry_func(
-    PCHypFillExtDir{lprobparm, use_nscbc, nscbc_sigma, nscbc_order});
+    PCHypFillExtDir{lprobparm, use_nscbc, nscbc_sigma, nscbc_order,
+                    ps_presence_params()});   // S2: host-side read here
   hyp_bndry_func(bx, data, dcomp, numcomp, geom, time, bcr, bcomp, scomp);
 }
 

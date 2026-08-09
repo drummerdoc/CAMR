@@ -65,6 +65,7 @@
 
 #ifdef USE_PS_HYDRO
 
+#include "PS_presence.H"   // S2
 #include "IndexDefines.H"
 #include "EOS.H"
 #include <AMReX_GpuQualifiers.H>
@@ -77,6 +78,7 @@ namespace PS_NSCBC {
 struct Params {
     amrex::Real P_amb   = amrex::Real(1.01325e5);   // Pa, ambient outside
     amrex::Real sigma   = amrex::Real(0.25);        // Poinsot-Lele soft-relax σ
+    PsPres      pres{};                              // S2 presence params (by value)
     amrex::Real L_ref   = amrex::Real(1.0);          // m, domain length (unused
                                                      // in this invariant form
                                                      // but kept for API stability)
@@ -161,13 +163,19 @@ _wallis_c_at_cell(const amrex::Real s[NVAR],
                   amrex::Real       uy,
                   amrex::Real       uz,
                   amrex::Real       P_mix,
-                  amrex::Real       Y[NUM_SPECIES]) noexcept
+                  amrex::Real       Y[NUM_SPECIES],
+                  const PsPres&     pr) noexcept
 {
     using amrex::Real;
     Real alpha_1 = _finite_or(s[UALPHA1], Real(1.0));
     constexpr Real alpha_floor = Real(1.0e-6);
-    if (alpha_1 < alpha_floor)             alpha_1 = alpha_floor;
-    if (alpha_1 > Real(1.0) - alpha_floor) alpha_1 = Real(1.0) - alpha_floor;
+    if (pr.enabled) {   // S2 presence: exact alpha
+        if (alpha_1 < Real(0.0)) alpha_1 = Real(0.0);
+        if (alpha_1 > Real(1.0)) alpha_1 = Real(1.0);
+    } else {
+        if (alpha_1 < alpha_floor)             alpha_1 = alpha_floor;
+        if (alpha_1 > Real(1.0) - alpha_floor) alpha_1 = Real(1.0) - alpha_floor;
+    }
     const Real alpha_2 = Real(1.0) - alpha_1;
 
     const Real m1 = amrex::max(_finite_or(s[UM1RHO1], Real(0.0)), Real(0.0));
@@ -198,9 +206,16 @@ _wallis_c_at_cell(const amrex::Real s[NVAR],
     if (!std::isfinite(c1) || c1 <= Real(0.0)) c1 = Real(1.0);
     if (!std::isfinite(c2) || c2 <= Real(0.0)) c2 = Real(1.0);
 
-    const Real Y1 = alpha_1 * rho_1 / rho_mix;
-    const Real Y2 = alpha_2 * rho_2 / rho_mix;
-    const Real c2_frozen = alpha_1 * Y1 * c1*c1 + alpha_2 * Y2 * c2*c2;
+    Real c2_frozen;
+    if (pr.enabled) {   // S2: correct Wallis form (#199, third wrong copy)
+        const Real Y1 = alpha_1 * rho_1 / rho_mix;
+        const Real Y2 = Real(1.0) - Y1;
+        c2_frozen = Y1 * c1*c1 + Y2 * c2*c2;
+    } else {
+        const Real Y1 = alpha_1 * rho_1 / rho_mix;
+        const Real Y2 = alpha_2 * rho_2 / rho_mix;
+        c2_frozen = alpha_1 * Y1 * c1*c1 + alpha_2 * Y2 * c2*c2;
+    }
     return (c2_frozen > Real(0.0)) ? std::sqrt(c2_frozen)
                                      : amrex::max(c1, c2);
 }
@@ -280,7 +295,7 @@ outflow_face(const amrex::Real s_N  [NVAR],
 
     // ---- 2. Wallis frozen sound speed at cell N -------------------
     const Real c_N = _wallis_c_at_cell(s_N, rho_N, e_N, ux_N, uy_N, uz_N,
-                                        P_N, Y_N);
+                                        P_N, Y_N, p.pres);
     if (!std::isfinite(c_N) || c_N <= Real(0.0)) {
         _zero_gradient_ghost(s_N, s_ghost);
         return;

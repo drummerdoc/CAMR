@@ -680,6 +680,7 @@ CAMR_derpres(
   auto const dat = datfab.const_array();
   auto pfab = derfab.array();
 
+  const PsPres l_pres = ps_presence_params();   // S2 (one host read)
   amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
     const amrex::Real rho = dat(i, j, k, URHO);
 #ifdef AMREX_USE_EB
@@ -707,7 +708,7 @@ CAMR_derpres(
     {
       amrex::Real Uloc[NVAR];
       for (int n = 0; n < NVAR; ++n) Uloc[n] = dat(i, j, k, n);
-      p = ps_mixture_pressure_from_cons(Uloc, p);
+      p = ps_mixture_pressure_from_cons(Uloc, p, l_pres);
     }
 #endif
     pfab(i, j, k) = p;

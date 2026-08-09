@@ -16,6 +16,7 @@ CAMR::construct_hydro_source (const MultiFab& S,
                               Real /*time*/,
                               Real dt)
 {
+    BL_PROFILE("CAMR::construct_hydro_source()");
     src_to_fill.setVal(0);
 
     if (verbose) {
@@ -178,6 +179,9 @@ CAMR::construct_hydro_source (const MultiFab& S,
                 dual_energy_eta         = Real(0.0);
             }
 #endif
+#ifdef USE_PS_HYDRO
+            const PsPres l_pres = ps_presence_params();   // S2 (one host read)
+#endif
             ParallelFor(
               qbx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
 #ifdef AMREX_USE_EB
@@ -194,7 +198,7 @@ CAMR::construct_hydro_source (const MultiFab& S,
                     // if CAMR.ps_hydro=0 — the augmented primitives
                     // are cheap and give Godunov / MOL access to the
                     // per-phase state should it want it in future.
-                    ps_augment_primitives(i, j, k, sarr, qarr);
+                    ps_augment_primitives(i, j, k, sarr, qarr, l_pres);
 #endif
 #ifdef AMREX_USE_EB
                 } else {
