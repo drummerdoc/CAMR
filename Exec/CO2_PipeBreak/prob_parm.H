@@ -31,6 +31,11 @@ struct ProbParmDevice
     amrex::Real p0    = 5.0e5;    // Pa   ambient / initial pressure
     amrex::Real T0    = 260.0;    // K    ambient / initial temperature
     amrex::Real u0    = 0.0;      // m/s  initial velocity
+    // S3/4.4 (DESIGN_ps_presence_discrete.md §6): trace-phase seed for
+    // nominally-single-phase states.  Legacy default 1e-6 (bit-identical).
+    // Set prob.alpha_trace=0 for presence runs: single-phase cells are
+    // born EXACTLY single-phase (alpha in {0,1}, m_trace = UE_trace = 0).
+    amrex::Real alpha_trace = 1.0e-6;
     amrex::Real p_amb = 5.0e5;    // Pa   outflow far-field pressure
 
     // Reservoir (dense CO2 behind the break gap, imposed at x-lo).
@@ -82,6 +87,25 @@ struct ProbParmDevice
     int res_char_inflow = 0;
     amrex::Real res_Psat = 0.0;  // Pa  Psat(T_res); filled in probinit for the
                                  //     characteristic inlet (P target).
+
+    // --- CHOKED-INLET CAP for res_char_inflow (satjet GERGTab oscillation) ---
+    // The (u-c) invariant relation above is only valid while the inflow is
+    // SUBSONIC; at M>=1 that characteristic no longer leaves the domain and
+    // the relation is ill-posed.  Worse, because the boundary pins the STATIC
+    // pressure at Psat while the jet expands downstream, (Psat - P_int) stays
+    // PERSISTENTLY POSITIVE, so u_b = u_int + (Psat-P_int)/(rho c) is a one-way
+    // integrator: measured +0.15..0.22 m/s of inflow velocity EVERY step in
+    // satjet_demo2, ratcheting the inlet from M=1.01 (step 20) to M=1.27
+    // (step 170) with no sign reversal.  The over-accelerated jet over-expands
+    // and drives the per-phase vapour density past its spinodal into the EOS
+    // guard extension, which is where the 2-dx checkerboard is generated.
+    //   Physically this reservoir vents through a gap, so the inlet plane IS
+    // the throat and is at most SONIC.  Cap the invariant velocity at
+    // res_mach_max * c_frozen(reservoir).  res_mach_max <= 0 disables the cap
+    // (legacy behaviour, for A/B).
+    amrex::Real res_mach_max = 1.0;
+    amrex::Real res_cfrozen  = 0.0;  // m/s  mixture (Wood) sound speed of the
+                                     //      reservoir ghost; filled in probinit.
 
     // Break-gap geometry on the x-lo rupture plane.
     amrex::Real gap_yc   = 0.5;   // m    gap centre (y)

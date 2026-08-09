@@ -18,6 +18,13 @@ import os, re, sys, glob, struct, subprocess
 import numpy as np
 
 EXE = os.environ.get('EXE', './CAMR1d.gnu.TPROF.PS.ex')
+# Reference set.  Default c1_ = the PR references in this directory.  For a GERG
+# / GERGTab build use the GERG references:
+#     REFGLOB='gerg_refs/g1_*_[0-9]*' python3 run_ac_suite.py
+# (the guard-layer changes live in Source/EOS/GERG, so a GERG build MUST be
+#  regressed against g1_, not c1_ -- c1_ would silently compare against a
+#  different thermodynamic surface.)
+REFGLOB = os.environ.get('REFGLOB', 'c1_*_[0-9]*')
 # keys whose value we replay from job_info (command-line override = last occurrence)
 KEYS = ('amr.n_cell', 'geometry.prob_lo', 'geometry.prob_hi', 'stop_time',
         'max_step', 'prob.phase_L', 'prob.phase_R', 'prob.p_L', 'prob.p_R',
@@ -56,11 +63,13 @@ def rd1d(p, var):
         f[il-ilo:ih-ilo+1] = vv[vi]
     return f
 
-def case_name(ref):  # c1_B4-Cross-critical_00205 -> B4-Cross-critical
-    return re.sub(r'^c1_', '', re.sub(r'_\d+$', '', os.path.basename(ref)))
+def case_name(ref):  # c1_/g1_B4-Cross-critical_00205 -> B4-Cross-critical
+    return re.sub(r'^[a-z0-9]+_', '', re.sub(r'_\d+$', '', os.path.basename(ref)))
 
 def main(argv):
-    refs = sorted(glob.glob('c1_*_[0-9]*'))
+    refs = sorted(glob.glob(REFGLOB))
+    if not refs:
+        print('no reference plotfiles matched REFGLOB=%s' % REFGLOB); return 1
     # keep only the highest-step ref per case
     best = {}
     for r in refs:

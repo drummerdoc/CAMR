@@ -6,8 +6,25 @@ Case list mirrors the standalone CASES[] (A1-A6, B1-B10, C1-C3)."""
 import os, sys, glob, csv, subprocess, numpy as np
 import run_ac_suite as R   # rd1d/hdr
 
-STD = '/sessions/adoring-keen-cori/mnt/co2-eos-cfd/build_sbx/ppm_1d_ps_wp'  # sandbox(Linux) build; host build/ is Mac
-CAMR = './CAMR1d.gnu.TPROF.PS.ex'
+# Standalone driver binary.  Override with CO2_STANDALONE_BIN=... .  The old
+# hard-coded /sessions/<sandbox>/ path died with the sandbox that made it.
+STANDALONE = os.environ.get('CO2_STANDALONE', '/Users/marcusd/src/SINTEF/co2-eos-cfd')
+STD = os.environ.get('CO2_STANDALONE_BIN', STANDALONE + '/build/ppm_1d_ps_wp')
+# 1-D executable.  DISCOVERED, not hard-coded: the build name carries
+# DIM/COMP/profiling/MPI and (since 2026-08) the Eos_Model suffix, so any
+# hard-coded name goes stale the moment a build option changes.
+# Override with CAMR_EXE=... if several 1-D builds are present.
+def _find_camr_exe():
+    import glob as _g
+    if os.environ.get('CAMR_EXE'): return os.environ['CAMR_EXE']
+    c = sorted(_g.glob('./CAMR1d.*.ex'), key=os.path.getmtime, reverse=True)
+    if not c:
+        raise SystemExit(
+            "no 1-D CAMR executable found in %s\n"
+            "  build one with:  make -j8 DIM=1 USE_MPI=FALSE\n"
+            "  (the GNUmakefile defaults to DIM=2; the suite is 1-D)" % os.getcwd())
+    return c[0]
+CAMR = _find_camr_exe()
 N = int(os.environ.get('PS_N', 64))
 STD_OUT = 'std_ref'      # standalone CSV refs
 CAMR_PRE = 'fs_'         # CAMR plotfile prefix per case
@@ -50,7 +67,29 @@ TWO_PHASE = {'B1-Comp-L-expand','B2-Evap-wave','B3-Sat-LV-contact','B4-Cross-cri
              'B9-Deep-Expansion','B10-Cross-critical-hot'}
 MT_TAU = 1.0e-4
 def case_cfg(name):
-    """-> (camr_overrides dict, standalone env dict, standalone extra flags)."""
+    """-> (camr_overrides dict, standalone env dict, standalone extra flags).
+
+    PS_FROZEN=1 selects the TAU -> INFINITY limit: all relaxation and phase
+    change disabled.  In that limit an EXACT solution exists
+    (exact_riemann.py model='frozen', stored in suite/profiles/), so any
+    discrepancy is unambiguously numerical error in the hyperbolic core --
+    solver, branch-locked EOS, reconstruction -- with the relaxation operators
+    excluded.  At production (finite) tau NO exact solution exists and a
+    discrepancy cannot be attributed.  See VALIDATION_finite_rate.md.
+    """
+    if os.environ.get('PS_FROZEN', '0') == '1':
+        # "Frozen" here means what exact_riemann.py model='frozen' means: NO
+        # PHASE CHANGE (mt off), riding the metastable single-phase branch.
+        # MECHANICAL (pressure) relaxation stays ON -- the analytic assumes a
+        # single mixture pressure, so ps_do_relax=0 would compare a P1!=P2
+        # solution against a P1==P2 reference and blame the difference on
+        # numerics.  (First attempt got this wrong and inflated every B case.)
+        camr = {'CAMR.ps_do_relax': 1,        # mechanical relaxation ON
+                'CAMR.ps_relax_mode': 0,      # instantaneous mechanical only
+                'CAMR.ps_mt_tau': 0,          # mass transfer OFF
+                'CAMR.ps_flash_tau': 0.0}     # no nucleation source
+        senv = {'PS_ORDER': '2', 'PS_MT_TAU': '1e30'}
+        return camr, senv, ['--pressure-only']
     if name in TWO_PHASE:
         camr = {'CAMR.ps_relax_mode':2, 'CAMR.ps_theta_tau':MT_TAU, 'CAMR.ps_mt_tau':MT_TAU}
         senv = {'PS_ORDER':'2', 'PS_MT_TAU':repr(MT_TAU)}   # MT on (no --pressure-only)

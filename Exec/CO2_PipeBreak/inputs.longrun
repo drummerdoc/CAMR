@@ -22,7 +22,7 @@
 #  configuration — and re-enable MT once #74 is settled.
 # =====================================================================
 amrex.fpe_trap_invalid = 0
-max_step  = 20000
+max_step = 140
 stop_time = 2.5e-3
 
 geometry.is_periodic = 0 0 0
@@ -72,30 +72,13 @@ CAMR.ps_flash_tau = 0.0       # flash OFF (saturated reservoir; no nucleation)
 CAMR.ps_pres_floor = 1.0e5
 CAMR.ps_temp_floor = 216.6
 
-# --- GERG/GERGTab extension sound speed (env var, NOT a ParmParse dial) -----
-# GERG_EXT_C defaults to ON and you should leave it alone.  Past the guard's
-# branch edge the EOS used to hard-set c = sqrt(CSQ_FLOOR) = 50 m/s while just
-# inside the edge it reports the true isentropic c (174 vapour / 211-359
-# liquid) -- a 3.5x-7x DISCONTINUITY that flips the HLLC upwind dissipation on
-# and off cell-to-cell and drives a growing 2-dx pressure oscillation in the
-# near-inlet lip shear layer (level-2 max|d2 P| 4.3 -> 26.3 bar over 25 steps).
-# ON derives c from the constructed extension surface's own identity, capped at
-# the edge value; the oscillation is arrested (holds at ~4.7 bar, and the
-# correlation with extension cells vanishes: 0.10 vs 0.11 bar, 0% of noisy
-# cells).  Costs nothing -- dt is unchanged, both branches are the same work.
-#   GERG_EXT_C=0  ONLY to (a) reproduce pre-2026-08 results, (b) bisect a new
-#                 instability, or (c) A-B the two surfaces deliberately.
-# See Source/EOS/GERG/gerg_co2_guard.H and
-# FINDINGS_gergtab_inflow_oscillation.md.  NOTE: being an env var it does NOT
-# appear in job_info, so plotfiles do not record which surface made them.
-
 CAMR.v = 1
 amr.v = 1
 CAMR.sum_interval = -1
 CAMR.redistribution_type = StateRedist
 amr.loadbalance_with_workestimates = 0
 
-amr.max_level       = 2
+amr.max_level = 2
 amr.ref_ratio       = 2 2 2 2
 amr.regrid_int      = 2 2 2 2
 amr.blocking_factor = 16
@@ -103,8 +86,7 @@ amr.max_grid_size   = 64
 amr.n_error_buf     = 2 2 2 2
 amr.grid_eff        = 0.9
 
-#amr.refinement_indicators = ldtag atag nftag pgtag
-amr.refinement_indicators = ldtag atag pgtag
+amr.refinement_indicators = ldtag atag nftag pgtag
 
 amr.ldtag.field_name = logden 
 amr.ldtag.adjacent_difference_greater = 0.15
@@ -115,9 +97,9 @@ amr.atag.field_name = ps_alpha1
 amr.atag.adjacent_difference_greater = 0.1
 amr.atag.max_level = 2
 
-#amr.nftag.in_box_lo = 0.0   0.42
-#amr.nftag.in_box_hi = 0.12  0.58
-#amr.nftag.max_level = 2
+amr.nftag.in_box_lo = 0.0   0.42
+amr.nftag.in_box_hi = 0.12  0.58
+amr.nftag.max_level = 2
 
 amr.pgtag.field_name = pressure
 amr.pgtag.adjacent_difference_greater = 3.0e5
@@ -186,3 +168,12 @@ prob.gap_yc   = 0.5
 prob.gap_half = 0.05
 prob.gap_taper = 0.02
 prob.ramp_time = 3.0e-4
+
+amr.restart = chkL_00104
+amr.check_int = -1
+amr.plot_int = -1
+
+amr.check_int = 2
+amr.plot_int = 2
+amr.check_file = chkL_
+amr.plot_file = pltL_

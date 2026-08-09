@@ -36,9 +36,9 @@
 // writes the slots directly via state(i,j,k,comp) instead.
 #ifdef USE_PS_HYDRO
 AMREX_GPU_DEVICE AMREX_FORCE_INLINE
-void CAMR_ps_fill_single_phase(amrex::Real* s, amrex::Real rho, amrex::Real E_spec)
+void CAMR_ps_fill_single_phase(amrex::Real* s, amrex::Real rho, amrex::Real E_spec,
+                               amrex::Real alpha_trace = amrex::Real(1.0e-6))
 {
-    const amrex::Real alpha_trace = amrex::Real(1.0e-6);
     const amrex::Real alpha_1     = amrex::Real(1.0) - alpha_trace;
     s[UALPHA1] = alpha_1;
     s[UM1RHO1] = alpha_1     * rho;
@@ -86,7 +86,7 @@ CAMR_initdata( int i, int j, int k,
     // VAPOR branch (phase-2 dominant, prob.amb_vapor=1) so the flash does not
     // mistake it for superheated liquid and boil it.  For supercritical /
     // liquid ambients keep phase-1 dominant (default).
-    const amrex::Real alpha_trace = amrex::Real(1.0e-6);
+    const amrex::Real alpha_trace = prob_parm.alpha_trace;   // S3/4.4
     const amrex::Real alpha_1 = (prob_parm.amb_vapor != 0)
                               ? alpha_trace                    // vapor (phase 2)
                               : (amrex::Real(1.0) - alpha_trace); // liquid (phase 1)
@@ -208,14 +208,83 @@ bcnormal(
                     Yi[0] = s_int[UFS  ] * inv_ri;
                     Yi[1] = s_int[UFS+1] * inv_ri;
                     Yi[2] = s_int[UFS+2] * inv_ri;
-                    amrex::Real P_i, gam_i;
-                    EOS::REY2P (s_int[URHO], e_i, Yi, P_i);
-                    EOS::REY2Gam(s_int[URHO], e_i, Yi, gam_i);
-                    amrex::Real c2 = gam_i * P_i * inv_ri;
-                    if (c2 < amrex::Real(1.0)) c2 = amrex::Real(1.0);
-                    const amrex::Real rhoc = s_int[URHO] * std::sqrt(c2);
+
+                    // ---- Interior P and acoustic impedance, taken from the
+                    // SAME two-phase reconstruction the solver uses.  The old
+                    // code used the single-fluid EQUILIBRIUM surface
+                    // (REY2P + REY2Gam on the mixture (rho,e)), which is a
+                    // DIFFERENT thermodynamic surface from the PS mixture rule
+                    // P_mix = a1*P1 + a2*P2 and the Wood c_frozen the fluxes
+                    // see.  In the satjet the two disagree by ~20% in c and up
+                    // to 30% in P, biasing the invariant every step.
+                    amrex::Real P_i  = amrex::Real(-1.0);
+                    amrex::Real rhoc = amrex::Real(-1.0);
+#ifdef USE_PS_HYDRO
+                    {
+                        const amrex::Real a1i = s_int[UALPHA1];
+                        const amrex::Real a2i = amrex::Real(1.0) - a1i;
+                        const amrex::Real m1i = s_int[UM1RHO1];
+                        const amrex::Real m2i = s_int[UM2RHO2];
+                        const amrex::Real uy_i =
+#if (AMREX_SPACEDIM >= 2)
+                            s_int[UMY] * inv_ri;
+#else
+                            amrex::Real(0.0);
+#endif
+                        amrex::Real ke_i = amrex::Real(0.5)*(ux_i*ux_i + uy_i*uy_i);
+#if (AMREX_SPACEDIM == 3)
+                        const amrex::Real uz_i = s_int[UMZ] * inv_ri;
+                        ke_i += amrex::Real(0.5)*uz_i*uz_i;
+#endif
+                        const amrex::Real atol = amrex::Real(1.0e-8);
+                        if (a1i > atol && a2i > atol
+                            && m1i > amrex::Real(0.0) && m2i > amrex::Real(0.0)) {
+                            const amrex::Real r1 = m1i / a1i;
+                            const amrex::Real r2 = m2i / a2i;
+                            // PS convention: UE_k carry the mass-proportional
+                            // kinetic share, so e_k = UE_k/m_k - ke.
+                            const amrex::Real ee1 = s_int[UE1] / m1i - ke_i;
+                            const amrex::Real ee2 = s_int[UE2] / m2i - ke_i;
+                            amrex::Real P1, C1, P2, C2;
+                            EOS::REY2PCs_liquid(r1, ee1, Yi, P1, C1);
+                            EOS::REY2PCs_vapor (r2, ee2, Yi, P2, C2);
+                            if (C1 > amrex::Real(0.0) && C2 > amrex::Real(0.0)) {
+                                const amrex::Real Pm = a1i*P1 + a2i*P2;
+                                const amrex::Real inv_rc2 = a1i/(r1*C1*C1)
+                                                          + a2i/(r2*C2*C2);
+                                if (Pm > amrex::Real(0.0) && inv_rc2 > amrex::Real(0.0)) {
+                                    P_i  = Pm;
+                                    // rho*c with 1/(rho c^2) = inv_rc2
+                                    rhoc = std::sqrt(s_int[URHO] / inv_rc2);
+                                }
+                            }
+                        }
+                    }
+#endif
+                    if (!(P_i > amrex::Real(0.0)) || !(rhoc > amrex::Real(0.0))) {
+                        // Fallback: single-fluid equilibrium surface (legacy).
+                        amrex::Real gam_i;
+                        EOS::REY2P  (s_int[URHO], e_i, Yi, P_i);
+                        EOS::REY2Gam(s_int[URHO], e_i, Yi, gam_i);
+                        amrex::Real c2 = gam_i * P_i * inv_ri;
+                        if (c2 < amrex::Real(1.0)) c2 = amrex::Real(1.0);
+                        rhoc = s_int[URHO] * std::sqrt(c2);
+                    }
+
                     amrex::Real ub = ux_i + (prob_parm.res_Psat - P_i) / rhoc;
                     if (ub < amrex::Real(0.0)) ub = amrex::Real(0.0); // inflow only
+                    // ---- CHOKED-INLET CAP (see prob_parm.H res_mach_max).
+                    // The (u-c) invariant is only outgoing while M<1; and with
+                    // the STATIC pressure pinned at Psat the correction term is
+                    // one-signed, so without a cap u_b ratchets upward without
+                    // bound.  This reservoir vents through a gap, so the inlet
+                    // plane is at most sonic.
+                    if (prob_parm.res_mach_max > amrex::Real(0.0)
+                        && prob_parm.res_cfrozen > amrex::Real(0.0)) {
+                        const amrex::Real ub_max =
+                            prob_parm.res_mach_max * prob_parm.res_cfrozen;
+                        if (ub > ub_max) ub = ub_max;
+                    }
                     un = swin * ub;
                 } else {
                     un = swin * prob_parm.res_u; // fixed inflow, taper->0
@@ -289,7 +358,8 @@ bcnormal(
                 R[UFS+1] = Y[1] * rho_r;
                 R[UFS+2] = Y[2] * rho_r;
 #ifdef USE_PS_HYDRO
-                CAMR_ps_fill_single_phase(R, rho_r, e_r);
+                CAMR_ps_fill_single_phase(R, rho_r, e_r,
+                                          prob_parm.alpha_trace);   // S3/4.4
 #endif
             }
             const amrex::Real w = swin;
