@@ -250,17 +250,20 @@ CAMR::CAMR_advance (Real time,
             // S0 fold-mass audit (same cadence/reset as the guard audit).
             {
                 PsFoldAudit& fa = ps_fold_audit();
-                long nv = fa.n_vanish, nt = fa.n_tfloor;
-                amrex::Real mv = fa.m_vanish, mt = fa.m_tfloor;
+                long nv = fa.n_vanish, nt = fa.n_tfloor, nx = fa.n_vacuum;
+                amrex::Real mv = fa.m_vanish, mt = fa.m_tfloor, mx = fa.m_vacuum;
                 amrex::ParallelDescriptor::ReduceLongSum(nv);
                 amrex::ParallelDescriptor::ReduceLongSum(nt);
+                amrex::ParallelDescriptor::ReduceLongSum(nx);
                 amrex::ParallelDescriptor::ReduceRealSum(mv);
                 amrex::ParallelDescriptor::ReduceRealSum(mt);
-                if (nv + nt > 0) {
+                amrex::ParallelDescriptor::ReduceRealSum(mx);
+                if (nv + nt + nx > 0) {
                     amrex::Print() << "[PS-FOLD] L" << level << " step "
                                    << parent->levelSteps(level) << " " << label
                                    << ": vanish n=" << nv << " m=" << mv
-                                   << " | tfloor n=" << nt << " m=" << mt << "\n";
+                                   << " | tfloor n=" << nt << " m=" << mt
+                                   << " | vacuum n=" << nx << " m=" << mx << "\n";
                 }
                 fa.reset();
             }

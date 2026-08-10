@@ -182,6 +182,17 @@ struct PsPhaseAPI {
     // the accessors then fall back to the CO2 values as a safety default.
     double T_crit_K   = 0.0;
     double T_triple_K = 0.0;
+    // E2' (DESIGN_ps_extinction.md §10): the backend's density-validity
+    // domain.  When SET (>0), the alpha-adjusting mechanical relax kernels
+    // treat these as BARRIERS on the alpha walk: rho_k(alpha) = m_k/alpha_k
+    // may not be driven outside [rho_dom_lo, rho_dom_hi], because
+    // P_k(rho_k) is undefined there and a Newton stepping past the edge is
+    // iterating on garbage (solver correctness, not a guard).  Unset (0) =
+    // historical behavior, bit-identical; the CAMR side sets these only
+    // under presence (ps_make_camr_eos_api).
+    double rho_dom_lo = 0.0;
+    double rho_dom_hi = 0.0;
+    bool has_rho_dom() const { return rho_dom_lo > 0.0 && rho_dom_hi > rho_dom_lo; }
     double t_crit()   const { return (T_crit_K   > 0.0) ? T_crit_K   : 304.13; }
     double t_triple() const { return (T_triple_K > 0.0) ? T_triple_K : 216.6; }
 
@@ -1884,6 +1895,24 @@ inline bool ps_pressure_relax_cell(V6& U, const PsPhaseAPI& eos,
     if (m1 <= 0.0 || m2 <= 0.0) { if (out_reason) *out_reason = PSR_BAD_INPUT; return false; }
     const double rho_mix = m1 + m2;
     if (rho_mix <= 0.0) { if (out_reason) *out_reason = PSR_BAD_INPUT; return false; }
+    // E2' domain barrier on the alpha walk (see PsPhaseAPI::rho_dom_*):
+    //   rho_1 = m1/alpha     in [lo,hi]  ->  alpha in [m1/hi, m1/lo]
+    //   rho_2 = m2/(1-alpha) in [lo,hi]  ->  alpha in [1-m2/lo, 1-m2/hi]
+    double a_bar_lo = p.alpha_min, a_bar_hi = 1.0 - p.alpha_min;
+    if (eos.has_rho_dom()) {
+        a_bar_lo = std::max(a_bar_lo, m1 / eos.rho_dom_hi);
+        a_bar_hi = std::min(a_bar_hi, m1 / eos.rho_dom_lo);
+        a_bar_lo = std::max(a_bar_lo, 1.0 - m2 / eos.rho_dom_lo);
+        a_bar_hi = std::min(a_bar_hi, 1.0 - m2 / eos.rho_dom_hi);
+        if (!(a_bar_lo < a_bar_hi) ||
+            alpha1 < a_bar_lo || alpha1 > a_bar_hi) {
+            // No in-domain alpha exists (or the entry state is already
+            // outside it — a vacuum-corner cell): relaxation cannot act
+            // legally; the vacuum fold owns this state.
+            if (out_reason) *out_reason = PSR_BAD_INPUT;
+            return false;
+        }
+    }
     const double u = U[3] / rho_mix;
     // Per-phase total energies E_k (invariant except for the work
     // redistribution term below).
@@ -1967,8 +1996,8 @@ inline bool ps_pressure_relax_cell(V6& U, const PsPhaseAPI& eos,
         double da = 1.0e-4 * std::min(alpha, 1.0 - alpha);
         for (int trial = 0; trial < 4 && !have_slope; ++trial, da *= 0.25) {
             if (da < 1.0e-14) break;
-            const double alpha_p = std::min(alpha + da, 1.0 - a_min);
-            const double alpha_m = std::max(alpha - da, a_min);
+            const double alpha_p = std::min(alpha + da, a_bar_hi);   // E2' barrier
+            const double alpha_m = std::max(alpha - da, a_bar_lo);
             const double dPd_p = (alpha_p > alpha)
                 ? compute_P_diff(alpha_p)
                 : std::numeric_limits<double>::quiet_NaN();
@@ -1997,7 +2026,8 @@ inline bool ps_pressure_relax_cell(V6& U, const PsPhaseAPI& eos,
         if (step >  cap) step =  cap;
         if (step < -cap) step = -cap;
         double alpha_new = alpha + step;
-        alpha_new = std::max(a_min, std::min(1.0 - a_min, alpha_new));
+        alpha_new = std::max(a_bar_lo, std::min(a_bar_hi, alpha_new));  // E2' barrier
+        // (a_bar_* == [a_min, 1-a_min] when the domain barrier is unset.)
 
         // Update energies via mechanical work; densities via mass.
         const double d_alpha = alpha_new - alpha;
@@ -2526,6 +2556,18 @@ inline bool ps_pelanti_relax_cell(V6& U, const PsPhaseAPI& eos,
     if (m_1 <= 0.0 || m_2 <= 0.0) return false;
     const double rho_mix = m_1 + m_2;
     if (rho_mix <= 0.0) return false;
+    // E2' domain barrier on the alpha walk (see PsPhaseAPI::rho_dom_*).
+    double a_bar_lo = single_phase_thr, a_bar_hi = 1.0 - single_phase_thr;
+    if (eos.has_rho_dom()) {
+        a_bar_lo = std::max(a_bar_lo, m_1 / eos.rho_dom_hi);
+        a_bar_hi = std::min(a_bar_hi, m_1 / eos.rho_dom_lo);
+        a_bar_lo = std::max(a_bar_lo, 1.0 - m_2 / eos.rho_dom_lo);
+        a_bar_hi = std::min(a_bar_hi, 1.0 - m_2 / eos.rho_dom_hi);
+        if (!(a_bar_lo < a_bar_hi) ||
+            alpha_1 < a_bar_lo || alpha_1 > a_bar_hi) {
+            return false;   // no legal alpha (vacuum corner): fold's job
+        }
+    }
     const double u = U[3] / rho_mix;
     const double ke = 0.5 * u * u;
 
@@ -2576,9 +2618,10 @@ inline bool ps_pelanti_relax_cell(V6& U, const PsPhaseAPI& eos,
         double alpha_1_new = alpha_1 + dalpha;
         // Keep interior; if we'd cross a boundary, freeze there and stop
         // (rare — dP > 0 with alpha_1 near 1 would drive us further out).
-        if (alpha_1_new < single_phase_thr) alpha_1_new = single_phase_thr;
-        if (alpha_1_new > 1.0 - single_phase_thr)
-            alpha_1_new = 1.0 - single_phase_thr;
+        // E2': the bounds are the domain barrier when set (== the
+        // single-phase thresholds otherwise, bit-identical).
+        if (alpha_1_new < a_bar_lo) alpha_1_new = a_bar_lo;
+        if (alpha_1_new > a_bar_hi) alpha_1_new = a_bar_hi;
 
         const double dalpha_actual = alpha_1_new - alpha_1;
         if (std::abs(dalpha_actual) < 1.0e-16) {
@@ -2986,10 +3029,20 @@ inline double ps_mt_tau_default()
     return v;
 }
 
+//  update_alpha (E1, DESIGN_ps_extinction.md §2):
+//    -1  legacy/standalone: consult the PS_MT_UPDATE_ALPHA env escape hatch
+//        (historical behavior, default off) with alpha_floor clamps.
+//     0  fixed-alpha transfer (historical default), regardless of env.
+//     1  DERIVED density-preserving transfer with PRESENCE semantics:
+//        dalpha_1 = -dm/rho_1 (donor density invariant, receiver density a
+//        convex combination -- invariant-domain-preserving at any rate,
+//        design §2/§5.1), alpha clamped to exact [0,1] (no 1e-6 fiction;
+//        corridor/fold semantics own the small-alpha ladder).
 inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
                                           double dt, double tau_g,
                                           double alpha_floor = 1.0e-6,
-                                          double g_ref = 0.0)
+                                          double g_ref = 0.0,
+                                          int update_alpha = -1)
 {
     if (tau_g <= 0.0 || dt <= 0.0) return false;
     if (!eos.valid()) return false;
@@ -3212,23 +3265,34 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
     // (mass leaving phase 1 shrinks its volume proportional to the
     // current ρ_1).  Default: off (α untouched, matches historical
     // finite-rate MT behavior).
-    static const bool mt_update_alpha = []{
+    static const bool mt_update_alpha_env = []{
         const char* v = std::getenv("PS_MT_UPDATE_ALPHA");
         return v && std::strcmp(v, "1") == 0;
     }();
+    const bool upd = (update_alpha < 0) ? mt_update_alpha_env
+                                        : (update_alpha != 0);
     const double U1_new = m1 - dm;
     const double U2_new = m2 + dm;
     const double U4_new = U[4] - dm * H_I;
     const double U5_new = U[5] + dm * H_I;
     double alpha_new = alpha1;
-    if (mt_update_alpha) {
-        // dα_1 = -dm/ρ_1 (mass leaving phase 1 reduces its volume by
-        // the same ratio, keeping ρ_1 fixed).  Cap so α stays in
-        // (alpha_floor, 1 − alpha_floor).
+    if (upd) {
+        // dα_1 = -dm/ρ_1: mass leaves (enters) phase 1 at the donor's
+        // CURRENT density, so ρ_1 is exactly invariant and ρ_2' is the
+        // mediant of ρ_2 and ρ_1 — a convex combination, in-domain at any
+        // rate (DESIGN_ps_extinction.md §2, D1 accepted 2026-08-10).
         const double dalpha = -dm / rho_1;
         alpha_new = alpha1 + dalpha;
-        if (alpha_new < alpha_floor)         alpha_new = alpha_floor;
-        if (alpha_new > 1.0 - alpha_floor)   alpha_new = 1.0 - alpha_floor;
+        if (update_alpha == 1) {
+            // Presence semantics: exact bounds only.  T1 (0.9 m cap above)
+            // keeps alpha interior until E2 adds the extinction endpoint.
+            if (alpha_new < 0.0) alpha_new = 0.0;
+            if (alpha_new > 1.0) alpha_new = 1.0;
+        } else {
+            // Historical env-path clamps, bit-preserved.
+            if (alpha_new < alpha_floor)         alpha_new = alpha_floor;
+            if (alpha_new > 1.0 - alpha_floor)   alpha_new = 1.0 - alpha_floor;
+        }
     }
     // Refuse to write back if the result is non-finite or drives a
     // partial density below the floor.  Otherwise a single bad Newton
@@ -3246,7 +3310,7 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
     // disabled, alpha_1 is unchanged and rho_k adjusts inversely with
     // m_k.  Pressure relaxation, if enabled separately, will bring
     // P_1 = P_2 downstream.
-    if (mt_update_alpha) U[0] = alpha_new;
+    if (upd) U[0] = alpha_new;
 
     ++ps_mass_transfer_count();
     return true;
@@ -3440,10 +3504,19 @@ inline double ps_flash_tau_default() {
     return v;
 }
 
+//  project_sat (E1b, DESIGN_ps_extinction.md §6): -1 legacy/standalone
+//  (consult PS_FLASH_PROJECT_SAT env, default off), 0 force off, 1 force
+//  on.  ON = the newborn phase grows at its SATURATION density
+//  (dm = rho_sat * dalpha) — the density-preserving transfer (E.1) run
+//  backwards, so birth and death are the same operator with opposite
+//  sign.  OFF grows the newborn at its CURRENT (host-slaved, possibly
+//  wrong-branch) density — measured on B9 zero-trace to create the
+//  out-of-domain trace states the removed G1/G3 caps used to hide.
 inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
                                   double dt, double tau_flash,
                                   double alpha_seed_target = 0.02,
-                                  double alpha_floor = 1.0e-6)
+                                  double alpha_floor = 1.0e-6,
+                                  int project_sat_in = -1)
 {
     if (tau_flash <= 0.0 || dt <= 0.0) return false;
     if (!eos.valid()) return false;
@@ -3569,10 +3642,12 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
     //     equilibrium sat locus by construction.  Closes the B7
     //     HEM-analytic gap and eliminates the trace-phase T_2 spike
     //     at α transitions.
-    static const bool project_sat = []{
+    static const bool project_sat_env = []{
         const char* v = std::getenv("PS_FLASH_PROJECT_SAT");
         return v && std::strcmp(v, "1") == 0;
     }();
+    const bool project_sat = (project_sat_in < 0) ? project_sat_env
+                                                  : (project_sat_in != 0);
 
     double alpha_1_new, dm;
     // Sat-locus targets (only used if project_sat).  Query at the

@@ -128,6 +128,18 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
         // (default 2e-2 == the kernel's historical alpha_seed_target 0.02,
         // so legacy behaviour is value-identical; single-sourcing only).
         const amrex::Real l_seed = ps_presence_params().alpha_birth;
+        // E1b (DESIGN_ps_extinction.md §6): symmetric birth — the newborn
+        // phase grows at its SATURATION density (the (E.1) operator run
+        // backwards).  CAMR.ps_flash_project_sat: -1 auto (presence ON -> 1,
+        // legacy -> 0, bit-identical), 0 force off, 1 force on.
+        static const int fl_proj_key = []() {
+            int v = -1;
+            amrex::ParmParse pp("CAMR");
+            pp.query("ps_flash_project_sat", v);
+            return v;
+        }();
+        const int l_fl_proj = (fl_proj_key >= 0) ? fl_proj_key
+                              : (ps_presence_params().enabled != 0 ? 1 : 0);
         for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
             const amrex::Box bx = mfi.growntilebox(nghost);
             amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
@@ -167,7 +179,8 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                 }
                 const hem::V6 Uv_pre = Uv;
                 if (hem::ps_flash_source_cell(Uv, eos, double(dt), double(tau),
-                                              double(l_seed))) {   // S3: birth at alpha_birth
+                                              double(l_seed), 1.0e-6,
+                                              l_fl_proj)) {   // S3 birth + E1b sat-projection
                     // B3 reproject: the flash moved mass; restore P1=P2
                     // (alpha-adjusting; preserves m_k and mixture rho-E).
                     // Bitwise change test = exact, not a tolerance.
@@ -214,6 +227,19 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
         const amrex::Real tau  = dials.mt_tau;
         const amrex::Real gref = dials.mt_gref;
         const PsPres l_pr = ps_presence_params();   // S4 (one host read)
+        // E1 (DESIGN_ps_extinction.md, D1/D5 accepted 2026-08-10):
+        // density-preserving transfer dalpha_1 = -dm/rho_1.  Key
+        // CAMR.ps_mt_update_alpha: -1 auto (presence ON -> 1, legacy -> 0,
+        // keeping the legacy path bit-identical), 0 force off, 1 force on.
+        // Host-read once, captured by value (GPU rules §12.2).
+        static const int mt_upd_key = []() {
+            int v = -1;
+            amrex::ParmParse pp("CAMR");
+            pp.query("ps_mt_update_alpha", v);
+            return v;
+        }();
+        const int l_mt_upd = (mt_upd_key >= 0) ? mt_upd_key
+                                               : (l_pr.enabled != 0 ? 1 : 0);
         for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
             const amrex::Box bx = mfi.growntilebox(nghost);
             amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
@@ -254,7 +280,7 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                 }
                 const hem::V6 Uv_pre = Uv;
                 if (hem::ps_mass_transfer_finite_cell(Uv, eos, double(dt), double(tau),
-                                                      1.0e-6, double(gref))) {
+                                                      1.0e-6, double(gref), l_mt_upd)) {
                     // B3 reproject: only when MT actually transferred mass
                     // (the kernel returns true on its internal gates too,
                     // with Uv untouched -- the bitwise test excludes those,

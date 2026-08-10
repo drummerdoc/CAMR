@@ -122,6 +122,14 @@ ps_make_camr_eos_api()
     // triple point / critical temperature in the gate code.
     api.T_crit_K   = double(EOS::T_crit());
     api.T_triple_K = double(EOS::T_triple());
+    // E2' (DESIGN_ps_extinction.md §10, Marc-approved 2026-08-10): under
+    // presence, hand the mechanical-relax kernels the backend's density
+    // domain so their alpha walk cannot step either phase outside it.
+    // Legacy (presence off): bounds unset -> kernels bit-identical.
+    if (ps_presence_params().enabled != 0) {
+        api.rho_dom_lo = double(EOS::rho_min());
+        api.rho_dom_hi = double(EOS::rho_max());
+    }
     // Fluid-sourced saturation pressure for the flash metastability test
     // (task #53) — no hard-coded co2_P_sat_wagner in the generic flash.
     api.Psat_of_T  = [](double T) { return double(EOS::Psat(amrex::Real(T))); };
@@ -1778,8 +1786,8 @@ ps_apply_floor(amrex::MultiFab& S_new, int nghost = 0)
 // -----------------------------------------------------------------
 #if !defined(AMREX_USE_GPU)
 struct PsFoldAudit {
-    long   n_vanish = 0, n_tfloor = 0;
-    double m_vanish = 0.0, m_tfloor = 0.0;   // |phase mass folded| [kg/m3 cell units]
+    long   n_vanish = 0, n_tfloor = 0, n_vacuum = 0;
+    double m_vanish = 0.0, m_tfloor = 0.0, m_vacuum = 0.0;   // |phase mass folded|
     void reset() { *this = PsFoldAudit{}; }
 };
 inline PsFoldAudit& ps_fold_audit() { static PsFoldAudit a; return a; }
@@ -1915,6 +1923,8 @@ ps_apply_vanish_fold(amrex::MultiFab& S_new, int nghost = 0)
     if (a_v <= amrex::Real(0.0)) return;
     BL_PROFILE("PS::ps_apply_vanish_fold()");
     const double alpha_vanish = double(a_v);
+    const PsPres prF = ps_presence_params();          // E2' (by value)
+    const double rminF = double(EOS::rho_min());      // E2' vacuum criterion
 
     for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
         const amrex::Box bx = mfi.growntilebox(nghost);
@@ -1935,6 +1945,7 @@ ps_apply_vanish_fold(amrex::MultiFab& S_new, int nghost = 0)
             Uv[5] = double(U(i, j, k, UE2));
             const double m1_pre = Uv[1], m2_pre = Uv[2];
             amrex::ignore_unused(m1_pre, m2_pre);
+            bool wrote = false;
             if (hem::ps_apply_vanish_fold(Uv, alpha_vanish)) {
 #if !defined(AMREX_USE_GPU)
                 ++ps_fold_audit().n_vanish;
@@ -1942,6 +1953,41 @@ ps_apply_vanish_fold(amrex::MultiFab& S_new, int nghost = 0)
                 ps_fold_audit().m_vanish +=
                     (Uv[1] == 0.0) ? m1_pre : m2_pre;
 #endif
+                wrote = true;
+            }
+            // E2' VACUUM DEATH (DESIGN_ps_extinction.md §10, Marc-approved
+            // 2026-08-10; presence only): a phase with finite alpha but
+            // rho_k = m_k/alpha_k at or below the backend's density-domain
+            // floor owns volume without a thermodynamic state — the SECOND
+            // degenerate corner (m -> 0 at finite alpha; the alpha corner
+            // is the vanish fold above).  Fold its volume AND residual
+            // mass/energy into the host, exactly and conservatively.
+            // Division-free criterion: m_k <= rho_min * alpha_k (<= not <:
+            // a phase PINNED at the declared validity floor has no
+            // interior state either).  Both-vacuum cells are left for the
+            // validator — there is no host to fold into.
+            if (prF.enabled != 0) {
+                const double a1v = Uv[0];
+                const bool vac1 = (a1v > 0.0) && (Uv[1] <= rminF * a1v);
+                const bool vac2 = (a1v < 1.0) && (Uv[2] <= rminF * (1.0 - a1v));
+                if (vac1 != vac2) {   // exactly one vacuum phase
+#if !defined(AMREX_USE_GPU)
+                    ++ps_fold_audit().n_vacuum;
+                    ps_fold_audit().m_vacuum += vac1 ? Uv[1] : Uv[2];
+#endif
+                    if (vac1) {       // fold phase 1 into phase 2
+                        Uv[2] += Uv[1];  Uv[5] += Uv[4];
+                        Uv[1] = 0.0;     Uv[4] = 0.0;
+                        Uv[0] = 0.0;
+                    } else {          // fold phase 2 into phase 1
+                        Uv[1] += Uv[2];  Uv[4] += Uv[5];
+                        Uv[2] = 0.0;     Uv[5] = 0.0;
+                        Uv[0] = 1.0;
+                    }
+                    wrote = true;
+                }
+            }
+            if (wrote) {
                 U(i, j, k, UALPHA1) = amrex::Real(Uv[0]);
                 U(i, j, k, UM1RHO1) = amrex::Real(Uv[1]);
                 U(i, j, k, UM2RHO2) = amrex::Real(Uv[2]);
