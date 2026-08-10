@@ -1152,3 +1152,104 @@ speed 8.8x the one dt assumed.
 This is a PRE-EXISTING defect, consistent with the 10a bisect: both
 `estTimeStep` and the LLF fallback predate the E-series and W2-1, neither
 of which touched them.
+
+## Addendum 10e — the 4498 m/s wave speed independently validated: it is
+## CORRECT.  The state it describes cannot exist.  Plus a build-hygiene
+## correction to Addendum 10.  (2026-08-10, W0 follow-up)
+
+### 10e.1  Independent validation of the wave speed
+
+An independent Peng-Robinson implementation (Python, written from the
+cubic; constants from gibbs_probe/probe_pr.cpp: Tc=304.13, Pc=7.3773e6,
+omega=0.22394, M=0.04401, cp0/R polynomial) was used to recompute c at the
+states the code reports.  Calibration first, on states that are physical:
+
+| state | independent | code | agreement |
+|---|---|---|---|
+| vapour 3.3985 kg/m3, 6704.6 K | c=1129.09, p=4.3075e6 | c=1129.088327, P2=4307493.63 | 7 figures |
+| initial left liquid 960, 280 K | p=1.2079e7 (120.79 bar) | IC is 120 bar | exact |
+| initial left liquid 960, 280 K | c=512.32 | estTimeStep global limiter 511.6 | 0.1% |
+
+Then the disputed state:
+
+| relaxed liquid, rho=1617.379, T=37.504 K | c=**4487.51** | c1=**4481.37** | **0.14%** |
+
+**The code's wave speed is right.**  4497.99 = |u| 29.09 + c_mix 4468.90,
+with c_mix = sqrt(Y1 c1^2 + Y2 c2^2) the frozen mass-weighted speed, which
+is the correct characteristic speed for the 7-equation system.  Neither the
+formula nor the EOS call is at fault.
+
+CORRECTION, recorded because it was briefly believed and reported: a first
+pass found Cv = -37 J/mol/K here and concluded the two implementations
+disagreed by 31%.  That was a sign error in the PR residual heat capacity.
+The residual is
+    Cv - Cv_ig = -T a''(T) * (1/(2 sqrt2 b)) ln[(v+b(1-sqrt2))/(v+b(1+sqrt2))]
+with a'' > 0 and the log negative, so the residual is POSITIVE.  Corrected,
+Cv = 65.44 J/mol/K (ideal 14.00) and the two implementations agree to
+0.14%.  Cv is not negative and never was.
+
+### 10e.2  What IS wrong: the state, produced by the relaxation
+
+The cell-probe (10c) shows exactly where it is made.  Cell 49, step 144:
+
+| stage | a1 | m1 | rho1 |
+|---|---|---|---|
+| A enter .. B post clean_state (8 stages) | 0.3718546 | 421.2580 | 1132.86 |
+| **C post relaxation** | **0.2604572** | 421.2580 (unchanged) | **1617.38** |
+| D post sources | 0.2604572 | 421.2580 | 1617.38 |
+
+The pressure relaxation compresses the liquid volume fraction by 30% in one
+step at fixed phase mass, so rho1 = m1/a1 lands at 1617.38 -- against
+rho_max = 1617.42 (0.98 * the PR hard-sphere pole; v/b = 1.0204).  The
+resulting phase states, from probe_pr on (rho, e):
+
+    liquid:  1617.38 kg/m3 at **37.50 K**   (CO2 triple point is 216.6 K:
+                                             this is solid territory)
+    vapour:  3.3985  kg/m3 at **6704.6 K**
+    both at P = 4.3075e6 Pa -- pressures ARE equilibrated
+
+So relaxation found a mechanical-equilibrium root with the two phases
+6667 K apart, the liquid denser than any real CO2 liquid and colder than
+its triple point.  PR is a smooth analytic function and returns a
+well-defined 4487 m/s there.  At physically valid liquid states the same
+code gives 512-741 m/s, so the value is 6-9x the physical range.
+
+**This is the defect: a spurious root of the pressure-relaxation solve.**
+Not the wave speed, not the LLF fallback, not the floor.  Everything in
+10b-10d downstream of it is consequence.
+
+Guards that did not fire: rho_max = 0.98*rho_pole = 1617.4 is itself deep
+inside the non-physical region (real CO2 liquid tops out near 1180), so the
+G1 clamp admits this state rather than rejecting it.  Nothing checks phase
+temperature against the triple point, and nothing checks inter-phase
+temperature disparity.  Any one of those three would have caught it.
+
+### 10e.3  Build-hygiene correction to Addendum 10
+
+Addendum 10 reports verify_canonical check 3 at 0.643 on this machine.  A
+clean from-scratch build of unmodified HEAD, in a separate worktree, gives
+**0.659581**, reproducibly, as do three further independent builds.  0.643
+is not reproducible.
+
+The 17:41 binary those gate numbers were measured on was assembled from
+several `timeout 40 make` invocations, i.e. across interrupted compiles.
+That is the most likely explanation: a stale object survived into the link,
+and every later incremental build in that tree inherited it.
+
+What this does and does not invalidate:
+- run_ac_suite 11/11 reproduces to EVERY PRINTED DIGIT on clean builds.
+  The legacy digit-identity result stands.
+- check 6 (0.427) reproduces.
+- check 3 does not: 0.643 -> 0.659581.  Both pass the gate (tolerance
+  +-0.03 about 0.643, |0.6596-0.643| = 0.0166), so nothing was ever red,
+  but the recorded number is wrong for a clean gnu/Linux build.
+- The W3 four-backend numbers of Addendum 10 were taken on separately
+  built binaries (one clean build per backend) and are unaffected by this,
+  EXCEPT that the PR-pair numbers share the suspect PR build.  Re-running
+  W3 on clean builds is cheap and is the obvious tidy-up.
+
+LESSON, worth keeping: completing an interrupted build by reissuing make
+is fine for getting a binary, but numbers destined for the record should
+come from a build that was not assembled across kills -- or be confirmed
+against a clean rebuild.  A chaotic leg like B9-stiff will not tell you;
+it just quietly reports a different number inside the tolerance.
