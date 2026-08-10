@@ -713,8 +713,122 @@ Addendum 9 reproduced here, on a binary built from the committed sources):
   if/else pair and the PASS branch fired in all of them.  The "27" in the
   script docstring is a stale tally, not a missing check.
 
-**W-series status: COMPLETE.**  Remaining registered items are W-D4 (retire
+**W-series status: COMPLETE** -- SCOPE-CORRECTED BY ADDENDUM 10a BELOW: this
+claim holds at the gated resolution (N=64) and is FALSE at N=96 and N=128.
+Read 10a before relying on it.  Remaining registered items are W-D4 (retire
 vs keep the now-shadowed 1e-30 q-guards and the B-stage energy resync), W-D5
 (corridor face-state incmis 0.05-0.11 in 2-D, measure-first), the residual
 first-order energyid ~5e-5..2.9e-3 sub-gate class, and the housecleaning
 pass.  None blocks production.
+
+## Addendum 10a — CORRECTION to Addendum 10: the stiff-front fix is
+## resolution-scoped, and check 6 does not discriminate what it claims
+## (2026-08-10, later)
+
+Two claims in Addenda 9/10 are narrower than they were written.  Both were
+found by running the follow-ups registered in Addendum 10 rather than
+leaving them as prose.  Same environment as Addendum 10 (gnu/Linux aarch64,
+gcc 13.3, one build per code state).
+
+### 10a.1  The presence path does not complete the B9 stiff leg above N=64
+
+Every W-series gate was run at n_cell=64.  Under refinement the leg stalls:
+dt falls ~6 orders at the front, bottoms near 1e-12, and partially recovers
+-- hundreds of thousands of steps would be needed to reach stop_time.
+All runs presence=1, alpha_trace=0, tau=1e-7, max_step=400, stop_time
+7.8189e-4:
+
+| n_cell | 70d0bbf (pre E-series, pre W2-1) | HEAD (E-series + W2-1) |
+|---|---|---|
+| 64  | STALLED, t=3.5448e-04 | **COMPLETES**, 106 steps, dt 1.88e-06 |
+| 96  | STALLED, t=2.3632e-04 | STALLED, t=7.3381e-04 |
+| 128 | STALLED, t=1.7724e-04 | STALLED, t=5.5036e-04 |
+
+**The collapse is NOT a regression from this work -- it PRE-DATES it**, and
+the E-series + W2-1 improved it substantially and consistently: the time
+reached before stalling grows 3.1x at both N=96 (2.36e-4 -> 7.34e-4) and
+N=128 (1.77e-4 -> 5.50e-4), and N=64 goes from stall to clean completion.
+The mechanism was reduced, not removed.  N=96 now reaches 94% of stop_time.
+
+Attribution, by control (all N=128, HEAD):
+
+| configuration | dt_min | t reached | outcome |
+|---|---|---|---|
+| presence=0, alpha_trace=1e-6 (legacy) | 3.07e-06 | 7.8189e-04 | COMPLETES |
+| presence=0, alpha_trace=0             | 3.07e-06 | 7.8189e-04 | COMPLETES |
+| presence=1, alpha_trace=0             | 1.08e-12 | 5.5036e-04 | stalled |
+| presence=1, alpha_trace=1e-6          | 4.04e-13 | 5.5036e-04 | stalled |
+| presence=1, alpha_trace=0, flash OFF  | 1.23e-12 | 5.8591e-04 | stalled |
+
+- It is the PRESENCE PATH, not the trace seeding: legacy completes with
+  either trace setting, presence stalls with either.
+- It is NOT flash birth: it stalls with flash disabled, where B9's two
+  genuinely single-phase sides mean no second phase exists anywhere.  That
+  points at the presence FLUX path (S1/S2 face states, or the W2-1 slot
+  derivation) rather than the source operators.
+- It is NOT a bad-state ratchet of the Addendum 6 kind: through the
+  collapse `[PS-VALIDATE]` reports rho_domain bulk=0 trace=0, nonfinite=0,
+  m_neg=0, massid 1e-13, with 1-2 cells at energyid ~1e-8.  The state stays
+  realizable; dt is being limited in est_time_step, most plausibly by a
+  mixture sound-speed spike.  NOT VERIFIED -- the sound speed was not
+  instrumented.  That is the next measurement if this is picked up.
+
+NOT ESTABLISHED: whether 2-D production is affected.  Production runs at
+tau=1e-3, four orders less stiff than this leg, and the 2-D testbed gates
+pass at ML2; but no 2-D resolution sweep was run.  Do not read this as a
+production defect, and do not read it as production being cleared either.
+
+### 10a.2  verify_canonical check 6 cannot distinguish birth from no-birth
+
+Check 6's comment asserts the invariant "flash birth from genuinely-pure
+liquid develops the evaporation (u-err well below the 0.85 no-birth
+plateau)".  Measured on current code, with flash the ONLY birth channel
+(B9's two sides are both single-phase at alpha_trace=0, so ps_flash_tau=0
+removes birth entirely):
+
+| backend | no birth (flash=0) | birth on (flash=1e-7) | movement |
+|---|---|---|---|
+| PR   | **0.404** | 0.427 | +0.023 (AWAY from HEM) |
+| GERG | **0.637** | 0.581 | -0.056 (toward HEM) |
+
+- The 0.85 no-birth plateau DOES NOT REPRODUCE.  It is a historical number
+  from a different code state (caps active, #88 live) and should not be
+  quoted as a live anchor.
+- A PR run with birth completely disabled scores 0.404 and PASSES check 6's
+  u-err < 0.60 threshold.  The check therefore does not test its stated
+  invariant; it would stay green if flash birth silently stopped working.
+- u-err is not even monotone in evaporation development: for PR, enabling
+  birth makes the velocity error slightly WORSE while unambiguously
+  developing more two-phase structure (below).
+
+Check 6 still has value as a dt-collapse / non-completion detector -- that
+is what it actually caught before W2-1 (u-err 30, dt collapse).  It should
+be re-stated in those terms, or given a discriminator that measures the
+phase structure directly.  REGISTERED, not fixed here.
+
+### 10a.3  The GERG-vs-PR gap of Addendum 10, resolved
+
+Addendum 10 left the PR 0.427 vs GERG 0.581 gap uninvestigated.  Measuring
+the phase structure directly (cells where both phases carry mass fraction
+> 1e-3; peak vapour mass fraction on the liquid side), N=64, flash on:
+
+| run | two-phase cells | max Y2 in liquid half |
+|---|---|---|
+| PR,   flash on  | 29/64 | 0.0094 |
+| PR,   flash off | 11/64 | 0.0000 |
+| GERG, flash on  | 11/64 | 0.0023 |
+| GERG, flash off |  6/64 | 0.0000 |
+
+**GERG develops about a quarter of the evaporation PR does** -- a 4x smaller
+peak vapour fraction over a third as many cells.  The gap is a real
+backend difference in how much phase change the leg produces, NOT the
+choice of analytic reference: the GERG run scores 0.581 against
+exact_B9_gerg and 0.572 against exact_B9_pr, so the reference choice
+accounts for 0.009 of the 0.154 gap.
+
+Tooling note: the plotfile's `alpha_1` field is clamped to [1e-6, 1-1e-6]
+on output, so it reports "two-phase" in every cell of every run and cannot
+be used for this measurement -- the phase masses must be used instead.
+This is the plotfile-cosmetics item registered in DESIGN_ps_wp_front.md §8
+correction (a); it is now known to actively mislead, so it is upgraded from
+cosmetic to worth fixing.
