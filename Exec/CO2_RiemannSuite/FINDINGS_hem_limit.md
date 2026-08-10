@@ -651,3 +651,70 @@ KNOWN-FAIL retired); production 2-D energyid 5-8% -> 1e-15 with solution
 unchanged (3.4e-4).  The non-AP stiff-front frontier item is CLOSED for
 the 1-D suite; backend B9-stiff re-test (Addendum 8 exception) is the
 remaining W3 item, one command per backend.
+
+## Addendum 10 — W3: four-backend B9-stiff re-test, and the W-series gates
+## re-verified on Marc's tree (2026-08-10, late)
+
+Closes the Addendum 8 STANDING EXCEPTION (the B9-stiff canonical-chain leg,
+deferred on all four backends until the stiff-front fix landed).
+
+**Environment.**  Everything below was measured on Marc's tree in the Cowork
+sandbox: gnu/Linux aarch64, gcc 13.3, `CAMR1d.gnu.TPROF.PS.<EOS>.ex`, one
+clean build per backend.  This is the same anchoring the c1_ references
+themselves carry (minted gnu/Linux 2026-07-12, gcc 11.4), so the regression
+comparison is like-for-like.  Marc's llvm/macOS binaries are a separate
+lineage and were not used.
+
+**The stiff leg** (vz_B9c_ config: B9-Deep-Expansion, n_cell=64,
+ps_relax_mode=4, theta/mt/flash tau = 1e-7, ps_presence=1, alpha_trace=0,
+ps_validate=1).  Each backend measured against ITS OWN HEM analytic —
+`exact_B9_pr.csv` for PR/PRTab, `exact_B9_gerg.csv` for GERG/GERGTab; the
+surfaces differ, so a single analytic would not be a fair gate.
+
+| backend | u-err vs own analytic | completes | rho_domain bulk | folds fired |
+|---|---|---|---|---|
+| PR      | **0.427** | yes | 0 | 0 |
+| PRTab   | **0.427** | yes | 0 | 0 |
+| GERG    | **0.581** | yes | 0 | 0 |
+| GERGTab | **0.581** | yes | 0 | 0 |
+
+All four pass the < 0.60 gate.  Two observations worth recording:
+
+- GERG/GERGTab agree to three digits, as Addendum 8's direct field
+  comparison (max|GERG - GERGTab| ~ 1e-11 of field scale) predicts.  The
+  table reproduces the analytic surface on this leg too.
+- The GERG pair sits at 0.581 vs the PR pair's 0.427 — a real backend
+  difference on the deep-expansion leg, not a presence or W2-1 artifact
+  (identical scheme, identical config, each against its own analytic).
+  It passes, but with less margin than PR; if the gate is ever tightened
+  below ~0.60 this is the leg that binds.  NOT investigated here: whether
+  the gap is the GERG surface's own HEM endpoint or the analytic's
+  construction.  Registered as an open, non-blocking item.
+
+`[PS-VALIDATE]` on every backend: `nonfinite=0 alpha_oob=0 m_neg=0
+massid=0 energyid=0`, worst massid 1.0e-13 and worst energyid 4.3e-13 at
+"A enter (post-hydro/C-F)" — the stage that used to report 28-39% energy
+identity breakage.  That is the W2-1 claim confirmed directly on the
+instrument that convicted the defect.
+
+**Gate re-verification on Marc's tree** (the cloud-measured greens of
+Addendum 9 reproduced here, on a binary built from the committed sources):
+
+- `run_ac_suite` legacy regression: 11/11 OK.  A/C legs at 1e-10..1e-6;
+  B9 2.6e-5/6.6e-5/7.9e-5; B4 1.56e-4/9.22e-4/1.95e-3 — the last matching
+  the pre-existing "Fix1 footprint" recorded in LEARNINGS.md
+  (1.54e-4/9.07e-4/1.91e-3), i.e. the known baseline, not a new deviation.
+- `verify_canonical`: VERDICT ALL CHECKS PASS.  Check 3 = 0.643 (dead on
+  the re-baselined 0.643 +- 0.03); check 6 = 0.427 (the retired KNOWN-FAIL,
+  green); A/C battery mean 0.0350; C1 exact; B4 flat 0.129 at both tau;
+  reproject live (0.879 vs 0.771); presence gates 4/4; B5 0.392; B2
+  pelanti umax 14.4.
+- Bookkeeping: 26 checks actually execute, not 27 — every check site is an
+  if/else pair and the PASS branch fired in all of them.  The "27" in the
+  script docstring is a stale tally, not a missing check.
+
+**W-series status: COMPLETE.**  Remaining registered items are W-D4 (retire
+vs keep the now-shadowed 1e-30 q-guards and the B-stage energy resync), W-D5
+(corridor face-state incmis 0.05-0.11 in 2-D, measure-first), the residual
+first-order energyid ~5e-5..2.9e-3 sub-gate class, and the housecleaning
+pass.  None blocks production.
