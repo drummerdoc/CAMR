@@ -1,0 +1,174 @@
+# =====================================================================
+#  CO2_PipeBreak — SHOWCASE pass 2: saturated two-phase CO2 blowdown,
+#  full plane (2 x 1 m), 3-level AMR.  Incorporates the session's fixes:
+#   - EOS branch-selection guard in co2_state_from_rho_e (return physical
+#     +P root; killed the near-inlet "salt-and-pepper" P dropouts).
+#   - Spinodal monotonization + positive per-phase P floor (mixture rule
+#     stays active in the dilute slug instead of the single-fluid fallback).
+#   - Max-packing guard in departureFunctions (v_m>b; no hyper-compression
+#     crash).
+#   - CAMR.ps_relax_mode=1 (P+T / HEM equilibrium): thermally couples the
+#     phases and PREVENTS the per-phase energy runaway (e1=UE1/m1 -> 1e10)
+#     that destroyed the mode-0 profiles by ~step 200.  This was the key
+#     fix for a clean long run (validated MT-off zoom clean to t=2e-4).
+#   - Physical viscosity CAMR.ps_mu (replaces the ps_shear_diss band-aid):
+#     resolves the shear layer instead of masking the checkerboard.
+#
+#  WATCH (task #74): mass transfer is ON here (ps_mt_tau=1e-6).  The
+#  instantaneous-MT phase DIRECTION on a dome-crossing expansion is NOT yet
+#  validated (A1-Sod-strong condensed the wrong way vs the old reference).
+#  If the plume behaves unphysically (condensing where it should vaporize),
+#  set ps_mt_tau=1.0e3 (MT effectively off) — that is the fully-validated
+#  configuration — and re-enable MT once #74 is settled.
+# =====================================================================
+amrex.fpe_trap_invalid = 0
+max_step = 101
+stop_time = 2.5e-3
+
+geometry.is_periodic = 0 0 0
+geometry.coord_sys   = 0
+geometry.prob_lo     = 0.0  0.0
+geometry.prob_hi     = 2.0  1.0
+amr.n_cell           = 256  128            # base; 3 levels -> 1024x512 finest
+
+CAMR.lo_bc = Inflow Inflow
+CAMR.hi_bc = Inflow Inflow
+
+CAMR.cfl = 0.3
+CAMR.fixed_dt = 0
+CAMR.allow_negative_energy = 1
+CAMR.do_mol = 0
+CAMR.ppm_type = 1
+
+CAMR.ps_hydro    = 1
+CAMR.ps_flux     = wp
+CAMR.ps_wp_order = 2
+CAMR.ps_recon    = 0
+CAMR.ps_bc_use_nscbc = 0
+CAMR.ps_alpha_vanish = 1.0e-8
+CAMR.ps_wp_transverse = 0   # OFF (#60): the BL-3b acoustic transverse coupling (=2) is
+                            # UNSTABLE at fine resolution (drives alpha1->1 pure-liquid
+                            # overshoot -> dt collapse; seen in fine uniform AND on AMR
+                            # refined levels).  =0 is the validated config (zoom); ps_mu
+                            # physical viscosity handles the near-jet shear instead.
+                            # (=1 = contact-only BL-3a is the stable middle option if the
+                            # transverse checkerboard reappears.)
+CAMR.ps_bl_reflux     = 2   # consistent two-phase C-F reflux (alpha co-move) (#51); required for 2-phase AMR
+CAMR.ps_shear_diss    = 0.0 # OFF: physical viscosity (ps_mu) used instead of this dissipation band-aid
+CAMR.ps_mu            = 2.0 # physical (effective) Newtonian viscosity: resolves the orifice shear layer
+
+CAMR.ps_do_relax  = 1
+CAMR.ps_relax_mode = 2        # P + FINITE-RATE thermal relaxation (#77): retains thermal
+                              # non-equilibrium (T_liq != T_vap) instead of pinning cells on
+                              # the saturation dome, so the finite-rate MT keeps a Gibbs
+                              # driving force and actually flashes; theta bounds the #72 runaway.
+                              # theta->0 recovers mode 1 (instantaneous P+T eq); theta->inf = mode 0.
+CAMR.ps_theta_tau = 1.0e-3    # thermal relaxation time [s] (mode 2 only)
+CAMR.ps_mt_tau    = 1.0e-3    # FINITE mass-transfer time: spreads flashing over ~tau/dt steps
+                              # (CONTINUOUS, visible in flash_rate).  tau<<dt (e.g. 1e-6) makes MT
+                              # near-instantaneous -> impulsive/bursty (flash_rate ~0 in snapshots).
+CAMR.ps_mt_gref   = 5.0e4
+CAMR.ps_flash_tau = 0.0       # flash OFF (saturated reservoir; no nucleation)
+CAMR.ps_pres_floor = 1.0e5
+CAMR.ps_temp_floor = 216.6
+
+CAMR.v = 0
+amr.v = 0
+CAMR.sum_interval = -1
+CAMR.redistribution_type = StateRedist
+amr.loadbalance_with_workestimates = 0
+
+amr.max_level = 0
+amr.ref_ratio       = 2 2 2 2
+amr.regrid_int      = 2 2 2 2
+amr.blocking_factor = 16
+amr.max_grid_size   = 64
+amr.n_error_buf     = 2 2 2 2
+amr.grid_eff        = 0.9
+
+amr.refinement_indicators = ldtag atag nftag pgtag
+
+amr.ldtag.field_name = logden 
+amr.ldtag.adjacent_difference_greater = 0.15
+amr.ldtag.max_level = 2
+
+amr.atag.field_name = ps_alpha1
+#amr.atag.value_greater = 1.0e-3
+amr.atag.adjacent_difference_greater = 0.1
+amr.atag.max_level = 2
+
+amr.nftag.in_box_lo = 0.0   0.42
+amr.nftag.in_box_hi = 0.12  0.58
+amr.nftag.max_level = 2
+
+amr.pgtag.field_name = pressure
+amr.pgtag.adjacent_difference_greater = 3.0e5
+amr.pgtag.max_level = 2
+
+#amr.n_error_buf = 4 4 4 4                        # was 2: keep C-F off features
+amr.n_error_buf = 2 2 2 2 
+
+#amr.refinement_indicators = ldtag atag
+#amr.ldtag.field_name = logden
+#amr.ldtag.adjacent_difference_greater = 0.15
+#amr.ldtag.max_level = 2
+#amr.atag.field_name = ps_alpha1
+#amr.atag.value_greater = 1.0e-3
+#amr.atag.adjacent_difference_greater = 0.1
+#amr.atag.max_level = 2
+
+#DistributionMapping.strategy = ROUNDROBIN
+DistributionMapping.strategy = KNAPSACK
+amr.checkpoint_files_output = 0
+amr.check_file              = chk_sj2_
+amr.check_int               = 50
+amr.plot_files_output = 0
+amr.plot_file         = plt_sj2_
+amr.plot_int          = 10
+amr.derive_plot_vars  = x_velocity y_velocity pressure flash_rate
+
+# --- Problem state: saturated two-phase reservoir -> vapor ambient ----
+# Back-pressure raised to 2.0e6 (#77): at p_amb=1e6 the jet under-expanded so
+# local troughs fell below ~5 bar (Psat at the CO2 triple point), cooling the
+# whole two-phase plume onto the 216.6 K floor where the coexistence-T gate
+# disables mass transfer (flash_rate -> 0).  A higher back-pressure keeps the
+# expansion endpoint warm (Tsat(local) well above the triple point) so flashing
+# stays active and visible in the developed plume, and avoids the solid/dry-ice
+# regime the liquid-vapor PR EOS cannot model.  Reservoir stays dome-consistent
+# (p_res ~ Psat(T_res=280) ~ 41.6 bar).
+prob.p0       = 2.0e6
+prob.T0       = 280.0
+prob.u0       = 0.0
+prob.p_amb    = 2.0e6
+prob.p_res    = 4.0e6
+prob.T_res    = 280.0
+prob.res_alpha1 = 0.05        # vapor-rich saturated two-phase reservoir (on-dome)
+prob.res_dome_taper = 1       # dome-consistent lip (#59)
+prob.res_u      = 0.0
+prob.res_char_inflow = 1      # subsonic characteristic (non-reflecting) inlet:
+                              # P=Psat + composition fixed, u from the outgoing
+                              # (u-c) invariant.  res_u is ignored.
+prob.res_mach_max = 1.0       # CHOKED-INLET CAP on that invariant velocity, in
+                              # units of the reservoir mixture (Wood) sound
+                              # speed printed by probinit (~185 m/s here).
+                              # WHY: the invariant relation is only valid at
+                              # M<1, and with the boundary STATIC pressure pinned
+                              # at Psat the correction (Psat - P_int) is
+                              # one-signed, so u_b ratcheted from M=1.01 to 1.27
+                              # over 170 steps in the previous run.  This
+                              # reservoir vents through a gap, so the inlet plane
+                              # is at most sonic.
+                              #   0   = cap OFF (legacy behaviour, for A/B)
+                              #   ~0.83 = cap at the EQUILIBRIUM sonic speed
+                              #           (c_eq 154 vs c_frozen 185 m/s) if the
+                              #           frozen cap still lets the inlet drift.
+prob.amb_vapor  = 1
+prob.sym_ylo    = 0           # FULL PLANE
+prob.gap_yc   = 0.5
+prob.gap_half = 0.05
+prob.gap_taper = 0.02
+prob.ramp_time = 3.0e-4
+
+amr.restart = chk_sj2_00100
+amr.check_int = -1
+amr.plot_int = -1
