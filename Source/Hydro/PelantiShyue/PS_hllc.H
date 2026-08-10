@@ -582,6 +582,61 @@ bool ps_star_state(int idir, const Face& fK, const amrex::Real UK[NVAR],
     return true;
 }
 
+// -------------------------------------------------------------------
+//  W0 FACE AUDIT (DESIGN_ps_wp_front.md §3/§5; Marc 2026-08-10:
+//  "implement after measurements" — this IS the measurement).  Host-only
+//  counters in the ps_guard style; compiled out on GPU; zero effect on
+//  the numerics.  Face classes:
+//     0  II — every (side, phase) Independent: the full 6-eq algebra's
+//              intended domain
+//     1  C  — at least one Corridor participant, no Absent
+//     2  A  — at least one Absent participant (a presence front)
+//  Per class: faces seen by the defect correction, faces where a small-q
+//  guard DROPPED the correction (§2.4 dropout mechanism), largest |defect|
+//  actually applied, largest |E_k*| formed (§2.3 singularity mechanism).
+// -------------------------------------------------------------------
+#if !defined(AMREX_USE_GPU)
+namespace face_diag {
+inline long&   n_seen(int c)    { static long n[3] = {0,0,0};   return n[c]; }
+inline long&   n_drop(int c)    { static long n[3] = {0,0,0};   return n[c]; }
+inline double& max_def(int c)   { static double v[3] = {0,0,0}; return v[c]; }
+inline double& max_estar(int c) { static double v[3] = {0,0,0}; return v[c]; }
+// fluctuations() (the wp path's engine — task-#207 defect is embedded here,
+// so on ps_flux=wp THESE are the live counters):
+inline long&   n_fl_seen(int c) { static long n[3] = {0,0,0};   return n[c]; }
+inline long&   n_fl_fail(int c) { static long n[3] = {0,0,0};   return n[c]; }
+inline double& max_incmis(int c){ static double v[3] = {0,0,0}; return v[c]; }
+inline void reset() {
+    for (int c = 0; c < 3; ++c) {
+        n_seen(c) = 0; n_drop(c) = 0; max_def(c) = 0.0; max_estar(c) = 0.0;
+        n_fl_seen(c) = 0; n_fl_fail(c) = 0; max_incmis(c) = 0.0;
+    }
+}
+}
+#endif
+
+//  Classify a face from the two cell states (regimes of both phases on
+//  both sides).  Branch-only; used by the audit now and available to a
+//  future regime-dispatched flux (design W2).
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+int wp_face_class(const amrex::Real UL[NVAR], const amrex::Real UR[NVAR],
+                  const PsPres& pr) noexcept
+{
+    if (pr.enabled == 0) return 0;
+    int cls = 0;
+    for (int side = 0; side < 2; ++side) {
+        const amrex::Real* U = (side == 0) ? UL : UR;
+        const amrex::Real a1 = U[UALPHA1];
+        const PsRegime r1 = ps_regime(a1, U[UM1RHO1], pr);
+        const PsRegime r2 = ps_regime(amrex::Real(1.0) - a1, U[UM2RHO2], pr);
+        if (r1 == PsRegime::Absent   || r2 == PsRegime::Absent)   return 2;
+        if (r1 == PsRegime::Corridor || r2 == PsRegime::Corridor) cls = 1;
+    }
+    return cls;
+}
+
+
+
 struct Fluctuations {
     amrex::Real Am[NVAR];   // A^-ΔQ  (left-going;  updates the L cell)
     amrex::Real Ap[NVAR];   // A^+ΔQ  (right-going; updates the R cell)
@@ -599,15 +654,26 @@ bool fluctuations(int idir, const amrex::Real UL[NVAR], const amrex::Real UR[NVA
     f.valid = false;
     for (int n = 0; n < NVAR; ++n) { f.Am[n] = Real(0.0); f.Ap[n] = Real(0.0); }
 
+#if !defined(AMREX_USE_GPU)
+    const int fcls_fl = wp_face_class(UL, UR, pr);   // W0 audit (wp path)
+    ++face_diag::n_fl_seen(fcls_fl);
+#endif
+#if !defined(AMREX_USE_GPU)
+#define PS_W0_FL_FAIL() (++face_diag::n_fl_fail(fcls_fl))
+#else
+#define PS_W0_FL_FAIL() ((void)0)
+#endif
+
     const Face fL = face_from_state(idir, UL, pr);
     const Face fR = face_from_state(idir, UR, pr);
-    if (!fL.valid || !fR.valid) return false;
+    if (!fL.valid || !fR.valid) { PS_W0_FL_FAIL(); return false; }
     const WaveSpeeds w = wave_speeds(fL, fR);
-    if (!w.valid) return false;
+    if (!w.valid) { PS_W0_FL_FAIL(); return false; }
 
     Real UsL[NVAR], UsR[NVAR];
-    if (!ps_star_state(idir, fL, UL, w.S_L, w.S_M, UsL, pk_ef)) return false;
-    if (!ps_star_state(idir, fR, UR, w.S_R, w.S_M, UsR, pk_ef)) return false;
+    if (!ps_star_state(idir, fL, UL, w.S_L, w.S_M, UsL, pk_ef)) { PS_W0_FL_FAIL(); return false; }
+    if (!ps_star_state(idir, fR, UR, w.S_R, w.S_M, UsR, pk_ef)) { PS_W0_FL_FAIL(); return false; }
+#undef PS_W0_FL_FAIL
 
     f.s[0] = w.S_L; f.s[1] = w.S_M; f.s[2] = w.S_R;
     for (int n = 0; n < NVAR; ++n) {
@@ -624,6 +690,20 @@ bool fluctuations(int idir, const amrex::Real UL[NVAR], const amrex::Real UR[NVA
         f.Am[n] = _finite_or(f.Am[n], Real(0.0));
         f.Ap[n] = _finite_or(f.Ap[n], Real(0.0));
     }
+#if !defined(AMREX_USE_GPU)
+    {   // W0: per-face identity-increment mismatch |Δ(UE1+UE2) - ΔUEDEN|
+        // for each fluctuation.  The star states are identity-consistent
+        // by construction, so a nonzero here falsifies the §2 consistency
+        // argument; zero shifts suspicion to the fallback flips / C-F.
+        const double misM = std::abs(double(f.Am[UE1]) + double(f.Am[UE2])
+                                     - double(f.Am[UEDEN]));
+        const double misP = std::abs(double(f.Ap[UE1]) + double(f.Ap[UE2])
+                                     - double(f.Ap[UEDEN]));
+        const double mis = std::max(misM, misP);
+        if (mis > face_diag::max_incmis(fcls_fl))
+            face_diag::max_incmis(fcls_fl) = mis;
+    }
+#endif
     f.valid = true;
     return true;
 }
@@ -662,17 +742,37 @@ void wp_phase_energy_defect(int idir,
     defect_UE1 = Real(0.0);
     defect_UE2 = Real(0.0);
 
+#if !defined(AMREX_USE_GPU)
+    const int fcls = wp_face_class(UL, UR, pr);   // W0 audit
+    ++face_diag::n_seen(fcls);
+#endif
+
     const Face fL = face_from_state(idir, UL, pr);
     const Face fR = face_from_state(idir, UR, pr);
-    if (!fL.valid || !fR.valid) return;
+    if (!fL.valid || !fR.valid) {
+#if !defined(AMREX_USE_GPU)
+        ++face_diag::n_drop(fcls);                // W0: correction dropped
+#endif
+        return;
+    }
     const WaveSpeeds w = wave_speeds(fL, fR);
-    if (!w.valid) return;
+    if (!w.valid) {
+#if !defined(AMREX_USE_GPU)
+        ++face_diag::n_drop(fcls);
+#endif
+        return;
+    }
 
     // Star-state contraction ratios.
     const Real denom_rL = w.S_L - w.S_M;
     const Real denom_rR = w.S_R - w.S_M;
     if (std::abs(denom_rL) < Real(1.0e-30) ||
-        std::abs(denom_rR) < Real(1.0e-30)) return;
+        std::abs(denom_rR) < Real(1.0e-30)) {
+#if !defined(AMREX_USE_GPU)
+        ++face_diag::n_drop(fcls);
+#endif
+        return;
+    }
     const Real r_L = (w.S_L - fL.u_n) / denom_rL;
     const Real r_R = (w.S_R - fR.u_n) / denom_rR;
 
@@ -682,7 +782,12 @@ void wp_phase_energy_defect(int idir,
     const Real q_R1 = fR.rho_1 * (w.S_R - fR.u_n);
     const Real q_R2 = fR.rho_2 * (w.S_R - fR.u_n);
     if (std::abs(q_L1) < Real(1.0e-30) || std::abs(q_L2) < Real(1.0e-30) ||
-        std::abs(q_R1) < Real(1.0e-30) || std::abs(q_R2) < Real(1.0e-30)) return;
+        std::abs(q_R1) < Real(1.0e-30) || std::abs(q_R2) < Real(1.0e-30)) {
+#if !defined(AMREX_USE_GPU)
+        ++face_diag::n_drop(fcls);                // §2.4: the q-guard dropout
+#endif
+        return;
+    }
 
     // Pelanti star-state per-phase specific total energies.
     // #85: per-phase P_k (pk_ef=1) vs mixture P (default #211).  Must match
@@ -737,6 +842,18 @@ void wp_phase_energy_defect(int idir,
     // Defect = (A^+ + A^-) - (F_R - F_L)
     defect_UE1 = sum_sW_UE1 - (FR_UE1 - FL_UE1);
     defect_UE2 = sum_sW_UE2 - (FR_UE2 - FL_UE2);
+
+#if !defined(AMREX_USE_GPU)
+    {   // W0 audit: applied-defect and star-energy magnitude spectra.
+        const double d = std::max(std::abs(double(defect_UE1)),
+                                  std::abs(double(defect_UE2)));
+        if (d > face_diag::max_def(fcls)) face_diag::max_def(fcls) = d;
+        const double es = std::max(
+            std::max(std::abs(double(E1_starL)), std::abs(double(E2_starL))),
+            std::max(std::abs(double(E1_starR)), std::abs(double(E2_starR))));
+        if (es > face_diag::max_estar(fcls)) face_diag::max_estar(fcls) = es;
+    }
+#endif
 }
 
 

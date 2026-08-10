@@ -13,6 +13,9 @@
 #include <AMReX_ParallelDescriptor.H>        // ReduceRealMax/ReduceLongSum in the PS-MASS probe
 #ifdef USE_PS_HYDRO
 #include "Hydro/PelantiShyue/PS_guards.H"    // guard audit counters
+#ifdef USE_PS_HYDRO
+#include "Hydro/PelantiShyue/PS_hllc.H"      // W0 face-audit counters
+#endif
 #endif
 
 using std::string;
@@ -247,6 +250,42 @@ CAMR::CAMR_advance (Real time,
             ps_guard::reset_counts();
             ps_guard::reset_rho_counts();
             ps_guard::reset_slaved();
+            // W0 face audit (DESIGN_ps_wp_front.md §5): report + reset at
+            // the same cadence, gated on CAMR.ps_face_diag (default off;
+            // the counters themselves cost a few compares per face).
+            {
+                static const int fd = []() {
+                    int v = 0; amrex::ParmParse pp("CAMR");
+                    pp.query("ps_face_diag", v); return v; }();
+                if (fd != 0) {
+                    static const char* cn[3] = {"II", "C ", "A "};
+                    amrex::Print() << "[PS-FACE] L" << level << " step "
+                                   << parent->levelSteps(level) << " " << label;
+                    for (int c = 0; c < 3; ++c) {
+                        amrex::Long ns = PS_HLLC::face_diag::n_seen(c);
+                        amrex::Long nd = PS_HLLC::face_diag::n_drop(c);
+                        amrex::Real md = PS_HLLC::face_diag::max_def(c);
+                        amrex::Real me = PS_HLLC::face_diag::max_estar(c);
+                        amrex::Long fs = PS_HLLC::face_diag::n_fl_seen(c);
+                        amrex::Long ff = PS_HLLC::face_diag::n_fl_fail(c);
+                        amrex::Real fm = PS_HLLC::face_diag::max_incmis(c);
+                        amrex::ParallelDescriptor::ReduceLongSum(ns);
+                        amrex::ParallelDescriptor::ReduceLongSum(nd);
+                        amrex::ParallelDescriptor::ReduceRealMax(md);
+                        amrex::ParallelDescriptor::ReduceRealMax(me);
+                        amrex::ParallelDescriptor::ReduceLongSum(fs);
+                        amrex::ParallelDescriptor::ReduceLongSum(ff);
+                        amrex::ParallelDescriptor::ReduceRealMax(fm);
+                        amrex::Print() << " | " << cn[c]
+                                       << " def:" << ns << "/" << nd
+                                       << " maxdef=" << md << " maxE*=" << me
+                                       << " fl:" << fs << "/" << ff
+                                       << " incmis=" << fm;
+                    }
+                    amrex::Print() << "\n";
+                }
+                PS_HLLC::face_diag::reset();
+            }
             // S0 fold-mass audit (same cadence/reset as the guard audit).
             {
                 PsFoldAudit& fa = ps_fold_audit();
