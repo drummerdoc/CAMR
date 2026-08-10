@@ -180,6 +180,41 @@ CAMR::CAMR_advance (Real time,
     // collapsed dt to 4e-12.  This probe reports the drift at each stage of
     // the reaction sequence so the responsible operator can be identified.
     // Purely diagnostic -- reads the state, changes nothing.
+#ifdef CAMR_PS_DIAG
+#define PS_CELL_PROBE(S,L) cell_probe((S),(L))
+    // Diagnostic (CAMR.ps_cell_diag = <i>, default -1 = off): dump ONE
+    // cell's PS state at every stage of the reaction sequence.  Reads only.
+    // NOTE: deliberately NOT nested inside the ps_diag_mass gate -- the W0
+    // face audit is, which makes ps_face_diag=1 alone print nothing.
+    auto cell_probe = [&](const amrex::MultiFab& S, const char* label) {
+#ifdef USE_PS_HYDRO
+        static const int icd = []() { int v = -1; amrex::ParmParse pp("CAMR");
+                                      pp.query("ps_cell_diag", v); return v; }();
+        if (icd < 0) return;
+        for (amrex::MFIter mfi(S); mfi.isValid(); ++mfi) {
+            const amrex::Box& pbx = mfi.validbox();
+            if (pbx.smallEnd(0) > icd || pbx.bigEnd(0) < icd) continue;
+            auto const& sa = S.const_array(mfi);
+            const amrex::Real a1 = sa(icd,0,0,UALPHA1);
+            const amrex::Real m1 = sa(icd,0,0,UM1RHO1);
+            const amrex::Real m2 = sa(icd,0,0,UM2RHO2);
+            const amrex::Real rho = sa(icd,0,0,URHO);
+            const amrex::Real rhoe = sa(icd,0,0,UEINT);
+            const amrex::Real mx = sa(icd,0,0,UMX);
+            amrex::Print() << "[CELL " << icd << "] step "
+                           << parent->levelSteps(level) << " | " << label
+                           << " a1=" << a1 << " m1=" << m1 << " m2=" << m2
+                           << " rho1=" << (a1 > 0.0 ? m1/a1 : -1.0)
+                           << " rho2=" << ((1.0-a1) > 0.0 ? m2/(1.0-a1) : -1.0)
+                           << " rho=" << rho << " m1+m2=" << (m1+m2)
+                           << " rhoe=" << rhoe
+                           << " u=" << (rho != 0.0 ? mx/rho : 0.0) << "\n";
+        }
+#endif
+    };
+#else
+#define PS_CELL_PROBE(S,L) ((void)0)
+#endif  // CAMR_PS_DIAG
     auto diag_mass = [&](amrex::MultiFab& S, const char* label) {
         // S0 invariant tripwire (CAMR.ps_validate; default 0 = silent no-op).
         // Runs at every diag point INDEPENDENTLY of ps_diag_mass's gate.
@@ -312,10 +347,14 @@ CAMR::CAMR_advance (Real time,
     auto apply_ps_reaction = [&](amrex::MultiFab& S, amrex::Real dt_r,
                                  int ng, bool do_print) {
         diag_mass(S, "A enter (post-hydro/C-F)");
+        PS_CELL_PROBE(S, "A  enter (post-hydro)   ");
         ps_resync_mixture_mass(S, ng);  // URHO==UM1RHO1+UM2RHO2 after hydro/C-F (see header)
         diag_mass(S, "A2 post mass resync");
-        ps_resync_phase_energy(S, ng);  // task #58: UE1+UE2==UEDEN after C-F interp/regrid
-        ps_dilute_energy_closure(S, ng); // #64: thermal-eq closure of vanishing-phase e_k (gated)
+        PS_CELL_PROBE(S, "A2 post mixture resync ");
+        ps_resync_phase_energy(S, ng);
+        PS_CELL_PROBE(S, "A3 post phase-E resync ");  // task #58: UE1+UE2==UEDEN after C-F interp/regrid
+        ps_dilute_energy_closure(S, ng);
+        PS_CELL_PROBE(S, "A4 post dilute closure "); // #64: thermal-eq closure of vanishing-phase e_k (gated)
         // ORDER: folds BEFORE floors, matching the standalone's clamp_cons6
         // (ppm_1d_ps_wp.cpp:1295-1300).  CAMR previously ran the floor FIRST,
         // so a cell whose phase had just been folded away was never repaired.
@@ -329,12 +368,16 @@ CAMR::CAMR_advance (Real time,
         // temperature floor and would have repaired them -- it just ran too
         // early to see them.
         ps_apply_vanish_fold(S, ng);
-        ps_apply_tfloor_fold(S, ng);   // gap item A2: was dead code; see
+        PS_CELL_PROBE(S, "A5 post VANISH fold    ");
+        ps_apply_tfloor_fold(S, ng);
+        PS_CELL_PROBE(S, "A6 post TFLOOR fold    ");   // gap item A2: was dead code; see
                                        // STANDALONE_LESSONS_GAP.md.  Must
                                        // follow the vanish fold.
-        ps_apply_floor(S, ng);          // positivity floor (task #50)
+        ps_apply_floor(S, ng);
+        PS_CELL_PROBE(S, "A7 post FLOOR          ");          // positivity floor (task #50)
         clean_state(S, false);   // intermediate: skip the UTEMP diagnostic sweep
         diag_mass(S, "B post floor/fold/clean");
+        PS_CELL_PROBE(S, "B  post clean_state    ");
         diag_a1(S, "reaction pre-relax");   // entering: reflects hydro/advection/C-F
         ps_report_temps(S, "pre-relax (post-hydro)", geom, ng);  // #88 diag
         if (ps_do_relax_cached != 0) {
@@ -342,12 +385,14 @@ CAMR::CAMR_advance (Real time,
             clean_state(S, false); // intermediate: skip the UTEMP diagnostic sweep
         }
         diag_mass(S, "C post relaxation (P/T/MT)");
+        PS_CELL_PROBE(S, "C  post relaxation     ");
         diag_a1(S, "reaction post-relax");  // jump here => MT/relaxation is the driver
         ps_report_temps(S, "post-relax", geom, ng);              // #88 diag
         ps_report_energy_overshoot(S, "post-relax", ng);         // #64 decision diagnostic (gated)
         ps_harvest_states(S, ng);            // #42 active-learning EOS state harvest (gated)
         ps_apply_sources(S, dt_r, ng);
         diag_mass(S, "D post sources (flash)");
+        PS_CELL_PROBE(S, "D  post sources        ");
         diag_a1(S, "reaction post-sources");// jump here => flash/source is the driver
         ps_report_temps(S, "post-sources", geom, ng);            // #88 diag
     };

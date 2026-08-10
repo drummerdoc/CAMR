@@ -871,6 +871,48 @@ ps_wp_face(int idir, int i, int j, int k, int iL, int jL, int kL,
             Ap[n]      =  half;
             flx_loc[n] = Real(0.5) * (FL[n] + FR[n]) - half;   // LLF flux
         }
+#if !defined(AMREX_USE_GPU) && defined(CAMR_PS_DIAG)
+        //  Diagnostic (CAMR.ps_llf_diag, default 0 = off).  Reports the faces
+        //  where fluctuations() failed and this LLF fallback actually fired,
+        //  with lam decomposed on the state that sets it.  See FINDINGS
+        //  Addenda 10d/10e: dt is sized from a single-fluid mixture sound
+        //  speed while THIS lam is the frozen two-phase speed, so a fallback
+        //  firing where lam exceeds the assumed speed runs above CFL 1.
+        {
+            static const int lld = []() { int v = 0; amrex::ParmParse pp("CAMR");
+                                          pp.query("ps_llf_diag", v); return v; }();
+            if (lld != 0 && in_valid) {
+                const Real a1d = UL[UALPHA1];
+                const Real m1d = UL[UM1RHO1], m2d = UL[UM2RHO2];
+                const Real rhod = UL[URHO];
+                const Real uxd = (rhod != Real(0.0)) ? UL[UMX]/rhod : Real(0.0);
+                const Real ked = Real(0.5)*uxd*uxd;
+                const Real r1_raw = m1d / amrex::max(a1d, Real(1.0e-300));
+                const Real r1_cl = ps_guard::clamp_phase_density(r1_raw, EOS::rho_min(), EOS::rho_max());
+                const Real r2_cl = ps_guard::clamp_phase_density(
+                        m2d / amrex::max(Real(1.0)-a1d, Real(1.0e-300)),
+                        EOS::rho_min(), EOS::rho_max());
+                const Real e1d = (m1d > Real(1.0e-12)) ? UL[UE1]/m1d - ked : UL[UEINT]/rhod;
+                const Real e2d = (m2d > Real(1.0e-12)) ? UL[UE2]/m2d - ked : UL[UEINT]/rhod;
+                Real Yd[NUM_SPECIES]; Yd[0] = Real(1.0);
+                for (int n = 1; n < NUM_SPECIES; ++n) Yd[n] = Real(0.0);
+                Real P1d, c1d, P2d, c2d;
+                EOS::REY2PCs_liquid(r1_cl, e1d, Yd, P1d, c1d);
+                EOS::REY2PCs_vapor (r2_cl, e2d, Yd, P2d, c2d);
+                const Real Y1d = m1d/rhod;
+                amrex::Print() << "[LLF-FALLBACK] i=" << i << " lam=" << lam
+                   << " lamL=" << lamL << " lamR=" << lamR
+                   << " rhoL=" << UL[URHO] << " rhoR=" << UR[URHO]
+                   << " drho=" << (UR[URHO]-UL[URHO]) << "\n"
+                   << "[LAM-DECOMP]  a1=" << a1d << " m1=" << m1d << " m2=" << m2d
+                   << " rho1_raw=" << r1_raw << " rho1_clamped=" << r1_cl
+                   << " rho_max=" << EOS::rho_max()
+                   << " e1=" << e1d << " P1=" << P1d << " c1=" << c1d
+                   << " rho2=" << r2_cl << " e2=" << e2d << " P2=" << P2d
+                   << " c2=" << c2d << " Y1=" << Y1d << "\n";
+            }
+        }
+#endif
     }
 
     // Conserved slots via consup; non-conserved via the per-cell deposit.

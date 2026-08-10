@@ -623,6 +623,26 @@ amrex::Real CAMR::estTimeStep(amrex::Real /*dt_old*/)
     amrex::ParallelDescriptor::ReduceRealMin(estdt_hydro);
     estdt_hydro *= cfl;
 
+#ifdef CAMR_PS_DIAG
+    {   // CAMR.ps_dt_diag (default 0 = off): which cell/state sets dt.
+        static const int dtd = []() { int v = 0; amrex::ParmParse pp("CAMR");
+                                      pp.query("ps_dt_diag", v); return v; }();
+        if (dtd != 0) {
+          for (amrex::MFIter mfi(stateMF); mfi.isValid(); ++mfi) {
+            const amrex::Box& dbx = mfi.validbox();
+            auto const& sarr = stateMF.const_array(mfi);
+            CAMR_dt_diag_t dd = CAMR_estdt_hydro_diag(dbx, sarr, dx[0]);
+            amrex::Print() << "[DT-DIAG] i=" << dd.i << " dt=" << dd.dt * cfl
+                           << " c=" << dd.c << " absu=" << std::abs(dd.ux)
+                           << " rho=" << dd.rho << " eint=" << dd.eint
+                           << " p=" << dd.pres << " gam=" << dd.gam
+                           << " a1=" << dd.a1 << " m1=" << dd.m1
+                           << " m2=" << dd.m2 << "\n";
+          }
+        }
+    }
+#endif  // CAMR_PS_DIAG
+
     if (verbose) {
       amrex::Print() << "...estimated hydro-limited timestep at level " << level
                      << ": " << estdt_hydro << " -> " << estdt_hydro*std::pow(2, level) << std::endl;
