@@ -1253,3 +1253,87 @@ is fine for getting a binary, but numbers destined for the record should
 come from a build that was not assembled across kills -- or be confirmed
 against a clean rebuild.  A chaotic leg like B9-stiff will not tell you;
 it just quietly reports a different number inside the tolerance.
+
+## Addendum 10f — correction to 10d's "8.8x at the same face", and what the
+## relaxation actually did with the energy.  (2026-08-10)
+
+### 10f.1  CORRECTION: the two speeds were never compared at the same cell
+
+10d.3 states that estTimeStep's mixture sound speed and
+ps_max_wave_speed_from_state "at the SAME face" give 511.6 vs 4497.99, a
+factor 8.8.  **That comparison is not like-for-like and the wording is
+wrong.**  511.6 m/s is the sound speed of the cell that set dt globally --
+cell i=0, the undisturbed 120-bar liquid at the far boundary.  4497.99 m/s
+is the wave speed at face 50.  Two different cells.  The phase-blind
+estimator's value AT cell 49 was never measured.
+
+What survives, and is the real structural point: dt is the global minimum
+of a PHASE-BLIND estimator, so a cell whose true characteristic speed is
+4498 m/s can never influence it.  The instability follows from dt being
+sized without reference to that cell at all -- not from two formulas
+disagreeing at one location.  The factor that matters for stability is
+lam*dt/dx = 2.198 (measured, 10d.2), which is unaffected.
+
+The two estimators are not competing estimates of one quantity.
+CAMR_estdt_hydro is the STOCK CAMR single-fluid routine: it reads only
+URHO and UEINT, calls the mixture EOS, and never looks at UALPHA1, UM1RHO1,
+UM2RHO2, UE1, UE2.  It cannot see a phase sitting at the EOS pole.  For
+cell 49 the two pictures of the same cell are:
+
+    phase-blind : one fluid, 423.77 kg/m3, e = -109594 J/kg  ->  T = 121.8 K
+    phase-aware : liquid 1617.4 kg/m3 at 37.5 K  +  vapour 3.40 at 6704.6 K
+
+### 10f.2  The relaxation conserves energy exactly and mis-splits it
+
+Cell 49, step 144, across stage C (mixture internal energy, from the cell
+probe): rhoe = -46443965.28 BEFORE and -46443965.28 AFTER, identical to
+every printed digit.  The operator is conservative; the defect is entirely
+in the partition.  Post-relaxation phase energies:
+
+    E1 = m1*(e1+ke) = -2.12328e+08 J/m3      (liquid, 99.407% of the mass)
+    E2 = m2*(e2+ke) = +1.66063e+08 J/m3      (vapour,  0.593% of the mass)
+    E1 + E2         = -4.62647e+07  ==  rhoe + rho*ke = -4.62647e+07   OK
+
+So the mechanical pass moved ~1.66e8 J/m3 out of the liquid and into the
+vapour.  Because the vapour carries 0.593% of the mass, that energy becomes
+a specific energy of 6.6e7 J/kg -- hence 6704.6 K -- while the liquid,
+having given it up, cools to 37.5 K.  Both phases then read 4.3075e6 Pa, so
+the pass has satisfied p1 = p2 and total energy: it found a MATHEMATICALLY
+VALID root of its own system.  It is the wrong branch.
+
+Direction check (INFERENCE, not measured -- the pre-relaxation phase
+temperatures were not recorded): pre-relaxation the liquid is at
+1132.86 kg/m3, which at ~280 K is ~450 bar by the independent PR of 10e.1,
+against a vapour at 4.0 kg/m3 and a few bar.  Relieving that imbalance
+physically wants alpha_1 to INCREASE (liquid expands, its pressure falls;
+vapour compresses, its pressure rises).  The pass moved alpha_1 the other
+way, 0.3718546 -> 0.2604572, and reached equality instead by cooling the
+compressed liquid to 37.5 K.  If that reading holds, the mechanical solve
+is converging to a spurious root rather than mis-stepping toward the right
+one.
+
+### 10f.3  The thermal pass did not do its job either
+
+Mode 4 is documented as alpha-adjusting mechanical relaxation FIRST, then
+finite-rate ISOCHORIC thermal relaxation driving T1 -> T2 at rate 1/theta.
+With theta = 1e-7 and dt = 5.09e-6, dt/theta = 51: thermal equilibration
+should be essentially complete within the step.  Stage C is sampled AFTER
+both passes, and it reports T1 = 37.5 K against T2 = 6704.6 K.  So the
+thermal pass either did not run (a guard or early return), or ran and
+failed to converge on the state the mechanical pass handed it.  NOT
+ESTABLISHED which.
+
+### 10f.4  The measurement that settles both
+
+One probe inside ps_canonical_relax_cell, reporting for the target cell:
+(alpha, p1, p2, T1, T2, e1, e2) at three points -- on entry, after the
+mechanical pass, after the thermal pass.  That distinguishes
+  (a) mechanical solve converges to a spurious root,   from
+  (b) mechanical solve is fine and the thermal pass wrecks or abandons it,
+and it shows whether the entry state was already unusual.  It is the same
+shape as the probe already committed in e3815f3 and should be added there
+under the same USE_PS_DIAG flag.
+
+Until that is known, "the relaxation is at fault" is localised to the
+stage (measured) but not to the pass (not measured), and the spurious-root
+reading of 10f.2 remains inference.
