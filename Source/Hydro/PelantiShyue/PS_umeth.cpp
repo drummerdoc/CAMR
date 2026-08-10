@@ -1654,6 +1654,18 @@ PS_umeth(const Box& bx,
                         Ft[n] += coef0 * (unlim ? Wf : ps_vanleer(Wf, Wup));
                     }
                 }
+                // W2-1 (DESIGN_ps_wp_front.md §7, Marc-approved 2026-08-10):
+                // the per-component van-Leer limiter breaks the linear
+                // inter-slot identities at fronts (measured: 1st-order
+                // massid 1e-13/energyid 5e-5 vs 2nd-order 5e-3/0.71 on
+                // B9-stiff).  Under presence, LIMIT THE PHASE SLOTS and
+                // DERIVE the mixture slots as their sums — identities exact
+                // by construction, conservation untouched (still a flux),
+                // no new constants.  Legacy path: per-component, bit-identical.
+                if (l_pres.enabled != 0) {
+                    Ft[URHO]  = Ft[UM1RHO1] + Ft[UM2RHO2];
+                    Ft[UEDEN] = Ft[UE1] + Ft[UE2];
+                }
                 // Conserved slots: add F̃ to the recovered flux.
                 for (int n = 0; n < NVAR; ++n) {
                     if (n==UTEMP || n==UALPHA1 || n==UE1 || n==UE2) continue;
