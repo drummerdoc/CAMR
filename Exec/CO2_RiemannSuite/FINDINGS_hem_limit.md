@@ -948,3 +948,101 @@ The diagnostic patch (Timestep.H argmin reporter + an env-gated call in
 CAMR::estTimeStep) is NOT in this commit; it lives in a scratch worktree.
 It is ~60 lines, off unless CAMR_DT_DIAG is set, and changes no numerics.
 Committing it would follow the W0 precedent of keeping instrumentation.
+
+## Addendum 10c — the N>=96 failure localised: a single over-large but
+## CONSERVATIVE flux at a strong contact, then the EOS evaluated out of
+## domain manufactures the mass.  (2026-08-10, later still)
+
+10b established that mass is created without bound and that the validator
+sees it but nothing acts.  10b left the priority question open: WHICH stage
+first breaks the cell.  Answered here.
+
+### 10c.1  Method
+
+Added a second temporary probe (env `CAMR_CELL_DIAG=<i>`, scratch worktree
+only, no numerics touched): dump one cell's full PS state at TEN points
+through `apply_ps_reaction` -- A enter, A2 mixture resync, A3 phase-energy
+resync, A4 dilute closure, A5 vanish fold, A6 T-floor fold, A7 floor,
+B post clean_state, C post relaxation, D post sources.  N=96, presence=1,
+alpha_trace=0, tau=1e-7, cell 50 (two cells right of the diaphragm).
+
+### 10c.2  The reaction chain is NOT the culprit -- it never touches the cell
+
+At every step, all ten stage dumps are byte-identical.  The within-step
+change in rho1 is exactly +0.000e+00 at every step from 0 to 146.  The
+folds, the floor, `clean_state`, the relaxation and the sources do not
+modify this cell at all.  **Everything that happens to it happens inside
+the hydro update, before "A enter".**  The 1e-6 volume fraction seen in
+10b is therefore NOT `ps_apply_floor` clamping: alpha reaches exactly
+1e-6 ACROSS the hydro update, implying a clamp inside the hydro /
+reconstruction path.  10b's inference that the floor pinned it was wrong.
+
+### 10c.3  The trigger: one face moves 83% of a cell in one step
+
+Cells 49/50/51 at "A enter", the last healthy step and the next:
+
+| step | cell 49 rho | cell 50 rho | cell 51 rho |
+|---|---|---|---|
+| 144 | 423.77 | 103.39 | 67.89 |
+| 145 | 74.28 (**-349.5**) | 455.53 (**+352.1**) | 69.59 (+1.7) |
+
+At step 144 the cell is entirely healthy: a1 = 0.323, rho1 = 317.5,
+u = 118 m/s, sitting on the steep liquid-side edge of the expansion
+(rho1 across 49/50/51 = 1132.9 / 317.5 / 237.4).  One step later cell 49
+has lost 83% of its mass across the single face 49|50.
+
+That is far outside what the CFL condition permits.  With u = 118 m/s,
+dt = 5.09e-6 s and dx = 1/96 m, material advances u*dt/dx = 5.8% of a cell
+per step.  The transfer is ~14x larger than the maximum physically
+admissible one.
+
+**But it is conservative.**  Total domain mass is 4.845543e+02 at step 145
+and unchanged to 1e-11 (roundoff).  Cell 49 loses what cell 50 gains.  The
+flux is grossly over-large, not mass-violating.
+
+### 10c.4  The kill: an out-of-domain state, then the EOS invents mass
+
+The over-large transfer leaves cell 50 at a1 = 0.2543, m1 = 452.85, hence
+rho1 = 1781.1 kg/m3.  The densest state anywhere in this problem is the
+initial left liquid at 959.3, so this is ~1.9x beyond the physical range
+and outside the CO2 EOS domain.  Nothing rejects it.
+
+The next step evaluates the EOS there, gets p = 1.25e14 Pa and
+gam = 1.17e6, computes fluxes from those numbers, and mass conservation
+ends immediately.  Global mass by plotfile step:
+
+| plotfile step | total mass | change |
+|---|---|---|
+| 141-146 | 4.845543e+02 | +1e-11 (roundoff) |
+| 147 | 1.912652e+05 | **+39372%** |
+| 148 | 1.362514e+07 | +7024% |
+| 149 | 5.419643e+08 | +3878% |
+
+So the causal chain is: over-large (but conservative) flux at a strong
+contact -> phase density 1.9x out of domain -> EOS garbage -> unbounded
+mass creation -> |u| ~ 1e9 m/s -> dt collapse -> run never completes.
+The dt collapse that started this whole investigation is the fifth link.
+
+### 10c.5  Where this leaves the fix
+
+- The defect is in the HYDRO path -- the WP flux with presence face states
+  at a strong contact -- not in the fold/floor/relax/source chain.  This is
+  the region the W0 face-class audit (commit 6e6ac81) was built to
+  instrument; that instrumentation is the natural next tool.
+- NOT ESTABLISHED: which term in the WP flux produces the over-large
+  transfer, and whether the face 49|50 is a presence-class boundary at
+  that step.  The W0 face-class counters should be read at step 145.
+- A cheap independent safeguard exists regardless of the flux fix: NOTHING
+  currently rejects a phase density outside the EOS domain.  `rho_domain`
+  already detects it (10b) and is report-only.  Making it actionable --
+  or clamping the reconstruction so a face cannot move more than the CFL
+  fraction of a cell -- would convert an unbounded mass blow-up into a
+  bounded, visible error.
+- W-D4 remains parked, and for a sharper reason than 10b gave: the B-stage
+  resync is not what is holding this together (it never touches the cell),
+  so retiring it is neither the risk nor the remedy.  The real exposure is
+  that the hydro path can emit an out-of-domain state that nothing checks.
+
+Both probes (the estTimeStep argmin reporter of 10b, and this ten-point
+stage dump) are env-gated, ~100 lines total, and live only in a scratch
+worktree.  Committing them would follow the W0 precedent.
