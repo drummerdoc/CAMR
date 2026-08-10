@@ -1046,3 +1046,109 @@ The dt collapse that started this whole investigation is the fifth link.
 Both probes (the estTimeStep argmin reporter of 10b, and this ten-point
 stage dump) are env-gated, ~100 lines total, and live only in a scratch
 worktree.  Committing them would follow the W0 precedent.
+
+## Addendum 10d — ROOT CAUSE: the timestep and the LLF fallback use two
+## DIFFERENT wave speeds.  When the fallback fires, the scheme runs at
+## CFL 2.2 and is unconditionally unstable.  (2026-08-10, W0 face audit)
+
+10c localised the failure to the hydro flux path and to one step.  The W0
+face-class audit (commit 6e6ac81) plus one further probe identify the
+mechanism exactly, and the numbers close to four significant figures.
+
+### 10d.1  The W0 audit names the face class
+
+`CAMR.ps_face_diag=1` (NOTE: also requires `CAMR.ps_diag_mass=1` -- the
+face block is nested inside the mass-diag gate, which is worth remembering,
+it silently prints nothing otherwise).  N=96, presence, cell-50 event:
+
+| step | II fl seen/fail | II max incmis | C fl seen/fail | C max incmis |
+|---|---|---|---|---|
+| 143 | 28 / **0** | 1.92e-04 | 71 / 0 | 1.29e-05 |
+| 144 | 28 / **0** | 1.55e-04 | 71 / 0 | 8.84e-06 |
+| 145 | 28 / **1** | 2.68e-04 | 71 / 0 | 1.36e-05 |
+| 146 | 28 / **2** | **0.71875** | 71 / 0 | 1.13e-05 |
+
+The failing face is class **II -- both phases independent on both sides**.
+It is NOT a corridor face and NOT a presence boundary; the corridor class
+stays clean at 71/0 and incmis ~1e-5 throughout.  The first failure lands
+exactly on step 145, the step of the 83% transfer.
+
+`fl_fail` means `PS_HLLC::fluctuations()` returned false -- an invalid face
+state, invalid wave speeds, or a failed star state -- so the face fell back.
+
+### 10d.2  The fallback is the weapon
+
+`PS_umeth.cpp` on `!ok` uses LLF/Rusanov:
+
+    lam = max(ps_max_wave_speed_from_state(UL), ...(UR))
+    flx = 0.5*(FL + FR) - 0.5*lam*(UR - UL)
+
+Instrumented (env `CAMR_LAM_DIAG`), the first fallback of the whole run is:
+
+    [LLF-FALLBACK] face i=50  lam=4497.99  lamL=4497.99  lamR=215.39
+                   rhoL=423.77 rhoR=103.39 drho=-320.38
+
+Face i=50 is the 49|50 face.  With dt = 5.09038e-06 and dx = 1/96:
+
+    lam * dt / dx  =  4497.99 * 5.09038e-06 / 0.0104167  =  **2.198**
+
+**The LLF fallback is running at an effective CFL of 2.2.**  LLF is stable
+only for CFL <= 1, so the diffusive term overshoots rather than damps.
+Predicted transfer:
+
+    0.5 * (lam*dt/dx) * drho  =  0.5 * 2.198 * 320.38  =  **352.1**
+
+Measured transfer into cell 50 at step 145 (10c.3): **+352.1**.  Four
+significant figures.  The mechanism is not a hypothesis.
+
+### 10d.3  Why dt does not protect the flux
+
+`estTimeStep` -> `CAMR_estdt_hydro` sizes dt from
+c = sqrt(gam*p/rho) on the MIXTURE state -- at this step 511.6 m/s, the
+global limiter.  The LLF fallback sizes its diffusion from
+`ps_max_wave_speed_from_state`, which at the SAME face returns 4497.99 m/s.
+
+**The two estimates disagree by a factor of 8.8, and the one that sets dt
+is the smaller.**  Every face where the fallback fires with
+lam > c_estdt/CFL is unstable by construction.  That is the defect.
+
+### 10d.4  Why N=64 is clean and why LEGACY survives at N=128
+
+| run | LLF fallbacks fired | lam when fired | effective CFL | outcome |
+|---|---|---|---|---|
+| N=64 presence | **0** (whole run) | -- | -- | completes |
+| N=128 legacy | 3 | 444-469 m/s | ~0.18 | completes |
+| N=96 presence | 1 (then cascade) | **4498 m/s** | **2.20** | destroyed |
+
+N=64 never fires the fallback at all -- it does not merely pass the gate,
+it never enters the regime.  Legacy at N=128 DOES fire the fallback three
+times, at faces whose states are sane (rho 899->797, a1 0.98->0.86) with
+lam ~468 m/s, i.e. BELOW the speed dt was sized for, so CFL ~0.18 and the
+fallback does what it is meant to do.  So the fallback is not the problem
+in itself.  The problem is a fallback firing at a face reporting a wave
+speed 8.8x the one dt assumed.
+
+### 10d.5  What is fixed by what
+
+- The CFL inconsistency is a real defect independent of everything else:
+  the timestep estimator must bound the wave speed actually used by the
+  flux.  Making `CAMR_estdt_hydro` use `ps_max_wave_speed_from_state`
+  (or taking the max of the two) is the direct fix and is
+  resolution-independent.  It would have prevented this entire cascade.
+- NOT ESTABLISHED, and the remaining open question: whether 4497.99 m/s is
+  a CORRECT wave speed for that state or itself spurious.  Liquid CO2 near
+  1133 kg/m3 has c ~ 600-900 m/s, so 4498 looks too large by ~5x.  If it is
+  spurious there is a SECOND bug in `ps_max_wave_speed_from_state` on
+  two-phase states.  Either way the CFL fix above is required; if the speed
+  is also wrong, the fix additionally over-restricts dt until that is
+  repaired.
+- Secondary, still worth doing (10c.5): nothing rejects an out-of-domain
+  phase density.  `rho_domain` detects and does not act.  With the CFL fix
+  the trigger disappears, but the lack of a domain guard is what turned a
+  bad flux into unbounded mass creation rather than a bounded error.
+- Why `fluctuations()` failed on that class-II face at all is still
+  unknown and now lower priority: with a correct dt the fallback is safe.
+
+This is a PRE-EXISTING defect, consistent with the 10a bisect: both
+`estTimeStep` and the LLF fallback predate the E-series and W2-1, neither
+of which touched them.
