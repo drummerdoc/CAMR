@@ -766,12 +766,16 @@ Attribution, by control (all N=128, HEAD):
   genuinely single-phase sides mean no second phase exists anywhere.  That
   points at the presence FLUX path (S1/S2 face states, or the W2-1 slot
   derivation) rather than the source operators.
-- It is NOT a bad-state ratchet of the Addendum 6 kind: through the
-  collapse `[PS-VALIDATE]` reports rho_domain bulk=0 trace=0, nonfinite=0,
-  m_neg=0, massid 1e-13, with 1-2 cells at energyid ~1e-8.  The state stays
-  realizable; dt is being limited in est_time_step, most plausibly by a
-  mixture sound-speed spike.  NOT VERIFIED -- the sound speed was not
-  instrumented.  That is the next measurement if this is picked up.
+- [THIS BULLET IS WRONG -- SEE ADDENDUM 10b.  It claimed the state stays
+  realizable and the validator stays clean through the collapse.  Both are
+  false; the claim came from reading only the first few flagged validator
+  lines, which were all pre-collapse.  The original text is kept here for
+  the record:]  "It is NOT a bad-state ratchet of the Addendum 6 kind:
+  through the collapse `[PS-VALIDATE]` reports rho_domain bulk=0 trace=0,
+  nonfinite=0, m_neg=0, massid 1e-13, with 1-2 cells at energyid ~1e-8.
+  The state stays realizable; dt is being limited in est_time_step, most
+  plausibly by a mixture sound-speed spike.  NOT VERIFIED -- the sound
+  speed was not instrumented." 
 
 NOT ESTABLISHED: whether 2-D production is affected.  Production runs at
 tau=1e-3, four orders less stiff than this leg, and the 2-D testbed gates
@@ -832,3 +836,115 @@ be used for this measurement -- the phase masses must be used instead.
 This is the plotfile-cosmetics item registered in DESIGN_ps_wp_front.md §8
 correction (a); it is now known to actively mislead, so it is upgraded from
 cosmetic to worth fixing.
+
+## Addendum 10b — CORRECTION to 10a: the N>=96 stall is UNBOUNDED MASS
+## CREATION, not a timestep artefact.  Mechanism identified.
+## (2026-08-10, later still)
+
+Addendum 10a called the N>=96 behaviour a dt collapse with a realizable
+state and a clean validator, and guessed at a mixture sound-speed spike.
+**The guess was wrong and one factual claim was wrong.**  The dt collapse is
+a symptom.  The disease is that the presence path creates mass without
+bound at the front once a cell leaves the EOS domain.
+
+### 10b.1  What was actually measured
+
+`estTimeStep` -> `CAMR_estdt_hydro` sets dt = dx / (c + |u|) with
+c = sqrt(gam*p/rho) from a SINGLE-FLUID EOS call on the MIXTURE state
+(URHO, UEINT).  A host-side argmin diagnostic was added (temporary, env-gated
+by CAMR_DT_DIAG) to report which cell sets dt and in what state.  N=96,
+presence=1, alpha_trace=0, tau=1e-7:
+
+Onset is abrupt, between steps 147 and 148, at cell i=50 of 96 -- two cells
+right of the diaphragm, i.e. AT THE FRONT:
+
+| | dt-limiting cell state |
+|---|---|
+| step 147 | i=0, rho=959.33, p=1.2e7, gam=20.92, c=511.6 -- a clean liquid cell |
+| step 148 | i=50, rho=9.158e+06, p=1.252e+14, gam=1.170e+06, c=3.998e+06, a1=**1e-06**, m1=9.111e+06, m2=4.62e+04 |
+
+a1 sits exactly on the 1e-6 floor while phase-1 mass is 9.1e6, so the
+IMPLIED PHASE DENSITY is m1/a1 ~ 9.1e12 kg/m3 -- eleven orders outside the
+CO2 EOS domain.  It compounds every step thereafter: mixture rho goes
+9.2e6 -> 3.3e8 -> 1.3e10 -> ... -> 1.9e15, and by the end dt is set by
+|u| = 1.7e9 m/s (faster than light) with c only 12.9 m/s.  So dt is
+ultimately limited by VELOCITY, not sound speed -- 10a's hypothesis was
+wrong in both magnitude and mechanism.
+
+### 10b.2  Mass is not conserved.  This is the headline.
+
+Total mass, sum(rho)/N over the domain, same run:
+
+| step | total mass | max rho |
+|---|---|---|
+| 0 | 4.845543e+02 | 9.593e+02 |
+| 20, 40, 60, 80, 100, 120, 140 | 4.845543e+02 (unchanged to 7 digits) | 9.593e+02 |
+| 152 | **5.803460e+13** | **1.379e+15** |
+
+Mass is conserved exactly for 140 steps and is then multiplied by ~1.2e11
+in twelve steps.  This is an unbounded mass source at the presence floor,
+not a stiff-front accuracy problem.
+
+### 10b.3  The validator DOES catch it.  Nothing acts on it.
+
+10a said the validator stayed clean.  It does not.  At the onset step:
+
+```
+A enter (post-hydro/C-F): ... energyid=10 (worst 2.148e-04) rho_domain bulk=5 trace=6
+A2 post mass resync:      ... energyid=10 (worst 2.148e-04) rho_domain bulk=5 trace=6
+B post floor/fold/clean:  ... energyid=0  (worst 4.658e-16) rho_domain bulk=5 trace=6
+C post relaxation:        ... energyid=0  (worst 4.658e-16) rho_domain bulk=5 trace=6
+D post sources (flash):   ... energyid=0  (worst 4.658e-16) rho_domain bulk=5 trace=6
+```
+and one step later bulk=6 trace=8.  Two things to read here:
+
+1. The instrument works.  `rho_domain` fires at the onset step and the
+   counts grow.  The W-series instrumentation was not blind.
+2. **The B stage repairs the ENERGY identity (energyid 2.1e-4 -> 4.7e-16)
+   and leaves rho_domain untouched at bulk=5 trace=6.**  The floor/fold/clean
+   stage makes the cell look consistent on the identity the validator
+   reports loudest while the out-of-domain phase density -- the actual
+   defect -- passes straight through.  rho_domain is report-only; no
+   operator acts on it.  That is the gap worth closing.
+
+At N=64 the same run reports ZERO rho_domain violations for the entire run
+on all four backends (Addendum 10's W3 table) and mass is conserved.  So
+N=64 does not merely pass -- it never enters this regime.
+
+### 10b.4  How 10a got it wrong
+
+The 10a claim came from grepping the validator output with a filter that
+excluded clean lines and then reading `head -6`.  At N=128 the onset is
+around step 145, so the first six flagged lines were all pre-collapse
+energyid noise with bulk=0.  The conclusion "bulk=0 through the collapse"
+was drawn from lines that never reached the collapse.  The lesson is the
+obvious one and it is worth writing down: when checking whether an event
+is flagged, grep the WINDOW AROUND THE EVENT, never the head of the log.
+
+### 10b.5  Revised status and what this changes
+
+- The bisect result of 10a.1 STANDS: this pre-dates the E-series and W2-1
+  (70d0bbf fails the same way, earlier), and that work improved
+  time-before-failure 3.1x and made N=64 clean.  It is not a regression.
+- But the failure is a mass-conservation defect, not a stiff-front
+  accuracy limit, so it is more serious than 10a implied and should not be
+  filed as a convergence curiosity.
+- NOT ESTABLISHED, and now the priority question: which operator first
+  drives the cell out of domain -- the presence flux path (S1/S2 face
+  states / W2-1 slots) or the floor itself.  The diagnostic prints the
+  state at dt-evaluation time only, i.e. AFTER a full step; it does not
+  localise the stage.  A per-stage dump of the offending cell across
+  A/A2/B/C/D on the onset step would localise it in one run.
+- 2-D production: still not measured, but the case for measuring it is now
+  stronger.  Production runs at tau=1e-3, four orders less stiff, and the
+  ML2 gates pass; but "the gate resolution never reached the failure mode"
+  is exactly what happened here, and ML2 is a resolution choice too.
+- W-D4 (retiring the shadowed q-guards and the B-stage energy resync)
+  should NOT proceed until 10b.5's first item is answered.  The B stage is
+  currently the thing standing between this defect and a NaN, even though
+  it is repairing the wrong quantity.
+
+The diagnostic patch (Timestep.H argmin reporter + an env-gated call in
+CAMR::estTimeStep) is NOT in this commit; it lives in a scratch worktree.
+It is ~60 lines, off unless CAMR_DT_DIAG is set, and changes no numerics.
+Committing it would follow the W0 precedent of keeping instrumentation.
