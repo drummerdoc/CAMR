@@ -565,3 +565,89 @@ canonical chain only, which is not the production configuration.
 phase-extinction fix (this addendum's diagnosis) — then re-baseline B9
 references on a cap-free binary; (4) housecleaning pass from
 GUARD_INVENTORY, item-by-item with gates between chunks.
+
+## Addendum 7 — task #20, GERGTab backend under presence (2026-08-09)
+
+Recipe (repeatable for GERG / PRTab): (1) rebuild 1-D + 2-D with
+`Eos_Model=<backend>`; (2) g1_ regression `EXE=./CAMR1d...GERGTab.ex
+REFGLOB='gerg_refs/g1_*_[0-9]*' python3 run_ac_suite.py`; (3) presence legs =
+replay each g1 ref's job_info config with `CAMR.ps_presence=1
+prob.alpha_trace=0`, field-normalized L2 vs the ref; (4) 2-D half-res ML2
+testbed pair (legacy trace=1e-6 vs presence trace=0) with `ps_validate=1`.
+
+GERGTab results, caps-removed build, GERG_EXT_C default ON:
+
+- g1_ regression: A3/C3 at machine precision (1e-14/1e-15); B4 ≤ 3.8e-5,
+  B9 ≤ 1.1e-4 max-rel (two-phase legs; refs were minted on a caps-active
+  binary — same story as PR, same magnitude class, PASS).
+- Presence legs (rel-L2 vs g1 refs): A3 1.3e-6 / C3 1.1e-6 / B4 2.9e-5 /
+  B9 8.9e-4.  Presence does not distort GERGTab; trace-fiction removal is
+  invisible at reference scale.
+- 2-D ML2 testbed: presence vs legacy roughness ratio 0.999 (0.1211 vs
+  0.1212 — the PR clean level is 0.119), rel-L2(rho) 3.9e-4, liquid
+  inventory Delta 7.2e-4.  NO pepper.  [PS-VALIDATE] trace=0 and
+  rho_domain bulk=0 in all 1733 reports (GERGTab's own rho_min/rho_max
+  metadata feeding V6); [PS-GUARD] rej_low=0, rej_high=0 throughout.
+- Backend physics note: GERGTab flash_rate max ~5.8e3 vs PR ~1.0e3 at the
+  same station (different surface, different Gibbs drive) — identical
+  between arms, so a backend property, not a presence artifact.
+- Ops note: 2-D GERGTab is ~2x slower than PR serially (table evaluation).
+
+**GERGTab verdict: PASS under presence + caps-removed.**  Not yet run:
+the B9-stiff canonical-chain leg (known-fail class on PR, Addendum 6 —
+re-test all backends after the stiff-source extinction fix).  Next:
+same recipe for PRTab and GERG.
+
+## Addendum 8 — task #20 complete: PRTab and GERG backends (2026-08-09)
+
+Same recipe as Addendum 7.  All on the caps-removed baseline.
+
+**PRTab** (bicubic PR surrogate, regressed vs the c1_ PR references):
+- c1_ regression: 11/11 OK.  A-battery and C-battery at 2e-7..5e-5;
+  B4 worst overall (rho 1.6e-4, P 9.5e-4, xmom 2.0e-3 field-scale).
+  LOCALIZED and benign: maxima sit in the left expansion fan at the
+  near-critical sweep (cells 14-17, rho~990 / 62 bar) and at the
+  critical-density crossing (cells 63-65, rho~234) — exactly where a
+  bicubic has its largest interpolation error.  Smooth, not oscillatory;
+  >1 order below the scheme's own B4 discretization error at N=64.
+  Watch item only if a future case PARKS near the critical point.
+- Presence legs: C1 identity 6e-8; worst B9 7.9e-4 rel-L2.  Clean.
+- 2-D ML2 testbed: presence vs legacy roughness ratio 1.000 (0.1187 both),
+  rel-L2(rho) 2.4e-4, inventory 2.7e-4; validators clean.  PASS.
+
+**GERG** (analytic evaluator, regressed vs g1_):
+- g1_ regression: A3/C3 machine precision; B4 <= 3.8e-5, B9 <= 1.1e-4. PASS.
+- Integrity check on a surprise: GERG and GERGTab reruns printed IDENTICAL
+  diffs-vs-ref to 3 digits.  Direct field comparison of the two builds on
+  B4: max|GERG - GERGTab| ~ 3e-12..3e-11 of field scale — the bicubic
+  reproduces the analytic surface to near round-off on these legs, so the
+  identical numbers are genuine fidelity, not a harness prefix collision.
+- Presence legs: identical to GERGTab's to printed precision (as the above
+  implies): A3/C3 ~1e-6, B4 9.7e-5, B9 8.9e-4.  Clean.
+- 2-D testbed: WAIVED (Marc, 2026-08-09).  Rationale: presence touches the
+  EOS only through the query surface; corridor/absent placeholder behavior
+  and metadata are identical between GERG and GERGTab (same guard layer,
+  table reproduces the surface to ~1e-11), and GERGTab's 2-D pair passed.
+  A GERG-analytic 2-D run would re-test evaluator speed, not presence
+  logic.
+
+**Task #20 verdict: all four backends (PR, PRTab, GERG, GERGTab) validated
+under presence on the caps-removed baseline.**  Standing exception: the
+B9-stiff canonical-chain leg (Addendum 6 known-fail) — re-test all backends
+after the stiff-source phase-extinction fix.
+
+## Addendum 9 — W-series complete: the stiff-front known-fail resolved
+## (2026-08-10, evening)
+
+Chain of attribution, each step by instrument: sources (E1/E1b) -> relax
+(E2' barrier) -> folds (E2' vacuum) -> face algebra (W0: exonerated,
+round-off) -> THE BL-2 PER-COMPONENT LIMITER (order-1-vs-2 test: massid
+1e-13 vs 5e-3, energyid 5e-5 vs 0.71).  Fix W2-1: limit phase slots,
+derive mixture slots as sums (identity-exact, conservation-exact, no
+constants, presence-gated).  Results: B9 zero-trace tau=1e-7 completes,
+u-err 0.427 (old cap-assisted ref 0.43, now earned honestly);
+verify_canonical ALL 27 PASS (check 3 re-baselined 0.643, check 6
+KNOWN-FAIL retired); production 2-D energyid 5-8% -> 1e-15 with solution
+unchanged (3.4e-4).  The non-AP stiff-front frontier item is CLOSED for
+the 1-D suite; backend B9-stiff re-test (Addendum 8 exception) is the
+remaining W3 item, one command per backend.

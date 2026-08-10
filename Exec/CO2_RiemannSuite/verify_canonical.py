@@ -13,7 +13,7 @@ Checks:
      handoff Part-2 values (the hyperbolic core is untouched)
   2. B4 canonical flatness — mode 4, u-err ~0.129 at tau=1e-4 AND 1e-7
      (the stiff-limit corruption is gone)
-  3. B9 canonical value — mode 4 + flash at tau=1e-7, u-err ~0.68.
+  3. B9 canonical value — mode 4 + flash at tau=1e-7, u-err ~0.64 (cap-free baseline).
      Doubles as a STALE-BINARY detector: an old binary silently maps
      mode 4 -> mode 0 and lands at ~0.84 instead.
   4. reproject liveness — production config (mode 2, tau=1e-4) run with
@@ -156,11 +156,11 @@ m = run_case('B9-Deep-Expansion',
              'vc4_B9_')
 u9 = l2(m, load_hem_analytic('B9'))['u'] if m else float('nan')
 if 0.80 < u9 < 0.90:
-    check('B9 mode-4 u-err ~0.68', False,
+    check('B9 mode-4 u-err ~0.64 (re-baselined 2026-08-10, cap-free + W2-1; was 0.68 on caps-active binaries)', False,
           f'got {u9:.3f} == the MODE-0 value: binary predates ps_relax_mode=4 '
           '(old binaries map unknown modes to 0). Rebuild clean.')
 else:
-    check('B9 mode-4 u-err ~0.68', abs(u9 - 0.682) < 0.03, f'got {u9:.3f}')
+    check('B9 mode-4 u-err ~0.64 (re-baselined 2026-08-10, cap-free + W2-1; was 0.68 on caps-active binaries)', abs(u9 - 0.643) < 0.03, f'got {u9:.3f}')
 
 # ---------------------------------------------------------------- check 4
 print('== 4. reproject liveness (PS_sources.H change present) ==')
@@ -221,9 +221,9 @@ if m is None:
     check('S3 canonical B9 zero-trace (flash birth)', False, 'run failed')
 else:
     u9z = l2(m, load_hem_analytic('B9'))['u']
-    # KNOWN-FAIL since 2026-08-09 cap removal (FINDINGS Addendum 6): the 0.43
-    # reference was CAP-ASSISTED; the stiff source's phase-extinction defect is
-    # the registered fix, after which this leg gets re-baselined.
+    # RESOLVED 2026-08-10: E-series (extinction) + W2-1 (identity-consistent
+    # BL-2 limiter) flipped this green at 0.429 with ZERO caps -- the honest
+    # number now equals the old cap-assisted 0.43.  See DESIGN_ps_wp_front.md.
     # S3-era value was 0.68 (#88 still active); S4's presence gating improves
     # this to ~0.43.  The check asserts the INVARIANT — flash birth from
     # genuinely-pure liquid develops the evaporation (u-err well below the
