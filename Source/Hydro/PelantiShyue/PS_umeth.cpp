@@ -395,30 +395,29 @@ ps_physical_flux_from_state(int idir, const Real U[NVAR], Real F[NVAR],
     constexpr Real rho_floor = Real(1.0e-6);
     // G1: clamp into the EOS validity domain (see PS_guards.H).  Was
     // floor-only, leaving rho_k free to reach the PR hard-sphere pole.
-    const PsRegime rg1 = pr.enabled ? ps_regime(alpha_1, m1, pr) : PsRegime::Independent;
-    const PsRegime rg2 = pr.enabled ? ps_regime(alpha_2, m2, pr) : PsRegime::Independent;
-    Real rho_1, rho_2;
-    if (pr.enabled) {   // S1: never divide for an ABSENT phase
-        rho_1 = (rg1 == PsRegime::Absent) ? rho
-              : ps_guard::clamp_phase_density(m1 / amrex::max(alpha_1, Real(1.0e-300)),
-                                              EOS::rho_min(), EOS::rho_max());
-        rho_2 = (rg2 == PsRegime::Absent) ? rho
-              : ps_guard::clamp_phase_density(m2 / amrex::max(alpha_2, Real(1.0e-300)),
-                                              EOS::rho_min(), EOS::rho_max());
-    } else {
-        rho_1 = ps_guard::clamp_phase_density(
-                     (m1 > Real(0.0)) ? m1 / alpha_1 : rho_floor,
-                     EOS::rho_min(), EOS::rho_max());
-        rho_2 = ps_guard::clamp_phase_density(
-                     (m2 > Real(0.0)) ? m2 / alpha_2 : rho_floor,
-                     EOS::rho_min(), EOS::rho_max());
-    }
-
+    //  Contract 3: the phase state is a CHECKED construction, on BOTH paths.
+    //  The legacy branch used to force rg = Independent (asserting a phase
+    //  exists), divide by alpha unconditionally, clamp the quotient into the
+    //  EOS domain, and substitute e_mix for the phase energy whenever m was
+    //  small -- four separate manufactures, after which both branch-locked
+    //  EOS queries ran regardless.  That is how a vapour slot acquired a
+    //  mixture-like energy and a liquid slot reached m/alpha = 1.1e4 kg/m3.
+    //  The presence branch already did this correctly ("definition, not
+    //  repair"); the two are now one path.
+    const PsRegime rg1 = ps_regime(alpha_1, m1, pr);
+    const PsRegime rg2 = ps_regime(alpha_2, m2, pr);
     const Real ke_spec = Real(0.5) * (ux*ux + uy*uy + uz*uz);
-    const Real E1_tot = ps_finite_or(U[UE1], Real(0.0));
-    const Real E2_tot = ps_finite_or(U[UE2], Real(0.0));
-    const Real e1 = (m1 > Real(1.0e-12)) ? E1_tot / m1 - ke_spec : e_mix;
-    const Real e2 = (m2 > Real(1.0e-12)) ? E2_tot / m2 - ke_spec : e_mix;
+    const PsPhaseQuot q1 = ps_phase_quot(alpha_1, m1,
+                                         ps_finite_or(U[UE1], Real(0.0)), ke_spec, pr);
+    const PsPhaseQuot q2 = ps_phase_quot(alpha_2, m2,
+                                         ps_finite_or(U[UE2], Real(0.0)), ke_spec, pr);
+    //  No state -> the mixture stands in, BY DEFINITION.  Not a clamp: a
+    //  phase that does not exist has no intensive properties of its own, and
+    //  its alpha weight is zero in the mixture rule below.
+    const Real rho_1 = q1.exists ? q1.rho : rho;
+    const Real rho_2 = q2.exists ? q2.rho : rho;
+    const Real e1    = q1.exists ? q1.e   : e_mix;
+    const Real e2    = q2.exists ? q2.e   : e_mix;
 
     Real Y[NUM_SPECIES];
     Y[0] = Real(1.0);
@@ -432,30 +431,17 @@ ps_physical_flux_from_state(int idir, const Real U[NVAR], Real F[NVAR],
     EOS::REY2P       (rho,   e_mix, Y, P_stock);
     P_stock = ps_guard::sanitize_stock_pressure(P_stock);
     Real P_mix;
-    if (pr.enabled) {
-        // S1: branch-locked queries ONLY for independent phases; a
-        // corridor/absent phase's pressure IS the mixture's (definition,
-        // not repair — replaces the A6 e_mix-into-branch-locked-EOS path
-        // for those phases in this function).
-        if (rg1 == PsRegime::Independent) {
-            EOS::REY2P_liquid(rho_1, e1, Y, P1);
-            ps_guard::sanitize_phase_pressure(P1, P_stock);
-        } else { P1 = P_stock; }
-        if (rg2 == PsRegime::Independent) {
-            EOS::REY2P_vapor(rho_2, e2, Y, P2);
-            ps_guard::sanitize_phase_pressure(P2, P_stock);
-        } else { P2 = P_stock; }
-        P_mix = alpha_1 * P1 + alpha_2 * P2;   // exact alpha: ABSENT -> 0
-    } else {
+    //  Branch-locked query ONLY for a phase that exists AND is independent.
+    //  Corridor / absent phases take the mixture pressure by definition.
+    if (q1.exists && rg1 == PsRegime::Independent) {
         EOS::REY2P_liquid(rho_1, e1, Y, P1);
-        EOS::REY2P_vapor (rho_2, e2, Y, P2);
-        // SINGLE-SOURCE (see PS_guards.H) -- was a third, one-sided copy.
-        const bool P1_bad = ps_guard::sanitize_phase_pressure(P1, P_stock);
-        const bool P2_bad = ps_guard::sanitize_phase_pressure(P2, P_stock);
-        P_mix = (!P1_bad && !P2_bad)
-            ? (alpha_1 * P1 + alpha_2 * P2)
-            : P_stock;
-    }
+        ps_guard::sanitize_phase_pressure(P1, P_stock);
+    } else { P1 = P_stock; }
+    if (q2.exists && rg2 == PsRegime::Independent) {
+        EOS::REY2P_vapor(rho_2, e2, Y, P2);
+        ps_guard::sanitize_phase_pressure(P2, P_stock);
+    } else { P2 = P_stock; }
+    P_mix = alpha_1 * P1 + alpha_2 * P2;
 
     // ---- Assemble the flux exactly as ps_physical_flux does --------
     for (int n = 0; n < NVAR; ++n) F[n] = Real(0.0);

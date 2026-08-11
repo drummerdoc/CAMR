@@ -59,6 +59,43 @@ PsRegime ps_regime(amrex::Real alpha, amrex::Real m, const PsPres& pr) noexcept
     return PsRegime::Independent;
 }
 
+// =====================================================================
+//  Contract 3: a phase state is a CHECKED construction.
+//
+//  rho_k = m_k / alpha_k  and  e_k = E_k / m_k  have DIFFERENT denominators
+//  -- alpha_k partitions volume, m_k partitions mass -- so neither
+//  constrains the other and a test on one does NOT license the other.  A
+//  phase therefore either HAS a state (both partitions meaningfully
+//  non-zero, both quotients well posed) or it has NONE, and consumers of
+//  intensive properties must take the no-state branch rather than receive a
+//  clamped number.
+//
+//  This is the predicate the code already owns -- ps_regime's Absent edge --
+//  applied at the point where the quotients are FORMED rather than repaired
+//  afterwards.  See FINDINGS Addenda 10k-10l.
+// =====================================================================
+struct PsPhaseQuot {
+    amrex::Real rho    = amrex::Real(0.0);
+    amrex::Real e      = amrex::Real(0.0);
+    bool        exists = false;
+};
+
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+PsPhaseQuot ps_phase_quot(amrex::Real alpha, amrex::Real m, amrex::Real E,
+                          amrex::Real ke, const PsPres& pr) noexcept
+{
+    PsPhaseQuot q{};
+    if (ps_regime(alpha, m, pr) == PsRegime::Absent) return q;   // no state exists
+    q.rho = m / alpha;
+    q.e   = E / m - ke;
+    if (!(q.rho > amrex::Real(0.0)) || !(q.rho == q.rho) || !(q.e == q.e)) {
+        q.rho = amrex::Real(0.0); q.e = amrex::Real(0.0);
+        return q;                                                // still exists=false
+    }
+    q.exists = true;
+    return q;
+}
+
 // Host-side one-shot read (ParmParse), captured by value into kernels.
 inline const PsPres& ps_presence_params()
 {

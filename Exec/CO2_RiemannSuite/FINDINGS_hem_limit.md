@@ -1779,3 +1779,103 @@ conclusion and should be read only with 10g alongside.
 triple-point saturation states are constants of the fluid and are currently
 recomputed on every call; caching them removes two Psat inversions per
 call and is the obvious next optimisation.  NOT done here.
+
+## Addendum 10l — Contract 3: the phase state is a CHECKED construction.
+## First two sites converted.  (2026-08-10)
+
+### 10l.1  The predicate already existed
+
+`ps_regime(alpha, m, pr)` returns Absent when `!(alpha > alpha_vanish) ||
+!(m > 0)` -- it already tests BOTH partitions.  That matters, because
+`rho_k = m_k/alpha_k` and `e_k = E_k/m_k` have DIFFERENT denominators:
+alpha_k partitions volume, m_k partitions mass, and neither constrains the
+other.  A test on the implied density therefore does NOT license the
+energy -- confirmed by observation, see 10l.3.
+
+Contract 3 is that predicate applied where the quotients are FORMED, not
+where they are repaired.  `ps_phase_quot` (PS_presence.H) returns
+{rho, e, exists}; a phase either has a state or it has none.
+
+### 10l.2  What the converted sites were doing
+
+`ps_physical_flux_from_state` and `ps_ctoprim`, legacy branch, in ~15
+lines each:
+
+1. `rg = Independent` FORCED -- asserting both phases exist;
+2. `rho_k = m_k/alpha_k` formed unconditionally;
+3. that quotient CLAMPED into [rho_min, rho_max];
+4. `e_k = (m_k > 1e-12) ? E_k/m_k - ke : e_mix` -- the MIXTURE energy
+   substituted for the phase energy whenever the mass was small;
+5. both branch-locked EOS queries then run regardless.
+
+Four manufactures, then two queries on the results.  Step 4 is how a
+vapour slot acquires a mixture-like energy; steps 2-3 are how a liquid slot
+reaches m/alpha = 1.1e4 kg/m3 (B9 cell 33, step 2, a1 = 1.5447e-06).
+
+The presence branch of both functions already did this correctly and its
+own comment calls it "definition, not repair".  The two paths are now one.
+
+### 10l.3  The observation that settles the criterion question
+
+Whether to gate on alpha or on the implied phase density was open.  It is
+settled by the fold-enabled run: with `CAMR.ps_alpha_vanish=1e-5` the fold
+fires, transfers the mass and ZEROES the slot -- and a downstream consumer
+then evaluates the phase it just removed, reaching the EOS at
+
+    rho = 1e-06 kg/m^3   e = 0 J/kg
+
+`rho = 1e-06` is `rho_min`: **in** the EOS domain, so a density-based
+admission test passes it.  `e = 0` is 257.18 J/kg below anything reachable
+at that density.  A density criterion would have waved it through.
+Existence must be decided BEFORE either quotient is formed.
+
+### 10l.4  The fold is not the missing half
+
+`ps_apply_vanish_fold` transfers the vanishing phase's mass to the survivor
+and zeroes the slot; the code calls it, with the T-floor fold, "the ONLY
+phase-removal mechanisms".  Both ship DISABLED
+(`CAMR.ps_alpha_vanish` and `CAMR.ps_temp_floor`, default 0), and neither
+is set in `inputs`.
+
+Enabling it makes B9 fail SOONER, not later -- because removal was never
+what was missing.  The missing half is the refusal: nothing stops a
+consumer from asking a removed phase for intensive properties.  That also
+explains why the fold ships off; with the refusal absent it looks like a
+regression.
+
+### 10l.5  Status
+
+Converted: `ps_physical_flux_from_state`, `ps_ctoprim` site 2.
+Remaining: `ps_ctoprim` site 1 (~line 80, same forced-Independent shape),
+`PS_hllc.H` (~167-170, 237-263), `ps_max_wave_speed_from_state`, and the
+relaxation coexistence check.
+
+B9 after these two conversions:
+
+| `ps_alpha_vanish` | outcome |
+|---|---|
+| 0   | step 5: rho = 79.93, e = -83584, LIQUID branch |
+| 1e-5 | step 1: rho = 1e-06, e = 0, VAPOR (unconverted site) |
+
+The first has changed CLASS.  rho = 79.93 with e = -83584 is an ordinary
+physical state -- nothing floored, nothing manufactured.  What is wrong is
+that it is being asked for on the LIQUID branch at 79.93 kg/m3, where
+liquid is ~960.  That is BRANCH SELECTION, and it is the next contract:
+nothing currently establishes who decides which branch a phase is
+evaluated on, or what happens when that decision is wrong.  Today it is a
+`rho > 2*rho_ig` heuristic with a corrective guard bolted on -- the same
+shape as everything else removed here.
+
+### 10l.6  Acceptance basis, restated
+
+Per the standing decision, no stored CAMR output has authority: the c1_
+plotfile references and the recorded numbers in verify_canonical (check 3's
+0.643, check 6's 0.427, the EXPECT table, the B4 flatness values) are
+outputs of the implementation under test and are retired as gates.
+
+What survives: the exact single-phase and HEM Riemann solutions
+(`exact_*_pr.csv`, `exact_*_gerg.csv`, `suite/profiles/*.csv`), which are
+independent solves from the standalone; the conservation identities
+(m1+m2 == rho, E1+E2 == rho_E) which are self-referential and cannot be
+contaminated; the floor/no-root census, whose target is zero; and
+robustness on the 2-D problem.

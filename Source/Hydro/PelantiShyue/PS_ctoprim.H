@@ -270,18 +270,19 @@ ps_mixture_pressure_from_cons(const amrex::Real U[NVAR], amrex::Real P_stock,
     const Real E_mix   = U[UEINT] * inv_r;
 
     const Real m1 = U[UM1RHO1], m2 = U[UM2RHO2];
-    const PsRegime rg1 = pr.enabled ? ps_regime(a1, m1, pr) : PsRegime::Independent;
-    const PsRegime rg2 = pr.enabled ? ps_regime(a2, m2, pr) : PsRegime::Independent;
-    // G1 (see PS_guards.H) -- was floor-only.  S2: never divide when ABSENT.
-    Real rho1 = (pr.enabled && rg1 == PsRegime::Absent) ? rho
-              : ps_guard::clamp_phase_density(m1 / amrex::max(a1, Real(1.0e-300)),
-                                              EOS::rho_min(), EOS::rho_max());
-    Real rho2 = (pr.enabled && rg2 == PsRegime::Absent) ? rho
-              : ps_guard::clamp_phase_density(m2 / amrex::max(a2, Real(1.0e-300)),
-                                              EOS::rho_min(), EOS::rho_max());
+    //  Contract 3 (see PS_presence.H): checked construction on BOTH paths.
+    //  Was: force rg = Independent on the legacy path, divide by alpha
+    //  regardless, clamp the quotient into the EOS domain, and substitute
+    //  E_mix for the phase energy when m was small.
+    const PsRegime rg1 = ps_regime(a1, m1, pr);
+    const PsRegime rg2 = ps_regime(a2, m2, pr);
+    const PsPhaseQuot q1 = ps_phase_quot(a1, m1, U[UE1], ke_spec, pr);
+    const PsPhaseQuot q2 = ps_phase_quot(a2, m2, U[UE2], ke_spec, pr);
     amrex::ignore_unused(rho_floor);
-    const Real e1 = (m1 > Real(1.0e-12)) ? U[UE1] / m1 - ke_spec : E_mix;
-    const Real e2 = (m2 > Real(1.0e-12)) ? U[UE2] / m2 - ke_spec : E_mix;
+    const Real rho1 = q1.exists ? q1.rho : rho;      // no state -> mixture, by definition
+    const Real rho2 = q2.exists ? q2.rho : rho;
+    const Real e1   = q1.exists ? q1.e   : E_mix;
+    const Real e2   = q2.exists ? q2.e   : E_mix;
 
     Real Y[NUM_SPECIES];
     Y[0] = Real(1.0);
@@ -289,7 +290,7 @@ ps_mixture_pressure_from_cons(const amrex::Real U[NVAR], amrex::Real P_stock,
     Real P1, P2;
     if (pr.enabled) {
         const Real P_ss = ps_guard::sanitize_stock_pressure(P_stock);
-        if (rg1 == PsRegime::Independent) { EOS::REY2P_liquid(rho1, e1, Y, P1);
+        if (q1.exists && rg1 == PsRegime::Independent) { EOS::REY2P_liquid(rho1, e1, Y, P1);
                                             ps_guard::sanitize_phase_pressure(P1, P_ss); }
         else                              { P1 = P_ss; }
         if (rg2 == PsRegime::Independent) { EOS::REY2P_vapor(rho2, e2, Y, P2);
