@@ -210,8 +210,14 @@ amrex::Real mixture_pressure(amrex::Real a1, amrex::Real P1,
 inline long& n_mass_neg()       { static long n = 0; return n; }
 inline long& n_mass_nonfinite() { static long n = 0; return n; }
 inline void  count_mass_neg()       { ++n_mass_neg(); }
+//  Bound as well as count (contract 4): the summed magnitude of mass CREATED by
+//  clamping a negative partial mass to zero.  The census counted 44-52 events
+//  per two-phase run with no idea of the size.
+inline double& m_mass_neg()         { static double m = 0.0; return m; }
+inline void  add_mass_neg(double dm) { m_mass_neg() += dm; }
 inline void  count_mass_nonfinite() { ++n_mass_nonfinite(); }
-inline void  reset_mass_counts() { n_mass_neg() = 0; n_mass_nonfinite() = 0; }
+inline void  reset_mass_counts() { n_mass_neg() = 0; n_mass_nonfinite() = 0;
+                                   m_mass_neg() = 0.0; }
 inline long& n_rho_clamp_hi() { static long n = 0; return n; }
 inline long& n_rho_clamp_lo() { static long n = 0; return n; }
 inline void  count_rho_hi()   { ++n_rho_clamp_hi(); }

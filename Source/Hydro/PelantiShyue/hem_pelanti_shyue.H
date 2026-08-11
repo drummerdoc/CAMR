@@ -97,10 +97,11 @@ struct PsMtStats {
                                 //   the normalised max, reported separately
     double cr_worst   = 0.0;    // largest RAW |dm'|/|dm| -- see note below
     double cr_worst_n = 0.0;    // largest NORMALISED |dm'|/|dm_eq - dm|
+    double cr_worst_r = 0.0;    // fully-relaxed regime: largest |dm'|/|dm_eq|
     void reset() { seen = gated = eqsolve = eqfail = iters = itmax = 0;
                    pr_iters = 0;
                    cr_samples = cr_nonctr = cr_refused = cr_relaxed = 0;
-                   cr_worst = 0.0; cr_worst_n = 0.0; }
+                   cr_worst = 0.0; cr_worst_n = 0.0; cr_worst_r = 0.0; }
 };
 inline PsMtStats& ps_mt_stats() { static PsMtStats s; return s; }
 
@@ -3057,7 +3058,8 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
                                           double alpha_floor = 1.0e-6,
                                           double g_ref = 0.0,
                                           int update_alpha = -1,
-                                          int diag_contract = 0)
+                                          int diag_contract = 0,
+                                          double h_w = 0.5)
 {
     if (tau_g <= 0.0 || dt <= 0.0) return false;
     if (!eos.valid()) return false;
@@ -3276,8 +3278,22 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
 
     if (!std::isfinite(dm) || dm == 0.0) return true;
 
-    // Energy transfer: interface enthalpy = arithmetic mean of h_1, h_2.
-    const double h_I = 0.5 * (p1.h + p2.h);
+    //  Energy transfer: interface enthalpy carrier (D2).  Historically HARD-
+    //  CODED to the arithmetic mean here, even though PsMassTransferParams
+    //  carries an h_interface_weight that ps_mass_transfer_relax_cell honours --
+    //  so the production path had no knob at all.  h_w now selects it:
+    //      0.5 (default) : mean, BIT-IDENTICAL to the previous expression
+    //      0.0 / 1.0     : phase-1 / phase-2 enthalpy
+    //      < 0           : UPWIND by the direction of transfer -- mass leaving
+    //                      phase 1 carries h_1, mass leaving phase 2 carries
+    //                      h_2.  This is the physically-motivated variant and
+    //                      the D2 alternative worth testing: with the mean, a
+    //                      stiff one-step transfer can leave the donor holding
+    //                      an energy its own density cannot support.
+    double h_I;
+    if (h_w < 0.0)            h_I = (dm > 0.0) ? p1.h : p2.h;   // upwind
+    else if (h_w == 0.5)      h_I = 0.5 * (p1.h + p2.h);        // exact old form
+    else                      h_I = (1.0 - h_w) * p1.h + h_w * p2.h;
     const double H_I = h_I + 0.5 * u_mix * u_mix;
 
     // Apply.  Session 89bg option: PS_MT_UPDATE_ALPHA=1 also updates
@@ -3378,7 +3394,19 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
                 if (rn > st.cr_worst_n) st.cr_worst_n = rn;
                 if (rn >= 1.0) ++st.cr_nonctr;
             } else {
-                ++st.cr_relaxed;   // frac ~ 1: no expected residual to divide by
+                //  FULLY-RELAXED regime (frac ~ 1, i.e. tau -> 0): the step
+                //  applied the WHOLE equilibrium transfer, so there is no
+                //  expected residual to normalise against -- and by the same
+                //  token ANY residual is pure path error.  Measure it against
+                //  the equilibrium transfer itself.  >= 1 means the step left
+                //  the cell wanting at least as much again as it just moved,
+                //  i.e. worse than doing nothing: non-contractive.
+                ++st.cr_relaxed;
+                if (std::abs(dm_eq_saved) > 0.0) {
+                    const double rr = std::abs(dm_res) / std::abs(dm_eq_saved);
+                    if (rr > st.cr_worst_r) st.cr_worst_r = rr;
+                    if (rr >= 1.0) ++st.cr_nonctr;
+                }
             }
         }
     }

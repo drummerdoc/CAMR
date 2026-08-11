@@ -48,10 +48,17 @@ inline long& n_T_clamp()   { static long n = 0; return n; }
 inline long& n_T_nonconv() { static long n = 0; return n; }   // branch-LOCKED (dangerous)
 inline long& n_T_nonconv_det() { static long n = 0; return n; } // phase-DETECT (normal probe)
 inline long& n_P_floor()   { static long n = 0; return n; }
+//  Split 2026-08-11: the 0.01 bar P floor fires overwhelmingly inside the
+//  BRACKET-END PROBES (state_from_T_v at T_MIN = 1 K, where the PR pressure at
+//  liquid-like densities is negative by construction), NOT on states in use.
+//  Counting them together made the census line unable to reach zero and made a
+//  benign work count read as alarming.  n_P_floor now counts IN-USE floors
+//  only; probe floors go here.
+inline long& n_P_floor_probe() { static long n = 0; return n; }
 inline long& n_noroot_lo() { static long n = 0; return n; }
 inline long& n_noroot_hi() { static long n = 0; return n; }
 inline long& n_calls()     { static long n = 0; return n; }
-inline void  reset() { n_T_clamp()=0; n_T_nonconv()=0; n_T_nonconv_det()=0; n_P_floor()=0; n_calls()=0; n_noroot_lo()=0; n_noroot_hi()=0; }
+inline void  reset() { n_T_clamp()=0; n_T_nonconv()=0; n_T_nonconv_det()=0; n_P_floor()=0; n_P_floor_probe()=0; n_calls()=0; n_noroot_lo()=0; n_noroot_hi()=0; }
 }
 // ---- strict mode (CAMR.ps_strict_eos) ---------------------------------
 //  BITMASK, 0 = off (default).  Add the bits you want to trap:
@@ -293,7 +300,8 @@ inline void departureFunctions(const PRFluid& f, amrex::Real T, amrex::Real v_m,
 // =====================================================================
 AMREX_GPU_HOST_DEVICE
 inline State state_from_T_v(const PRFluid& f, amrex::Real T, amrex::Real v_m,
-                            Phase3 phase = Phase3::Vapor)
+                            Phase3 phase = Phase3::Vapor,
+                            bool probe = false)   // true = bracket-end probe
 {
     amrex::Real a, dadT, d2adT2, b;
     pureParams2(f.pr, T, a, dadT, d2adT2, b);
@@ -431,7 +439,8 @@ inline State state_from_T_v(const PRFluid& f, amrex::Real T, amrex::Real v_m,
     // (all A-C Riemann states: P >> 0.01 bar), so it is inert there.
     constexpr amrex::Real P_pos_floor = amrex::Real(1.0e3);   // 0.01 bar
     if (!(P > P_pos_floor)) {
-        P = P_pos_floor; PS_CENSUS(n_P_floor);
+        P = P_pos_floor;
+        if (probe) { PS_CENSUS(n_P_floor_probe); } else { PS_CENSUS(n_P_floor); }
 #if defined(CAMR_PS_DIAG) && !defined(AMREX_USE_GPU)
         if ((hem::strict() & 2))
             hem::strict_abort("P floored to P_pos_floor (0.01 bar)",
@@ -1058,8 +1067,8 @@ inline State state_from_rho_e(const PRFluid& f, amrex::Real rho, amrex::Real e_t
     //      (a defined, monotone-consistent outcome) instead of to wherever
     //      an iteration happened to stop.
     auto solve_single = [&](Phase3 ph, amrex::Real Ta, amrex::Real Tb) -> State {
-        State sa = state_from_T_v(f, Ta, v_m, ph);
-        State sb = state_from_T_v(f, Tb, v_m, ph);
+        State sa = state_from_T_v(f, Ta, v_m, ph, true);   // bracket end
+        State sb = state_from_T_v(f, Tb, v_m, ph, true);   // bracket end
         if (e_target <= sa.e) {
             //  NO ROOT.  This input is not a state: no temperature on this
             //  branch at this density reproduces e.  It is NOT clamped to the
@@ -1198,8 +1207,8 @@ inline bool state_from_rho_e_phase_try(const PRFluid& f, amrex::Real rho,
     constexpr amrex::Real T_MAX = amrex::Real(5000.0);
     const amrex::Real v_m = v_PR_from_rho(f, rho);
 
-    State sa = state_from_T_v(f, T_MIN, v_m, phase);
-    State sb = state_from_T_v(f, T_MAX, v_m, phase);
+    State sa = state_from_T_v(f, T_MIN, v_m, phase, true);   // bracket end
+    State sb = state_from_T_v(f, T_MAX, v_m, phase, true);   // bracket end
     //  No sign change over the bracket => no temperature on this branch at
     //  this density reproduces e.  Report it; the caller decides.  Callers
     //  with a documented fallback (PsPhaseAPI's ph.valid contract) take it;

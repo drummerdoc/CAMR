@@ -248,6 +248,12 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
             int v = 0; amrex::ParmParse pp("CAMR");
             pp.query("ps_mt_diag", v); return v; }();
         const int l_mt_cr = (mt_diag_lvl >= 2) ? 1 : 0;
+        // D2 experiment: CAMR.ps_mt_h_weight.  0.5 = mean (default, previous
+        // behaviour bit-for-bit); negative = upwind by transfer direction.
+        static const double mt_h_w = []() -> double {
+            double v = 0.5; amrex::ParmParse pp("CAMR");
+            pp.query("ps_mt_h_weight", v); return v; }();
+        const double l_mt_h_w = mt_h_w;
         for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
             const amrex::Box bx = mfi.growntilebox(nghost);
             amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
@@ -289,7 +295,7 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                 const hem::V6 Uv_pre = Uv;
                 if (hem::ps_mass_transfer_finite_cell(Uv, eos, double(dt), double(tau),
                                                       1.0e-6, double(gref), l_mt_upd,
-                                                      l_mt_cr)) {
+                                                      l_mt_cr, l_mt_h_w)) {
                     // B3 reproject: only when MT actually transferred mass
                     // (the kernel returns true on its internal gates too,
                     // with Uv untouched -- the bitwise test excludes those,
@@ -330,6 +336,7 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                                << " worst_raw=" << st.cr_worst
                                << " worst_norm=" << st.cr_worst_n
                                << " nonctr(norm>=1)=" << st.cr_nonctr
+                               << " worst_relaxed=" << st.cr_worst_r
                                << " fully_relaxed=" << st.cr_relaxed
                                << " refused=" << st.cr_refused;
             }

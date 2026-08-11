@@ -1736,6 +1736,7 @@ CAMR::clean_state(amrex::MultiFab& S, bool refresh_temp)
           } else if (m1 < amrex::Real(0.0)) {
 #if !defined(AMREX_USE_GPU)
               ps_guard::count_mass_neg();
+              ps_guard::add_mass_neg(double(-m1));   // mass CREATED by the clamp
 #endif
               m1 = amrex::Real(0.0);
           }
@@ -1750,6 +1751,7 @@ CAMR::clean_state(amrex::MultiFab& S, bool refresh_temp)
           } else if (m2 < amrex::Real(0.0)) {
 #if !defined(AMREX_USE_GPU)
               ps_guard::count_mass_neg();
+              ps_guard::add_mass_neg(double(-m2));   // mass CREATED by the clamp
 #endif
               m2 = amrex::Real(0.0);
           }

@@ -841,3 +841,82 @@ and D2 (the H_I = mean(h1,h2) carrier) can no longer be described as affecting
    one remaining piece and tau=1e-7 is the exact_suite gate configuration, so it
    should be added before the controller decision is taken.
 
+## The D2 enthalpy-carrier experiment (2026-08-11) — the carrier IS implicated
+
+`CAMR.ps_mt_h_weight` added (default 0.5 = the previous hard-coded mean, taken
+through the identical expression; <0 = UPWIND by transfer direction, so mass
+leaving phase k carries h_k).  Note the production kernel had NO knob before
+this: `ps_mass_transfer_finite_cell` hard-coded `0.5*(p1.h+p2.h)` while
+`PsMassTransferParams::h_interface_weight` existed and was honoured only by the
+0-D-harness solver.
+
+**B9 zero-trace, mode 4, flash stiff, tau = 1e-7, N=64:**
+
+    h_weight   meaning                     result
+    0.5        mean (default)              ABORTS at 24 advances, e_1 = -945868
+    1.0        receiver (vapour) h          ABORTS at 24 advances, e_1 = -952549
+    0.0        donor (liquid) h            COMPLETES, 103 advances
+    -1         upwind by sign of dm        COMPLETES, 103 advances
+
+dm > 0 here (evaporation), so upwind == donor == h_1.  The mechanism is now
+plain and physical: mass leaving the liquid must carry the LIQUID's enthalpy.
+Debiting the donor by the MEAN of two very different enthalpies removes too much
+energy per unit mass, and in the stiff limit (dm = dm_eq in one step) leaves the
+donor holding an energy its own density cannot support -- the measured 470 kJ/kg
+below the reachable bound.  Mixture energy is conserved either way (the transfer
+is `U[4] -= dm*H_I; U[5] += dm*H_I`), which is exactly why the identity stayed at
+round-off while the PARTITION went absurd.
+
+**Consistency argument, independent of the measurement:** D1 already decided
+that transfer moves VOLUME at the DONOR's density (E.1).  Taking the ENERGY at
+the mean breaks that symmetry.  The kernel's own comment on
+`h_interface_weight` says "upwinding by sign of dm is more physical".
+
+**But it is NOT a clean fix, and I am not proposing it as a landing.**
+  - tau sweep with upwind: 1e-4 completes, **1e-5 still ABORTS**, 1e-6 completes,
+    1e-7 completes.  Non-monotone in tau -- so the failure is marginal near
+    1e-5, not removed.
+  - tau = 1e-6 completes while its normalised contraction ratio is **1271.8**.
+    So a large ratio does not predict failure either; the 5.2 metric and the
+    abort are not the same signal.
+  - **The HEM gate does not flip green.**  With upwind, B9 at tau=1e-7 RUNS and
+    scores rel-L2 vs the exact HEM solution of rho 0.1145 / **u 0.8347** /
+    P 0.3382.  The gate is u-err < 0.60, and `DESIGN_ps_wp_front.md` §8 recorded
+    0.427 on 2026-08-10.  So the crash becomes a quantified 39% miss, which is
+    far more tractable, but it is not passing AND the 0.427 is not reproduced.
+    **That regression from 0.427 is now its own question**, separate from the
+    carrier: between then and now the tree gained the bracketed EOS, contract 3,
+    the legacy deletion, the clean_state floor removal and today's changes.
+
+So D2 is not "affects path, not endpoint" -- at tau <= 1e-5 the carrier choice
+decides whether the run survives.  Whether the answer is upwind, the saturation
+enthalpy, a controller (5.2 a/b/c), or some combination is NOT settled by this
+experiment, and the 0.427 regression should be bisected first.
+
+## The three small census pieces (2026-08-11, landed)
+
+1. **Contraction ratio, fully-relaxed regime.**  At frac ~ 1 there is no
+   expected residual to normalise against, so those cells now report
+   `worst_relaxed = |dm'|/|dm_eq|` -- after a full-equilibrium step ANY residual
+   is path error by definition -- instead of being dropped.  >= 1 counts as
+   non-contractive there too.
+2. **Mass clamps bounded, not just counted.**  `ps_guard::m_mass_neg()`
+   accumulates the mass CREATED by clamping a negative partial mass to zero, at
+   both `clean_state` sites; `[PS-FLOOR]` now prints `mass_neg_kg` beside the
+   event count.  Closes the "counted but unbounded" half of contract 4 on the
+   mass path.  NOT YET MEASURED -- needs a re-run of the diag build.
+3. **P-floor counter split.**  `state_from_T_v` takes a `probe` flag, set true at
+   the four bracket-end call sites (`hem_pr_state.H` 1061/1062, 1201/1202).
+   `n_P_floor` now counts IN-USE floors only; probe floors go to
+   `n_P_floor_probe`.  The census line can now reach zero in principle, which it
+   could not before.  NOT YET MEASURED -- needs a re-run of the diag build.
+
+**Regression with all four at their defaults:** 19/19 cases complete, identities
+at round-off (worst massid 1.5e-16, worst energyid 1.2e-14), and `exact_suite`
+reproduces the accuracy table to every printed digit (A1 0.0118/0.0101/0.0153,
+C2 u 0.1248, B4 0.0635/0.1266/0.0491).  NOTE: the identity values moved at the
+1e-16..1e-14 level versus this morning's run, which is round-off and most likely
+the added `probe` parameter changing inlining -- the GNUmakefile's own warning
+that "even unexecuted added code shifts it".  Bit-identity was NOT demonstrated;
+accuracy invariance was.
+
