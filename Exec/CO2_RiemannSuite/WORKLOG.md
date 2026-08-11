@@ -22,6 +22,11 @@ Convention:
    open [DECIDE] points D1-D5.  **D3 is live.**
 3. **`../../DESIGN_ps_presence_discrete.md`** — the presence ladder
    (Absent / Corridor / Independent) the above is gated on.
+4. **`../../DESIGN_ps_wp_front.md`** — the WP phase-energy front note.
+   **It is CLOSED** (W0 measured, W2-1 landed `0d6b54f`, gates green).  Read it
+   so you do not re-attribute a stiff-leg failure to it, as happened
+   2026-08-11.  Its only open items are W-D4 (q-guard retirement) and W-D5
+   (corridor face-state identity, 2-D, 0.05-0.11, decoupled from any gate).
 
 The design notes are LOAD-BEARING and are not summarised here.  On
 2026-08-10 a context compaction dropped them from the working set and the
@@ -665,4 +670,118 @@ that should not be the one to notice it.
    corridor -> INDEPENDENT while carrying the energy defect in the window
    between two sweeps.  V7 gives ~70 stages of warning that something is
    unreachable, but it is not positioned to pre-empt the fatal query.
+
+## Floor / no-root CENSUS — acceptance basis item 3 (2026-08-11, all 19 cases)
+
+Built `USE_PS_DIAG=TRUE` in a throwaway dir (`/tmp/cen`, NOT the repo objdir --
+the flag only changes DEFINES, so toggling it in place would silently mix
+objects), run with `CAMR.ps_floor_diag=1`, per-step `[PS-FLOOR]` counters summed
+over each run.  N=64, wp, alpha_trace=0, production config per `case_cfg`.
+
+**Every non-convergence counter is ZERO in all 19 cases:**
+
+    nonconv_LOCKED  (branch-locked, the dangerous one)   0   was 20,414
+    nonconv_DETECT  (phase-detect, structural)           0   was  1,980
+    T_clamp_1K                                           0
+    mass_nonfinite                                       0
+
+That is contract 1 delivered and MEASURED, not assumed: the bracketed EOS
+eliminated the entire non-convergence population the pre-bracketing census
+recorded.
+
+**Two counters are non-zero.**
+
+1. `mass_neg` -- negative partial mass clamped to 0 in `clean_state`, counted by
+   `ps_guard`.  Zero on every A and C case and on B1/B5/B6/B8; **44-52 events
+   per run** on B2 (44), B3 (48), B4 (49), B7 (52), B9 (48), B10 (50) -- i.e.
+   exactly the flashing / genuinely-two-phase cases.  The identity m1+m2 == rho
+   still holds at round-off afterwards because `ps_resync_mixture_mass` follows,
+   so this is mass SILENTLY CREATED and then reconciled.  It is counted but NOT
+   BOUNDED: the counter records events, not magnitude.  Contract 4's remaining
+   item on the mass path.  Next measurement: the summed |dm| of those clamps.
+
+2. `P_floor_1kPa` -- the 0.01 bar per-phase pressure floor
+   (`hem_pr_state.H` ~433).  Ranges from **2** (C1-Identity) to **3,324,855**
+   (B5-Both-2P); A cases 20k-148k, B7 1.1M, B9 216k.
+   **Verified by strict trap (`CAMR.ps_strict_eos=2`) on A1: it fires at
+   T = 1 K** --
+       EOS INPUT: rho = 113.24, e = -61556 J/kg, VAPOR, T at failure = 1 K
+   -- i.e. inside the COLD END OF THE BRACKET that `state_from_rho_e[_phase]`
+   evaluates to test for a root.  These are CLASSIFICATION PROBES, not states in
+   use, and the PR pressure at T = 1 K is below 0.01 bar by construction at
+   liquid-like densities.  It does not corrupt the bracket: `st.e = e_mol/f.M`
+   is explicitly "e unchanged", so `sa.e`/`sb.e` and therefore the no-root test
+   are unaffected.  The count tracks how much BRACKETING WORK a case does, not
+   how many states were repaired -- which is why the quiescent C1-Identity run
+   does 2 and the fully two-phase B5 does 3.3M.
+   Consequence: the floor's own comment ("inert there ... all A-C Riemann
+   states: P >> 0.01 bar") is true of the STATES and false of the PROBES, and
+   the counter conflates them.  As it stands this census line can never reach
+   zero and is uninformative -- it read as alarming and was not.  Fix is to
+   split it: do not increment on bracket-end evaluations, or bucket
+   probe-vs-in-use.  Until then, treat `P_floor_1kPa` as a work counter.
+
+**Verdict on basis item 3.**  Target zero is MET for every counter that
+represents a repair to a state in use, with two exceptions to close: the
+unbounded `mass_neg` magnitude, and the mis-scoped P-floor counter.
+
+Also found: `floor_census::n_calls()` is never incremented anywhere (`eos_calls`
+prints 0 always).  The historical "172,725 EOS calls" denominator cannot be
+reproduced from this build, so the old percentages are not recomputable.
+
+## CORRECTION + attribution: B9-stiff is MASS TRANSFER, not the WP front (2026-08-11)
+
+**My error, recorded so it is not repeated.**  I spent today attributing
+B9-stiff to "the standing WP birth-front item".  That item is CLOSED.
+`DESIGN_ps_wp_front.md` §7 ran W0 and identified the mechanism (mixed update
+forms), §8 implemented W2-1 (`0d6b54f`: in the BL-2 limiter, limit the PHASE
+slots and DERIVE `Ft[URHO] = Ft[UM1RHO1]+Ft[UM2RHO2]`,
+`Ft[UEDEN] = Ft[UE1]+Ft[UE2]`), and its gates went green -- B9 zero-trace stiff
+at tau=1e-7 completed with u-err 0.427 < 0.60 and verify_canonical 27/27.  The
+fix is still in the tree at `PS_umeth.cpp` 1694-1695.  I missed this because the
+restart reading list at the top of this file names TWO design notes and there
+are THREE; the extinction note §11 points at the front item as "its own design
+note" and does not say it was subsequently resolved.  **Reading list fixed
+below.**
+
+**The identity is still fixed -- measured today.**  B9-stiff worst A-stage
+energyid: `ps_wp_order=2` -> **9.4e-05**, `ps_wp_order=1` -> **0.130**.  Order 2
+is four orders better AND dies sooner (24 vs 52 advances), so the identity is
+not what kills the run.  E1+E2 = rho_E holds to round-off at the aborting step
+while the PARTITION between phases is physically impossible (e_2 = +6.1e6 J/kg,
+e_1 = -9.4e5 J/kg).  Identity-consistent, physically absurd: a different
+quantity from the one W2-1 fixed.
+
+**Attribution by instrument** (B9 zero-trace, mode 4, flash stiff at 1e-7
+throughout, N=64, order 2):
+
+    theta=1e-3  mt=1e-7   ABORTS at 24 advances, rho_1=1247.8, e_1=-950423
+    theta=1e-7  mt=1e-3   COMPLETES, 103 advances, no abort
+    theta=1e-3  mt=1e-3   COMPLETES, 103 advances, no abort
+
+Stiff thermal with slow MT is clean; stiff MT with slow thermal reproduces the
+abort at the same state as the fully-stiff leg (rho_1=1232.3, e_1=-945868).
+Flash is stiff in every row, so it is not the discriminator.  **The finite-rate
+MASS TRANSFER at stiff tau is the driver.**
+
+**This is exactly the measurement `DESIGN_ps_extinction.md` §5.2 reserved.**  MT
+moves `dm * H_I` with `H_I = 0.5*(h_1+h_2) + ke` (D2, deliberately left as the
+mean for that work item).  In the stiff limit the exact integration takes
+`dm -> dm_eq` in ONE step, so the donor can be left holding an energy its
+density cannot support while the mixture total is conserved exactly -- which is
+the measured signature.  §5.2's recorded decision was "instrument first,
+controller later ... taken ONLY if measurements show non-contractive cells at
+production or stiff-sweep settings."  Those measurements now exist, and they are
+non-contractive at tau <= 1e-7.  So the deferred item is now live:
+  - E2's CONTRACTION-RATIO diagnostic (§5.2, never implemented -- still item 2
+    on the Next list) is the specified instrument.
+  - Then the controller choice §5.2 (a) stage-uniform sub-cycling /
+    (b) per-cell contractivity sub-cycling / (c) lagged global dt backstop,
+    ranked there by GPU lock-step friendliness.
+  - D2 (the H_I choice) stops being "affects path, not endpoint" if no
+    controller is added.
+Production stiffness (tau=1e-3) and the whole 19-case battery are unaffected.
+
+**D3 (corridor-donor MT) stays deferred** on today's earlier evidence, and this
+result does not disturb that: the dying-donor case still never occurs.
 
