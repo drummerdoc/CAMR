@@ -30,6 +30,16 @@ The 1-D suite does not run to completion.  B9 aborts, deliberately, on
 inputs that are not states.  This is intended: the aborts replace silent
 floors that were hiding the same defects.
 
+## Harness
+
+`exact_suite.py` is the acceptance harness.  `run_ac_suite.py` is RETIRED
+and must not be used to evaluate a change: it replays each stored
+reference's `job_info` -- **including `CAMR.ps_flux`** -- onto the command
+line, so it silently re-creates the configuration the c1_ references were
+minted under and is structurally incapable of seeing a change to the
+defaults.  (Observed: switching the `inputs` default to `wp` produced
+byte-identical suite output, because the harness forced `hllc` back.)
+
 ## Acceptance basis
 
 **No stored CAMR output has authority.**  The c1_ plotfile references and
@@ -60,6 +70,30 @@ What counts:
 | 5 | Operators declare preconditions and refuse. | not started |
 | 6 | Validity propagates (`hem::State` has no valid flag; `PsPhase` does). | not started |
 | 7 | ~~Branch selection~~ — **RETRACTED.**  Phase ID is not determined, it is asserted by the slot: slot 1 IS liquid, slot 2 IS vapour, from init until removal.  A phase-locked query needs no inference.  The only genuine determination is the MIXTURE query (`state_from_rho_e`), which now brackets against the dome; the old `rho > 2*rho_ig` heuristic is gone. | n/a |
+
+## Measurements: rel-L2 vs EXACT solutions (wp, 64 cells, 2026-08-10)
+
+| case | rho | u | P |
+|---|---|---|---|
+| A1-Sod-strong | 0.0118 | 0.0101 | 0.0153 |
+| A2-Sod-weak | 0.0130 | 0.0890 | 0.0150 |
+| A3-Lax-like | 0.0271 | 0.0835 | 0.0281 |
+| A4-Double-rare | 0.0244 | 0.0551 | 0.0286 |
+| A5-Two-shock | 0.0540 | 0.1063 | 0.0668 |
+| A6-Near-vacuum | 0.0122 | 0.0103 | 0.0153 |
+| C1-Identity | 0.0000 | 0.0000 | 0.0000 |
+| C2-Acoustic-limit | 0.0001 | **0.1248** | 0.0001 |
+| C3-Strong-shock-V | 0.0269 | 0.1028 | 0.0248 |
+| B4-Cross-critical | 0.0635 | 0.1266 | 0.0491 |
+| B9-Deep-Expansion | fails under stiff relaxation | | |
+
+No pass thresholds are set yet; these ARE the first absolute numbers.
+C2's u error (0.1248) against rho/P at 1e-4 is anomalous and unexplained.
+
+wp vs hllc where both run: A1 0.0118/0.0101/0.0153 (wp) vs
+0.0158/0.0149/0.0201 (hllc); A5 marginally better on wp; B4 runs on wp and
+FAILS on hllc.  hllc is less accurate where it works and broken where it
+does not.
 
 ## Durable measurements
 
@@ -110,6 +144,14 @@ What counts:
   alpha_trace=0 and 1e-6 gave identical trajectories to 4 digits, because
   step 1 re-imposed the fiction regardless.  After removing the floor they
   differ, as an initial condition should.
+- **B9 completes on wp WITHOUT stiff relaxation, and fails WITH it**
+  (mode 4, tau=1e-7).  An earlier claim that "B9 runs to completion on wp"
+  was unqualified and is only true for the non-stiff configuration.
+- **The alpha transport lags the mass transport on the hllc path**: cell 33
+  reaches rho1 = 31247 against an upstream 908, alpha advancing at ~1/4 the
+  rate of its own mass update.  On wp the same cell holds 922 against 908.
+  There are two separate alpha updates (`dsdt_arr[UALPHA1]` at PS_umeth.cpp
+  1886 and 2392); `ps_correct_alpha_transport` is DEAD CODE, never called.
 - **B9 aborts at step 10 independently of all of this** (`rho = 10.83,
   e = -12171, VAPOR`), unchanged by trace seeding or the floor removal.
 - **Single-phase is insensitive to the floor removal**: A1-A6 all pass at
