@@ -1433,3 +1433,104 @@ at the floor.  A false pressure imbalance, repeated, is a ratchet.
 
 Only the last five links were correctly attributed in 10b-10f.  The first
 four are new here, and the first is still open.
+
+## Addendum 10h — FLOOR CENSUS: the silent EOS repairs fire MILLIONS of
+## times, including in every run we call good.  Rate does not discriminate
+## healthy from fatal.  (2026-08-10)
+
+Question posed: is it EVER safe to apply a floor, or is a run toast from
+the first one?  Answered by counting.  A census (CAMR.ps_floor_diag=1,
+USE_PS_DIAG builds) instruments the three SILENT repairs in
+Source/EOS/PR/hem_pr_state.H.
+
+### 10h.1  The three sites
+
+| site | what it does | observable before this? |
+|---|---|---|
+| `ps_newton_solve_T`, `if (T < 1) T = 1` (x3 copies) | clamps the Newton iterate to a 1 K floor | no |
+| `ps_newton_solve_T` returns false at max_iter | non-convergence; **the caller DISCARDS the return value** | no |
+| `state_from_T_v`, `P_pos_floor = 1.0e3` | substitutes 0.01 bar for the solved P | no |
+
+The non-convergence site carries the comment "Return value (converged) is
+a future non-convergence diagnostic hook."  It was never built.  All three
+return a state with `valid = true`.
+
+### 10h.2  The counts
+
+| run | steps | EOS calls | T_clamp | T_nonconv | **nonconv rate** | P_floor |
+|---|---|---|---|---|---|---|
+| N=64 presence — COMPLETES, passes every gate | 106 | 172959 | 1889188 | 22390 | **12.9%** | 273597 |
+| N=96 presence — DIES at ~step 145 | 150 | 338696 | 3134478 | 37295 | **11.0%** | 529321 |
+| N=64 LEGACY — the digit-identical c1_ path | 103 | 67610 | 118490 | 1394 | **2.1%** | 82967 |
+
+T_clamp is not an independent defect: 1889188/22390 = 84.4 and
+118490/1394 = 85.0, i.e. essentially every clamp belongs to a
+non-converging call burning ~85 of its 100 iterations pinned at 1 K.  The
+clamp is the SIGNATURE of the non-convergence, not a separate event.
+
+P_floor fires more often than there are Newton calls (1.58 per call at
+N=64) because `state_from_T_v` is reached from more paths than the
+(rho,e) solve.
+
+### 10h.3  What this answers, and what it refuses to answer
+
+- **Floors are not rare and they are not confined to broken runs.**  The
+  N=64 presence run is the basis of the entire validated W-series -- it
+  completes, and verify_canonical passes on it.  **12.9% of its EOS calls
+  do not converge and are silently accepted.**
+- **Even the legacy path is not clean.**  The configuration that reproduces
+  the c1_ references to EVERY PRINTED DIGIT still runs 2.1% non-convergence
+  and 82967 pressure-floor substitutions.  Digit-identical agreement with a
+  stored reference does NOT mean the EOS solved.
+- **Rate does not discriminate.**  The run that dies has a LOWER
+  non-convergence rate (11.0%) than the run that passes (12.9%).  So the
+  hypothesis "one floor and the run is toast" is not supported in a
+  counting sense, and neither is "floors are fine because the gates pass".
+  Counting cannot decide it.
+
+What decides it is WHERE the floor lands.  The `P_pos_floor` comment argues
+its own inertness precisely this way -- "the phase's tiny volume fraction
+weights it negligibly" -- and for a trace phase that is true.  The 10g
+failure is the same floor landing on a phase carrying 99.407% of the cell
+mass, where nothing weights it away.  A floor on a vanishing phase is
+plausibly inert; the identical floor on a dominant phase poisoned the run.
+The code does not distinguish these cases, and nothing records which one
+just happened.
+
+### 10h.4  Other silent repairs found, NOT yet instrumented
+
+The census covers three sites.  The same pattern appears at least here:
+
+- `ps_finite_or(x, fallback)` — substitutes for non-finite values throughout
+  PS_umeth.cpp / PS_hllc.H.  Uncounted.
+- `if (!std::isfinite(c1) || c1 <= 0) c1 = 1.0` in
+  ps_max_wave_speed_from_state — a 1 m/s sound speed, uncounted.
+- `ps_pressure_relax_cell(..., &reason)` — `reason` is populated and then
+  the caller `return`s on failure, leaving the cell unrelaxed.  Silent.
+- The thermal coexistence gate (10g.1) — skips thermal relaxation entirely
+  when the temperatures are outside [T_triple, T_crit].  Silent, and in the
+  10g failure it fired precisely because an earlier floor had put T at 1 K.
+- alpha clamps to [1e-6, 1-1e-6] at several sites.
+- `clamp_phase_density` to [rho_min, rho_max] — this one IS counted
+  (PS-GUARD rho_clamp_lo/hi) but the count is only reported under
+  ps_diag_mass.
+
+### 10h.5  Recommended: a strict mode, and what it would cost
+
+Per the standing instruction that no floor or skipped non-convergence
+should be silent, the minimum viable change is a `CAMR.ps_strict_eos` dial
+that, on any of the sites above, prints the full offending input state
+(rho_k, e_k, alpha, m_k, cell index, stage) and aborts on the FIRST
+occurrence.  Not a log -- 22390 events per run is not readable -- but a
+stop-on-first with enough state to reconstruct the input.
+
+The census says what that costs: a strict run will stop almost immediately,
+because these fire from step 0 (35 P-floor hits before the first timestep).
+So strict mode is not a switch to flip on production; it is a bisection
+tool for driving the count to zero one input defect at a time, starting
+with whatever fires first at step 0.
+
+That first firing is the natural successor to this addendum: 35 P_floor
+substitutions occur before any timestep is taken, i.e. in the INITIAL
+CONDITION or its first EOS evaluation.  Whatever is wrong is wrong before
+the solver runs.

@@ -392,6 +392,21 @@ CAMR::CAMR_advance (Real time,
         ps_harvest_states(S, ng);            // #42 active-learning EOS state harvest (gated)
         ps_apply_sources(S, dt_r, ng);
         diag_mass(S, "D post sources (flash)");
+#ifdef CAMR_PS_DIAG
+        {   // CAMR.ps_floor_diag (default 0 = off): per-step census of the
+            // SILENT EOS repairs.  Deliberately NOT nested in ps_diag_mass.
+            static const int fc = []() { int v = 0; amrex::ParmParse pp("CAMR");
+                                         pp.query("ps_floor_diag", v); return v; }();
+            if (fc != 0) {
+                amrex::Print() << "[PS-FLOOR] step " << parent->levelSteps(level)
+                    << "  eos_calls=" << hem::floor_census::n_calls()
+                    << "  T_clamp_1K=" << hem::floor_census::n_T_clamp()
+                    << "  T_nonconv=" << hem::floor_census::n_T_nonconv()
+                    << "  P_floor_1kPa=" << hem::floor_census::n_P_floor() << "\n";
+                hem::floor_census::reset();
+            }
+        }
+#endif
         PS_CELL_PROBE(S, "D  post sources        ");
         diag_a1(S, "reaction post-sources");// jump here => flash/source is the driver
         ps_report_temps(S, "post-sources", geom, ng);            // #88 diag

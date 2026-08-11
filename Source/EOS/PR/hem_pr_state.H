@@ -33,6 +33,25 @@
 namespace hem {
 
 // ---------------------------------------------------------------------
+//  Floor census (CAMR_PS_DIAG builds only).  Counts the SILENT repairs in
+//  this file: the Newton T-clamp to 1 K, Newton non-convergence (whose
+//  return value the caller DISCARDS), and the P_pos_floor substitution.
+//  Each of these returns a state marked valid.  FINDINGS Addendum 10h.
+// ---------------------------------------------------------------------
+#if defined(CAMR_PS_DIAG) && !defined(AMREX_USE_GPU)
+namespace floor_census {
+inline long& n_T_clamp()   { static long n = 0; return n; }
+inline long& n_T_nonconv() { static long n = 0; return n; }
+inline long& n_P_floor()   { static long n = 0; return n; }
+inline long& n_calls()     { static long n = 0; return n; }
+inline void  reset() { n_T_clamp()=0; n_T_nonconv()=0; n_P_floor()=0; n_calls()=0; }
+}
+#define PS_CENSUS(x) (++hem::floor_census::x())
+#else
+#define PS_CENSUS(x) ((void)0)
+#endif
+
+// ---------------------------------------------------------------------
 //  Extended fluid description: PR cubic + molar mass + ideal-gas c_p^ig
 //  + optional Peneloux volume translation.
 //
@@ -350,7 +369,7 @@ inline State state_from_T_v(const PRFluid& f, amrex::Real T, amrex::Real v_m,
     // affecting any stable/metastable state whose P already exceeds the floor
     // (all A-C Riemann states: P >> 0.01 bar), so it is inert there.
     constexpr amrex::Real P_pos_floor = amrex::Real(1.0e3);   // 0.01 bar
-    if (!(P > P_pos_floor)) P = P_pos_floor;
+    if (!(P > P_pos_floor)) { P = P_pos_floor; PS_CENSUS(n_P_floor); }
 
     State st;
     st.T     = T;
@@ -846,8 +865,9 @@ bool ps_newton_solve_T(const PRFluid& f, amrex::Real v_m,
         if (res_ok && step_ok) return true;   // converged (both criteria)
 
         T += dT;
-        if (T < amrex::Real(1)) T = amrex::Real(1);
+        if (T < amrex::Real(1)) { T = amrex::Real(1); PS_CENSUS(n_T_clamp); }
     }
+    PS_CENSUS(n_T_nonconv);
     return false;   // max_iter reached — should not happen (diagnostic hook)
 }
 
@@ -880,7 +900,7 @@ void ps_newton_solve_T_fixed(const PRFluid& f, amrex::Real v_m,
             dT = (dT > amrex::Real(0) ? amrex::Real(1) : amrex::Real(-1))
                * amrex::Real(0.3)*T;
         T += dT;
-        if (T < amrex::Real(1)) T = amrex::Real(1);
+        if (T < amrex::Real(1)) { T = amrex::Real(1); PS_CENSUS(n_T_clamp); }
     }
 }
 
@@ -902,6 +922,7 @@ inline State state_from_rho_e(const PRFluid& f, amrex::Real rho, amrex::Real e_t
     // Robust, seed-independent Newton on T (temperature-scaled stop;
     // see ps_newton_solve_T).  Return value (converged) is a future
     // non-convergence diagnostic hook.
+    PS_CENSUS(n_calls);
     ps_newton_solve_T(f, v_m, e_mol_target, T);
 
     // -------- 2) phase check : are we inside the dome at this T? ------
@@ -1027,6 +1048,7 @@ inline State state_from_rho_e_phase(const PRFluid& f, amrex::Real rho,
     // residual, and also stop if the state increment becomes negligible
     // (Newton stalled at the round-off floor / ill-conditioned point),
     // capped at max_iter.  All three criteria are seed-independent.
+    PS_CENSUS(n_calls);
     ps_newton_solve_T(f, v_m, e_mol_target, T);
 
     // No dome check -- return the requested phase regardless.  Inside the
@@ -1095,7 +1117,7 @@ inline State state_from_P_s(const PRFluid& f, amrex::Real P, amrex::Real s_targe
             step = (step > amrex::Real(0) ? amrex::Real(1) : amrex::Real(-1))
                  * amrex::Real(0.2)*T;
         T += step;
-        if (T < amrex::Real(1))     T = amrex::Real(1);
+        if (T < amrex::Real(1))   { T = amrex::Real(1); PS_CENSUS(n_T_clamp); }
     }
     return state_from_T_P(f, T, P, hint);
 }
