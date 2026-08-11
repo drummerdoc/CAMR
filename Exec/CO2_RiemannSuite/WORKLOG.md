@@ -785,3 +785,59 @@ Production stiffness (tau=1e-3) and the whole 19-case battery are unaffected.
 **D3 (corridor-donor MT) stays deferred** on today's earlier evidence, and this
 result does not disturb that: the dying-donor case still never occurs.
 
+## E2 CONTRACTION-RATIO DIAGNOSTIC — implemented, and the metric needed fixing
+
+**Landed** (`CAMR.ps_mt_diag = 2`; level 1 keeps its old cost).  In
+`ps_mass_transfer_finite_cell`, after the transfer is written back, the cell
+equilibrium is re-solved ON A COPY with settings identical to the dm_eq solve
+(the `nest_pr` static was hoisted to function scope so there is one source of
+truth), and the residual transfer dm' it still wants is measured.  Host-side,
+solution untouched, reported on the `[ps_mt_diag]` line.  A re-solve that
+REFUSES is counted (`refused`) and never silently treated as zero.
+
+**The ratio as §5.2 writes it does not discriminate.**  Measured on B9
+zero-trace, mode 4, flash stiff, N=64:
+
+    tau     run        samples  worst_raw    worst_norm   nonctr  relaxed
+    1e-3    COMPLETES     154   325.8        1.0022         108      0
+    1e-4    aborts          2    12.87       1.0211           2      0
+    1e-5    aborts          2     1.139      1.3053           2      0
+    1e-6    aborts          2     0.3105     642.66           2      0
+    1e-7    aborts          2     0.3101     (degenerate)      0      2
+
+`worst_raw` is |dm'|/|dm| exactly as the note specifies.  It is ANTI-correlated
+with trouble: worst (325.8) at the CLEAN production tau, ~1 at the failing
+tau=1e-5, and 0.31 at the stiffest.  The reason is structural, not numerical:
+`dm = frac*dm_eq` with `frac = 1 - exp(-dt/tau)`, so a cell that is deliberately
+relaxing slowly still wants ~(1-frac)*dm_eq afterwards and the raw ratio is
+~1/frac.  It measures the INTENDED finite-rate undershoot, which is the model
+working, not the path error §5.2 was after.
+
+**The fix is a normalisation, and it needs no new constant.**  Divide the
+residual by the residual an ON-MANIFOLD step would have left,
+|dm_eq - dm| = (1-frac)|dm_eq|.  That is 1 for a perfect step at ANY tau, hence
+comparable across the sweep, and exceeds 1 exactly when the applied step left the
+cell further from equilibrium than the un-relaxed remainder explains.
+`worst_norm` then behaves: **1.0022 at production stiffness, 1.02 at 1e-4, 1.31
+at 1e-5, and 642.7 at 1e-6** -- monotone in the right direction and pointing at
+the regime that dies.  The 108 "nonctr" cells at tau=1e-3 are all in the 1.002
+class, i.e. round-off above unity, not a signal.
+
+**So §5.2's controller trigger is now measured and MET**: there are genuinely
+non-contractive cells at stiff-sweep settings (642.7 at tau=1e-6), and none at
+production stiffness.  The deferred controller decision (§5.2 a / b / c) is live,
+and D2 (the H_I = mean(h1,h2) carrier) can no longer be described as affecting
+"path, not endpoint" at tau <= 1e-5.
+
+**Caveats, both real:**
+1. Sample counts are NOT comparable across the sweep.  The failing runs abort at
+   24 advances (12 steps) and only ever measure 2 cells; the completing run
+   measures 154.  "2 of 2 non-contractive" is what the stiff rows say.
+2. At tau = 1e-7 the normalised metric DEGENERATES: frac ~ 1, so the expected
+   residual is ~0 and there is nothing to divide by.  Those cells are bucketed as
+   `fully_relaxed` rather than divided by zero -- deliberately, so the max is not
+   poisoned.  For that regime the right denominator is |dm_eq| itself (any
+   residual after a full-equilibrium step IS path error).  That third form is the
+   one remaining piece and tau=1e-7 is the exact_suite gate configuration, so it
+   should be added before the controller decision is taken.
+

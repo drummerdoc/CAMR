@@ -85,8 +85,22 @@ inline int& ps_mass_transfer_count()      { static int n = 0; return n; }
 struct PsMtStats {
     long seen = 0, gated = 0, eqsolve = 0, eqfail = 0, iters = 0, itmax = 0;
     long pr_iters = 0;      // INNER pressure-relax Newton iterations
+    // DESIGN_ps_extinction.md 5.2 -- one-step path error of the finite-rate
+    // transfer, as the dimensionless CONTRACTION RATIO |dm'|/|dm|.  No tuned
+    // constant.  ratio < 1 = damped ringing; ratio >= 1 = a genuine non-AP
+    // cell.  Filled only under CAMR.ps_mt_diag >= 2 (costs a second
+    // equilibrium solve per transferring cell).
+    long   cr_samples = 0;      // cells where the ratio was formed
+    long   cr_nonctr  = 0;      // of those, NORMALISED ratio >= 1
+    long   cr_refused = 0;      // re-solve refused: ratio NOT formed, NOT zeroed
+    long   cr_relaxed = 0;      // frac ~ 1 (expected residual 0): excluded from
+                                //   the normalised max, reported separately
+    double cr_worst   = 0.0;    // largest RAW |dm'|/|dm| -- see note below
+    double cr_worst_n = 0.0;    // largest NORMALISED |dm'|/|dm_eq - dm|
     void reset() { seen = gated = eqsolve = eqfail = iters = itmax = 0;
-                   pr_iters = 0; }
+                   pr_iters = 0;
+                   cr_samples = cr_nonctr = cr_refused = cr_relaxed = 0;
+                   cr_worst = 0.0; cr_worst_n = 0.0; }
 };
 inline PsMtStats& ps_mt_stats() { static PsMtStats s; return s; }
 
@@ -3042,7 +3056,8 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
                                           double dt, double tau_g,
                                           double alpha_floor = 1.0e-6,
                                           double g_ref = 0.0,
-                                          int update_alpha = -1)
+                                          int update_alpha = -1,
+                                          int diag_contract = 0)
 {
     if (tau_g <= 0.0 || dt <= 0.0) return false;
     if (!eos.valid()) return false;
@@ -3132,6 +3147,14 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
     const double g_diff = p1.g - p2.g;
     double dm;
 
+    //  Equilibrium-solver nesting switch.  Hoisted to function scope so the
+    //  5.2 contraction re-solve below uses IDENTICAL settings to the dm_eq
+    //  solve -- otherwise the ratio would compare two different targets.
+    static const int nest_pr = []{
+        const char* v = std::getenv("PS_MT_NEST_PR");
+        return (v && *v) ? std::atoi(v) : 0; }();
+    double dm_eq_saved = 0.0;   // equilibrium-endpoint transfer, for 5.2
+
     // ---- finite-rate mass-transfer amount dm ----------------------------
     // OPTION 2 (default, task #39): EXACT RELAXATION toward the
     // instantaneous MT equilibrium.  The transferred mass relaxes toward
@@ -3212,9 +3235,6 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
         //                 = N > 1       : cap at N iters -- DO NOT USE: measured
         //                   99-100% eqfail, i.e. it silently disables MT while
         //                   looking fast and "converging" in 1 outer iteration.
-        static const int nest_pr = []{
-            const char* v = std::getenv("PS_MT_NEST_PR");
-            return (v && *v) ? std::atoi(v) : 0; }();
         PsPressureRelaxParams pr_eq;
         if (nest_pr == 0)      mt_eq.nest_pressure_relax = false;
         else if (nest_pr > 1)  pr_eq.max_iter = nest_pr;
@@ -3222,6 +3242,7 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
         if (!ps_mass_transfer_relax_cell(Ueq, eos, mt_eq, pr_eq)) ++ps_mt_stats().eqfail;
         const double dm_eq = m1 - Ueq[1];               // mass leaving phase 1
         dm = frac * dm_eq;
+        dm_eq_saved = dm_eq;                           // for the 5.2 diagnostic
     } else if (g_ref > 0.0) {
         // NON-DIMENSIONALISED explicit driving force (legacy task #32 fix).
         const double m_ref = (m1 < m2) ? m1 : m2;
@@ -3311,6 +3332,56 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
     // m_k.  Pressure relaxation, if enabled separately, will bring
     // P_1 = P_2 downstream.
     if (upd) U[0] = alpha_new;
+
+    //  5.2 CONTRACTION RATIO (E2 diagnostic).  Re-evaluate the cell
+    //  equilibrium on the UPDATED state: the residual transfer dm' it STILL
+    //  wants, over the dm just applied, is dimensionless and involves no tuned
+    //  constant.  Transferring at donor-rho with carrier enthalpy H_I is not
+    //  the flash manifold, so after a large stiff step the cell is near but not
+    //  on the new equilibrium; this measures how near.  ratio < 1 means the
+    //  next step damps the discrepancy; ratio >= 1 is a genuine non-AP cell.
+    //  Runs on a COPY -- the solution is untouched -- and costs a second
+    //  equilibrium solve, hence gated (CAMR.ps_mt_diag >= 2).  A re-solve that
+    //  REFUSES is counted separately and never silently treated as zero.
+    if (diag_contract != 0 && dm != 0.0) {
+        V6 Ucr = U;                       // post-transfer state
+        PsMassTransferParams mt_cr;
+        mt_cr.dome_gate = false;          // mirrors the dm_eq solve above
+        PsPressureRelaxParams pr_cr;
+        if (nest_pr == 0)      mt_cr.nest_pressure_relax = false;
+        else if (nest_pr > 1)  pr_cr.max_iter = nest_pr;
+        PsMtStats& st = ps_mt_stats();
+        if (!ps_mass_transfer_relax_cell(Ucr, eos, mt_cr, pr_cr)) {
+            ++st.cr_refused;
+        } else {
+            const double dm_res = U[1] - Ucr[1];
+            ++st.cr_samples;
+            //  RAW ratio, exactly as 5.2 writes it.  MEASURED 2026-08-11 to be
+            //  dominated by the INTENDED finite-rate undershoot, not by path
+            //  error: dm = frac*dm_eq, so a cell that is deliberately relaxing
+            //  slowly still wants ~(1-frac)*dm_eq afterwards and the raw ratio
+            //  is ~1/frac.  It therefore reads WORST (325) at the clean
+            //  production tau=1e-3 and ~1 at the failing tau=1e-5 -- i.e.
+            //  ANTI-correlated with trouble.  Kept for continuity with the
+            //  note, but it is not the discriminator.
+            const double raw = std::abs(dm_res) / std::abs(dm);
+            if (raw > st.cr_worst) st.cr_worst = raw;
+            //  NORMALISED ratio: the residual over the residual an ON-MANIFOLD
+            //  step would have left, |dm_eq - dm| = (1-frac)|dm_eq|.  This is 1
+            //  for a perfect step at ANY tau, so it is comparable across the
+            //  sweep, and > 1 exactly when the applied step pushed the cell
+            //  further from equilibrium than the un-relaxed remainder explains
+            //  -- which is what 5.2 meant by a non-AP cell.
+            const double expect = std::abs(dm_eq_saved - dm);
+            if (expect > 1.0e-12 * std::abs(dm_eq_saved)) {
+                const double rn = std::abs(dm_res) / expect;
+                if (rn > st.cr_worst_n) st.cr_worst_n = rn;
+                if (rn >= 1.0) ++st.cr_nonctr;
+            } else {
+                ++st.cr_relaxed;   // frac ~ 1: no expected residual to divide by
+            }
+        }
+    }
 
     ++ps_mass_transfer_count();
     return true;

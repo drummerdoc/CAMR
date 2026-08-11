@@ -240,6 +240,14 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
         }();
         const int l_mt_upd = (mt_upd_key >= 0) ? mt_upd_key
                                                : (l_pr.enabled != 0 ? 1 : 0);
+        // CAMR.ps_mt_diag >= 2 additionally enables the 5.2 contraction-ratio
+        // measurement inside the kernel (a second equilibrium solve per
+        // transferring cell), so level 1 keeps its present cost.  Host-read
+        // once, threaded by value (GPU rules 12.2).
+        static const int mt_diag_lvl = []() -> int {
+            int v = 0; amrex::ParmParse pp("CAMR");
+            pp.query("ps_mt_diag", v); return v; }();
+        const int l_mt_cr = (mt_diag_lvl >= 2) ? 1 : 0;
         for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
             const amrex::Box bx = mfi.growntilebox(nghost);
             amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
@@ -280,7 +288,8 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                 }
                 const hem::V6 Uv_pre = Uv;
                 if (hem::ps_mass_transfer_finite_cell(Uv, eos, double(dt), double(tau),
-                                                      1.0e-6, double(gref), l_mt_upd)) {
+                                                      1.0e-6, double(gref), l_mt_upd,
+                                                      l_mt_cr)) {
                     // B3 reproject: only when MT actually transferred mass
                     // (the kernel returns true on its internal gates too,
                     // with Uv untouched -- the bitwise test excludes those,
@@ -315,7 +324,16 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                            << " eqfail=" << st.eqfail
                            << " iters=" << st.iters
                            << " iters/eqsolve=" << per
-                           << " itmax=" << st.itmax << " pr_iters=" << st.pr_iters << " pr/gibbs=" << (st.iters>0?double(st.pr_iters)/double(st.iters):0.0) << std::endl;
+                           << " itmax=" << st.itmax << " pr_iters=" << st.pr_iters << " pr/gibbs=" << (st.iters>0?double(st.pr_iters)/double(st.iters):0.0);
+            if (mt_diag_lvl >= 2) {
+                amrex::Print() << "  [contract] samples=" << st.cr_samples
+                               << " worst_raw=" << st.cr_worst
+                               << " worst_norm=" << st.cr_worst_n
+                               << " nonctr(norm>=1)=" << st.cr_nonctr
+                               << " fully_relaxed=" << st.cr_relaxed
+                               << " refused=" << st.cr_refused;
+            }
+            amrex::Print() << std::endl;
             st.reset();
         }
 
