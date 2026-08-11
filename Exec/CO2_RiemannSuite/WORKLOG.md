@@ -39,9 +39,10 @@ What counts:
 2. Conservation identities: `m1+m2 == rho`, `E1+E2 == rho_E`.
    Self-referential, cannot be contaminated.
 3. The floor / no-root census.  Target: zero.
-4. Robustness on the 2-D problem.  **Currently unexercised — no 2-D
-   measurement has been taken in this work.  If it is to be a gate, it
-   needs a baseline established before more changes land.**
+4. Robustness on the 2-D problem.  **DEFERRED by decision (2026-08-10):
+   1-D correctness comes first.  No 2-D measurement has been taken in this
+   work and none is planned until the 1-D suite is correct against basis
+   items 1-3.**
 
 ## Contracts
 
@@ -109,14 +110,15 @@ What counts:
 - What should happen when alpha collapses while mass remains?  The fold
   answers "transfer it", but the trigger is a fixed alpha threshold and the
   pathology is density/energy-dependent.
-- 2-D baseline: unmeasured.
+- 2-D: deferred by decision until 1-D is correct.  Unmeasured.
 
 ## Next
 
 1. Finish contract 3: `ps_ctoprim` site 1, `PS_hllc.H` (~167-170,
    237-263), `ps_max_wave_speed_from_state`, relaxation coexistence check.
-2. Establish the 2-D baseline before more changes land.
-3. Then contract 7 (branch selection), which B9 is now blocked on.
+2. Then contract 7 (branch selection), which B9 is now blocked on.
+3. 1-D correctness against the exact single-phase and HEM Riemann solves.
+   2-D is deferred until that holds.
 
 ## Superseded — do not re-derive
 

@@ -1,3 +1,12 @@
+> **CHRONOLOGICAL RECORD — NOT CURRENT STATE.**  This file is append-only and
+> reads in the order the work happened.  Later addenda CORRECT earlier ones:
+> several conclusions here were subsequently negated (10g corrects 10e/10f;
+> 10j corrects 10i).  Reading it in order will walk you through wrong
+> conclusions before the right one.
+>
+> **For what we currently believe, read `WORKLOG.md`.**  That file is revised
+> in place; this one preserves how we got there.
+
 # FINDINGS: the HEM-limit test — first run, and it fails
 
 **2026-08-08.** First execution of validation test 2 from
