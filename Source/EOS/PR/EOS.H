@@ -774,6 +774,21 @@ namespace EOS {
       S = s.s;
   }
 
+  //  Non-aborting variant.  Returns false when this (rho,e) has no root on
+  //  the requested branch, so callers holding a validity channel (e.g.
+  //  PsPhaseAPI's ph.valid) can report it instead of the EOS aborting.
+  AMREX_GPU_HOST_DEVICE
+  AMREX_FORCE_INLINE
+  bool REY2PTS_phase_try(amrex::Real R, amrex::Real E, amrex::Real* /*Y*/,
+                         hem::Phase3 phase,
+                         amrex::Real& P, amrex::Real& T, amrex::Real& S)
+  {
+      hem::State s{};
+      if (!hem::state_from_rho_e_phase_try(co2_fluid(), R, E, phase, s)) return false;
+      P = s.P; T = s.T; S = s.s;
+      return true;
+  }
+
   // Speed-of-sound at (ρ, P) — branch-locked variant.
   //
   //  The stock RPY2Cs (below) uses state_from_P_rho which is

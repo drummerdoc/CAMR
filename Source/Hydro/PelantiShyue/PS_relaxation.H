@@ -146,7 +146,18 @@ ps_make_camr_eos_api()
         amrex::Real P, T, S;
         const hem::Phase3 ph3 = (phase == 1) ? hem::Phase3::Liquid
                                              : hem::Phase3::Vapor;
-        EOS::REY2PTS_phase(amrex::Real(rho), amrex::Real(e), Y, ph3, P, T, S);
+        if (!EOS::REY2PTS_phase_try(amrex::Real(rho), amrex::Real(e), Y, ph3,
+                                    P, T, S)) {
+            //  No root on this branch for this (rho,e).  Honour the
+            //  PsPhaseAPI contract -- report invalid -- rather than letting
+            //  the EOS abort.  The flash source's documented h_dom fallback
+            //  and the coexistence gate both already test ph.valid.
+            ph.alpha = ph.alpha; ph.rho = rho; ph.e = e;
+            ph.P = 0.0; ph.T = 0.0; ph.c = 0.0;
+            ph.h = 0.0; ph.s = 0.0; ph.g = 0.0;
+            ph.valid = false;
+            return;
+        }
         ph.rho   = rho;
         ph.e     = e;
         ph.P     = double(P);

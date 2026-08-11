@@ -1683,3 +1683,99 @@ moves and any "e < 0 is suspicious" rule silently inverts.
 evaluated, never assumed.**  At the saturated liquid branch that bound is
 around -2.1e5 J/kg; at near-vacuum it is ~0.  A single sign test is wrong
 at one end or the other.
+
+## Addendum 10k — CHECKPOINT: bracketed EOS, no clamps, and ABSENT honoured
+## through the existing validity contract.  (2026-08-10)
+
+First landed step of the contract rework.  Two changes, both verified
+against the full legacy suite.
+
+### 10k.1  state_from_rho_e / state_from_rho_e_phase are now BRACKETED
+
+Replaced.  The previous scheme ran an UNBRACKETED single-phase Newton and
+used its FAILURE to trigger a dome check evaluated at whatever T that
+failure left behind -- typically the 1 K clamp, where the dome test admits
+rho in (5.4e-3, 1650), i.e. essentially every density in the problem, so
+almost anything classified as two-phase.  Its two-phase Newton used a
+finite-difference derivative and an absolute 1e-3 tolerance and, on
+failure, FELL THROUGH to a single-phase answer at that same bad T, labelled
+by a rho > 2*rho_ig heuristic that needed its own corrective guard.
+
+Now:
+- classify by comparison against the dome-clamped saturation locus, which
+  is monotone in T over [T_triple, Tc] and degenerates to e_satL / e_satV
+  outside the dome, so ONE bracket covers the whole range;
+- cheap exit first: the dome is widest at the triple point, so rho outside
+  [rho_V(T_tr), rho_L(T_tr)] can never be two-phase at any T -- two
+  saturation calls settle it and the locus search is skipped entirely
+  (this is the common case: near-vacuum and compressed liquid both);
+- solve with Illinois (bracketed false position): derivative-free,
+  superlinear, and it CANNOT leave the bracket;
+- single-phase solves try the fast Newton first and accept it only if it
+  lands inside a bracket where a root is already PROVEN to exist,
+  falling back to Illinois otherwise.
+
+No step depends on a divergent iteration, and no result is a clamp.
+
+### 10k.2  "No root" is a verdict, not a floor
+
+`state_from_rho_e_phase_try` returns false when no temperature on the
+requested branch at that density reproduces e.  The aborting wrapper
+`state_from_rho_e_phase` is for callers with no way to report failure
+upward; it stops the run in EVERY build, printing rho, e, branch, the
+reachable bound and the gap.  There is no dial to make it quiet and no
+"nearest reachable state" substitution -- that was drafted and rejected,
+correctly: handing back a plausible state for an impossible input is the
+same laundering in a different coat.
+
+### 10k.3  ABSENT honoured through the contract that already existed
+
+`PsPhaseAPI` documents "on failure ... set ph.valid = false".  Both sides
+already respected it -- the flash source tests `p_other.valid` and falls
+back to h_dom, and the coexistence gate tests it too -- but the EOS aborted
+underneath before the lambda could report.  The lambda now uses the try
+variant and reports invalid.  Nothing silent was added: the event is
+counted, and callers without a validity channel still abort.
+
+This removed the `rho = 1e-06, e = -213.73` failure (the floor-seeded trace
+phase) with no change to any caller's logic.
+
+### 10k.4  Gate results
+
+| case | result |
+|---|---|
+| A1-A6 | digit-identical to the c1_ references |
+| C1, C2, C3 | digit-identical (C1's P 1.55e-16 -> 1.55e-15, both roundoff) |
+| B4 | digit-identical (1.56e-04 / 9.22e-04 / 1.95e-03) |
+| B9 | **ABORTS** |
+| presence stiff leg N=64 | **ABORTS** |
+
+10 of 11 unchanged to every printed digit, so the re-baseline anticipated
+before this work did NOT materialise.  The two that stop, stop on inputs
+that are not states:
+
+- B9: rho = 9.967, e = -2.9756e+07 J/kg on the VAPOR branch against a
+  reachable bound of -5505.9 -- 29.75 MJ/kg outside the reachable range.
+  B9 previously PASSED at 2.64e-05 with that quantity floored to T = 1 K.
+- presence leg: rho = 1649.86 (the PR hard-sphere pole is M/b = 1650.35),
+  e = -650765 against a bound of -597902, gap -52.9 kJ/kg.  This is the
+  10g pole-compressed liquid, now a hard stop instead of a silent floor.
+
+Both were wrong before and are now visibly wrong.  That is the intended
+trade.
+
+### 10k.5  CORRECTION carried forward
+
+Addenda 10e and 10f attribute the failure to the relaxation "producing"
+the unphysical state.  **10g showed that is wrong -- it RECEIVED one**, and
+10f's inference that alpha moved the wrong way rested on a pre-relaxation
+temperature that had never been measured (it was 1 K, not 280 K).  The
+correction is recorded in 10g; the earlier text still reads as the
+conclusion and should be read only with 10g alongside.
+
+### 10k.6  Cost
+
+~3x slower on the near-vacuum leg (A6: ~30 s against ~10 s).  The
+triple-point saturation states are constants of the fluid and are currently
+recomputed on every call; caching them removes two Psat inversions per
+call and is the obvious next optimisation.  NOT done here.

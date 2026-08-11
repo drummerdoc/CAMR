@@ -48,8 +48,10 @@ inline long& n_T_clamp()   { static long n = 0; return n; }
 inline long& n_T_nonconv() { static long n = 0; return n; }   // branch-LOCKED (dangerous)
 inline long& n_T_nonconv_det() { static long n = 0; return n; } // phase-DETECT (normal probe)
 inline long& n_P_floor()   { static long n = 0; return n; }
+inline long& n_noroot_lo() { static long n = 0; return n; }
+inline long& n_noroot_hi() { static long n = 0; return n; }
 inline long& n_calls()     { static long n = 0; return n; }
-inline void  reset() { n_T_clamp()=0; n_T_nonconv()=0; n_T_nonconv_det()=0; n_P_floor()=0; n_calls()=0; }
+inline void  reset() { n_T_clamp()=0; n_T_nonconv()=0; n_T_nonconv_det()=0; n_P_floor()=0; n_calls()=0; n_noroot_lo()=0; n_noroot_hi()=0; }
 }
 // ---- strict mode (CAMR.ps_strict_eos) ---------------------------------
 //  BITMASK, 0 = off (default).  Add the bits you want to trap:
@@ -87,6 +89,28 @@ inline void strict_abort(const char* site, const char* what, double rho,
 #else
 #define PS_CENSUS(x) ((void)0)
 #endif
+
+//  Unconditional no-root reporter.  (rho,e) that no temperature reproduces on
+//  the requested branch is a DATA defect, not a numerical one, so it stops the
+//  run in every build -- no dial, no clamp, no silent substitution.
+inline void ps_eos_noroot(const char* what, double rho, double e,
+                          double e_bound, double T_bound, int phase)
+{
+#if !defined(HEM_NO_AMREX)
+    amrex::Print() << "\n[PS-EOS] NO ROOT -- this (rho,e) is not a state.\n"
+                   << "  " << what << "\n"
+                   << "  rho = " << rho << " kg/m^3    e = " << e << " J/kg"
+                   << "    branch = " << (phase == 1 ? "LIQUID" : "VAPOR") << "\n"
+                   << "  reachable bound at T = " << T_bound << " K is e = "
+                   << e_bound << " J/kg  (gap " << (e - e_bound) << ")\n"
+                   << "  Reproduce: echo \"" << rho << " " << e
+                   << " 1.0 0.0\" | ./probe_pr\n"
+                   << "  Fix the data going in.  The EOS will not invent a state.\n\n";
+    amrex::Abort("PS-EOS: (rho,e) has no root on the requested branch");
+#else
+    (void)what; (void)rho; (void)e; (void)e_bound; (void)T_bound; (void)phase;
+#endif
+}
 
 // ---------------------------------------------------------------------
 //  Extended fluid description: PR cubic + molar mass + ideal-gas c_p^ig
@@ -986,101 +1010,156 @@ void ps_newton_solve_T_fixed(const PRFluid& f, amrex::Real v_m,
 }
 
 AMREX_GPU_HOST_DEVICE
+AMREX_GPU_HOST_DEVICE
 inline State state_from_rho_e(const PRFluid& f, amrex::Real rho, amrex::Real e_target,
-                              amrex::Real T_init = amrex::Real(-1.0))
+                              amrex::Real /*T_init*/ = amrex::Real(-1.0))
 {
-    amrex::Real v_m = v_PR_from_rho(f, rho);   // PR-space volume
-    amrex::Real e_mol_target = e_target * f.M;
+    // =================================================================
+    //  BRACKETED (rho,e) -> state.   Replaces the previous scheme, which
+    //  ran an UNBRACKETED single-phase Newton first and used its FAILURE
+    //  to trigger a dome check evaluated at whatever T that failure left
+    //  behind -- typically the 1 K clamp, where the dome test admits
+    //  essentially every density (5.4e-3 .. 1650 kg/m3) and so classified
+    //  almost anything as two-phase.  Its two-phase Newton then used a
+    //  finite-difference derivative and an absolute 1e-3 tolerance, and on
+    //  failure FELL THROUGH to a single-phase answer at that same bad T,
+    //  labelled by a rho>2*rho_ig heuristic that needed its own guard.
+    //  See FINDINGS Addenda 10h-10k.
+    //
+    //  Now:  classify by comparison against the dome-clamped saturation
+    //  locus (monotone in T over the whole [T_triple, Tc] range), then
+    //  solve inside a bracket.  No step depends on a divergent iteration,
+    //  and "no root" is a REPORTED outcome, not a floor.
+    // =================================================================
+    constexpr amrex::Real T_TRIPLE = amrex::Real(216.592);   // == EOS::T_triple()
+    constexpr amrex::Real T_MIN    = amrex::Real(1.0);
+    constexpr amrex::Real T_MAX    = amrex::Real(5000.0);
+    const amrex::Real Tc  = f.pr.Tc;
+    const amrex::Real v_m = v_PR_from_rho(f, rho);
+    const amrex::Real v   = amrex::Real(1.0)/rho;
 
-    // -------- 1) single-phase Newton on T  -----------------------------
-    // Initial guess: T_init if positive & finite (warm-start from a
-    // cached nearby state — see co2_state_from_rho_e_cached), else the
-    // 0.8·Tc default that centres the initial iterate midway between
-    // liquid- and vapor-branch typical temperatures.
-    amrex::Real T = (T_init > amrex::Real(0.0) && std::isfinite(T_init))
-                     ? T_init
-                     : f.pr.Tc * amrex::Real(0.8);
-    // Robust, seed-independent Newton on T (temperature-scaled stop;
-    // see ps_newton_solve_T).  Return value (converged) is a future
-    // non-convergence diagnostic hook.
-    PS_CENSUS(n_calls);
-    ps_newton_solve_T(f, v_m, e_mol_target, T, 1);
+    // ---- dome-clamped locus:  x clamped to [0,1] keeps this defined and
+    //      monotone OUTSIDE the dome too (it degenerates to e_satL / e_satV),
+    //      which is what lets one bracket cover the whole range.  Used for
+    //      CLASSIFICATION ONLY -- never returned as an answer.
+    struct Locus { amrex::Real e, x, rhoL, rhoV; };
+    auto locus_at = [&](amrex::Real T) -> Locus {
+        State L = satStateL(f, T), V = satStateV(f, T);
+        amrex::Real vL = amrex::Real(1.0)/L.rho, vV = amrex::Real(1.0)/V.rho;
+        amrex::Real x  = (v - vL)/(vV - vL);
+        if (x < amrex::Real(0)) x = amrex::Real(0);
+        if (x > amrex::Real(1)) x = amrex::Real(1);
+        return { (amrex::Real(1)-x)*L.e + x*V.e, x, L.rho, V.rho };
+    };
 
-    // -------- 2) phase check : are we inside the dome at this T? ------
-    if (T < f.pr.Tc) {
-        State L = satStateL(f, T);
-        State V = satStateV(f, T);
-        if (rho < L.rho && rho > V.rho) {
-            // inside the dome in density - check energy bracket
-            if (e_target > L.e && e_target < V.e) {
-                // two-phase: Newton on T for mixture energy match
-                amrex::Real Tt = T;
-                for (int it = 0; it < 60; ++it) {
-                    State Lt = satStateL(f, Tt);
-                    State Vt = satStateV(f, Tt);
-                    amrex::Real vL = amrex::Real(1)/Lt.rho;
-                    amrex::Real vV = amrex::Real(1)/Vt.rho;
-                    amrex::Real v_mix = amrex::Real(1)/rho;
-                    amrex::Real x = (v_mix - vL)/(vV - vL);
-                    if (x < amrex::Real(0)) x = amrex::Real(0);
-                    if (x > amrex::Real(1)) x = amrex::Real(1);
-                    amrex::Real e_mix = (amrex::Real(1)-x)*Lt.e + x*Vt.e;
-                    amrex::Real r = e_mix - e_target;
-                    if (amrex::Math::abs(r) < amrex::Real(1e-3)) {
-                        return state_from_T_x(f, Tt, x);
-                    }
-                    // numerical dT (analytic is messy)
-                    amrex::Real dT = amrex::Real(0.01)*Tt;
-                    State Lp = satStateL(f, Tt+dT);
-                    State Vp = satStateV(f, Tt+dT);
-                    amrex::Real vLp = amrex::Real(1)/Lp.rho;
-                    amrex::Real vVp = amrex::Real(1)/Vp.rho;
-                    amrex::Real xp = (v_mix - vLp)/(vVp - vLp);
-                    if (xp < amrex::Real(0)) xp = amrex::Real(0);
-                    if (xp > amrex::Real(1)) xp = amrex::Real(1);
-                    amrex::Real e_mix_p = (amrex::Real(1)-xp)*Lp.e + xp*Vp.e;
-                    amrex::Real drdT = (e_mix_p - e_mix)/dT;
-                    amrex::Real step = -r/drdT;
-                    if (amrex::Math::abs(step) > amrex::Real(0.2)*Tt)
-                        step = (step > amrex::Real(0) ? amrex::Real(1) : amrex::Real(-1))
-                             * amrex::Real(0.2)*Tt;
-                    Tt += step;
-                    if (Tt < amrex::Real(1))     Tt = amrex::Real(1);
-                    if (Tt >= f.pr.Tc)           Tt = amrex::Real(0.99)*f.pr.Tc;
-                }
-                // fall through if didn't converge
+    // ---- bracketed single-phase solve.  e_PR(T) at fixed v is monotone in
+    //      T, so a sign change over the bracket is necessary and sufficient.
+    //      No root  ->  counted, and clamped to the NEAREST REACHABLE state
+    //      (a defined, monotone-consistent outcome) instead of to wherever
+    //      an iteration happened to stop.
+    auto solve_single = [&](Phase3 ph, amrex::Real Ta, amrex::Real Tb) -> State {
+        State sa = state_from_T_v(f, Ta, v_m, ph);
+        State sb = state_from_T_v(f, Tb, v_m, ph);
+        if (e_target <= sa.e) {
+            //  NO ROOT.  This input is not a state: no temperature on this
+            //  branch at this density reproduces e.  It is NOT clamped to the
+            //  nearest reachable state -- that would hand back a plausible
+            //  answer for an impossible input and nothing downstream could
+            //  tell.  Hard stop; fix the data going in.
+#if defined(CAMR_PS_DIAG) && !defined(AMREX_USE_GPU)
+            PS_CENSUS(n_noroot_lo);
+#endif
+            ps_eos_noroot("below the coldest reachable state on this branch",
+                          double(rho), double(e_target), double(sa.e), double(Ta),
+                          (ph == Phase3::Liquid) ? 1 : 2);
+        }
+        if (e_target >= sb.e) {
+#if defined(CAMR_PS_DIAG) && !defined(AMREX_USE_GPU)
+            PS_CENSUS(n_noroot_hi);
+#endif
+            ps_eos_noroot("above the hottest reachable state on this branch",
+                          double(rho), double(e_target), double(sb.e), double(Tb),
+                          (ph == Phase3::Liquid) ? 1 : 2);
+        }
+        //  A root is now PROVEN to exist in (Ta,Tb).  Try the fast unbracketed
+        //  Newton first; accept it only if it lands inside the bracket and
+        //  actually satisfies the residual.  Otherwise fall back to Illinois,
+        //  which cannot fail.  This keeps the common case at Newton speed
+        //  while retaining the guarantee.
+        {
+            amrex::Real Tn = f.pr.Tc * amrex::Real(0.8);
+            if (ps_newton_solve_T(f, v_m, e_target*f.M, Tn, 0, 0) &&
+                Tn > Ta && Tn < Tb) {
+                State mn = state_from_T_v(f, Tn, v_m, ph);
+                if (std::abs(mn.e - e_target) <=
+                    amrex::Real(1e-10)*std::abs(e_target) + amrex::Real(1e-6))
+                    return mn;
             }
         }
+        amrex::Real a = Ta, b = Tb, fa = sa.e - e_target, fb = sb.e - e_target;
+        amrex::Real T = amrex::Real(0.5)*(a+b);
+        for (int it = 0; it < 100; ++it) {
+            amrex::Real c = (a*fb - b*fa)/(fb - fa);
+            amrex::Real lo_ = (a < b) ? a : b, hi_ = (a < b) ? b : a;
+            if (!(c > lo_ && c < hi_)) c = amrex::Real(0.5)*(a+b);
+            State m = state_from_T_v(f, c, v_m, ph);
+            amrex::Real fc = m.e - e_target;
+            T = c;
+            if (std::abs(fc) <= amrex::Real(1e-12)*std::abs(e_target) + amrex::Real(1e-9) ||
+                std::abs(b - a) < amrex::Real(1e-13)*std::abs(c) + amrex::Real(1e-14)) break;
+            if (fc*fb < amrex::Real(0)) { a = b; fa = fb; } else { fa *= amrex::Real(0.5); }
+            b = c; fb = fc;
+        }
+        return state_from_T_v(f, T, v_m, ph);
+    };
+
+    //  Cheap exit first.  rho_L(T) is decreasing and rho_V(T) increasing, so
+    //  the dome is widest at the triple point: rho outside
+    //  [rho_V(T_tr), rho_L(T_tr)] can never be two-phase at ANY temperature.
+    //  Two saturation evaluations settle it, and the whole locus search --
+    //  which costs two Psat inversions per iteration -- is skipped.  This is
+    //  the common case (near-vacuum and compressed liquid both land here).
+    {
+        State Ltr = satStateL(f, T_TRIPLE), Vtr = satStateV(f, T_TRIPLE);
+        if (rho >= Ltr.rho) return solve_single(Phase3::Liquid, T_MIN, T_MAX);
+        if (rho <= Vtr.rho) return solve_single(Phase3::Vapor,  T_MIN, T_MAX);
     }
-    // single-phase result : pick L/V label by where rho sits relative to the
-    // ideal-gas density at this (T, P_PR(T, v_m)) - a benign heuristic.
-    amrex::Real a, dadT, d2adT2, b;
-    pureParams2(f.pr, T, a, dadT, d2adT2, b);
-    amrex::Real D    = v_m*v_m + amrex::Real(2)*b*v_m - b*b;
-    amrex::Real P_PR = R_gas*T/(v_m - b) - a/D;
-    amrex::Real rho_ig = f.M*P_PR / (R_gas*T);
-    Phase3 ph = (rho > amrex::Real(2)*rho_ig) ? Phase3::Liquid : Phase3::Vapor;
-    // Branch-selection guard (task #69).  The rho>2*rho_ig heuristic is a
-    // knife-edge: for a two-phase-density state that fell through the
-    // two-phase Newton (e.g. its single-phase T is sub-triple-point so the
-    // saturation Newton can't converge), a borderline pick of the LIQUID
-    // branch evaluates state_from_T_v(Liquid) at a density far below the
-    // liquid spinodal, where the (monotone-regularized) PR extension returns
-    // a large NEGATIVE pressure — which is then floored to ~0 and shows up as
-    // an isolated "vacuum-dropout" cell.  Two neighbouring cells whose (rho,e)
-    // straddle the threshold then get wildly different P (e.g. -595 vs +14 bar)
-    // for essentially the same state.  Guard: if the heuristic phase yields a
-    // non-physical (<=P_floor) pressure while the OTHER phase branch is
-    // physical, return the physical one.  Genuine single-phase states (where
-    // the picked branch is already physical) are unaffected.
-    constexpr amrex::Real P_floor_eos = amrex::Real(1.0);   // 1 Pa
-    State s_pick  = state_from_T_v(f, T, v_m, ph);
-    if (s_pick.P <= P_floor_eos || !std::isfinite(s_pick.P)) {
-        const Phase3 other = (ph == Phase3::Liquid) ? Phase3::Vapor : Phase3::Liquid;
-        State s_other = state_from_T_v(f, T, v_m, other);
-        if (s_other.P > P_floor_eos && std::isfinite(s_other.P)) return s_other;
+
+    Locus lo = locus_at(T_TRIPLE);
+    Locus hi = locus_at(amrex::Real(0.999999)*Tc);
+
+    // Outside the locus in energy: the PHASE is set by where rho sits in the
+    // dome at that endpoint, NOT by which side of the energy we are on.
+    //  NOTE: the locus endpoints classify the PHASE, but they do NOT bound the
+    //  temperature.  Being above the locus does not mean T > Tc -- a rarefied
+    //  vapour sits above the saturated-vapour energy at Tc while being far
+    //  colder, because at low density e(T) exceeds the saturated value at the
+    //  same T.  So the single-phase solve always gets the FULL bracket and
+    //  finds the root wherever it actually is.
+    if (e_target <= lo.e)
+        return solve_single((rho >= lo.rhoL) ? Phase3::Liquid : Phase3::Vapor, T_MIN, T_MAX);
+    if (e_target >= hi.e)
+        return solve_single((rho >= hi.rhoL) ? Phase3::Liquid : Phase3::Vapor, T_MIN, T_MAX);
+
+    // Inside: Illinois (bracketed false position) on the monotone locus.
+    amrex::Real a = T_TRIPLE, b = amrex::Real(0.999999)*Tc;
+    amrex::Real fa = lo.e - e_target, fb = hi.e - e_target;
+    amrex::Real T = amrex::Real(0.5)*(a+b), xq = amrex::Real(0.5);
+    for (int it = 0; it < 100; ++it) {
+        amrex::Real c = (a*fb - b*fa)/(fb - fa);
+        amrex::Real lo_ = (a < b) ? a : b, hi_ = (a < b) ? b : a;
+        if (!(c > lo_ && c < hi_)) c = amrex::Real(0.5)*(a+b);
+        Locus m = locus_at(c);
+        amrex::Real fc = m.e - e_target;
+        T = c; xq = m.x;
+        if (std::abs(fc) <= amrex::Real(1e-12)*std::abs(e_target) + amrex::Real(1e-9) ||
+            std::abs(b - a) < amrex::Real(1e-13)*std::abs(c) + amrex::Real(1e-14)) break;
+        if (fc*fb < amrex::Real(0)) { a = b; fa = fb; } else { fa *= amrex::Real(0.5); }
+        b = c; fb = fc;
     }
-    return s_pick;
+    if (xq > amrex::Real(0) && xq < amrex::Real(1)) return state_from_T_x(f, T, xq);
+    // locus degenerated at the solution -> genuinely single phase
+    return solve_single((xq <= amrex::Real(0)) ? Phase3::Liquid : Phase3::Vapor, T_MIN, T_MAX);
 }
 
 // =====================================================================
@@ -1098,46 +1177,71 @@ inline State state_from_rho_e(const PRFluid& f, amrex::Real rho, amrex::Real e_t
 //  of state_from_rho_e; only the post-Newton dispatch differs.
 // =====================================================================
 AMREX_GPU_HOST_DEVICE
-inline State state_from_rho_e_phase(const PRFluid& f, amrex::Real rho,
-                                    amrex::Real e_target, Phase3 phase,
-                                    amrex::Real T_init = amrex::Real(-1.0))
+AMREX_GPU_HOST_DEVICE
+inline bool state_from_rho_e_phase_try(const PRFluid& f, amrex::Real rho,
+                                       amrex::Real e_target, Phase3 phase,
+                                       State& out)
 {
-    amrex::Real v_m = v_PR_from_rho(f, rho);
-    amrex::Real e_mol_target = e_target * f.M;
+    //  BRANCH-LOCKED (rho,e) -> state.  This entry has no dome fallback: it
+    //  returns the requested phase or nothing.  It previously ran an
+    //  UNBRACKETED Newton and, when the branch had no root, returned whatever
+    //  T the iteration stopped at -- typically the 1 K clamp -- MARKED VALID.
+    //  That was the single largest silent-repair site in the code (20414 hits
+    //  in a 106-step N=64 run that passes every gate; FINDINGS 10j.3).
+    //
+    //  Now bracketed.  e_PR(T) at fixed v is monotone in T, so a sign change
+    //  over [T_MIN, T_MAX] is necessary and sufficient for a root.  No sign
+    //  change means this (rho,e) is not a state on this branch, and that is
+    //  an unconditional abort in every build -- not a clamp, and not
+    //  contingent on which routine called us.
+    constexpr amrex::Real T_MIN = amrex::Real(1.0);
+    constexpr amrex::Real T_MAX = amrex::Real(5000.0);
+    const amrex::Real v_m = v_PR_from_rho(f, rho);
 
-    // Single-phase Newton on T to match the target internal energy.
-    // Initial guess:
-    //   * If T_init > 0 and finite → use it (warm-start from a cached
-    //     nearby state; used by co2_state_from_rho_e_phase_cached to
-    //     bypass the fixed phase-default when a spatially or
-    //     temporally close state is on hand).
-    //   * Else → phase-biased default (liquid cooler, vapor warmer).
-    //     Helps convergence near the dome where the cubic has
-    //     multiple roots.
-    amrex::Real T;
-    if (T_init > amrex::Real(0.0) && std::isfinite(T_init)) {
-        T = T_init;
-    } else {
-        T = (phase == Phase3::Liquid)
-                  ? amrex::Real(0.7) * f.pr.Tc
-                  : amrex::Real(1.0) * f.pr.Tc;
+    State sa = state_from_T_v(f, T_MIN, v_m, phase);
+    State sb = state_from_T_v(f, T_MAX, v_m, phase);
+    //  No sign change over the bracket => no temperature on this branch at
+    //  this density reproduces e.  Report it; the caller decides.  Callers
+    //  with a documented fallback (PsPhaseAPI's ph.valid contract) take it;
+    //  callers without one get the unconditional abort in the wrapper below.
+    if (e_target <= sa.e || e_target >= sb.e) {
+#if defined(CAMR_PS_DIAG) && !defined(AMREX_USE_GPU)
+        if (e_target <= sa.e) PS_CENSUS(n_noroot_lo); else PS_CENSUS(n_noroot_hi);
+#endif
+        out = (e_target <= sa.e) ? sa : sb;   // nearest bound, for reporting only
+        return false;
     }
 
-    // Robust Newton stop (see docs P2).  A loose residual-only tolerance
-    // let the accepted T depend on the initial guess (warm-start seed),
-    // which broke box-layout independence.  We now converge on a TIGHT
-    // residual, and also stop if the state increment becomes negligible
-    // (Newton stalled at the round-off floor / ill-conditioned point),
-    // capped at max_iter.  All three criteria are seed-independent.
-    PS_CENSUS(n_calls);
-    ps_newton_solve_T(f, v_m, e_mol_target, T, 2,
-                      (phase == Phase3::Liquid) ? 1 : 2);
+    amrex::Real a = T_MIN, b = T_MAX, fa = sa.e - e_target, fb = sb.e - e_target;
+    amrex::Real T = amrex::Real(0.5)*(a+b);
+    for (int it = 0; it < 100; ++it) {
+        amrex::Real c = (a*fb - b*fa)/(fb - fa);
+        amrex::Real lo_ = (a < b) ? a : b, hi_ = (a < b) ? b : a;
+        if (!(c > lo_ && c < hi_)) c = amrex::Real(0.5)*(a+b);
+        State m = state_from_T_v(f, c, v_m, phase);
+        amrex::Real fc = m.e - e_target;
+        T = c;
+        if (std::abs(fc) <= amrex::Real(1e-12)*std::abs(e_target) + amrex::Real(1e-9) ||
+            std::abs(b - a) < amrex::Real(1e-13)*std::abs(c) + amrex::Real(1e-14)) break;
+        if (fc*fb < amrex::Real(0)) { a = b; fa = fb; } else { fa *= amrex::Real(0.5); }
+        b = c; fb = fc;
+    }
+    out = state_from_T_v(f, T, v_m, phase);
+    return true;
+}
 
-    // No dome check -- return the requested phase regardless.  Inside the
-    // dome this is the metastable extrapolation of the PR cubic; the
-    // PR EOS is mathematically smooth there even though the physical
-    // saturated mixture would prefer two-phase equilibrium.
-    return state_from_T_v(f, T, v_m, phase);
+//  Aborting wrapper: for callers with no way to signal failure upward.
+AMREX_GPU_HOST_DEVICE
+inline State state_from_rho_e_phase(const PRFluid& f, amrex::Real rho,
+                                    amrex::Real e_target, Phase3 phase,
+                                    amrex::Real /*T_init*/ = amrex::Real(-1.0))
+{
+    State out{};
+    if (!state_from_rho_e_phase_try(f, rho, e_target, phase, out))
+        ps_eos_noroot("no root on the requested branch (branch-locked entry)",
+                      double(rho), double(e_target), double(out.e), double(out.T),
+                      (phase == Phase3::Liquid) ? 1 : 2);
+    return out;
 }
 
 //  state_from_rho_e_phase_fixed — branch-locked (rho,e)->State using a FIXED
