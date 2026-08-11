@@ -13,6 +13,16 @@
 //    V3  m_k ≥ 0
 //    V4  URHO == m₁ + m₂          (mixture mass stored twice)
 //    V5  UE1 + UE2 == UEDEN       (mixture energy stored twice)
+//    V7  (ρ_k, e_k) is a REACHABLE state on phase k's branch — the
+//        predicate the production EOS actually enforces, asked through
+//        PsPhaseAPI's ph.valid channel (so it is backend-agnostic and
+//        never aborts inside the sweep).  V6 tests DENSITY only: a phase
+//        can sit inside [rho_min, rho_max] while its ENERGY is far below
+//        the coldest reachable e at that density, and V6 reports 0.
+//        Measured 2026-08-11 on the B9 HEM leg: ρ_1 = 1386 (inside the
+//        domain) with e_1 = -8.9e5 J/kg, ~800 kJ/kg off, while V6 said
+//        bulk=0 trace=0 at every stage until a diagnostic EOS call in
+//        CAMR::computeTemp aborted the run.  Same bucketing as V6.
 //    V6  ρ_k = m_k/α_k inside the EOS domain [rho_min, rho_max] —
 //        bucketed by α_k ≥ 1e-2 (BULK) vs α_k < 1e-2 (TRACE), so the
 //        report separates real-phase violations (a genuine solver
@@ -38,6 +48,8 @@
 
 #include "IndexDefines.H"
 #include "EOS.H"
+#include "PS_presence.H"      // ps_phase_quot: the contract-3 checked construction
+#include "PS_relaxation.H"    // ps_make_camr_eos_api (V7 validity channel)
 #include <AMReX_MultiFab.H>
 #include <AMReX_ParmParse.H>
 #include <AMReX_ParallelDescriptor.H>
@@ -65,7 +77,17 @@ ps_validate_state(amrex::MultiFab& S, const char* label, int nghost = 0)
     const Real rmin = EOS::rho_min(), rmax = EOS::rho_max();
 
     amrex::Long n_v1=0, n_v2=0, n_v3=0, n_v4=0, n_v5=0,
-                n_v6_bulk=0, n_v6_trace=0;
+                n_v6_bulk=0, n_v6_trace=0, n_v7_bulk=0, n_v7_trace=0;
+    // V7 asks the EOS through the PsPhaseAPI validity contract, so it works
+    // for every backend and cannot abort mid-sweep.  Host-only diagnostic,
+    // so the std::function is legal here (GPU rules 12.1: validator is B4
+    // class, host by design).  Built once.
+    const PsPres l_pr_v7 = ps_presence_params();
+    static const hem::PsPhaseAPI api_v7 = ps_make_camr_eos_api();
+    // First V7 offender, for a report that can be fed straight to probe_pr.
+    int  v7_i=0, v7_j=0, v7_k=0, v7_ph=0;
+    Real v7_a=0.0, v7_r=0.0, v7_e=0.0;
+    bool v7_seen=false;
     Real w_v4 = 0.0, w_v5 = 0.0;              // worst relative identity drift
     bool abort_hit = false;
     int  ab_i=0, ab_j=0, ab_k=0;
@@ -122,6 +144,47 @@ ps_validate_state(amrex::MultiFab& S, const char* label, int nghost = 0)
                         else                 { ++n_v6_trace; }
                     }
                 }
+                // V7 (rho_k, e_k) reachability on phase k's own branch.
+                const Real rho_mix = m1 + m2;
+                if (api_v7.valid() && rho_mix > Real(0.0)) {
+                    const Real px = U(i,j,k, UMX);
+#if (AMREX_SPACEDIM >= 2)
+                    const Real py = U(i,j,k, UMY);
+#else
+                    const Real py = Real(0.0);
+#endif
+#if (AMREX_SPACEDIM == 3)
+                    const Real pz = U(i,j,k, UMZ);
+#else
+                    const Real pz = Real(0.0);
+#endif
+                    const Real ke = Real(0.5) * (px*px + py*py + pz*pz)
+                                  / (rho_mix * rho_mix);
+                    for (int kk = 1; kk <= 2; ++kk) {
+                        const Real a_k = (kk == 1) ? a1 : a2;
+                        const Real m_k = (kk == 1) ? m1 : m2;
+                        const Real E_k = (kk == 1) ? E1 : E2;
+                        // Contract 3: form the quotients ONCE, checked.  A
+                        // phase with no state (ABSENT / degenerate quotient)
+                        // is not V7's business -- V1/V2/V3/V6 own those.
+                        const PsPhaseQuot q =
+                            ps_phase_quot(a_k, m_k, E_k, ke, l_pr_v7);
+                        if (!q.exists) continue;
+                        hem::PsPhase ph{};
+                        ph.alpha = double(a_k);
+                        api_v7.state_from_rho_e_phase(kk, double(q.rho),
+                                                      double(q.e), ph);
+                        if (!ph.valid) {
+                            if (a_k >= alpha_blk) { ++n_v7_bulk; bulk_bad = true; }
+                            else                  { ++n_v7_trace; }
+                            if (!v7_seen) {
+                                v7_seen = true;
+                                v7_i=i; v7_j=j; v7_k=k; v7_ph=kk;
+                                v7_a=a_k; v7_r=q.rho; v7_e=q.e;
+                            }
+                        }
+                    }
+                }
             }
             if (bulk_bad && !abort_hit) { abort_hit = true; ab_i=i; ab_j=j; ab_k=k; }
         });
@@ -134,6 +197,8 @@ ps_validate_state(amrex::MultiFab& S, const char* label, int nghost = 0)
     amrex::ParallelDescriptor::ReduceLongSum(n_v5);
     amrex::ParallelDescriptor::ReduceLongSum(n_v6_bulk);
     amrex::ParallelDescriptor::ReduceLongSum(n_v6_trace);
+    amrex::ParallelDescriptor::ReduceLongSum(n_v7_bulk);
+    amrex::ParallelDescriptor::ReduceLongSum(n_v7_trace);
     amrex::ParallelDescriptor::ReduceRealMax(w_v4);
     amrex::ParallelDescriptor::ReduceRealMax(w_v5);
 
@@ -144,9 +209,21 @@ ps_validate_state(amrex::MultiFab& S, const char* label, int nghost = 0)
                    << " massid=" << n_v4 << " (worst " << w_v4 << ")"
                    << " energyid=" << n_v5 << " (worst " << w_v5 << ")"
                    << " rho_domain bulk=" << n_v6_bulk
-                   << " trace=" << n_v6_trace << "\n";
+                   << " trace=" << n_v6_trace
+                   << " reachable bulk=" << n_v7_bulk
+                   << " trace=" << n_v7_trace << "\n";
 
-    if (mode >= 2 && (n_v1 + n_v2 + n_v3 + n_v6_bulk) > 0) {
+    // Name the first unreachable phase state in a form that can be replayed:
+    //   echo "<rho> <e> 1.0 0.0" | ./probe_pr
+    if ((n_v7_bulk + n_v7_trace) > 0 && v7_seen) {
+        amrex::Print() << "[PS-VALIDATE]   first unreachable phase state: ("
+                       << v7_i << "," << v7_j << "," << v7_k << ") phase "
+                       << v7_ph << (v7_ph == 1 ? " (LIQUID)" : " (VAPOR)")
+                       << "  alpha=" << v7_a << "  rho=" << v7_r
+                       << "  e=" << v7_e << "\n";
+    }
+
+    if (mode >= 2 && (n_v1 + n_v2 + n_v3 + n_v6_bulk + n_v7_bulk) > 0) {
         amrex::Print() << "[PS-VALIDATE] first bulk violation at ("
                        << ab_i << "," << ab_j << "," << ab_k << ") stage '"
                        << label << "'\n";

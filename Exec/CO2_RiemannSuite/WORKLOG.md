@@ -553,3 +553,61 @@ it; the aborts were downstream reporters.
   and kill their process tree, so long builds need `make` reissued (as the
   ground rules say) and long runs need `amr.check_int` + `amr.restart` chunks.
 
+## V7: per-phase (rho,e) REACHABILITY in the validator (2026-08-11, landed)
+
+**Why.**  V6 tests DENSITY only -- `rho_k` against `[EOS::rho_min, rho_max]`.
+A phase can sit well inside that interval while its ENERGY is far outside the
+reachable set at that density, and V6 reports zero.  That is the blind spot
+that let the B9 HEM leg diverge unseen until a diagnostic EOS call aborted the
+run, and it is the same one-sided gap as the E2' vacuum-death criterion
+(`m_k <= rho_min*alpha_k`, density-only) and the corridor's unowned upper edge.
+
+**How, and why not through the EOS surface.**  The predicate already exists:
+`hem::state_from_rho_e_phase_try` (`hem_pr_state.H` ~1181) brackets
+[T_MIN=1, T_MAX=5000] and returns false without aborting.  But
+`EOS::REY2PTS_phase_try` exists ONLY in the PR backend (PRTab/GERG/GERGTab do
+not have it; GERGTab has no `rho_min` either), so calling it from the validator
+would break three of the four backends.  V7 therefore asks through
+**`PsPhaseAPI::state_from_rho_e_phase` and its `ph.valid` contract** --
+contract 2's declared validity channel, backend-agnostic, and legal in a
+host-only diagnostic (GPU rules 12.1: the validator is B4 class, host by
+design, so the `std::function` is fine).  Quotients are formed by
+`ps_phase_quot` (contract 3), not re-derived.  Bucketed bulk/trace at
+`alpha_blk = 1e-2` exactly like V6; mode 2 now aborts on V7 bulk as well.
+
+**Measured -- the blind spot, on the B9 HEM leg (mode 4, flash, tau = 1e-5,
+alpha_trace = 1e-6):**
+- **90 stages** where V6 reports `rho_domain bulk=0 trace=0` while V7 reports a
+  violation.  V6 is not merely later there; it is silent.
+- V7 first fires at log line 51, the EOS abort is at line 268: **~43 validator
+  stages (~8 steps) of warning** where before there was none.
+- Named: `(34,0,0) phase 1 (LIQUID) alpha=1.01e-06 rho=20.64 e=-62034` -- the
+  `prob.alpha_trace` slot holding vapour-density material in the LIQUID slot.
+  That is the "slot integrity" open question, now instrumented, and correctly
+  in the TRACE bucket so it does not raise a bulk alarm.
+
+**On the tau = 1e-7 leg** (exact_suite's B9 config): V7 names
+`(33,0,0) phase 1 (LIQUID) alpha=7.79e-04 rho=1639.07 e=-602784` at stage
+"A enter (post-hydro/C-F)", 155 log lines before the abort; V7 detects strictly
+more violating phase states than V6 at 65 of 115 stages.
+
+**No false alarms.**  Production config, `ps_validate=1`, N=64: V7 bulk AND
+trace are **0** on A1, B2, B4, B5, B7, B9, B10, C1 -- including B2/B7/B9/B10,
+which carry corridor-occupied cells at the final time.  So the corridor's
+ill-conditioned quotients do NOT trip V7; a V7 hit means a real defect.
+Default-off (`ps_validate=0`) so the shipped path is unchanged.
+
+**Left undone, deliberately:** the report carries no numeric gap
+(`e - e_bound`), because `REY2PTS_phase_try` discards the bound state and
+`PsPhase` has no field for it.  Ranking hits by severity needs either a bound
+field on `PsPhase` or the try-variant added to the other three backends --
+recorded, not done.  The first-offender cell index is rank-local, the same
+pre-existing convention as V6's `ab_i/j/k` (correct serial, wrong under MPI).
+
+**Next (agreed order):** with a real detector in place, change
+`CAMR::computeTemp`'s fill rule -- both-INDEPENDENT -> per-phase T with NO
+mixture inversion; one ABSENT -> mixture `REY2T` (well posed, it IS the
+survivor); one CORRIDOR -> the host phase's branch-locked T.  Non-PS path
+untouched.  That removes the last aborting query in a field nothing in the
+conserved evolution reads.
+
