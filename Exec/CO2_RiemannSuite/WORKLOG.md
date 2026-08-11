@@ -143,9 +143,13 @@ does not.
   no longer changes the outcome.  Aborts at `rho = 10.83, e = -12159`,
   VAPOR — an ordinary vapour density with e roughly 6 kJ/kg below the
   reachable bound, against -29.8 MJ/kg out of range at the start.
-- **Vanish fold + T-floor fold are the only phase-removal mechanisms and
-  both ship disabled** (`CAMR.ps_alpha_vanish`, `CAMR.ps_temp_floor`,
-  default 0; neither set in `inputs`).
+- **Vanish fold + T-floor fold are the only phase-removal mechanisms.**
+  CORRECTED 2026-08-11: the vanish fold is NOT disabled.  `ps_apply_vanish_fold`
+  (`PS_relaxation.H` ~1962) overrides at S3 -- under presence it uses
+  `prS3.alpha_vanish` = 1e-8 regardless of `CAMR.ps_alpha_vanish`, which is
+  consulted only on the (now deleted) legacy path.  So death at alpha < 1e-8,
+  and E2' vacuum death (`m_k <= rho_min*alpha_k`), are both unconditionally
+  live.  `CAMR.ps_temp_floor` (default 0) IS still off.
 - **Enabling the fold makes B9 fail sooner**, at `rho = 1e-06, e = 0` — the
   zeroed slot, queried by a consumer after removal.
 - **`clean_state` was recreating the trace fiction every step.**  It clamped
@@ -325,3 +329,227 @@ repairs.  Production stiffness (tau = 1e-3) is clean.
 - "The arrival density should be found by inverting h(rho_arr, P_I) = h_I."
   Re-derived after a compaction; it is D1's REJECTED alternative.  (E.1)
   needs no inversion and carries a proof.  See the section above.
+
+## D3 measurements (2026-08-11) — corridor donors, and what actually kills B9
+
+All read-only: no tree change, runs in `/tmp/d3`, N=64 B9, `wp`, analysis by
+plotfile post-process (`corridor_census.py` / `corridor_traj2.py`, kept in
+`/tmp/d3`, not in the repo).
+
+**1. The dying corridor donor does not occur.**  Corridor episodes were
+classified per cell per phase by following alpha_k across the plotfile series
+(rising = birth by accumulation, falling = descending toward death, and
+separately: did the episode start from alpha_k >= alpha_cond).  Five runs:
+mode 2 tau=1e-4 with the 1e-6 trace, mode 2 tau=1e-4 and tau=1e-6 zero-trace,
+both phases each.  Result: **43 corridor episodes, 0 entered from
+INDEPENDENT.**  Every non-pinned episode is monotone RISING (up 100%), i.e.
+the front-propagation channel of presence design §1.  The 21 "falling"
+episodes in the trace run are far-field cells pinned at alpha_1 = 1.000e-06
+(round-off dither on the IC seed; 24 cells still exactly at the seed at
+t_end).  Phase 2 has ZERO corridor episodes in either zero-trace run.
+=> the premise of DESIGN_ps_extinction.md §4 ("a phase dying under (E.1)
+enters the corridor before it dies; S4 freezes MT there, leaving a slaved
+remnant") is UNOBSERVED on B9.  D3 has no exhibited case.
+
+**2. §4's decidability argument is wrong about the code.**  §4 rests on
+"`ps_mass_transfer_relax_cell` computes dm_eq from CELL TOTALS, not from the
+corridor phase's ill-defined intensives".  It does not: it runs Newton on
+dm driving g_1 - g_2 with `ps_state_from_cons` -> per-phase branch-locked EOS
+queries at (m_k/alpha_k, UE_k/m_k) -- both corridor-forbidden quotients
+(design §1).  D3 as written breaches the corridor rule rather than
+sidestepping it.  A genuine totals endpoint DOES exist: `hem::state_from_rho_e`
+(the bracketed dome flash, 2d20ffa) on (rho_mix, e_mix).
+
+**3. The spt = 5e-3 cut is a silent skip, and its stated failure mode does
+not reproduce.**  0-D corner sweep (`CAMR.ps_relax_sweep=1`, existing cases
+a1 = 1e-2/1e-4/1e-6/1e-8 at rho1=950, rho2=63, T=270):
+  - default: at a1 <= 1e-4 all four solvers (isoP/isoT/MT(g)/mechP) return
+    **ok=1 with the state untouched**, leaving dP = 4.1e-01 and dg = 3.0e-01
+    standing.  Counted nowhere: the S4 gate in `PS_sources.H` returns before
+    `++ps_mt_stats().seen`, so corridor refusals are invisible in
+    `[ps_mt_diag]`.
+  - `PS_SINGLE_PHASE_THRESHOLD=1e-12` (env, no code change): at a1 = 1e-4
+    MT(g) CONVERGES -- dg 3.0e-01 -> 6.4e-05, dM = 0, dE = 0; at a1 = 1e-6 it
+    REFUSES (ok=0, state finite, untouched).  0 UNSAFE.  So the kernel
+    comment's "unbounded step and NaN one iterate later" does not reproduce
+    on this family.
+  - This does NOT license MT in the corridor: the sweep builds CLEAN corridor
+    states (rho_1 = 950 exact, e_1 exactly on-branch).  A real corridor cell's
+    quotient carries the eta/alpha amplification -- which is what alpha_cond
+    is derived from.
+  - Also measured: the MT endpoint is NOT thermal equilibrium.  coex a=0.5
+    converges to dg = 1.2e-05 with **dT = 5.3e-02** still standing.  So the
+    totals-flash endpoint (full HEM: P=T=g) and the driver's endpoint (P,g)
+    are different targets -- adopting the former for corridor donors only
+    would put a discontinuity in the relaxation target at alpha_cond.
+
+**4. alpha_cond is stated in VOLUME; the stranded quantity is MASS.**
+Measured corridor liquid at alpha_1 = 8.96e-03 holding **Y_1 = m_1/rho = 0.461**
+-- 46% of its cell's mass, every thermodynamic operator disabled, rho_1 = 983.
+Mirror side, same threshold: corridor vapour in liquid at alpha_2 = 1e-06 holds
+Y_2 = 2.4e-07.  ~2e6 apart in stranded mass at the same alpha gate.  The §2
+derivation of alpha_cond (conditioning of rho_k = m_k/alpha_k) is
+density-ratio-blind.  This number belongs in front of any corridor decision.
+
+**5. What actually kills the B9 HEM-limit leg** (mode 4, flash on,
+`PS_FLASH_METASTABLE_MARGIN=0`, tau = 1e-5): abort at step ~11,
+
+    [PS-EOS] NO ROOT   rho = 1601.002 kg/m3   e = -600171 J/kg   branch = LIQUID
+    reachable bound at T = 1 K is e = -583688  (gap -16483)
+
+Backtrace: `EOS::REY2PTS_phase` <- `CAMR::computeTemp` (CAMR.cpp:1519, lambda
+`Tph`) <- `CAMR::clean_state` (CAMR.cpp:1733).  `computeTemp` (1469-1540)
+(a) clamps alpha into **[1e-6, 1-1e-6]** -- a surviving copy of the floor
+design §8 deletes "all copies" of; (b) gates the per-phase query on its own
+private **eps = 1e-3**, two decades BELOW alpha_cond, i.e. inside the
+corridor; (c) then makes a **branch-locked** query at (m_k/alpha_k,
+UE_k/m_k).  Its comment says "diagnostic only -- does not touch the conserved
+evolution": true of the value, false of the consequence -- under contract 1 a
+diagnostic query is now a run-terminating event.
+
+Cell 33 trajectory, per step (`amr.plot_int=1`), alpha_1 / m_1 / rho_1=m_1/alpha_1 / e_1:
+
+    step  2   2.35e-06   1.42e-03    605.5   -1.62e+05   CORRIDOR
+    step  4   2.78e-05   3.05e-02   1093.8   -2.02e+05   CORRIDOR
+    step  6   1.42e-04   1.73e-01   1220.5   -2.51e+05   CORRIDOR
+    step  8   3.99e-04   5.64e-01   1412.6   -3.80e+05   CORRIDOR
+    step 10   8.19e-04   1.28e+00   1567.0   -5.38e+05   CORRIDOR
+    step 11   (alpha_1 crosses eps=1e-3; queried at rho_1 = 1601 -> abort)
+
+alpha_1 grows ~1.4x/step, so alpha_1 ~ 1.1e-03 at the query: still CORRIDOR,
+two decades below alpha_cond = 1e-2.  The quotient marches monotonically at
+the PR pole (1650) and e_1 falls past the T = 1 K bound.  Nothing arrests it:
+in the corridor no operator may act (correct, by design), and --
+
+**6. the fold's high side has no owner.**  E2' added VACUUM DEATH for
+`m_k <= rho_min*alpha_k` (the m -> 0 corner).  There is NO symmetric
+condition for a corridor phase whose quotient runs at the UPPER domain edge.
+That is the corner cell 33 dies in.
+
+**7. Per-step deposit ratio at the birth front, unattributed.**  Cell 33
+steps 2-3: dm/dalpha = 1053 then 1125 kg/m3, against
+rho_L_sat(280 K) = 889.3 from the code's own `co2_sat_state` table -- 18-27%
+high, compounding monotonically into the quotient above.  NOT attributed:
+a step mixes flash birth (E1b, `dm = rho_sat*dalpha`), WP transport and
+relaxation.  Separating them is the next measurement, and it is upstream of
+both D3 and the WP-front item.
+
+## computeTemp presence gate — landed, and the full battery (2026-08-11)
+
+**LANDED.**  `CAMR::computeTemp` (CAMR.cpp) no longer queries a phase that has
+no state.  Deleted the surviving `alpha -> [1e-6, 1-1e-6]` clamp (design 8
+deletes "all copies"; this one was missed) and replaced the function's private
+`eps = 1e-3` gate with `ps_regime(...) == Independent` on BOTH phases.  The
+presence params are read once host-side and captured by value (GPU 12.2).
+Nothing else changed; the mixture T computed above still stands for every cell
+the gate excludes, which is what the block already did for pure cells.
+
+**Measured before/after on the leg that motivated it** (B9, mode 4, flash on,
+`PS_FLASH_METASTABLE_MARGIN=0`, tau = 1e-5, N=64):
+  before: abort at step 11, `computeTemp` -> `REY2PTS_phase`,
+          rho = 1601.0 / e = -6.00e5 / LIQUID (cell 33, alpha_1 ~ 1.1e-3).
+  after:  that abort is GONE.  Run reaches step ~21 and aborts on a DIFFERENT
+          query -- see the next section.
+
+**Full 1-D battery at full_suite's production config** (N=64, wp, alpha_trace=0,
+A/C: relax_mode 0 + MT off; B: mode 2, theta = mt = 1e-4).  All 19 cases RUN TO
+COMPLETION.  Reference-free identities (basis item 2) at round-off everywhere:
+worst massid 1.5e-16 (B5), worst energyid 5.8e-14 (B5), every other case
+<= 8.9e-16.  Corridor-occupied cells at the final time: B2 2, B4 1, B7 6,
+B9 3, B10 2, all others 0.
+
+**Accuracy unchanged.**  `exact_suite.py wp` (rel-L2 vs the exact solutions)
+reproduces the 2026-08-10 table to every printed digit: A1 0.0118/0.0101/0.0153,
+A2 0.0130/0.0890/0.0150, A3 0.0271/0.0835/0.0281, A4 0.0244/0.0551/0.0286,
+A5 0.0540/0.1063/0.0668, A6 0.0122/0.0103/0.0153, C1 exact 0, C2
+0.0001/0.1248/0.0001, C3 0.0269/0.1028/0.0248, B4 0.0635/0.1266/0.0491.
+The gate is invisible to the solution, as a diagnostic-only change must be.
+
+**2-D robustness (basis item 4; run as a regression gate, NOT as the
+correctness basis -- 1-D stays the arbiter).**
+- `CO2_TBlowdown` (DIM=2, gnu, no MPI): `inputs-x` runs to max_step=300 and
+  `inputs-x-amr` to stop_time at step 253 (max_level exercised, so the C-F /
+  reflux fold hooks are on the path).  No aborts.  `CAMR.ps_validate=1` over
+  the first 293 advances of `inputs-x`: 1460 stages, ZERO rho_domain
+  violations (bulk AND trace), worst energyid 1.4e-16.
+- `CO2_PipeBreak` (DIM=2, 256x128, max_level=2, mt_tau=1e-6, flash off):
+  ~55 steps, 1565 validator stages, ZERO rho_domain violations, worst massid
+  2.4e-15, no aborts.
+
+## The SECOND defect in computeTemp — identified, NOT fixed (needs a decision)
+
+With the per-phase query gated, B9's stiff HEM leg (`exact_suite` config: mode
+4, theta = mt = flash = 1e-7) now aborts at step ~21 in the SAME function on
+the MIXTURE query:
+
+    [PS-EOS] NO ROOT   rho = 19.074 kg/m3   e = -36517 J/kg   branch = VAPOR
+    reachable bound at T = 1 K is e = -10712   (gap -25805)
+    EOS::REY2T <- CAMR::computeTemp <- CAMR::clean_state
+
+`computeTemp` calls the single-fluid mixture inversion `REY2T(rho_mix, e_mix)`
+UNCONDITIONALLY for every cell, and only afterwards overwrites the result with
+the per-phase T for two-phase cells.  **For a genuine two-phase cell the
+mixture pair need not be a state at all**: rho_mix is set by the vapour VOLUME
+while e_mix is set by the liquid MASS.  Measured at the aborting cell (step 20
+plotfile, cell 33): alpha_1 = 6.2e-3 but Y_1 = m_1/rho = 0.542 -- 54% of the
+cell's mass as liquid in 0.6% of its volume.  A homogeneous fluid at 19 kg/m3
+cannot carry that enthalpy deficit, so the query has no answer.  The function's
+own task-#52 comment already says the mixture inversion is wrong here ("non-
+monotone near the saturation dome ... wiggly Temp diagnostic") -- which is why
+the per-phase T exists -- but the mixture value is still COMPUTED first, and
+under contract 1 computing it is now a run-terminating event.  For a
+both-Independent cell the result is then discarded, so the evaluation is not
+merely unsafe, it is dead.
+
+**Proposed presence temperature rule (no thresholds, no fallbacks):**
+  - both phases INDEPENDENT -> alpha-weighted per-phase T (today's value), and
+    do NOT evaluate the mixture inversion at all;
+  - one phase ABSENT -> mixture `REY2T`, which is well posed because the
+    mixture IS the survivor's single-phase state (design 1);
+  - one phase CORRIDOR -> the HOST phase's branch-locked T (the corridor's own
+    host closure, design 1/4).  **This is the part that needs Marc:** those
+    cells currently get the mixture T, and the mixture pair is exactly the
+    unanswerable query, so their T has to be redefined either to the host
+    closure (recommended) or to "no value" (leave UTEMP, mark invalid).
+Two further silent substitutions in the same block, deliberately NOT touched in
+this commit (one problem per commit): the `Tps in (T_trip, 1e4)` range test
+that falls back to the mixture T, and the trailing display floor
+`UTEMP < T_trip -> T_trip`.  Both are diagnostic-only and both are floors.
+
+## What B9-stiff is actually blocked on (sharper, 2026-08-11)
+
+At the step-20 state of that leg the PHASE ENERGY SPLIT has diverged at the
+birth front while the conserved sum is intact:
+
+    cell 32  alpha_1 = 1.32e-01  Y_1 = 0.962  rho_1 = 1495  e_1 = -3.73e5  e_2 = +6.12e6
+    cell 33  alpha_1 = 6.21e-03  Y_1 = 0.542  rho_1 = 1386  e_1 = -8.92e5  e_2 = +1.24e6
+    cell 34  alpha_1 = 2.98e-04  Y_1 = 0.033  rho_1 = 1322  e_1 = -9.81e5  e_2 = +2.74e5
+
+e_2 = +6.1e6 J/kg is not a vapour state and e_1 = -8.9e5 is far below the
+liquid's reachable bound, yet E_1 + E_2 = rho_E to round-off.  So this is not a
+conservation failure and not a corridor-quotient artefact: it is the WP
+phase-energy split running away at a fresh birth front -- the standing non-AP
+frontier item (extinction note 10 point 3 / 11) with numbers an order of
+magnitude past the previously recorded 28%.  No computeTemp change can reach
+it; the aborts were downstream reporters.
+
+## Build environment notes (next session, save an hour)
+
+- `src/amrex` is a symlink to an ABSOLUTE host path (`/Users/marcusd/...`) which
+  does not resolve inside the device VM.  Pass
+  `AMREX_HOME=<mount>/PeleLMeX/Submodules/PelePhysics/Submodules/amrex`.
+- `tmp_build_dir` carries the PREVIOUS session's mount prefix in its `.d`
+  files, so make tries to rebuild from a path that no longer exists.  Rewrite
+  the session id in `tmp_build_dir/{o,s}/<config>/*.d`.
+- **STALE-BINARY INCIDENT #5 (mine).**  I rewrote that prefix with
+  `grep -rl | xargs sed -i`, which matched the `.o` files too (the id appears
+  in their debug info) and bumped their mtimes ABOVE the patched source, so
+  make relinked from a stale `CAMR.o` and the "fixed" binary was the old code.
+  It reproduced the identical abort, byte for byte, which is the only reason it
+  was caught.  Restrict the rewrite to `*.d`, and `touch` the sources after.
+- `make` fails at the very end on `rm AMReX_buildInfo.cpp` (the sandbox cannot
+  delete on the mount).  Use `KEEP_BUILDINFO_CPP=TRUE`.
+- No MPI in the VM; build `USE_MPI=FALSE`.  Sandbox calls are capped at 45 s
+  and kill their process tree, so long builds need `make` reissued (as the
+  ground rules say) and long runs need `amr.check_int` + `amr.restart` chunks.
+

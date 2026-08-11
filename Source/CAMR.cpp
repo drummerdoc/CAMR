@@ -1444,6 +1444,9 @@ CAMR::computeTemp(amrex::MultiFab& S, int ng)
   reset_internal_energy(S, ng);
   const int l_ps_hydro = ps_hydro;              // task #52: per-phase T for PS state
   const amrex::Real l_T_trip = EOS::T_triple(); // fluid triple point (EOS, not hardcoded)
+#ifdef USE_PS_HYDRO
+  const PsPres l_pr = ps_presence_params();     // host read once, by value (GPU 12.2)
+#endif
 
 #ifdef AMREX_USE_EB
   auto const& fact =
@@ -1494,9 +1497,7 @@ CAMR::computeTemp(amrex::MultiFab& S, int ng)
        // evolution.  Falls back to the mixture T above if the per-phase
        // result is non-finite.
        if (l_ps_hydro != 0) {
-         amrex::Real a1 = Sarr(i, j, k, UALPHA1);
-         a1 = amrex::max(amrex::Real(1.0e-6),
-                         amrex::min(amrex::Real(1.0) - amrex::Real(1.0e-6), a1));
+         const amrex::Real a1 = Sarr(i, j, k, UALPHA1);
          const amrex::Real m1 = Sarr(i, j, k, UM1RHO1);
          const amrex::Real m2 = Sarr(i, j, k, UM2RHO2);
          if (m1 > amrex::Real(0.0) && m2 > amrex::Real(0.0)) {
@@ -1528,10 +1529,21 @@ CAMR::computeTemp(amrex::MultiFab& S, int ng)
            // metastable garbage T), so there the single-phase mixture REY2T
            // (already in UTEMP) is the right value.  Also require the result
            // to be in the physical CO2 range; otherwise keep the mixture T.
-           constexpr amrex::Real eps  = amrex::Real(1.0e-3);
            const amrex::Real T_lo = l_T_trip;                 // fluid triple point (EOS)
            constexpr amrex::Real T_hi = amrex::Real(1.0e4);
-           if (a1 > eps && a1 < amrex::Real(1.0) - eps) {
+           // PRESENCE (design 1, contract 2).  The per-phase T is a
+           // BRANCH-LOCKED query at (m_k/alpha_k, UE_k/m_k), so it may only be
+           // asked for a phase that HAS a state.  In the corridor rho_k
+           // inherits relative error eta/alpha_k and the query has no right to
+           // an answer.  The private eps = 1e-3 this replaces sat two decades
+           // BELOW alpha_cond and therefore admitted corridor phases: on the
+           // B9 HEM leg (mode 4, flash, tau=1e-5) cell 33 crossed eps at
+           // alpha_1 ~ 1.1e-3 carrying m_1/alpha_1 = 1601 kg/m3 and e_1 =
+           // -6.0e5 J/kg, and this DIAGNOSTIC aborted the run on NO ROOT.
+           // Gate on the classifier; otherwise the mixture T computed above
+           // stands, which is what this block already does for pure cells.
+           if (ps_regime(a1, m1, l_pr) == PsRegime::Independent &&
+               ps_regime(a2, m2, l_pr) == PsRegime::Independent) {
              const amrex::Real T1 = Tph(1, m1 / a1, Sarr(i,j,k,UE1) / m1 - ke);
              const amrex::Real T2 = Tph(2, m2 / a2, Sarr(i,j,k,UE2) / m2 - ke);
              const amrex::Real Tps = a1 * T1 + a2 * T2;
