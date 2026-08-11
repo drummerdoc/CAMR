@@ -41,7 +41,14 @@ struct PsPres {
     amrex::Real alpha_vanish = amrex::Real(1.0e-8);
     amrex::Real alpha_cond   = amrex::Real(1.0e-2);
     amrex::Real alpha_birth  = amrex::Real(2.0e-2);
-    int         enabled      = 0;
+    //  The legacy (enabled == 0) path is DELETED.  Presence semantics are
+    //  the only semantics: alpha free in [0,1] so ABSENT is reachable, phase
+    //  states formed by checked construction, branch-locked queries only for
+    //  phases that exist.  Every manufacture found in the 2026-08-10 audit
+    //  lived in an `enabled == 0` fork whose presence-side twin was already
+    //  correct.  This field stays 1 and is retained only until the remaining
+    //  forks are removed; `CAMR.ps_presence` is no longer read.
+    int         enabled      = 1;
 };
 
 // Per-phase regime.  alpha is THIS phase's volume fraction, m its
@@ -102,7 +109,7 @@ inline const PsPres& ps_presence_params()
     static const PsPres p = []() {
         PsPres v;
         amrex::ParmParse pp("CAMR");
-        pp.query("ps_presence",         v.enabled);
+        //  CAMR.ps_presence deliberately NOT read: the legacy path is gone.
         pp.query("ps_alpha_cond",       v.alpha_cond);
         pp.query("ps_alpha_birth",      v.alpha_birth);
         pp.query("ps_presence_vanish",  v.alpha_vanish);   // unified with the

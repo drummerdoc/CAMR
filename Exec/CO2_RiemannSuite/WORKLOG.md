@@ -18,8 +18,13 @@ Convention:
 
 ## Current status (2026-08-10)
 
-Branch `co2-eos`.  Three checkpoints landed: `2d20ffa` (bracketed EOS),
-`f08f43e` (contract 3, first two sites).  Tree clean.
+Branch `co2-eos`.  Landed: `2d20ffa` (bracketed EOS), `f08f43e` + `e6f4da2`
+(contract 3, three sites), legacy path deleted.
+
+**The legacy (`ps_presence == 0`) path is gone.**  `PsPres::enabled` is 1
+and `CAMR.ps_presence` is no longer read.  36 `pr.enabled` forks remain as
+dead code in 6 files and are being deleted mechanically; the live branch is
+the only one that ever ran, so a mistake in that deletion shows up at once.
 
 The 1-D suite does not run to completion.  B9 aborts, deliberately, on
 inputs that are not states.  This is intended: the aborts replace silent
@@ -80,11 +85,15 @@ What counts:
   formation term.  So at near-ideal densities e < 0 is unreachable HERE,
   but that is an artefact of the missing term, not physics.  The invariant
   to code against is `e >= e(T_min) AT THAT DENSITY`, evaluated.
-- **On the legacy path `a1` is clamped into `[1e-6, 1-1e-6]` BEFORE the
-  regime test**, so `ps_regime`'s vanish edge (1e-8) can never fire there
-  and Absent is unreachable.  The presence path clamps to [0,1] and so
-  admits exact 0/1.  Contract 3 is therefore inert on the legacy path until
-  that clamp goes.
+- The legacy path clamped `a1` into `[1e-6, 1-1e-6]` BEFORE the regime test,
+  so `ps_regime`'s vanish edge (1e-8) could never fire and Absent was
+  unreachable — contract 3 was inert there.  Resolved by deleting the path.
+- **Deleting legacy barely moves single phase**: A1 goes from 2.09e-06 to
+  3.34e-09 against the (retired) stored reference.
+- **B9 with legacy gone**: reaches step 10 (was 5), and `ps_alpha_vanish`
+  no longer changes the outcome.  Aborts at `rho = 10.83, e = -12159`,
+  VAPOR — an ordinary vapour density with e roughly 6 kJ/kg below the
+  reachable bound, against -29.8 MJ/kg out of range at the start.
 - **Vanish fold + T-floor fold are the only phase-removal mechanisms and
   both ship disabled** (`CAMR.ps_alpha_vanish`, `CAMR.ps_temp_floor`,
   default 0; neither set in `inputs`).
@@ -123,12 +132,7 @@ What counts:
 
 ## Next
 
-1. **Decide whether the legacy (`pr.enabled == 0`) path is deleted.**  It
-   has no authority, no future, and its forks are where every manufacture
-   found so far lived.  Presence semantics are already the correct ones
-   (alpha free in [0,1], Absent reachable, "definition not repair").
-   Deleting the fork removes the alpha pre-clamp, makes contract 3 effective,
-   and halves the surface being audited.
+1. Delete the 36 dead `pr.enabled` forks (6 files), file by file.
 2. Finish contract 3 on the unified path: `PS_hllc.H` (~167-170, 237-263),
    `ps_max_wave_speed_from_state`, relaxation coexistence check.
 3. The removal trigger: what fires when a slot's state leaves its branch's
