@@ -64,8 +64,15 @@ ps_augment_primitives(int i, int j, int k,
         if (a1 > amrex::Real(1.0) - alpha_floor) a1 = amrex::Real(1.0) - alpha_floor;
     }
     const amrex::Real a2 = amrex::Real(1.0) - a1;
-    const PsRegime rg1 = pr.enabled ? ps_regime(a1, m1rho1, pr) : PsRegime::Independent;
-    const PsRegime rg2 = pr.enabled ? ps_regime(a2, m2rho2, pr) : PsRegime::Independent;
+    //  Contract 3: regime computed honestly on BOTH paths (was: forced
+    //  Independent on legacy, i.e. asserting both phases exist).
+    //  NOTE: on the legacy path a1 is clamped into [alpha_floor, 1-alpha_floor]
+    //  ABOVE, before this test, so alpha can never fall below ps_regime's
+    //  vanish edge and Absent is unreachable there.  That clamp is a
+    //  contract-4 item; until it goes, this predicate is weaker than it looks
+    //  on the legacy path.
+    const PsRegime rg1 = ps_regime(a1, m1rho1, pr);
+    const PsRegime rg2 = ps_regime(a2, m2rho2, pr);
 
     // Per-phase densities ρ_k = (α_k ρ_k) / α_k .  LLF diffusion in
     // the trace phase (α₂ ≈ 1e-6 initially) can drive α_k ρ_k
@@ -78,21 +85,12 @@ ps_augment_primitives(int i, int j, int k,
     // G1: clamp into the EOS validity domain (see PS_guards.H).  Was
     // floor-only, which left rho_k free to reach the PR hard-sphere pole.
     const amrex::Real rho_mix_c = u(i,j,k, URHO);
-    amrex::Real rho1, rho2;
-    if (pr.enabled) {   // S2: never divide for an ABSENT phase
-        rho1 = (rg1 == PsRegime::Absent) ? rho_mix_c
-             : ps_guard::clamp_phase_density(m1rho1 / amrex::max(a1, amrex::Real(1.0e-300)),
-                                             EOS::rho_min(), EOS::rho_max());
-        rho2 = (rg2 == PsRegime::Absent) ? rho_mix_c
-             : ps_guard::clamp_phase_density(m2rho2 / amrex::max(a2, amrex::Real(1.0e-300)),
-                                             EOS::rho_min(), EOS::rho_max());
-    } else {
-        rho1 = ps_guard::clamp_phase_density(m1rho1 / a1,
-                                EOS::rho_min(), EOS::rho_max());
-        rho2 = ps_guard::clamp_phase_density(m2rho2 / a2,
-                                EOS::rho_min(), EOS::rho_max());
-    }
     amrex::ignore_unused(rho_floor);
+    //  rho_k / e_k are formed together below, after ke_spec, by the checked
+    //  construction (contract 3).  They used to be built here, clamped into
+    //  the EOS domain, with e_k separately falling back to the MIXTURE energy
+    //  "to keep downstream EOS calls in a valid regime" -- i.e. manufacturing
+    //  a state rather than reporting that none exists.
 
     // Per-phase specific internal energies e_k = E_k − ½ u²
     // (per-phase kinetic energy uses the mixture velocity, which
@@ -116,10 +114,12 @@ ps_augment_primitives(int i, int j, int k,
     // per-phase partial mass goes bad — an approximation but keeps
     // downstream EOS calls in a valid regime.
     const amrex::Real E_mix = u(i,j,k, UEINT) / u(i,j,k, URHO);
-    const amrex::Real e1 = (m1rho1 > amrex::Real(1.0e-12))
-        ? E1_tot / m1rho1 - ke_spec : E_mix;
-    const amrex::Real e2 = (m2rho2 > amrex::Real(1.0e-12))
-        ? E2_tot / m2rho2 - ke_spec : E_mix;
+    const PsPhaseQuot q1 = ps_phase_quot(a1, m1rho1, E1_tot, ke_spec, pr);
+    const PsPhaseQuot q2 = ps_phase_quot(a2, m2rho2, E2_tot, ke_spec, pr);
+    const amrex::Real rho1 = q1.exists ? q1.rho : rho_mix_c;
+    const amrex::Real rho2 = q2.exists ? q2.rho : rho_mix_c;
+    const amrex::Real e1   = q1.exists ? q1.e   : E_mix;
+    const amrex::Real e2   = q2.exists ? q2.e   : E_mix;
 
     // Per-phase pressures — branch-locked (task #185).
     //

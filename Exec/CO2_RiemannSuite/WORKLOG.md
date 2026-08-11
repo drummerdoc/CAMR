@@ -54,7 +54,7 @@ What counts:
 | 4 | Every remaining floor named, bounded, counted — or deleted. | not started |
 | 5 | Operators declare preconditions and refuse. | not started |
 | 6 | Validity propagates (`hem::State` has no valid flag; `PsPhase` does). | not started |
-| 7 | Branch selection: who decides, and what if wrong. | **newly identified**, not started |
+| 7 | ~~Branch selection~~ — **RETRACTED.**  Phase ID is not determined, it is asserted by the slot: slot 1 IS liquid, slot 2 IS vapour, from init until removal.  A phase-locked query needs no inference.  The only genuine determination is the MIXTURE query (`state_from_rho_e`), which now brackets against the dome; the old `rho > 2*rho_ig` heuristic is gone. | n/a |
 
 ## Durable measurements
 
@@ -80,6 +80,11 @@ What counts:
   formation term.  So at near-ideal densities e < 0 is unreachable HERE,
   but that is an artefact of the missing term, not physics.  The invariant
   to code against is `e >= e(T_min) AT THAT DENSITY`, evaluated.
+- **On the legacy path `a1` is clamped into `[1e-6, 1-1e-6]` BEFORE the
+  regime test**, so `ps_regime`'s vanish edge (1e-8) can never fire there
+  and Absent is unreachable.  The presence path clamps to [0,1] and so
+  admits exact 0/1.  Contract 3 is therefore inert on the legacy path until
+  that clamp goes.
 - **Vanish fold + T-floor fold are the only phase-removal mechanisms and
   both ship disabled** (`CAMR.ps_alpha_vanish`, `CAMR.ps_temp_floor`,
   default 0; neither set in `inputs`).
@@ -103,10 +108,14 @@ What counts:
 
 ## Open questions
 
-- **Branch selection (contract 7).**  B9 now aborts at `rho = 79.93,
-  e = -83584` on the LIQUID branch — an ordinary physical state asked for
-  on the wrong branch.  Nothing establishes who decides.  Today: a
-  `rho > 2*rho_ig` heuristic plus a corrective guard.
+- **Slot integrity.**  B9 aborts at `rho = 79.93, e = -83584` on a
+  phase-LOCKED query for slot 1.  LIQUID is correct — the slot defines it.
+  What is wrong is that slot 1 holds 79.93 kg/m3 where liquid is ~960: the
+  assertion "slot 1 is liquid" has become false while the slot still holds
+  mass, and nothing removed it.  This folds into the removal question, and
+  sharpens the trigger: the fold fires on ALPHA crossing a threshold, but
+  what failed here is the slot's STATE leaving its branch's domain, which
+  alpha does not see (a1 can be healthy while rho_1 is vapour-like).
 - What should happen when alpha collapses while mass remains?  The fold
   answers "transfer it", but the trigger is a fixed alpha threshold and the
   pathology is density/energy-dependent.
@@ -114,11 +123,18 @@ What counts:
 
 ## Next
 
-1. Finish contract 3: `ps_ctoprim` site 1, `PS_hllc.H` (~167-170,
-   237-263), `ps_max_wave_speed_from_state`, relaxation coexistence check.
-2. Then contract 7 (branch selection), which B9 is now blocked on.
-3. 1-D correctness against the exact single-phase and HEM Riemann solves.
-   2-D is deferred until that holds.
+1. **Decide whether the legacy (`pr.enabled == 0`) path is deleted.**  It
+   has no authority, no future, and its forks are where every manufacture
+   found so far lived.  Presence semantics are already the correct ones
+   (alpha free in [0,1], Absent reachable, "definition not repair").
+   Deleting the fork removes the alpha pre-clamp, makes contract 3 effective,
+   and halves the surface being audited.
+2. Finish contract 3 on the unified path: `PS_hllc.H` (~167-170, 237-263),
+   `ps_max_wave_speed_from_state`, relaxation coexistence check.
+3. The removal trigger: what fires when a slot's state leaves its branch's
+   domain (alpha threshold does not see it).
+4. 1-D correctness against the exact single-phase and HEM Riemann solves.
+   2-D deferred until that holds.
 
 ## Superseded — do not re-derive
 
