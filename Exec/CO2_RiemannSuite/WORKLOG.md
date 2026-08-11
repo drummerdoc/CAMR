@@ -611,3 +611,58 @@ survivor); one CORRIDOR -> the host phase's branch-locked T.  Non-PS path
 untouched.  That removes the last aborting query in a field nothing in the
 conserved evolution reads.
 
+## computeTemp fill rule (2026-08-11, landed) — and what it did NOT fix
+
+**LANDED.**  The mixture inversion `REY2T(rho_mix, e_mix)` is no longer
+unconditional.  `computeTemp`'s PS branch now dispatches on presence:
+  both INDEPENDENT -> alpha-weighted per-phase T, and the mixture inversion is
+      NOT asked (for a two-phase cell it is the question with no answer:
+      rho_mix is set by the light phase's VOLUME, e_mix by the heavy phase's
+      MASS).  Measured with the liquid on its 280 K saturation locus: at
+      alpha_1 = 0.005 against vapour at 12.3 kg/m3 the inversion returns
+      **134.6 K**, 82 K BELOW the triple point, for a cell whose phases are at
+      280 K and 219.6 K.  At alpha_1 = 0.011 / rho_2 = 24.5 it returns 142.1 K.
+      The trailing display floor then clamps such values to T_triple, turning a
+      visibly absurd number into a plausible-looking one.
+  one CORRIDOR -> the HOST phase's branch-locked T (the corridor phase is
+      host-slaved by definition, design 1/4).  These cells previously took the
+      mixture value, i.e. exactly the unanswerable query.
+  one ABSENT -> mixture inversion, unchanged: the cell IS single-phase Euler
+      and (rho_mix, e_mix) IS the survivor's own state.
+CORRIDOR+CORRIDOR is unreachable (alpha_1 + alpha_2 = 1 puts one of them at
+>= 1/2).  Quotients come from `ps_phase_quot` (contract 3).  The two-phase
+branches never fall back to the mixture inversion even if the quotients do not
+exist -- that is a state defect owned by V1/V6/V7, not a reason to ask an
+unanswerable question.  Non-PS path bit-unchanged (`ps_T_set` is always false
+there).  Also dropped: the old `Tps in (T_trip, 1e4)` range test, which was a
+silent substitution of the mixture value for a per-phase result that V7 now
+reports properly.
+
+**Regression.**  Full 19-case battery at production config: all complete,
+worst massid 1.5e-16, worst energyid 5.8e-14.  `exact_suite.py wp` reproduces
+the 2026-08-10 accuracy table to every printed digit (A1 0.0118/0.0101/0.0153,
+C2 u 0.1248, B4 0.0635/0.1266/0.0491, ...).
+
+**It did NOT fix B9-stiff, and was not going to.**  On the exact_suite B9 leg
+(mode 4, theta = mt = flash = 1e-7) the run still aborts, now on an
+INDEPENDENT phase 1 at `rho = 1232.3, e = -945868 J/kg` -- **470 kJ/kg** below
+the coldest reachable state.  That is contract 1 refusing a state that is not a
+state; the phase-energy split has diverged (the WP birth-front item).  Two
+classes of unanswerable query have been removed from this function; the
+remaining abort is a genuine defect being correctly reported, by a component
+that should not be the one to notice it.
+
+**Two gaps this exposed, both named, neither fixed:**
+1. **computeTemp can still abort.**  Making a diagnostic report-only needs the
+   non-aborting EOS entry, but `REY2PTS_phase_try` exists ONLY in PR, and
+   `computeTemp` is a device `ParallelFor` so it cannot use PsPhaseAPI's
+   std::function (GPU rules 12.2) the way V7 does.  Adding the try-variant to
+   PRTab/GERG/GERGTab is one well-scoped job that unlocks BOTH a report-only
+   diagnostic AND V7's missing numeric gap.
+2. **The validator sweeps at stage boundaries; clean_state runs between them.**
+   On that leg V7 fired at 70 stages but every hit was TRACE bucket, so
+   `ps_validate=2` would NOT have aborted first: the cell crosses
+   corridor -> INDEPENDENT while carrying the energy defect in the window
+   between two sweeps.  V7 gives ~70 stages of warning that something is
+   unreachable, but it is not positioned to pre-empt the fatal query.
+

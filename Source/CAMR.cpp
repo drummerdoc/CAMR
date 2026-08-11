@@ -1483,8 +1483,17 @@ CAMR::computeTemp(amrex::MultiFab& S, int ng)
          massfrac[n] = Sarr(i, j, k, UFS + n) * rhoInv;
        }
        amrex::Real rho = Sarr(i, j, k, URHO);
-       EOS::REY2T(rho, e, massfrac, T);
-       Sarr(i, j, k, UTEMP) = T;
+       // The MIXTURE inversion REY2T(rho_mix, e_mix) is deferred to after the
+       // presence block, because for a PS two-phase cell it is not a question
+       // with an answer: rho_mix is set by the light phase's VOLUME while
+       // e_mix is set by the heavy phase's MASS, so the pair need not be a
+       // single-fluid state at all.  Measured 2026-08-11 with the liquid on
+       // its 280 K saturation locus: at alpha_1 = 0.005 against vapour at
+       // 12.3 kg/m3 the inversion returns 134.6 K -- 82 K BELOW the triple
+       // point -- for a cell whose phases are at 280 K and 219.6 K; and on the
+       // B9 HEM leg it has no root at all and aborted the run from this
+       // diagnostic.  Ask it only where it is well posed (below).
+       bool ps_T_set = false;
 
 #ifdef USE_PS_HYDRO
        // Task #52: for the Pelanti-Shyue 6-eq state, the single-phase
@@ -1522,43 +1531,75 @@ CAMR::computeTemp(amrex::MultiFab& S, int ng)
                                           : hem::Phase3::Vapor, Pq, Tq, Sq);
              return Tq;
            };
-           // Use the per-phase T only in GENUINE two-phase cells; in
-           // near-single-phase cells the fixed phase1=Liquid / phase2=Vapor
-           // branch labelling can be wrong (e.g. dense supercritical phase-1
-           // at vapor density -> the liquid branch extrapolates to a cold
-           // metastable garbage T), so there the single-phase mixture REY2T
-           // (already in UTEMP) is the right value.  Also require the result
-           // to be in the physical CO2 range; otherwise keep the mixture T.
-           const amrex::Real T_lo = l_T_trip;                 // fluid triple point (EOS)
-           constexpr amrex::Real T_hi = amrex::Real(1.0e4);
-           // PRESENCE (design 1, contract 2).  The per-phase T is a
+           // PRESENCE dispatch (design 1, contract 2).  The per-phase T is a
            // BRANCH-LOCKED query at (m_k/alpha_k, UE_k/m_k), so it may only be
-           // asked for a phase that HAS a state.  In the corridor rho_k
+           // asked for a phase that HAS a state; in the corridor rho_k
            // inherits relative error eta/alpha_k and the query has no right to
-           // an answer.  The private eps = 1e-3 this replaces sat two decades
-           // BELOW alpha_cond and therefore admitted corridor phases: on the
-           // B9 HEM leg (mode 4, flash, tau=1e-5) cell 33 crossed eps at
-           // alpha_1 ~ 1.1e-3 carrying m_1/alpha_1 = 1601 kg/m3 and e_1 =
-           // -6.0e5 J/kg, and this DIAGNOSTIC aborted the run on NO ROOT.
-           // Gate on the classifier; otherwise the mixture T computed above
-           // stands, which is what this block already does for pure cells.
-           if (ps_regime(a1, m1, l_pr) == PsRegime::Independent &&
-               ps_regime(a2, m2, l_pr) == PsRegime::Independent) {
-             const amrex::Real T1 = Tph(1, m1 / a1, Sarr(i,j,k,UE1) / m1 - ke);
-             const amrex::Real T2 = Tph(2, m2 / a2, Sarr(i,j,k,UE2) / m2 - ke);
-             const amrex::Real Tps = a1 * T1 + a2 * T2;
-             if (std::isfinite(Tps) && Tps > T_lo && Tps < T_hi)
-               Sarr(i, j, k, UTEMP) = Tps;
+           // an answer.  Exactly one of these three holds, and alpha_1+alpha_2
+           // = 1 makes CORRIDOR+CORRIDOR unreachable (one of them is >= 1/2):
+           //   both INDEPENDENT   -> alpha-weighted per-phase T; the mixture
+           //                         inversion is NOT asked (it is the case
+           //                         with no answer).
+           //   one CORRIDOR       -> the HOST phase's branch-locked T.  The
+           //                         corridor phase is host-slaved by
+           //                         definition (design 1/4) and contributes
+           //                         no thermodynamics; previously these cells
+           //                         took the mixture value, which is exactly
+           //                         the unanswerable query.
+           //   one ABSENT         -> fall through to the mixture inversion:
+           //                         the cell IS single-phase Euler and
+           //                         (rho_mix, e_mix) IS the survivor's own
+           //                         state, so that call is well posed.
+           const PsRegime rg1 = ps_regime(a1, m1, l_pr);
+           const PsRegime rg2 = ps_regime(a2, m2, l_pr);
+           if (rg1 == PsRegime::Independent && rg2 == PsRegime::Independent) {
+             // Contract 3: quotients formed once, checked.  If they do not
+             // exist the cell is a state defect owned by ps_validate_state
+             // (V1/V6/V7) -- do NOT fall back to the mixture inversion, which
+             // for a two-phase cell is the query that has no answer.
+             ps_T_set = true;
+             const PsPhaseQuot q1 = ps_phase_quot(a1, m1, Sarr(i,j,k,UE1), ke, l_pr);
+             const PsPhaseQuot q2 = ps_phase_quot(a2, m2, Sarr(i,j,k,UE2), ke, l_pr);
+             if (q1.exists && q2.exists) {
+               const amrex::Real Tps = a1 * Tph(1, q1.rho, q1.e)
+                                     + a2 * Tph(2, q2.rho, q2.e);
+               if (std::isfinite(Tps)) Sarr(i, j, k, UTEMP) = Tps;
+             }
+           } else if ((rg1 == PsRegime::Corridor && rg2 == PsRegime::Independent) ||
+                      (rg2 == PsRegime::Corridor && rg1 == PsRegime::Independent)) {
+             ps_T_set = true;
+             const int hk = (rg1 == PsRegime::Independent) ? 1 : 2;
+             const amrex::Real ah = (hk == 1) ? a1 : a2;
+             const amrex::Real mh = (hk == 1) ? m1 : m2;
+             const amrex::Real Eh = (hk == 1) ? Sarr(i,j,k,UE1) : Sarr(i,j,k,UE2);
+             const PsPhaseQuot qh = ps_phase_quot(ah, mh, Eh, ke, l_pr);
+             if (qh.exists) {
+               const amrex::Real Th = Tph(hk, qh.rho, qh.e);
+               if (std::isfinite(Th)) Sarr(i, j, k, UTEMP) = Th;
+             }
            }
          }
-         // Display floor: the single-phase mixture REY2T can return
-         // sub-triple-point T at dense inlet cells, which is outside the CO2
-         // EOS validity range (dry-ice territory the PR EOS cannot model).
-         // Clamp the reported T to the triple point so the diagnostic stays
-         // physical & monotone (matches ps_temp_floor on the energy side).
-         if (Sarr(i, j, k, UTEMP) < l_T_trip)
-           Sarr(i, j, k, UTEMP) = l_T_trip;
        }
+#endif
+       // Mixture inversion: every non-PS cell, and PS cells that are
+       // single-phase (one phase ABSENT).  Unchanged for the non-PS path,
+       // where ps_T_set is always false.
+       if (!ps_T_set) {
+         EOS::REY2T(rho, e, massfrac, T);
+         Sarr(i, j, k, UTEMP) = T;
+       }
+#ifdef USE_PS_HYDRO
+       // Display floor: the single-phase mixture REY2T can return
+       // sub-triple-point T at dense inlet cells, which is outside the CO2
+       // EOS validity range (dry-ice territory the PR EOS cannot model).
+       // Clamp the reported T to the triple point so the diagnostic stays
+       // physical & monotone (matches ps_temp_floor on the energy side).
+       // Applied AFTER whichever branch supplied the value, as before.
+       // NOTE: this is a surviving silent floor on a diagnostic field; it now
+       // also masks a legitimately sub-triple-point per-phase T.  Named here,
+       // not removed in this commit.
+       if (l_ps_hydro != 0 && Sarr(i, j, k, UTEMP) < l_T_trip)
+         Sarr(i, j, k, UTEMP) = l_T_trip;
 #endif
        }
     });
