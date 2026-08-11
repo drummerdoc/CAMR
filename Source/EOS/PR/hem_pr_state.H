@@ -45,10 +45,11 @@ namespace hem {
 #if defined(CAMR_PS_DIAG) && !defined(AMREX_USE_GPU)
 namespace floor_census {
 inline long& n_T_clamp()   { static long n = 0; return n; }
-inline long& n_T_nonconv() { static long n = 0; return n; }
+inline long& n_T_nonconv() { static long n = 0; return n; }   // branch-LOCKED (dangerous)
+inline long& n_T_nonconv_det() { static long n = 0; return n; } // phase-DETECT (normal probe)
 inline long& n_P_floor()   { static long n = 0; return n; }
 inline long& n_calls()     { static long n = 0; return n; }
-inline void  reset() { n_T_clamp()=0; n_T_nonconv()=0; n_P_floor()=0; n_calls()=0; }
+inline void  reset() { n_T_clamp()=0; n_T_nonconv()=0; n_T_nonconv_det()=0; n_P_floor()=0; n_calls()=0; }
 }
 // ---- strict mode (CAMR.ps_strict_eos) ---------------------------------
 //  BITMASK, 0 = off (default).  Add the bits you want to trap:
@@ -74,7 +75,7 @@ inline void strict_abort(const char* site, const char* what, double rho,
     amrex::Print() << "\n[PS-STRICT] ABORT -- silent EOS repair at: " << site
                    << "\n  EOS INPUT : rho = " << rho << " kg/m^3"
                    << "   e = " << e << " J/kg"
-                   << "   phase = " << (phase == 1 ? "LIQUID" : "VAPOR")
+                   << "   phase = " << (phase == 1 ? "LIQUID" : (phase == 2 ? "VAPOR" : "UNKNOWN (see Backtrace.0 for the branch-locked caller)"))
                    << "\n  T at failure = " << T << " K"
                    << "\n  Reproduce   : echo \"" << rho << " " << e
                    << " 1.0 0.0\" | ./probe_pr"
@@ -885,7 +886,9 @@ inline State state_from_P_rho(const PRFluid& f, amrex::Real P, amrex::Real rho)
 // ---------------------------------------------------------------------
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
 bool ps_newton_solve_T(const PRFluid& f, amrex::Real v_m,
-                       amrex::Real e_mol_target, amrex::Real& T)
+                       amrex::Real e_mol_target, amrex::Real& T,
+                       int site = 0,   // 1 = phase-DETECT, 2 = branch-LOCKED
+                       int req_phase = 0)  // 1 = LIQUID, 2 = VAPOR, 0 = unknown
 {
     constexpr int         max_iter = 100;
     constexpr amrex::Real T_rtol   = amrex::Real(1e-12);
@@ -920,13 +923,23 @@ bool ps_newton_solve_T(const PRFluid& f, amrex::Real v_m,
 #endif
         }
     }
-    PS_CENSUS(n_T_nonconv);
 #if defined(CAMR_PS_DIAG) && !defined(AMREX_USE_GPU)
-    if ((hem::strict() & 1))
-        hem::strict_abort("Newton on T did NOT converge (max_iter)",
+    if (site == 1) ++hem::floor_census::n_T_nonconv_det(); else PS_CENSUS(n_T_nonconv);
+    //  site 1 (phase-DETECT) failing is BY DESIGN: state_from_rho_e tries a
+    //  single-phase solve first and uses its failure to trigger the dome
+    //  check, which then solves the two-phase state exactly.  Trapped only
+    //  under bit 8.  site 2 (branch-LOCKED) has NO dome fallback -- it
+    //  returns the requested phase regardless, marked valid.  That is the
+    //  dangerous one and it is what bit 1 traps.
+    if (((site == 2) && (hem::strict() & 1)) || ((site == 1) && (hem::strict() & 8)))
+        hem::strict_abort(site == 2 ? "Newton non-convergence, BRANCH-LOCKED entry"
+                                    : "Newton non-convergence, phase-DETECT entry (by design)",
             "no root for this (rho,e) on the requested branch; T was left "
             "wherever the iteration stopped and the state marked VALID",
-            f.M/v_m, e_mol_target/f.M, double(T), 0);
+            f.M/v_m, e_mol_target/f.M, double(T), req_phase);
+#endif
+#if !defined(CAMR_PS_DIAG) || defined(AMREX_USE_GPU)
+    PS_CENSUS(n_T_nonconv);
 #endif
     return false;   // max_iter reached — should not happen (diagnostic hook)
 }
@@ -991,7 +1004,7 @@ inline State state_from_rho_e(const PRFluid& f, amrex::Real rho, amrex::Real e_t
     // see ps_newton_solve_T).  Return value (converged) is a future
     // non-convergence diagnostic hook.
     PS_CENSUS(n_calls);
-    ps_newton_solve_T(f, v_m, e_mol_target, T);
+    ps_newton_solve_T(f, v_m, e_mol_target, T, 1);
 
     // -------- 2) phase check : are we inside the dome at this T? ------
     if (T < f.pr.Tc) {
@@ -1117,7 +1130,8 @@ inline State state_from_rho_e_phase(const PRFluid& f, amrex::Real rho,
     // (Newton stalled at the round-off floor / ill-conditioned point),
     // capped at max_iter.  All three criteria are seed-independent.
     PS_CENSUS(n_calls);
-    ps_newton_solve_T(f, v_m, e_mol_target, T);
+    ps_newton_solve_T(f, v_m, e_mol_target, T, 2,
+                      (phase == Phase3::Liquid) ? 1 : 2);
 
     // No dome check -- return the requested phase regardless.  Inside the
     // dome this is the metastable extrapolation of the PR cubic; the

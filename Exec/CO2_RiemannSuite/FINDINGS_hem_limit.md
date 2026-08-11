@@ -1611,3 +1611,75 @@ and the default build remains byte-identical (A1 and B4 re-verified
 digit-identical after every step above).  Driving the count to zero is a
 data-repair exercise on the phase-energy split, to be done one input defect
 at a time with strict mode as the bisector -- NOT by adjusting the repairs.
+
+## Addendum 10j — CORRECTION to 10i, and the census split by call site.
+## (2026-08-10)
+
+10i is wrong on two counts and its headline number was measured against the
+wrong bound.  Corrected here; 10i is left in place for the record.
+
+### 10j.1  e = -37343 J/kg is NOT unreachable
+
+10i called it "a phase energy that cannot exist".  It is an ordinary
+**two-phase mixture**: rho = 30.8758, e = -37343.19 resolves to T = 223.847 K,
+quality x = 0.58229, and reconstructing (rho, e) from that (T, x) via the
+saturation states gives drho = 0.000e+00 and de = 3.7e-05 (1e-9 relative).
+The shipped code resolves it CORRECTLY.  The state is fine.
+
+The error: 10i compared the target against the vapour-branch energy at
+220 K and called the 1.19e5 J/kg gap "below the coldest physical vapour
+energy".  220 K is not the coldest reachable point -- the branch continues
+down to the 1 K clamp, where e = -1.738e4.  And more importantly the state
+is not on the vapour branch at all.
+
+### 10j.2  The trap was mislabelled VAPOR
+
+The abort printed `phase = VAPOR` because the non-convergence site passed a
+hardcoded 0 for the phase and the printer read 0 as VAPOR.  The site did not
+know the requested phase.  Fixed: the phase is now threaded through from
+the branch-locked caller, and 0 prints as UNKNOWN.
+
+### 10j.3  The census conflated two call sites; split
+
+`ps_newton_solve_T` is called from two entry points with completely
+different failure semantics:
+
+- `state_from_rho_e` (phase-DETECTING): its single-phase solve MUST fail for
+  a genuinely two-phase (rho,e).  The failure is what triggers the dome
+  branch.  Wrong-but-recoverable.
+- `state_from_rho_e_phase` (branch-LOCKED): "No dome check -- return the
+  requested phase regardless."  A failure here returns a garbage state
+  marked valid.  **This is the dangerous one.**
+
+| run | branch-LOCKED | phase-detect |
+|---|---|---|
+| N=64 presence (passes every gate) | **20414** | 1980 |
+| N=96 presence (dies) | **33360** | 3938 |
+| N=64 legacy (digit-identical c1_) | **636** | 758 |
+
+So 10h's "22390 non-convergences" is really 20414 dangerous + 1980
+structural.  The alarm stands; the attribution in 10i did not.
+
+### 10j.4  On the energy reference (raised in review)
+
+The concern: e may carry an offset (heat of formation), so a negative e is
+not evidence of anything.  CORRECT as a principle, and the check was worth
+making.  What this implementation actually does:
+
+- `PRFluid` carries `a_cp[5]` -- a0..a4 of cp/R ONLY.  There is no a5/a6.
+  The trailing argument of `PRFluid::make` is the **Peneloux volume shift**,
+  not an energy offset.
+- `h_ig_per_mole(T) = R*T*(a0 + T*(a1/2 + T*(a2/3 + T*(a3/4 + T*a4/5))))`.
+  The leading R*T makes it vanish identically at T = 0, so the constant of
+  integration is zero BY CONSTRUCTION, and e_ig = h_ig - R*T -> 0 as T -> 0.
+- Measured, same reference: e(0.001 K) = 0.2557, e(1 K) = 257.18,
+  e(2 K) = 516.05 -> cv = 258.9 J/kg/K, e(T->0) = -1.7 J/kg.
+
+So at near-ideal densities e < 0 really is unreachable HERE -- but only
+because no formation term exists.  If a5 is ever populated the T->0 limit
+moves and any "e < 0 is suspicious" rule silently inverts.
+
+**The invariant to code against is `e >= e(T_min) at that density`,
+evaluated, never assumed.**  At the saturated liquid branch that bound is
+around -2.1e5 J/kg; at near-vacuum it is ~0.  A single sign test is wrong
+at one end or the other.
