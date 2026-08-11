@@ -56,7 +56,7 @@ What counts:
 | 1 | EOS is a total function: a state, or "not a state" with the bound missed.  Never a substitute. | **done** (`2d20ffa`) |
 | 2 | ABSENT means no state exists; never queried. | partial — honoured via `PsPhaseAPI.valid`; audit incomplete |
 | 3 | Phase-state construction is checked, never repaired. | in progress — 2 of ~6 sites |
-| 4 | Every remaining floor named, bounded, counted — or deleted. | not started |
+| 4 | Every remaining floor named, bounded, counted — or deleted. | in progress — `clean_state` floor deleted; mass repairs counted |
 | 5 | Operators declare preconditions and refuse. | not started |
 | 6 | Validity propagates (`hem::State` has no valid flag; `PsPhase` does). | not started |
 | 7 | ~~Branch selection~~ — **RETRACTED.**  Phase ID is not determined, it is asserted by the slot: slot 1 IS liquid, slot 2 IS vapour, from init until removal.  A phase-locked query needs no inference.  The only genuine determination is the MIXTURE query (`state_from_rho_e`), which now brackets against the dome; the old `rho > 2*rho_ig` heuristic is gone. | n/a |
@@ -99,6 +99,22 @@ What counts:
   default 0; neither set in `inputs`).
 - **Enabling the fold makes B9 fail sooner**, at `rho = 1e-06, e = 0` — the
   zeroed slot, queried by a consumer after removal.
+- **`clean_state` was recreating the trace fiction every step.**  It clamped
+  a1 into [1e-6, 1-1e-6] and each partial mass up to `rho_floor*a_k`,
+  unconditionally, on every cell: a1 = 1e-6 with m_k = 1e-12, so
+  m/a = 1e-6 — the exact `rho = 1e-06` state that had been reaching the EOS
+  with no root.  It ran two stages AFTER the vanish fold had correctly
+  zeroed the same cells.  Far-field cell 50, step 1, before the fix:
+  `A enter 1e-6/1e-12 -> A5 fold 0/0 -> B clean_state 1e-6/1e-12`.
+- **`prob.alpha_trace` only ever set t=0**: with the floor in place,
+  alpha_trace=0 and 1e-6 gave identical trajectories to 4 digits, because
+  step 1 re-imposed the fiction regardless.  After removing the floor they
+  differ, as an initial condition should.
+- **B9 aborts at step 10 independently of all of this** (`rho = 10.83,
+  e = -12171, VAPOR`), unchanged by trace seeding or the floor removal.
+- **Single-phase is insensitive to the floor removal**: A1-A6 all pass at
+  1e-9..1e-5 against the retired references (A6, the near-vacuum case,
+  moves most: 1.09e-06 -> 1.34e-05).
 
 ## Current conclusions
 
@@ -128,6 +144,15 @@ What counts:
 - What should happen when alpha collapses while mass remains?  The fold
   answers "transfer it", but the trigger is a fixed alpha threshold and the
   pathology is density/energy-dependent.
+- **B9's step-10 abort is still unexplained** and is now the live question.
+  It survives every fix so far, so it is not the trace fiction, not the
+  floor, and not the seeding.
+- A dt guard on the RATE of change of `m_k/alpha_k` was proposed and
+  WITHDRAWN: the metric is unbounded at phase birth (0 -> finite) and was
+  otherwise dominated by the floor, which wrote the bad state directly
+  rather than reaching it by evolution.  No dt would have prevented it.
+- Census counters are incremented inside `ParallelFor` lambdas and are racy
+  under OpenMP tiling (pre-existing convention).  Counts are indicative.
 - 2-D: deferred by decision until 1-D is correct.  Unmeasured.
 
 ## Next

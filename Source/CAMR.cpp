@@ -22,6 +22,7 @@
 #include "IndexDefines.H"
 #ifdef USE_PS_HYDRO
 #include "PS_relaxation.H"   // ps_resync_phase_energy / ps_apply_floor (#84)
+#include "PS_guards.H"      // ps_guard counters (clean_state repairs)
 #endif
 
 bool CAMR::signalStopJob = false;
@@ -1636,34 +1637,69 @@ CAMR::clean_state(amrex::MultiFab& S, bool refresh_temp)
   normalize_species(S);
 
 #ifdef USE_PS_HYDRO
-  // Task #203: 6-eq state clamp mirroring the standalone driver's
-  // clamp_cons6 (co2-eos-cfd ppm_1d_ps_wp.cpp:1255-1330).  Called
-  // after every hydro / source sub-step to prevent the α₁ overshoot
-  // that drives dt → 0 on cross-critical Riemann problems (B4).  Just
-  // like the standalone: clamp α₁ to [alpha_floor, 1-alpha_floor];
-  // clamp per-phase partial masses to RHO_FLOOR · α_k; sanitize NaN.
-  constexpr amrex::Real alpha_floor_cs = amrex::Real(1.0e-6);
-  constexpr amrex::Real rho_floor_cs   = amrex::Real(1.0e-6);
+  // 6-eq state clamp.  Was: clamp α₁ into [1e-6, 1-1e-6] and each partial
+  // mass up to RHO_FLOOR·α_k, unconditionally, on every cell of every call.
+  // That stamped α₁ = 1e-6 with m_k = 1e-12 (their product) into every cell
+  // in the domain each step — including far-field cells no front had
+  // reached — recreating the trace fiction that `prob.alpha_trace` only ever
+  // set at t=0, and immediately undoing the vanish fold, which had correctly
+  // zeroed the same cells two stages earlier.  m/α = 1e-12/1e-6 = 1e-6 is
+  // the `rho = 1e-06` state that was reaching the EOS with no root.
+  //
+  // Now: α₁ is held to its DEFINITIONAL range [0,1] — 0 and 1 are legal and
+  // mean the phase is absent — and a negative partial mass is set to 0,
+  // which makes that phase absent rather than inventing a fictitious one.
+  // Both are counted.  Nothing is floored to a non-zero value.
+  amrex::ignore_unused(0);
   for (amrex::MFIter mfi(S, amrex::TilingIfNotGPU()); mfi.isValid(); ++mfi) {
       const amrex::Box& bx = mfi.growntilebox();
       auto const& Sa = S.array(mfi);
       amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
           amrex::Real a1 = Sa(i,j,k, UALPHA1);
-          if (!std::isfinite(a1)) a1 = amrex::Real(0.5);
-          if (a1 < alpha_floor_cs)             a1 = alpha_floor_cs;
-          if (a1 > amrex::Real(1.0) - alpha_floor_cs)
-              a1 = amrex::Real(1.0) - alpha_floor_cs;
+          //  A non-finite volume fraction is a defect, not a value to be
+          //  chosen.  It used to be replaced by 0.5 -- inventing a
+          //  half-and-half cell out of a NaN.  It is not repaired: it stops
+          //  the run.  alpha itself is held only to its DEFINITIONAL range
+          //  [0,1]; 0 and 1 are legal and mean the phase is absent.
+          if (!std::isfinite(a1)) {
+#if !defined(AMREX_USE_GPU)
+              amrex::Print() << "\n[PS-STATE] non-finite alpha_1 at ("
+                             << i << "," << j << "," << k << "): a1 = " << a1
+                             << "\n  Not repaired.  Fix the data going in.\n\n";
+              amrex::Abort("PS-STATE: non-finite alpha_1 in clean_state");
+#endif
+          }
+          if (a1 < amrex::Real(0.0)) a1 = amrex::Real(0.0);
+          if (a1 > amrex::Real(1.0)) a1 = amrex::Real(1.0);
           Sa(i,j,k, UALPHA1) = a1;
           const amrex::Real a2 = amrex::Real(1.0) - a1;
 
           amrex::Real m1 = Sa(i,j,k, UM1RHO1);
-          if (!std::isfinite(m1) || m1 < rho_floor_cs * a1)
-              m1 = rho_floor_cs * a1;
+          if (!std::isfinite(m1)) {
+#if !defined(AMREX_USE_GPU)
+              ps_guard::count_mass_nonfinite();
+#endif
+              m1 = amrex::Real(0.0);
+          } else if (m1 < amrex::Real(0.0)) {
+#if !defined(AMREX_USE_GPU)
+              ps_guard::count_mass_neg();
+#endif
+              m1 = amrex::Real(0.0);
+          }
           Sa(i,j,k, UM1RHO1) = m1;
 
           amrex::Real m2 = Sa(i,j,k, UM2RHO2);
-          if (!std::isfinite(m2) || m2 < rho_floor_cs * a2)
-              m2 = rho_floor_cs * a2;
+          if (!std::isfinite(m2)) {
+#if !defined(AMREX_USE_GPU)
+              ps_guard::count_mass_nonfinite();
+#endif
+              m2 = amrex::Real(0.0);
+          } else if (m2 < amrex::Real(0.0)) {
+#if !defined(AMREX_USE_GPU)
+              ps_guard::count_mass_neg();
+#endif
+              m2 = amrex::Real(0.0);
+          }
           Sa(i,j,k, UM2RHO2) = m2;
 
           // Sanitize per-phase energies (sign is reference-frame

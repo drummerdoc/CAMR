@@ -403,7 +403,10 @@ CAMR::CAMR_advance (Real time,
                     << "  T_clamp_1K=" << hem::floor_census::n_T_clamp()
                     << "  nonconv_LOCKED=" << hem::floor_census::n_T_nonconv()
                     << "  nonconv_detect=" << hem::floor_census::n_T_nonconv_det()
-                    << "  P_floor_1kPa=" << hem::floor_census::n_P_floor() << "\n";
+                    << "  P_floor_1kPa=" << hem::floor_census::n_P_floor()
+                    << "  mass_neg=" << ps_guard::n_mass_neg()
+                    << "  mass_nonfinite=" << ps_guard::n_mass_nonfinite() << "\n";
+                ps_guard::reset_mass_counts();
                 hem::floor_census::reset();
             }
         }

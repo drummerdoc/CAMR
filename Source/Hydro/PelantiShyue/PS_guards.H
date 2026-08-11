@@ -202,6 +202,16 @@ amrex::Real mixture_pressure(amrex::Real a1, amrex::Real P1,
 //  underlying state inconsistency is a separate question (see G5/G7).
 // ---------------------------------------------------------------------
 #if !defined(AMREX_USE_GPU)
+//  clean_state repairs.  A negative or non-finite partial mass is set to
+//  zero -- which makes that phase ABSENT, a representable state, rather than
+//  a fictitious sliver.  Counted because contract 4 requires every surviving
+//  repair to be named and counted.  A non-finite ALPHA is not repaired at
+//  all: it aborts (see CAMR::clean_state).
+inline long& n_mass_neg()       { static long n = 0; return n; }
+inline long& n_mass_nonfinite() { static long n = 0; return n; }
+inline void  count_mass_neg()       { ++n_mass_neg(); }
+inline void  count_mass_nonfinite() { ++n_mass_nonfinite(); }
+inline void  reset_mass_counts() { n_mass_neg() = 0; n_mass_nonfinite() = 0; }
 inline long& n_rho_clamp_hi() { static long n = 0; return n; }
 inline long& n_rho_clamp_lo() { static long n = 0; return n; }
 inline void  count_rho_hi()   { ++n_rho_clamp_hi(); }
