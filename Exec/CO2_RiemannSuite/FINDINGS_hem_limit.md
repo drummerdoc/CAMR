@@ -1337,3 +1337,99 @@ under the same USE_PS_DIAG flag.
 Until that is known, "the relaxation is at fault" is localised to the
 stage (measured) but not to the pass (not measured), and the spurious-root
 reading of 10f.2 remains inference.
+
+## Addendum 10g — CORRECTION to 10e/10f: the relaxation did NOT create the
+## bad state.  It was handed a liquid phase with NO EOS ROOT, flagged
+## VALID, and amplified it.  (2026-08-10)
+
+A probe inside ps_canonical_relax_cell (CAMR.ps_relax_diag=<i>, committed
+under the same USE_PS_DIAG flag) reports the cell at ENTRY, after the
+mechanical pass, at the thermal gate, and after the thermal pass.  It
+overturns the attribution in 10e.2 and 10f.2.
+
+### 10g.1  The measurement, cell 49, the step that breaks it
+
+```
+ENTRY      a1=0.3718546 rho1=1132.857 rho2=4.0012 e1=-505127.16 e2=6.6185e7
+           p1=1000        p2=5074307.3   T1=1        T2=6707.69   ok1=1 ok2=1
+post-MECH  a1=0.2604572 rho1=1617.379 rho2=3.3985 e1=-504456.14 e2=6.6072e7
+           p1=4307505.7   p2=4307493.6   T1=37.583   T2=6704.63   ok1=1 ok2=1
+GATE       coexist=0  thermal=SKIPPED  T_triple=216.592  T_crit=304.13
+post-THERM (identical to post-MECH)
+```
+
+**At ENTRY the liquid already reads T1 = 1 K and p1 = 1000 Pa.**  Those are
+floor values -- the 0.01 bar P floor and a 1 K T floor.  The PR liquid
+branch has NO ROOT at (rho1 = 1132.86, e1 = -505127 J/kg), so the query
+floors.  For scale, the undisturbed 120-bar liquid in the same run sits at
+rho = 959.3 with e = -112317 J/kg: **cell 49's liquid energy is 4.5x more
+negative than any physical CO2 liquid at that density.**
+
+And it is not a late-onset problem.  From the FIRST relaxation call on this
+cell, T1 = 1 and p1 = 1000, every call.  The vapour meanwhile ratchets
+monotonically upward across calls -- T2 = 1823 -> 1946 -> 2065 -> ... ->
+6708 K, e2 = 1.74e6 -> 6.62e7 J/kg -- while a1 climbs 0.0102 -> 0.0455 -> ...
+
+### 10g.2  What this corrects
+
+- **10e.2 said the pressure relaxation produced the unphysical state.
+  WRONG.**  It received one.  The state was already floor-pinned on the
+  liquid side before relaxation ran, on this cell's very first call.
+- **10f.2's direction inference was WRONG.**  It reasoned that the liquid
+  was at ~450 bar (from rho1 = 1132.86 at ~280 K) and therefore alpha_1
+  should have INCREASED, concluding the mechanical solve ran backwards.
+  The liquid was not at 450 bar; it was reading the 1000 Pa floor.  Given
+  p1 = 1000 against p2 = 5.07e6, compressing the liquid (alpha_1 down) is
+  the CORRECT direction, and the pass equalised to 4.3075e6 competently.
+  The mechanical solve is not converging to a spurious root.  It is
+  solving the right problem with a fictitious input.
+  The lesson is the one 10f flagged about itself: that inference rested on
+  a pre-relaxation temperature that had never been measured.  When it was
+  measured it came out 1 K, not 280 K.
+- **10f.3's open question is CLOSED, and the answer is "it bailed".**  The
+  thermal pass is gated on a coexistence test requiring
+  T_triple < T1,T2 < T_crit.  With T1 = 1 and T2 = 6704.6 the gate is
+  false, so the thermal relaxation is SKIPPED.  It did not fail to
+  converge; it never ran.
+
+### 10g.3  The two real defects, both upstream
+
+1. **A phase energy with no EOS root is reported VALID.**  `ok1 = 1` on
+   every line above, with T1 = 1 K and p1 = 1000 Pa.  The floors are
+   applied silently and the validity flag does not distinguish "solved" from
+   "no root, floored".  Every consumer downstream -- the mechanical
+   relaxation, the coexistence gate, the wave speed -- then treats 1000 Pa
+   as a real pressure.  This is the single highest-value fix: the floor path
+   must be observable.
+2. **The liquid phase energy is wrong long before anything fails.**
+   e1 ~ -505127 J/kg against ~-112317 for physical liquid at that density.
+   NOT ESTABLISHED where it comes from: the candidates are the phase-energy
+   slots in the WP flux path, the BL-2 defect register, ps_resync_phase_energy,
+   or the energy assigned to a newly born phase.  Cell 49 has carried a
+   floor-seeded m1 = 1e-12 since step 0 and grown it to O(300) by step 109,
+   so "energy accumulated against a mass that grew from nothing" is the
+   obvious first place to look.
+
+Also worth noting, because it now looks like a symptom rather than a
+cause: the vapour's monotonic 1823 -> 6708 K climb is the mechanical pass
+doing work every call against a liquid pressure that is permanently pinned
+at the floor.  A false pressure imbalance, repeated, is a ratchet.
+
+### 10g.4  Revised causal chain (superseding 10b-10f)
+
+    liquid phase energy goes unphysical (SOURCE UNKNOWN -- 10g.3 item 2)
+      -> PR liquid branch has no root at (rho1, e1)
+      -> query floors to T=1 K, p=1000 Pa, and reports VALID
+      -> mechanical relaxation works against a false 1000 Pa every call,
+         ratcheting vapour energy up (T2: 1823 -> 6708 K)
+      -> thermal pass, which would have equalised T, is gated OFF because
+         the temperatures are outside the coexistence window
+      -> liquid eventually compressed to 1617 kg/m3 = 98% of the PR pole
+      -> c1 = 4481 m/s (correct arithmetic; validated 10e.1)
+      -> fluctuations() fails at that face, LLF fallback fires
+      -> lam*dt/dx = 2.198, over CFL 1: 83% of a cell dumped in one step
+      -> receiving cell out of EOS domain -> unbounded mass creation
+      -> |u| ~ 1e9 m/s -> dt collapse -> run never completes
+
+Only the last five links were correctly attributed in 10b-10f.  The first
+four are new here, and the first is still open.

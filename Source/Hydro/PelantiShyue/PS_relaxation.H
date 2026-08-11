@@ -598,6 +598,30 @@ ps_canonical_relax_cell(int i, int j, int k,
         if (ps_cell_metastable(eos, rho1, e1, rho2, e2)) return;
     }
 
+#ifdef CAMR_PS_DIAG
+    //  Diagnostic (CAMR.ps_relax_diag = <i>, default -1 = off).  Dumps this
+    //  cell's phase states at entry / after the mechanical pass / after the
+    //  thermal pass, plus the coexistence decision gating the thermal pass.
+    //  See FINDINGS Addendum 10g.
+    auto relax_probe = [&](const char* stage, const hem::V6& V) {
+        static const int rd = []() { int v = -1; amrex::ParmParse pp("CAMR");
+                                     pp.query("ps_relax_diag", v); return v; }();
+        if (rd < 0 || i != rd) return;
+        const double a1p = V[0];
+        const double r1p = V[1] / a1p, r2p = V[2] / (1.0 - a1p);
+        const double kep = 0.5 * (V[3]/rho_mix) * (V[3]/rho_mix);
+        const double e1p = V[4]/V[1] - kep, e2p = V[5]/V[2] - kep;
+        hem::PsPhase s1{}, s2{};
+        eos.state_from_rho_e_phase(1, r1p, e1p, s1);
+        eos.state_from_rho_e_phase(2, r2p, e2p, s2);
+        amrex::Print() << "[RELAX-PROBE " << i << "] " << stage
+                       << " a1=" << a1p << " rho1=" << r1p << " rho2=" << r2p
+                       << " e1=" << e1p << " e2=" << e2p
+                       << " p1=" << s1.P << " p2=" << s2.P
+                       << " T1=" << s1.T << " T2=" << s2.T
+                       << " ok1=" << int(s1.valid) << " ok2=" << int(s2.valid) << "\n";
+    };
+#endif
     hem::V6 Uv;
     Uv[0] = alpha1_in;
     Uv[1] = m1;
@@ -605,6 +629,9 @@ ps_canonical_relax_cell(int i, int j, int k,
     Uv[3] = p_mag;
     Uv[4] = U(i,j,k, UE1);
     Uv[5] = U(i,j,k, UE2);
+#ifdef CAMR_PS_DIAG
+    relax_probe("ENTRY     ", Uv);
+#endif
 
     // Mechanical first (alpha-adjusting; preserves m_k and mixture rho-E).
     // Kernel per CAMR.ps_mech_kernel (B1 A/B; see ps_mech_kernel above).
@@ -617,6 +644,9 @@ ps_canonical_relax_cell(int i, int j, int k,
             return;   // leave the cell as-is; same failure policy as mode 0
         }
     }
+#ifdef CAMR_PS_DIAG
+    relax_probe("post-MECH ", Uv);
+#endif
     // Thermal second (isochoric at the NEW alpha; theta<=0 -> instantaneous),
     // gated by the task-#35 two-phase-coexistence test, applied here for the
     // same reason MT and the flash source already apply it: at a
@@ -645,6 +675,20 @@ ps_canonical_relax_cell(int i, int j, int k,
             hem::ps_iso_thermal_relax_cell_finite(Uv, eos, double(dt),
                                                   double(theta));
         }
+#ifdef CAMR_PS_DIAG
+        {
+            static const int rd2 = []() { int v = -1; amrex::ParmParse pp("CAMR");
+                                          pp.query("ps_relax_diag", v); return v; }();
+            if (rd2 >= 0 && i == rd2) {
+                amrex::Print() << "[RELAX-PROBE " << i << "] GATE       coexist="
+                               << int(coexist) << "  thermal="
+                               << (coexist ? "RAN" : "SKIPPED")
+                               << "  T_triple=" << Ttr << "  T_crit=" << Tcr
+                               << "   (gate needs Ttr < T1,T2 < Tcr)\n";
+            }
+        }
+        relax_probe("post-THERM", Uv);
+#endif
     }
 
     U(i,j,k, UALPHA1) = Real(Uv[0]);
