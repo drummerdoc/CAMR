@@ -14,6 +14,21 @@ Convention:
   historical trail of how we got here and contain several conclusions that
   were later negated; do not consult them for current state.
 
+### Read these at restart, in this order
+
+1. **This file** — current belief.
+2. **`../../DESIGN_ps_extinction.md`** (repo root) — the derived
+   mass-transfer / birth operator, its proof, its measured results, and the
+   open [DECIDE] points D1-D5.  **D3 is live.**
+3. **`../../DESIGN_ps_presence_discrete.md`** — the presence ladder
+   (Absent / Corridor / Independent) the above is gated on.
+
+The design notes are LOAD-BEARING and are not summarised here.  On
+2026-08-10 a context compaction dropped them from the working set and the
+D1 decision was re-derived from scratch over roughly an hour, reaching the
+answer the note had already rejected.  If you are reading this after a
+restart and have not opened them, stop and open them.
+
 ---
 
 ## Current status (2026-08-10)
@@ -199,13 +214,95 @@ does not.
 
 ## Next
 
-1. Delete the 36 dead `pr.enabled` forks (6 files), file by file.
-2. Finish contract 3 on the unified path: `PS_hllc.H` (~167-170, 237-263),
+1. **[DECIDE D3] Corridor-donor mass transfer.**  The live decision.  A
+   phase dying under (E.1) enters the Corridor before it dies; S4 currently
+   freezes MT there, leaving a slaved remnant that equilibrium says should
+   not exist.  `DESIGN_ps_extinction.md` §4 argues it is well-posed to
+   continue (dm_eq comes from CELL TOTALS, not the corridor phase's
+   ill-defined intensives) and proposes: allow MT in the corridor for the
+   DYING direction only (donor in corridor, receiver independent); birth in
+   a corridor stays the flash's job.  Rejected alternative recorded there:
+   fold-on-gate-crossing.
+2. **E2: the extinction endpoint** — T3's refusal (`U1_new <= 0 -> return
+   false`) deleted, `m_k = 0` with `alpha_k = 0` admitted as THE Absent
+   state, plus the §5.2 contraction-ratio diagnostic (measurement only; a
+   controller is deferred pending data).
+3. Delete the 36 dead `pr.enabled` forks (6 files), file by file.
+4. Finish contract 3 on the unified path: `PS_hllc.H` (~167-170, 237-263),
    `ps_max_wave_speed_from_state`, relaxation coexistence check.
-3. The removal trigger: what fires when a slot's state leaves its branch's
-   domain (alpha threshold does not see it).
-4. 1-D correctness against the exact single-phase and HEM Riemann solves.
+5. Delete the HLLC flux path (wp is the default and is better; HLLC fails
+   B4 and B9).
+6. 1-D correctness against the exact single-phase and HEM Riemann solves.
    2-D deferred until that holds.
+7. Deferred, agreed: racy census counters under OpenMP tiling.
+8. Needs Marc's terminal (not doable from the sandbox):
+   `git worktree remove -f -f /tmp/camr_base /tmp/camr_clean /tmp/camr_diag`;
+   `git branch -D wip/precommit-gate`; delete `_to_delete/`; remove the
+   stray `Exec/CO2_RiemannSuite/{cv,ev,z0}_00010.temp/` directories.
+
+## Mass transfer and the volume fraction (verified 2026-08-10)
+
+**Question asked:** when mass transfers between phases, at what density does
+it arrive, and does that keep alpha and rho locked?
+
+**Answer: already decided and already landed.**  `DESIGN_ps_extinction.md`
+§2 / D1.  Transfer moves volume at the DONOR's current density,
+
+    dalpha_1 = -dm / rho_1                                          (E.1)
+
+which is an identity, not a closure: the donor's rho is then EXACTLY
+invariant, and the receiver's rho is the mediant of rho_1 and rho_2 — a
+convex combination, hence in-domain at ANY transfer rate.  The T1/T2 caps
+were retired because (E.1) makes the states they chased unreachable, not
+because they were tuned away.
+
+**The saturation-arrival-density alternative was considered and rejected
+for TRANSFER** (D1): rho_sat(T) is correct only on the dome, and off-dome it
+breaks the invariance proof.  Near equilibrium — where MT actually operates
+— the donor density coincides with rho_sat, so the physical picture is
+recovered for free exactly where it applies.
+
+**The saturation density IS used for BIRTH** (E1b, §6), where there is no
+donor volume convention because the phase is being created:
+`ps_flash_source_cell` grows the newborn phase with `dm = rho_sat(T_dom)*dalpha`.
+Birth and death are then the same operator with opposite sign.
+
+Both are live in the current tree as ParmParse keys, each auto-resolving to
+ON because presence is now hard-forced (`PsPres::enabled = 1`):
+`CAMR.ps_mt_update_alpha` (`PS_sources.H` ~232) and
+`CAMR.ps_flash_project_sat` (`PS_sources.H` ~133).
+
+### Standalone comparison (`SINTEF/co2-eos-cfd`, read 2026-08-10)
+
+The standalone has NO arrival-density inversion — no `rho_arr`, no
+`h(rho_arr, P_I) = h_I`, anywhere.  It has both ideas only as env-gated,
+default-OFF experiments: `PS_MT_UPDATE_ALPHA` (donor density, same E.1
+formula) and `PS_FLASH_PROJECT_SAT` (sat-density birth).  CAMR has promoted
+both to derived defaults with a proof attached.  **The standalone is behind
+CAMR here and is not a reference for this operator.**
+
+### Correction: which MT function is on the production path
+
+`hem::ps_mass_transfer_relax_cell` (hem_pelanti_shyue.H ~2776) does NOT
+write alpha — but it is called from `PS_zerod_test.H` ONLY.  It is the 0-D
+equilibrium-endpoint harness and is **not on the production path**.
+Production MT is `hem::ps_mass_transfer_finite_cell` (~3041), called from
+`PS_sources.H:282`, and it DOES write alpha via (E.1).
+
+Consequently the earlier reading "B9-stiff fails because mass transfer never
+writes alpha" is WRONG, and so is "the pressure relax skips the condensing
+cells at `alpha1 < 5e-3`": under presence the S4 gate in `PS_sources.H`
+already excludes everything below `alpha_cond = 1e-2`, so the kernel's 5e-3
+cut never binds.  The skipped condensing cells were CORRIDOR cells, where MT
+declines to act by design — see D3 below.
+
+### What actually remains on B9-stiff
+
+Per `DESIGN_ps_extinction.md` §11, attributed by instrument with every other
+operator exonerated: the WP hyperbolic step breaks the phase-energy identity
+by up to 28% and massid ~1e-3 at a FRESH BIRTH FRONT, from ~step 10, before
+any repair can act.  At tau <= 1e-4 the injected defect outruns the per-step
+repairs.  Production stiffness (tau = 1e-3) is clean.
 
 ## Superseded — do not re-derive
 
@@ -220,3 +317,11 @@ does not.
   field in the diagnostic, not a measurement.
 - FINDINGS 10h framing: "22,390 silent non-convergences".  Really 20,414
   dangerous (branch-locked) + 1,980 structural (phase-detect, by design).
+- "B9-stiff fails because mass transfer never writes alpha."  Wrong function:
+  that is `ps_mass_transfer_relax_cell`, which is 0-D-harness only.  The
+  production kernel `ps_mass_transfer_finite_cell` writes alpha via (E.1).
+- "The pressure relax skips the condensing cells at alpha1 < 5e-3."  Inert:
+  the S4 presence gate upstream already excludes alpha < alpha_cond = 1e-2.
+- "The arrival density should be found by inverting h(rho_arr, P_I) = h_I."
+  Re-derived after a compaction; it is D1's REJECTED alternative.  (E.1)
+  needs no inversion and carries a proof.  See the section above.
