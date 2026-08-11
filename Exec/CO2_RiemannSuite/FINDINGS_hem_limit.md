@@ -1534,3 +1534,80 @@ That first firing is the natural successor to this addendum: 35 P_floor
 substitutions occur before any timestep is taken, i.e. in the INITIAL
 CONDITION or its first EOS evaluation.  Whatever is wrong is wrong before
 the solver runs.
+
+## Addendum 10i — STRICT MODE, and the first two silent repairs it traps.
+## Both are phase energies that cannot exist.  (2026-08-10)
+
+`CAMR.ps_strict_eos` (USE_PS_DIAG builds, default 0 = off) aborts on the
+FIRST silent EOS repair, printing the EOS input so the offending state can
+be replayed through gibbs_probe.  BITMASK, because the sites are different
+failures and conflating them is a mistake I made in the first draft:
+
+    1  Newton on T did not converge   -- NO ROOT on the requested branch
+    2  P_pos_floor substitution       -- the solve SUCCEEDED; its answer was
+                                        simply below an arbitrary 0.01 bar
+    4  the 1 K Newton iterate clamp   -- iteration-level step limiter
+
+### 10i.1  First trap, bit 1 (no root).  N=64 presence, the run that passes.
+
+```
+[PS-STRICT] Newton on T did NOT converge (max_iter)
+  EOS INPUT : rho = 30.87582599 kg/m^3   e = -37343.18889 J/kg   phase = VAPOR
+  T at failure = 1 K
+```
+
+Independently, via rt_pr on the SAME EOS reference, CO2 vapour at
+rho = 30.8758 kg/m3 has:
+
+| T [K] | 220 | 250 | 280 | 320 | 400 |
+|---|---|---|---|---|---|
+| e [J/kg] | +8.126e4 | +9.928e4 | +1.183e5 | +1.450e5 | +2.030e5 |
+
+The solver was handed **e = -3.734e4**, which is not merely low -- it is on
+the wrong side of zero and ~1.19e5 J/kg below the COLDEST physical vapour
+energy at that density.  There is no T >= 1 K that satisfies it.  Newton
+walks to the 1 K clamp, exhausts 100 iterations, returns false, and the
+caller uses T = 1 K with valid = true.
+
+For scale: the undisturbed LIQUID in the same run sits at e = -112317 J/kg.
+A vapour phase carrying a liquid-like energy is exactly what this looks
+like.
+
+### 10i.2  First trap, bit 2 (correct answer overridden)
+
+```
+[PS-STRICT] P floored to P_pos_floor (0.01 bar)
+  EOS INPUT : rho = 1.175538179e-04 kg/m^3   e = 13222.25392 J/kg   phase = VAPOR
+  T at failure = 45.02802945 K
+```
+
+This one is NOT a missing root.  At 1.18e-4 kg/m3 and 45 K the ideal-gas
+pressure is rho*R*T/M ~ 1 Pa, and PR agrees: the EOS solved correctly and
+returned ~1 Pa.  The floor then overrode a correct answer with 1000 Pa --
+a factor ~1000 on that phase's pressure.  The density itself is the
+floor-seeded trace vapour of a pure-liquid cell (alpha_2 = 1e-6 against
+m2 = 1e-12 gives rho_2 = O(1e-6..1e-4)).
+
+So bit 2 fires on a state the P_pos_floor comment explicitly reasons is
+inert -- "the phase's tiny volume fraction weights it negligibly".  That
+reasoning is sound HERE.  It is the same floor landing on a phase carrying
+99.407% of the cell mass (10g) that was not inert.  Nothing in the code
+distinguishes the two.
+
+### 10i.3  What both have in common
+
+Both traps are a phase energy inconsistent with that phase's density and
+identity: a vapour holding -3.7e4 J/kg where physical vapour holds +8e4 to
++2e5, and (10g) a liquid holding -5.05e5 where physical liquid holds
+-1.12e5.  **The EOS is not the defect in either case.  The phase-energy
+split feeding it is.**  That is now the single upstream target, and it is
+the same conclusion 10g.3 item 2 reached from the other direction.
+
+### 10i.4  Status
+
+Strict mode is a DIAGNOSTIC.  No behavioural fix has been made: the floors,
+the discarded convergence flag and the gates are all exactly as they were,
+and the default build remains byte-identical (A1 and B4 re-verified
+digit-identical after every step above).  Driving the count to zero is a
+data-repair exercise on the phase-energy split, to be done one input defect
+at a time with strict mode as the bisector -- NOT by adjusting the repairs.

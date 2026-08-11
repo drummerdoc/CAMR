@@ -28,6 +28,10 @@
 #pragma once
 
 #include "hem_saturation_amrex.H"
+#if defined(CAMR_PS_DIAG) && !defined(HEM_NO_AMREX)
+#include <AMReX_ParmParse.H>
+#include <AMReX_Print.H>
+#endif
 #include <cmath>
 
 namespace hem {
@@ -45,6 +49,38 @@ inline long& n_T_nonconv() { static long n = 0; return n; }
 inline long& n_P_floor()   { static long n = 0; return n; }
 inline long& n_calls()     { static long n = 0; return n; }
 inline void  reset() { n_T_clamp()=0; n_T_nonconv()=0; n_P_floor()=0; n_calls()=0; }
+}
+// ---- strict mode (CAMR.ps_strict_eos) ---------------------------------
+//  BITMASK, 0 = off (default).  Add the bits you want to trap:
+//    1  Newton on T did not converge  (genuinely NO ROOT on that branch)
+//    2  P_pos_floor substitution      (the solve SUCCEEDED; its answer was
+//                                      simply below an arbitrary 0.01 bar)
+//    4  the 1 K Newton iterate clamp  (iteration-level step limiter)
+//  Bits 1 and 2 are different failures and must not be conflated: bit 1 is
+//  a missing root, bit 2 is a correct answer being overridden.
+//  Aborts on the FIRST occurrence, printing the EOS INPUT so the offending
+//  state can be reproduced with gibbs_probe/probe_pr.  See Addendum 10h.
+inline int& strict_level() { static int v = -1; return v; }
+inline int  strict() {
+    if (strict_level() < 0) {
+        int t = 0; amrex::ParmParse pp("CAMR");
+        pp.query("ps_strict_eos", t); strict_level() = t;
+    }
+    return strict_level();
+}
+inline void strict_abort(const char* site, const char* what, double rho,
+                         double e, double T, int phase)
+{
+    amrex::Print() << "\n[PS-STRICT] ABORT -- silent EOS repair at: " << site
+                   << "\n  EOS INPUT : rho = " << rho << " kg/m^3"
+                   << "   e = " << e << " J/kg"
+                   << "   phase = " << (phase == 1 ? "LIQUID" : "VAPOR")
+                   << "\n  T at failure = " << T << " K"
+                   << "\n  Reproduce   : echo \"" << rho << " " << e
+                   << " 1.0 0.0\" | ./probe_pr"
+                   << "\n  WHAT       : " << what
+                   << "\n  Fix the DATA GOING IN, not the repair.\n\n";
+    amrex::Abort("PS-STRICT: silent EOS repair (CAMR.ps_strict_eos)");
 }
 #define PS_CENSUS(x) (++hem::floor_census::x())
 #else
@@ -369,7 +405,16 @@ inline State state_from_T_v(const PRFluid& f, amrex::Real T, amrex::Real v_m,
     // affecting any stable/metastable state whose P already exceeds the floor
     // (all A-C Riemann states: P >> 0.01 bar), so it is inert there.
     constexpr amrex::Real P_pos_floor = amrex::Real(1.0e3);   // 0.01 bar
-    if (!(P > P_pos_floor)) { P = P_pos_floor; PS_CENSUS(n_P_floor); }
+    if (!(P > P_pos_floor)) {
+        P = P_pos_floor; PS_CENSUS(n_P_floor);
+#if defined(CAMR_PS_DIAG) && !defined(AMREX_USE_GPU)
+        if ((hem::strict() & 2))
+            hem::strict_abort("P floored to P_pos_floor (0.01 bar)",
+                "the EOS SOLVED; its pressure was simply below 0.01 bar and was overridden",
+                double(f.M/v_real), double(e_mol/f.M), double(T),
+                (phase == Phase3::Liquid) ? 1 : 2);
+#endif
+    }
 
     State st;
     st.T     = T;
@@ -865,9 +910,24 @@ bool ps_newton_solve_T(const PRFluid& f, amrex::Real v_m,
         if (res_ok && step_ok) return true;   // converged (both criteria)
 
         T += dT;
-        if (T < amrex::Real(1)) { T = amrex::Real(1); PS_CENSUS(n_T_clamp); }
+        if (T < amrex::Real(1)) { T = amrex::Real(1); PS_CENSUS(n_T_clamp);
+#if defined(CAMR_PS_DIAG) && !defined(AMREX_USE_GPU)
+            if ((hem::strict() & 4))
+                hem::strict_abort("Newton T-iterate clamped to 1 K",
+                    "iteration step limiter; signature of a solve walking "
+                    "toward a nonexistent root",
+                    f.M/v_m, e_mol_target/f.M, double(T), 0);
+#endif
+        }
     }
     PS_CENSUS(n_T_nonconv);
+#if defined(CAMR_PS_DIAG) && !defined(AMREX_USE_GPU)
+    if ((hem::strict() & 1))
+        hem::strict_abort("Newton on T did NOT converge (max_iter)",
+            "no root for this (rho,e) on the requested branch; T was left "
+            "wherever the iteration stopped and the state marked VALID",
+            f.M/v_m, e_mol_target/f.M, double(T), 0);
+#endif
     return false;   // max_iter reached — should not happen (diagnostic hook)
 }
 
@@ -900,7 +960,15 @@ void ps_newton_solve_T_fixed(const PRFluid& f, amrex::Real v_m,
             dT = (dT > amrex::Real(0) ? amrex::Real(1) : amrex::Real(-1))
                * amrex::Real(0.3)*T;
         T += dT;
-        if (T < amrex::Real(1)) { T = amrex::Real(1); PS_CENSUS(n_T_clamp); }
+        if (T < amrex::Real(1)) { T = amrex::Real(1); PS_CENSUS(n_T_clamp);
+#if defined(CAMR_PS_DIAG) && !defined(AMREX_USE_GPU)
+            if ((hem::strict() & 4))
+                hem::strict_abort("Newton T-iterate clamped to 1 K",
+                    "iteration step limiter; signature of a solve walking "
+                    "toward a nonexistent root",
+                    f.M/v_m, e_mol_target/f.M, double(T), 0);
+#endif
+        }
     }
 }
 
