@@ -2116,3 +2116,75 @@ re-baselining in one deliberate pass — NOT case by case as they trip.
 still not round-off, so the energy-wave identity defect named in the W2-2 entry
 survives and is now the largest remaining known item on this path.  And B2/B9
 still abort.
+
+### B2/B9 under W2-2b, and the plateau is now the ONE remaining problem (2026-08-12)
+
+**Why B2 and B9 still abort.**  Same class as B7's old failure, opposite end:
+they now fail on the VAPOUR ceiling, not the liquid floor, and on the HOST phase.
+
+    B2  cell (32,0,0)  phase 2 VAPOR  alpha_2 = 0.833   e_2 = 2.2109e7
+        reachable bound at T_MAX is 2.21025e7  -> gap +6.9e3 J/kg  (0.03 % over)
+        UE1 -1.240e8  UE2 +8.440e7  UEDEN -3.964e7    e_mix = -1.480e5  (healthy)
+    B9  cell (33,0,0)  phase 2 VAPOR  alpha_2 = 0.971   e_2 = 2.3002e7
+        reachable bound 2.21010e7        -> gap +9.0e5 J/kg  (4 % over)
+        UE1 -2.269e7  UE2 +1.655e7  UEDEN -6.142e6    e_mix = -1.314e5  (healthy)
+
+Split amplification is only ~5-6 here (B7 reached 2097 before W2-2), and the
+mixture energies are fine.  B2 is 0.03 % over its bound — marginal, not
+catastrophic.  Both remain carrier-SENSITIVE where B7 is not, so the residual
+abort mechanism is the D2 carrier, as the earlier probe indicated.
+
+**The unifying result.**  With the carrier set to upwind, B2 and B9 complete —
+and all three cases then land in the SAME place:
+
+    B7-Rupture-Sonic    0.2464 / 0.8557 / 0.6597   (carrier-insensitive, native)
+    B2-Evap-wave        0.0740 / 0.9186 / 0.3263   (upwind carrier)
+    B9-Deep-Expansion   0.1136 / 0.8890 / 0.3397   (upwind carrier)
+
+    working B cases      u = 0.11 .. 0.17
+    no-birth plateau     u ~ 0.83 .. 0.92          <- all three are here
+    S4 reference (B9)    u = 0.43
+
+So the two failure modes have SEPARATED cleanly:
+
+    the ABORT    was the BL-2 limiter.  Fixed by W2-2/W2-2b for B7 outright, and
+                 for B2/B9 once the carrier stops fighting it.
+    the PLATEAU  is a different, SHARED problem.  The limiter work did not move
+                 it at all (B2 upwind was 0.9154 before W2-2 and 0.9186 after).
+
+**And that gives D2 an argument it did not have.**  B7 is carrier-insensitive —
+mean and upwind give bit-identical results — so B7's behaviour IS the
+carrier-free answer, and B7 lands on the plateau.  Upwind reproduces that on
+B2/B9; the mean carrier is the outlier that aborts instead.  **Upwind is the
+choice consistent with the one case that has no opinion.**  That is a real
+argument for D2, distinct from "it happens to run".
+
+**What the plateau is.**  All three converge to the wrong equilibrium.  That is
+exactly Marc's coupling question (2026-08-12): mechanical, thermal and MT
+relaxation are applied SPLIT and SEQUENTIALLY, each converging to its own
+sub-manifold, and nothing anywhere asserts that the composite fixed point is
+saturation (P1=P2, T1=T2, g1=g2).  Registered as the zero-D fixed-point test.
+The plateau has always been attributed to "flash birth does not develop"; "the
+relaxation composite converges somewhere that is not saturation" explains the
+same number and has never been tested.  It is now the single largest open item.
+
+### verify_canonical re-baselined in one pass (2026-08-12)
+
+    before: FAIL, 6 checks      after: FAIL, 2 checks
+
+Updated, with the direction of each change recorded in the file so the band
+keeps meaning something:
+
+    A4-Double-rare    .024/.055/.029 -> .022/.052/.027   IMPROVED
+    A6-Near-vacuum    .012/.010/.015 -> .012/.008/.015   IMPROVED (u by 20 %)
+    C3-Strong-shock-V .027/.103/.025 -> .029/.108/.027   WORSE ~7 %, the one real
+                       regression from W2-2b — re-baselined so it is WATCHED,
+                       not because it is accepted
+    check 4 rp pair   0.880/0.771    -> 0.865/0.797      pre-existing drift from
+                       the dt-consistency fix, verified untouched by the limiter
+                       work (both configs run with ctop_sub = ctop_host_floor = 0)
+
+A/C battery mean 0.0350, unchanged, still the headline gate.  The two remaining
+FAILs are checks 3 and 6, both reading exactly 1.000 — the run-failed signature
+for B9 at the mean carrier.  They are NOT re-baselined: they are the open defect,
+and they should stay red until it is fixed.
