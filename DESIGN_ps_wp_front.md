@@ -233,3 +233,104 @@ REMAINING (successor): residual first-order energyid ~5e-5..2.9e-3 class
 (sub-gate, likely the alpha_wp/UEINT bookkeeping or corridor face states)
 if ever load-bearing; W-D4 q-guard retirement decision; then the
 housecleaning pass.
+
+---
+
+## 9. RE-OPENED (2026-08-12): W2-1 is correct but incomplete, and the
+##    obvious completion FAILS
+
+This note was marked CLOSED after W2-1.  It is re-opened because the defect
+W2-1 addressed has a second half that W2-1 does not reach.
+
+### 9.1 What W2-1 did and did not do
+
+W2-1 established: limit the PHASE slots, DERIVE the mixture slots as their sums.
+
+    Ft[URHO]  := Ft[UM1RHO1] + Ft[UM2RHO2]
+    Ft[UEDEN] := Ft[UE1] + Ft[UE2]
+
+That tied the mixture to the phases and made the linear identity exact.  It is
+still correct and still needed — `energyid` reads 1e-14 today.
+
+It did NOT tie the two phases to EACH OTHER.  `UE1` and `UE2` remain limited
+independently, per component, so van Leer can shave them by different factors at
+a front.  Their sum is then whatever it is (the mixture is derived from it, so no
+identity notices), but their RATIO — the phase-energy split — drifts.
+
+### 9.2 The measurement (WORKLOG 2026-08-12)
+
+On B7-Rupture-Sonic the liquid specific energy falls near-linearly at about
+1.2e4 J/kg per step, 79 % of it inside the hydro, on 92 of 105 steps, until it
+leaves the EOS domain and aborts.  At `ps_wp_order=1` — no correction at all —
+the drift is 1.7 J/kg per step, four orders of magnitude smaller, and B7 runs to
+completion.  Turning reconstruction off changes nothing.  The BL-2 correction is
+the mechanism.
+
+Why energy and not mass, though W2-1 treats them alike: `m_1` and `m_2` are both
+POSITIVE, so independent limiting biases their ratio only mildly.  `UE1` and
+`UE2` have OPPOSITE signs (liquid e ~ -1.3e5 J/kg, vapour ~ +4e5) and cancel to
+roughly 1/13 of their own magnitudes, so the same relative bias lands amplified
+on the difference.
+
+### 9.3 The obvious completion, tried and REJECTED
+
+Apply ONE limiter factor to the phase-energy pair, `phi = min(phi_1, phi_2)`, so
+that scaling both waves by a single number preserves their ratio exactly while
+each slot stays inside its own TVD bound.  No new constant.  Implemented behind
+`CAMR.ps_wp_pair_limit` and measured:
+
+    case                pair=0 (before)   pair=1 (min-phi)
+    B7-Rupture-Sonic      -1.3653e6         -2.7661e6      2x WORSE
+    B2-Evap-wave          -3.4497e6         -4.0859e8    118x WORSE
+    B9-Deep-Expansion     -4.1345e6         -1.9650e8     48x WORSE
+
+(final `e1_min`; all still abort.)  It also perturbed the working cases — B4/B5
+moved in the third digit — so it is not even neutral where nothing was wrong.
+**Reverted; not committed.**
+
+This is counter-intuitive and the reason is the finding.  `min(phi_1, phi_2)` is
+strictly MORE limiting on both energy slots than what it replaces, so it should
+be strictly more diffusive and should have moved toward the `ps_wp_order=1`
+behaviour, which is healthy.  It moved hard the other way.
+
+The explanation is W2-1's derivation DIRECTION.  Because `Ft[UEDEN]` is defined
+as `Ft[UE1] + Ft[UE2]`, limiting the phase energies more also limits the MIXTURE
+energy correction more — while `URHO` (from the mass pair) and the momenta are
+untouched.  The mixture energy correction then falls out of step with the mass
+and momentum corrections it has to remain consistent with, and that inconsistency
+costs more than the split bias it was meant to remove.
+
+**So the phase-energy split and the mixture-energy/momentum consistency are
+coupled through W2-1, and cannot be tuned independently.**  Any fix that adjusts
+phase-slot limiting necessarily moves the mixture energy.  That is the real
+constraint, and it was not visible before this experiment.
+
+### 9.4 What that implies for the actual fix  [DECIDE W-D6]
+
+The question is no longer "which limiter" but **which quantity is primary**.
+
+  W2-2a  MIXTURE PRIMARY.  Limit `Ft[UEDEN]` on its own wave, per component,
+         consistently with mass and momentum; then DISTRIBUTE it to the phases.
+         Inverts W2-1.  The distribution rule is the whole design question, and
+         the natural identity-preserving choice — split by the raw wave ratio
+         `W_UE1 / (W_UE1 + W_UE2)` — divides by the cancelling sum and is
+         ill-conditioned in exactly the cells that matter.  A well-conditioned
+         alternative (e.g. by mass fraction `m_k / rho_mix`) is a physical
+         modelling choice, not an identity, and needs its own justification.
+  W2-2b  KEEP W2-1, CONSTRAIN THE SPLIT ELSEWHERE.  Leave the correction alone
+         and add a separate, explicit control on the phase-energy split — the
+         quantity that is actually drifting — rather than trying to get the
+         limiter to preserve it as a side effect.
+  W2-2c  LIMIT IN A BETTER-CONDITIONED BASIS.  The trouble is that `UE1`,`UE2`
+         is a badly-conditioned pair for this fluid (opposite signs, strong
+         cancellation).  Limit instead on `(UEDEN, e_1 - e_2)` or `(UEDEN,
+         UE1/UEDEN)` — a sum-and-difference basis where the smooth quantity and
+         the split are separately represented and can each be limited on their
+         own merits.  Most work; most likely to be right for the same reason
+         W2-1 was right, namely that it fixes the basis rather than the symptom.
+
+Recommendation: W2-2c is the principled one and W2-2a is the cheapest to try,
+but neither should be coded before the distribution/basis question is settled
+here.  The min-phi experiment is exactly the kind of plausible local fix that
+this note exists to prevent being re-tried: it has now been tried, measured, and
+it makes things worse for a structural reason.
