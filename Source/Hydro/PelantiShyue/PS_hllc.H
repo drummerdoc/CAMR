@@ -691,6 +691,13 @@ inline long& n_fl_cause(int c) { static long n[PS_FL_NCAUSE] = {0}; return n[c];
 //  Which SIDE's star state refused: 0 = L, 1 = R.  Answers "is it systematically
 //  one side" without doubling the cause table.
 inline long& n_fl_side(int s_)  { static long n[2] = {0,0}; return n[s_]; }
+//  W2-2 check (2026-08-12).  Under scalar-per-wave limiting the BL-2 correction
+//  must satisfy the linear identities BEFORE W2-1's assignment fixes them up,
+//  because every raw wave satisfies them and a scalar scaling preserves that.
+//  These accumulate the worst relative residual W2-1 still has to remove.  They
+//  must read at round-off; anything larger falsifies the derivation.
+inline double& max_w21_mass()   { static double v = 0.0; return v; }
+inline double& max_w21_energy() { static double v = 0.0; return v; }
 inline void reset() {
     for (int c = 0; c < 3; ++c) {
         n_seen(c) = 0; n_drop(c) = 0; max_def(c) = 0.0; max_estar(c) = 0.0;
@@ -698,6 +705,7 @@ inline void reset() {
     }
     for (int c = 0; c < PS_FL_NCAUSE; ++c) n_fl_cause(c) = 0;
     n_fl_side(0) = 0; n_fl_side(1) = 0;
+    max_w21_mass() = 0.0; max_w21_energy() = 0.0;
 }
 }
 #endif

@@ -363,6 +363,19 @@ CAMR::CAMR_advance (Real time,
                             amrex::Print() << "  | star side L=" << sL
                                            << " R=" << sR << "\n";
                         }
+                        //  W2-2: the residual W2-1 still has to remove.  Under
+                        //  scalar-per-wave limiting this must be round-off.
+                        {
+                            double wm = PS_HLLC::face_diag::max_w21_mass();
+                            double we = PS_HLLC::face_diag::max_w21_energy();
+                            amrex::ParallelDescriptor::ReduceRealMax(wm);
+                            amrex::ParallelDescriptor::ReduceRealMax(we);
+                            amrex::Print() << "[PS-W21] L" << level << " step "
+                                           << parent->levelSteps(level) << " "
+                                           << label
+                                           << ": residual before fixup  mass="
+                                           << wm << "  energy=" << we << "\n";
+                        }
                     }
                 }
                 PS_HLLC::face_diag::reset();

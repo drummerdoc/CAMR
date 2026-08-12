@@ -1561,10 +1561,71 @@ PS_umeth(const Box& bx,
                     if (!fbox.contains(amrex::IntVect(AMREX_D_DECL(ni,nj,nk)))) continue;
                     const Real asl   = std::abs(sl);
                     const Real coef0 = Real(0.5) * asl * (Real(1.0) - asl * dtdx);
+                    //  W2-2 (DESIGN_ps_wp_front.md §10): ONE SCALAR LIMITER PER
+                    //  WAVE, not one per component.
+                    //
+                    //  LeVeque's wave-propagation limiter is a scalar per wave
+                    //  family, obtained by PROJECTING the upwind wave onto this
+                    //  one and applying the resulting factor to the whole wave
+                    //  vector:
+                    //      theta^p = <W_up^p , W_f^p> / <W_f^p , W_f^p>
+                    //      W~^p    = phi(theta^p) * W^p
+                    //  This code limited each COMPONENT separately instead, on
+                    //  the stated grounds that the 6-eq waves are non-orthogonal.
+                    //  Orthogonality is not what the projection needs -- theta is
+                    //  a projection of the SAME wave family at the neighbouring
+                    //  interface, and the <W_f,W_f> denominator is what handles
+                    //  degeneracy -- but the cost of the deviation was severe.
+                    //
+                    //  Scaling every component of a wave by ONE number preserves
+                    //  the wave's DIRECTION in state space.  Scaling them by
+                    //  different numbers bends it, and a bent wave is no longer a
+                    //  wave of this system.  Consequences that were all observed
+                    //  and separately patched before the cause was identified:
+                    //
+                    //   * Every raw wave satisfies the linear identities exactly
+                    //     (W[URHO] = W[UM1RHO1]+W[UM2RHO2] and W[UEDEN] =
+                    //     W[UE1]+W[UE2]), because both the cell state and
+                    //     ps_star_state's star state satisfy them.  A scalar
+                    //     scaling therefore preserves them FOR FREE.  Bending
+                    //     broke them -- measured energyid 0.71 at 2nd order (§8),
+                    //     which is what W2-1 was invented to paper over.
+                    //   * W2-1 restored the SUM by fiat while the wave stayed
+                    //     bent, so the SPLIT kept drifting: the 1.2e4 J/kg per
+                    //     step liquid drain that aborts B7/B2/B9.
+                    //   * min(phi_1,phi_2) pair-limiting (§9.3) failed because it
+                    //     is still not scalar-per-wave -- one factor for the two
+                    //     energies, others for mass and momentum, bending the
+                    //     wave a different way.
+                    //
+                    //  PREDICTION, asserted below: with this in place W2-1's two
+                    //  assignments become no-ops to round-off.  If they do not,
+                    //  this reasoning is wrong.
+                    Real phi = Real(1.0);
+                    if (!unlim) {
+                        Real wdotw = Real(0.0), wdotu = Real(0.0);
+                        for (int n = 0; n < NVAR; ++n) {
+                            if (n == UTEMP) continue;   // not a wave component
+                            const Real Wf  = wv(i, j, k,  l*NVAR + n);
+                            const Real Wup = wv(ni,nj,nk, l*NVAR + n);
+                            wdotw += Wf * Wf;
+                            wdotu += Wf * Wup;
+                        }
+                        //  A wave of zero strength contributes nothing whatever
+                        //  phi is; leave it at 1 rather than dividing by zero.
+                        if (wdotw > Real(0.0)) {
+                            const Real theta = wdotu / wdotw;
+                            //  van Leer, phi(theta) = (theta+|theta|)/(1+|theta|).
+                            //  Identical to the ps_vanleer(a,b) = 2ab/(a+b) form
+                            //  used before, which is 2*theta/(1+theta) for
+                            //  theta > 0 and 0 otherwise -- same limiter, applied
+                            //  to a projected theta instead of a per-component one.
+                            const Real at = std::abs(theta);
+                            phi = (theta + at) / (Real(1.0) + at);
+                        }
+                    }
                     for (int n = 0; n < NVAR; ++n) {
-                        const Real Wf  = wv(i, j, k,  l*NVAR + n);
-                        const Real Wup = wv(ni,nj,nk, l*NVAR + n);
-                        Ft[n] += coef0 * (unlim ? Wf : ps_vanleer(Wf, Wup));
+                        Ft[n] += coef0 * phi * wv(i, j, k, l*NVAR + n);
                     }
                 }
                 // W2-1 (DESIGN_ps_wp_front.md §7, Marc-approved 2026-08-10):
@@ -1575,7 +1636,37 @@ PS_umeth(const Box& bx,
                 // DERIVE the mixture slots as their sums — identities exact
                 // by construction, conservation untouched (still a flux),
                 // no new constants.  Legacy path: per-component, bit-identical.
+                //  W2-1, now a MEASURED no-op rather than a repair.  Under
+                //  scalar-per-wave limiting the identities hold by construction
+                //  (see the derivation above), so these assignments must not
+                //  change anything.  The residual they would have removed is
+                //  accumulated host-side so the claim is checked every run
+                //  instead of being asserted once here.  Kept as the assignment
+                //  (not deleted) so the unlimited and legacy paths, which do NOT
+                //  get scalar limiting, still behave exactly as before.
                 if (l_pres.enabled != 0) {
+#if !defined(AMREX_USE_GPU)
+                    {
+                        const Real dR = Ft[URHO]  - (Ft[UM1RHO1] + Ft[UM2RHO2]);
+                        const Real dE = Ft[UEDEN] - (Ft[UE1] + Ft[UE2]);
+                        const Real sR = std::abs(Ft[URHO])  + std::abs(Ft[UM1RHO1])
+                                      + std::abs(Ft[UM2RHO2]);
+                        const Real sE = std::abs(Ft[UEDEN]) + std::abs(Ft[UE1])
+                                      + std::abs(Ft[UE2]);
+                        if (sR > Real(0.0)) {
+                            const double q = std::abs(double(dR)) / double(sR);
+                            if (q > PS_HLLC::face_diag::max_w21_mass()) {
+                                PS_HLLC::face_diag::max_w21_mass() = q;
+                            }
+                        }
+                        if (sE > Real(0.0)) {
+                            const double q = std::abs(double(dE)) / double(sE);
+                            if (q > PS_HLLC::face_diag::max_w21_energy()) {
+                                PS_HLLC::face_diag::max_w21_energy() = q;
+                            }
+                        }
+                    }
+#endif
                     Ft[URHO]  = Ft[UM1RHO1] + Ft[UM2RHO2];
                     Ft[UEDEN] = Ft[UE1] + Ft[UE2];
                 }

@@ -1989,3 +1989,66 @@ hypotheses did not.
       is marked CLOSED and should be re-opened for it).
   N9  Then B2/B9's second contributor, with D2 re-opened on the (E.1) / 5.2
       terms as already recorded.
+
+### W2-2: scalar-per-wave limiting (Marc's call, 2026-08-12) — big improvement,
+### prediction HALF confirmed
+
+Marc: "shouldn't we be limiting invariants that are transported with the waves
+rather than the summed conserved properties that result?"  Yes.  LeVeque's
+limiter is a SCALAR per wave family, from a projection
+
+    theta^p = <W_up^p, W_f^p> / <W_f^p, W_f^p>      W~^p = phi(theta^p) W^p
+
+applied to the whole wave vector.  CAMR limited each COMPONENT separately, on
+the stated grounds that the 6-eq waves are non-orthogonal — but orthogonality is
+not what the projection needs, and scaling components by different numbers BENDS
+the wave's direction in state space.  Implemented the projection form; the
+limiter function is unchanged (the old `ps_vanleer(a,b)=2ab/(a+b)` is exactly
+van Leer's `phi=2*theta/(1+theta)`, only with a per-component theta).
+
+**The falsifiable prediction was that W2-1's two assignments become no-ops.**
+Instrumented as `[PS-W21]`, the worst relative residual W2-1 still has to remove:
+
+    mass    1.096e-13   CONFIRMED — round-off, exactly as derived
+    energy  6.623e-03   REFUTED   — four orders too large
+
+So the MASS waves satisfy `W[URHO] = W[UM1RHO1]+W[UM2RHO2]` identically and a
+scalar scaling preserves it, as argued.  The ENERGY waves do NOT satisfy
+`W[UEDEN] = W[UE1]+W[UE2]`.  That is a second, independent defect which W2-1 has
+been silently absorbing since it landed — the derivation said the star state
+gives `U*[UEDEN] = m1s*E1s + m2s*E2s = U*[UE1]+U*[UE2]` exactly and the cell side
+is held by `ps_resync_phase_energy` (V5 reads 1e-12), so one of those two is not
+true at the faces where the correction is large.  **Not chased further tonight;
+it is now a small, well-posed question with an instrument pointing at it.**
+
+**Effect on the pathology (B7, HEM leg):**
+
+    final e1_min   -1.3653e6  ->  -4.9422e5     2.8x less drift
+    steps reached        106  ->        111
+    worst energyid   1.1e-13  ->   1.4e-12      still round-off
+    still aborts
+
+So scalar limiting removes roughly two thirds of the drain.  For scale, at
+`ps_wp_order=1` (no correction at all) e1_min is -1.79e4, so a third of the
+gap to "no correction" remains — consistent with the un-refuted half of the
+prediction still being in force.
+
+**Effect on the 16 accuracy numbers — MIXED, net slightly better:**
+
+    A/C mean (the documented gate, <= 0.0350):   0.0350 -> 0.0346   PASS
+
+    improved   A1  .0118/.0101/.0153 -> .0105/.0103/.0135
+               A4  .0244/.0551/.0286 -> .0219/.0505/.0266
+               A6  .0122/.0103/.0153 -> .0103/.0069/.0132   (~30 % on u)
+               B4  P .0491 -> .0477      B10 P .0826 -> .0794
+    worse      A3  .0271/.0835/.0281 -> .0286/.0844/.0280
+               C3  .0269/.1028/.0248 -> .0290/.1059/.0265
+               B8  .0116/.1654/.0531 -> .0131/.1859/.0606   (~12 %, the worst)
+
+B8-Wall-Reflection is the one real regression and wants explaining before this is
+called done — it is a symmetric case, so a limiter change showing up there is
+informative rather than random.
+
+**Committed** because it is the correct algorithm, improves the documented gate,
+and cuts the pathological drift by 2.8x — but with two open items named above
+(the energy-wave identity residual, and B8).  Reverting is one `git revert`.
