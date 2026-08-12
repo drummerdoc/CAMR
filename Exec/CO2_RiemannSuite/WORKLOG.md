@@ -2052,3 +2052,67 @@ informative rather than random.
 **Committed** because it is the correct algorithm, improves the documented gate,
 and cuts the pathological drift by 2.8x — but with two open items named above
 (the energy-wave identity residual, and B8).  Reverting is one `git revert`.
+
+### W2-2b: scale the projection — B8 recovered, and B7 COMPLETES (2026-08-12)
+
+**Thread 1 of the B8 investigation was the answer.**  Two free checks first
+reshaped the problem:
+
+  * **B8 is exactly single-phase.**  `alpha_1 = 1.0000000000` in all 64 cells,
+    zero deviation.  Pure liquid colliding at +/-50 m/s.  So the W2-2 regression
+    had NO two-phase content and could only have been the limiter itself — which
+    also makes B8 the cleanest available probe of a limiter change.
+  * **Symmetry intact**: worst asymmetry 1.9e-14 (u), 3.0e-15 (rho), 7.8e-15 (P).
+    An accuracy trade-off, not a correctness bug.
+
+**The defect was mine, not the idea's.**  W2-2's projection
+`<W_up,W_f>/<W_f,W_f>` summed RAW conservative components, whose magnitudes span
+orders.  On B8 (rho ~ 621, |u| ~ 50, e ~ -1.3e5) the energy components contribute
+~1e13 to `<W,W>` against momentum's ~1e7 and mass's ~1e2 — six orders.  The
+single scalar phi was therefore set by the energy wave alone, and density,
+momentum and alpha inherited it.  LeVeque's projection presumes commensurate
+components; raw conservative variables are not.
+
+**Fix**: scale each component by the magnitude the two adjacent cells carry, so
+each contributes its RELATIVE change.  `CAMR.ps_wp_proj_scale` (default 1).
+Components identically zero on both sides are skipped — the norm rather than an
+edge case, since an absent phase's slots are EXACTLY zero.  Note this changes only
+WHICH scalar comes out: phi is still applied to the raw wave, so W2-2's
+direction-preservation, and with it the linear identities, is untouched.
+
+**Result — the pathological drift is essentially eliminated at full 2nd order:**
+
+    B7 e1_min      pre-W2-2   -1.3653e6
+                   W2-2       -4.9422e5
+                   W2-2b      -2.3131e4      <- 98.3 % of the drift removed
+                   floor      -1.7900e4      (ps_wp_order=1, i.e. NO correction)
+
+    B7-Rupture-Sonic:  ABORT  ->  **RUNS TO COMPLETION**  (first time on the
+    exact_suite HEM leg).  Scores 0.2464 / 0.8557 / 0.6597 — large, and the u
+    figure is in the no-birth-plateau range, so it completes without necessarily
+    doing the right physics.  A case with a NUMBER is still a large step up from
+    a case with an abort.
+
+**B8 recovered and slightly better than it ever was:**
+
+    B8   baseline .0116/.1654/.0531  ->  W2-2 .0131/.1859/.0606  (12 % worse)
+                                     ->  W2-2b .0115/.1647/.0527  (best of the three)
+
+**Gates.**  `verify_canonical`: the headline **A/C battery mean = 0.0350, PASS**
+(and 0.0351 on the exact-zero-trace variant, also PASS).  Verdict FAIL on 6
+checks vs 3 before, but the accounting matters:
+
+    A4-Double-rare   FAILS because it IMPROVED  (.0244/.0551/.0286 -> .0224/.0523/.0269)
+    A6-Near-vacuum   FAILS because it IMPROVED  (u .010 -> .008)
+    C3-Strong-shock  genuinely worse ~7 %       (.027/.103/.025 -> .029/.108/.027)
+    B9 checks 3 & 6  1.000 = the pre-existing run failure
+    rp=1 threshold   pre-existing stale (read .794 before any limiter work today)
+
+So one real regression (C3), two "failures" that are improvements against tight
+hardcoded bands, and three pre-existing.  Those per-case bands now need
+re-baselining in one deliberate pass — NOT case by case as they trip.
+
+**Still open:** the W2-1 energy residual is 4.3e-3 (was 6.6e-3) — improved but
+still not round-off, so the energy-wave identity defect named in the W2-2 entry
+survives and is now the largest remaining known item on this path.  And B2/B9
+still abort.

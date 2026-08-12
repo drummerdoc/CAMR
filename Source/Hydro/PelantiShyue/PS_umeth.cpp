@@ -1289,6 +1289,18 @@ PS_umeth(const Box& bx,
     };
     const int wp_unlimited = ps_wp_unlimited_cached();
 
+    // W2-2b: nondimensionalise the wave components before projecting.
+    // CAMR.ps_wp_proj_scale = 1 (default) or 0 (raw components, W2-2 as first
+    // landed) for A/B without a rebuild.
+    auto ps_wp_projscale_cached = []() -> int
+    {
+        static const int cached = []() {
+            int v = 1; amrex::ParmParse pp("CAMR");
+            pp.query("ps_wp_proj_scale", v); return v; }();
+        return cached;
+    };
+    const int wp_proj_scale = ps_wp_projscale_cached();
+
     // BL-3a: contact-only transverse fluctuation coupling (2D).
     //   CAMR.ps_wp_transverse = 0 (default) → directionally split (BL-1/2).
     //                         = 1           → add the LeVeque transverse
@@ -1466,6 +1478,7 @@ PS_umeth(const Box& bx,
         const bool o2 = (wp_order == 2);            // BL-2 correction fluxes
         const bool tv = (wp_transverse != 0);       // BL-3a transverse (2D)
         const bool unlim = (wp_unlimited != 0);     // bypass van Leer (diag)
+        const bool pscale = (wp_proj_scale != 0);   // W2-2b scaled projection
         const bool store_w = o2 || tv;              // need the raw waves?
         const int  wc = store_w ? (3*NVAR + 3) : 1; // wave/speed store width
         const int  fc = o2 ? 3 : 1;                 // Ftilde store {α,UE1,UE2}
@@ -1603,13 +1616,56 @@ PS_umeth(const Box& bx,
                     //  this reasoning is wrong.
                     Real phi = Real(1.0);
                     if (!unlim) {
+                        //  W2-2b: the projection must be taken in a
+                        //  NONDIMENSIONAL inner product.
+                        //
+                        //  Raw conservative components span orders of magnitude,
+                        //  so an unscaled <W,W> is dominated by whichever has the
+                        //  largest absolute scale — for CO2 that is always the
+                        //  energies.  Measured on B8-Wall-Reflection (pure liquid,
+                        //  rho ~ 621, |u| ~ 50, e ~ -1.3e5): the energy components
+                        //  contribute ~1e13 to <W,W> against momentum's ~1e7 and
+                        //  mass's ~1e2 — six orders.  The single scalar phi was
+                        //  therefore set by the energy wave alone, and density,
+                        //  momentum and alpha inherited it.  That is what cost B8
+                        //  ~12 % when W2-2 landed, on a case with NO two-phase
+                        //  content at all (alpha_1 = 1.0 in all 64 cells), so the
+                        //  regression could only have been the limiter.
+                        //
+                        //  Scale each component by the magnitude the two adjacent
+                        //  cells actually carry, so every component contributes
+                        //  its RELATIVE change.  Note this changes only WHICH
+                        //  scalar comes out: phi is still applied to the raw wave,
+                        //  so the direction-preservation that W2-2 is for — and
+                        //  with it the linear identities — is untouched.
+                        const int oi = (idir == 0) ? 1 : 0;
+                        const int oj = (idir == 1) ? 1 : 0;
+                        const int ok2 = (idir == 2) ? 1 : 0;
                         Real wdotw = Real(0.0), wdotu = Real(0.0);
                         for (int n = 0; n < NVAR; ++n) {
                             if (n == UTEMP) continue;   // not a wave component
                             const Real Wf  = wv(i, j, k,  l*NVAR + n);
                             const Real Wup = wv(ni,nj,nk, l*NVAR + n);
-                            wdotw += Wf * Wf;
-                            wdotu += Wf * Wup;
+                            Real inv = Real(1.0);
+                            if (pscale) {
+                                //  A component that is identically zero on both
+                                //  sides carries no information and is skipped --
+                                //  this is the norm, not an edge case: in a
+                                //  single-phase cell the absent phase's slots are
+                                //  EXACTLY zero (B8).  Fall back to the wave's own
+                                //  magnitude if the cells are zero but the star
+                                //  state is not (phase birth).
+                                const Real sc =
+                                    std::abs(uin_arr(i-oi, j-oj, k-ok2, n))
+                                  + std::abs(uin_arr(i,    j,    k,    n));
+                                if (sc > Real(0.0))            inv = Real(1.0) / sc;
+                                else if (std::abs(Wf) > Real(0.0))
+                                                               inv = Real(1.0) / std::abs(Wf);
+                                else                           continue;
+                            }
+                            const Real wf = Wf * inv, wu = Wup * inv;
+                            wdotw += wf * wf;
+                            wdotu += wf * wu;
                         }
                         //  A wave of zero strength contributes nothing whatever
                         //  phi is; leave it at 1 rather than dividing by zero.
