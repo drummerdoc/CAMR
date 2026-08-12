@@ -84,7 +84,27 @@ def read(pref):
                 u=R.rd1d(p,'xmom')/rho, P=R.rd1d(p,'pressure'))
 
 def l2(num, ana):
-    """rel-L2 per field, EXCEPT where the exact field is identically zero.
+    """Two normalisations per field, because ONE of them misleads.
+
+    rel-L2 (the historical metric, first column group) divides each field's
+    error by THAT FIELD's RMS.  rho and P sit on a large BACKGROUND -- 30 bar,
+    1e3 kg/m3 -- while u has NO background: it is pure signal on a zero base.
+    So rel-L2 flatters rho and P by their background and is honest about u,
+    which makes the u column look systematically worse and invites the
+    conclusion that velocity is the badly-resolved field.  It is not.
+    Measured 2026-08-11: normalise instead by each field's own VARIATION
+    across the exact solution, max-min, and all three land in one band
+    (5.6e-3 .. 1.6e-1) with u the BEST-resolved field in five cases.
+    C2-Acoustic is the extreme -- a 0.05 bar perturbation on 30 bar, so its P
+    denominator is ~6e2x the actual signal, and its apparent 1e-4 vs 1.2e-1
+    rho/u split is entirely the denominators.
+
+    Both are printed.  rel-L2 stays FIRST and unchanged so the recorded
+    acceptance numbers in WORKLOG.md remain directly comparable; the variation
+    columns are what you use to compare one field against another.
+
+    Third rule: where the exact field is identically zero (B3 is a stationary
+    contact, exact u == 0 everywhere) a relative norm has no denominator.
 
     B3-Sat-LV-contact is a stationary contact: the exact u is 0 everywhere, so a
     RELATIVE norm has no denominator.  The old 1e-30 floor turned that into
@@ -98,10 +118,12 @@ def l2(num, ana):
         e_rms = np.sqrt(np.mean((ni-ana[k])**2))
         a_rms = np.sqrt(np.mean(ana[k]**2))
         n_rms = np.sqrt(np.mean(ni**2))
+        span  = np.max(ana[k]) - np.min(ana[k])
+        v = (e_rms/span) if span > 0 else float('nan')
         if a_rms <= 1e-12*max(n_rms, 1e-300):
-            out[k]=(e_rms, True)
+            out[k]=(e_rms, True, v)
         else:
-            out[k]=(e_rms/a_rms, False)
+            out[k]=(e_rms/a_rms, False, v)
     return out
 
 def main():
@@ -118,7 +140,10 @@ def main():
     else:
         cases = ALL
     print('flux=%s  n_cell=%d   rel-L2 vs EXACT solution (not a recording)'%(flux,N))
-    print('%-22s %10s %10s %10s   %s'%('case','rho','u','P','status'))
+    print('%-22s %-32s | %-26s %s'
+          % ('', 'err / RMS(exact)   [rel-L2]', 'err / VARIATION(exact)', ''))
+    print('%-22s %10s %10s %10s | %8s %8s %8s   %s'
+          % ('case','rho','u','P','rho','u','P','status'))
     print('%-22s (a = ABSOLUTE rms error in field units: the exact field is'
           ' identically zero there)' % '')
     for case in cases:
@@ -133,9 +158,13 @@ def main():
         ana = load_hem(TWOPHASE[case]) if case in TWOPHASE else load_profile(case)
         e=l2(num,ana)
         def fmt(t):
-            v,absol = t
+            v,absol,_ = t
             return ('%9.4g a' % v) if absol else ('%10.4f' % v)
-        print('%-22s %s %s %s   ok'
-              % (case, fmt(e['rho']), fmt(e['u']), fmt(e['P'])))
+        def fmtv(t):
+            v = t[2]
+            return '%8s' % '-' if v != v else '%8.4f' % v
+        print('%-22s %s %s %s | %s %s %s   ok'
+              % (case, fmt(e['rho']), fmt(e['u']), fmt(e['P']),
+                 fmtv(e['rho']), fmtv(e['u']), fmtv(e['P'])))
 
 main()

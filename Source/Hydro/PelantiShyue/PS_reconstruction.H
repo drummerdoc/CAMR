@@ -39,6 +39,7 @@
 #ifdef USE_PS_HYDRO
 
 #include "IndexDefines.H"
+#include "PS_wavespeed.H"   // ps_finite_or (one copy)
 #include <AMReX_Array4.H>
 #include <AMReX_GpuQualifiers.H>
 #include <cmath>
@@ -205,18 +206,6 @@ ps_muscl_reconstruct(int i, int j, int k, int dir,
 //  box layout (the standing constraint).
 // =====================================================================
 
-// Local finite-or-fallback.  HISTORICAL: ps_finite_or used to live in
-// PS_umeth.cpp, so this header could not reach it.  It now lives in
-// PS_wavespeed.H (moved 2026-08-11) and this copy is redundant -- identical
-// body -- but is left in place rather than folded in the same commit as the
-// timestep fix.  Safe to delete; call ps_finite_or instead.
-AMREX_GPU_HOST_DEVICE
-AMREX_FORCE_INLINE
-amrex::Real
-ps_recon_finite(amrex::Real v, amrex::Real fallback) noexcept
-{
-    return std::isfinite(v) ? v : fallback;
-}
 
 // van Leer harmonic-mean limiter (standalone vanLeer_slope).
 AMREX_GPU_HOST_DEVICE
@@ -258,14 +247,14 @@ ps_prim_from_cons_local(const amrex::Real U[NVAR], amrex::Real W[PS_NPRIM]) noex
     if (!(rho > Real(0.0))) return false;
     const Real inv_r = Real(1.0) / rho;
 
-    const Real ux = ps_recon_finite(U[UMX], Real(0.0)) * inv_r;
+    const Real ux = ps_finite_or(U[UMX], Real(0.0)) * inv_r;
 #if (AMREX_SPACEDIM >= 2)
-    const Real uy = ps_recon_finite(U[UMY], Real(0.0)) * inv_r;
+    const Real uy = ps_finite_or(U[UMY], Real(0.0)) * inv_r;
 #else
     const Real uy = Real(0.0);
 #endif
 #if (AMREX_SPACEDIM == 3)
-    const Real uz = ps_recon_finite(U[UMZ], Real(0.0)) * inv_r;
+    const Real uz = ps_finite_or(U[UMZ], Real(0.0)) * inv_r;
 #else
     const Real uz = Real(0.0);
 #endif
@@ -388,8 +377,8 @@ ps_ppm_reconstruct(int i, int j, int k, int dir,
     const int iL = i - di, jL = j - dj, kL = k - dk;
     Real UdonorL[NVAR], UdonorR[NVAR];
     for (int n = 0; n < NVAR; ++n) {
-        UdonorL[n] = ps_recon_finite(U(iL, jL, kL, n), Real(0.0));
-        UdonorR[n] = ps_recon_finite(U(i,  j,  k,  n), Real(0.0));
+        UdonorL[n] = ps_finite_or(U(iL, jL, kL, n), Real(0.0));
+        UdonorR[n] = ps_finite_or(U(i,  j,  k,  n), Real(0.0));
     }
 
     // Gather primitives on the 6-cell stencil f-3 … f+2 (index s=0..5
@@ -402,7 +391,7 @@ ps_ppm_reconstruct(int i, int j, int k, int dir,
         const int cj = j + o * dj;
         const int ck = k + o * dk;
         Real Uc[NVAR];
-        for (int n = 0; n < NVAR; ++n) Uc[n] = ps_recon_finite(U(ci, cj, ck, n), Real(0.0));
+        for (int n = 0; n < NVAR; ++n) Uc[n] = ps_finite_or(U(ci, cj, ck, n), Real(0.0));
         if (!ps_prim_from_cons_local(Uc, Wst[s])) {
             // Floored fallback primitive (matches the standalone).
             constexpr Real af = Real(1.0e-6), rf = Real(1.0e-6);

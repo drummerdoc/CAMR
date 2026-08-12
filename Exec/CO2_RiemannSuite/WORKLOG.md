@@ -1230,3 +1230,41 @@ findings (the census, the two velocity-error decompositions) live only in /tmp,
 which was already wiped once mid-session -- the durable record is this file, not
 the scripts.
 
+## Both loose ends closed (2026-08-11)
+
+**`ps_recon_finite` deleted.**  PS_reconstruction.H's private copy of
+`ps_finite_or` existed only because the original lived in a .cpp; that reason is
+gone.  The header now includes PS_wavespeed.H and its 6 call sites use
+`ps_finite_or`.  Bodies were byte-identical, and the suite confirms it: every
+number unchanged.  One finite-or in the tree.
+
+**The variation-normalised metric is now IN `exact_suite.py`, not a scratch
+script.**  It printed from /tmp/udiag2.py, and /tmp was wiped once mid-session,
+so the capability would not have survived.  `l2()` now returns both
+normalisations and the table prints two column groups: rel-L2 FIRST and
+unchanged, so every recorded acceptance number in this file stays directly
+comparable, then err/variation for comparing one FIELD against another.  The
+docstring carries the reason -- that rel-L2 divides rho and P by a large
+background and u by nothing, which is what made velocity look like the weak
+field.  Anyone reading that column now reads the explanation with it.
+
+Current table (rel-L2 | variation), HEM-limit config, mean carrier:
+
+    A1 0.0118/0.0101/0.0153 | 0.0075/0.0059/0.0085
+    A2 0.0130/0.0890/0.0150 | 0.0325/0.0790/0.0374
+    A3 0.0271/0.0835/0.0281 | 0.0243/0.0655/0.0250
+    A4 0.0244/0.0551/0.0286 | 0.0315/0.0158/0.0303
+    A5 0.0540/0.1063/0.0668 | 0.0794/0.0428/0.0779
+    A6 0.0122/0.0103/0.0153 | 0.0076/0.0056/0.0084
+    C1 exact 0              | (no variation: identity case)
+    C2 0.0001/0.1248/0.0001 | 0.0426/0.1115/0.0558
+    C3 0.0269/0.1028/0.0248 | 0.0229/0.0776/0.0209
+    B1 0.0051/0.1106/0.0485 | 0.0427/0.0938/0.0481
+    B3 0.0486/3.14e-11 a/0.0000 | 0.0359/-/-
+    B4 0.0635/0.1266/0.0491 | 0.0493/0.0966/0.0578
+    B5 0.0420/0.1604/0.0184 | 0.0486/0.1282/0.0663
+    B6 0.0236/0.0665/0.0307 | 0.0887/0.0449/0.0881
+    B8 0.0116/0.1654/0.0531 | 0.0865/0.0432/0.0862
+    B10 0.0705/0.1208/0.0826 | 0.0516/0.0936/0.0530
+    B2, B7, B9: RUN FAILED (B2/B9 complete with ps_mt_h_weight=-1)
+
