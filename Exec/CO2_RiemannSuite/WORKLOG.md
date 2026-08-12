@@ -1636,3 +1636,80 @@ numbers bit-identical, B2/B7/B9 fail exactly as before.
 
 Also worth re-measuring once A lands: B2 and B9 fail on the same leg, and
 `[PS-FLCAUSE]` will now say whether they share this mechanism.
+
+### P_star test removed — verified, and it was masking a second problem (2026-08-12)
+
+Option A applied: the PVRS contact-pressure computation, its positivity test and
+the unread `WaveSpeeds::P_star` field are gone from `wave_speeds()`
+(`PS_hllc.H`). The `PS_FL_WS_PSTAR` cause number is retained, annotated as
+retired, so cause numbering stays comparable with the run recorded above.
+
+**All four pre-specified checks pass.**
+
+    1  [PS-FLCAUSE] silent           0 lines on B7, B2 and B9 (was 22 on B7)
+    2  stage-A energyid worst        1.07e-1  ->  8.556e-14   (B7)
+                                              ->  9.060e-14   (B2)
+                                              ->  9.735e-14   (B9)
+       stage-A reports above 1e-3    several per run  ->  0
+    3  B7 past its old wall          step 63  ->  step 105, then a DIFFERENT abort
+    4  16 exact_suite numbers        bit-identical
+
+Check 2 is the one that matters: the phase-energy identity defect is gone, and
+it is gone on all three cases, not just the one that was diagnosed. Check 4
+confirms no A/C or working-B case ever refused a face, so the guard was pure
+loss. `ps_star_state`'s five tests still never fire — nothing has been left
+unguarded, because they were the tests inspecting quantities that are USED.
+
+**What was underneath.** All three cases now fail at ONE new site with one
+signature — and the direction has flipped from too hot to too cold:
+
+    B7   LIQUID  rho = 996.4993712   e = -8.804328e5 J/kg   gap -4.777849e5
+    B2   LIQUID  rho = 565.6187627   e = -1.449668e6 J/kg    gap -1.193326e6
+    B9   LIQUID  rho = 895.8360923   e = -1.594700e6 J/kg    gap -1.224270e6
+
+against the liquid branch's reachable bound at `T_MIN = 1 K`. Physical liquid
+CO2 is about -1.3e5 J/kg, so these are 6.8x to 12x too negative. The liquid
+donor is being over-cooled, hard.
+
+**It is a BULK defect, not a corridor gate hole.** The backtrace attributes the
+call to `CAMR.cpp:1582`, which is the call site inside the
+`rg1 == Independent && rg2 == Independent` branch of `computeTemp` — so the
+fatal cell has `alpha_1 >= alpha_cond` and the query was legitimate to make.
+(V7 does separately report five *trace*-bucket unreachable states at
+`alpha_1 ~= 0.0096`, just under `alpha_cond`; those are corridor phases, are
+bucketed as trace exactly as the design intends, and are NOT the abort. Do not
+conflate them, as the alpha values invite.)
+
+**The carrier probe splits the remaining failures in two.** With
+`CAMR.ps_mt_h_weight` at the default 0.5 (mean) and at -1 (upwind):
+
+    B2-Evap-wave        mean 0.5   ABORT      upwind -1  completes
+    B9-Deep-Expansion   mean 0.5   ABORT      upwind -1  completes
+    B7-Rupture-Sonic    mean 0.5   ABORT      upwind -1  ABORT, rho and e
+                                              BIT-IDENTICAL to the mean run
+
+So B7 is carrier-INSENSITIVE — a third, distinct problem, and the mass-transfer
+enthalpy carrier is not in its causal path at all. B2 and B9 are the D2 carrier
+question.
+
+**But upwind is NOT a fix for B2/B9 — it completes by not doing the physics.**
+Scored against the exact HEM solutions (rel-L2 rho/u/P):
+
+    B2-Evap-wave        0.0740 / 0.9154 / 0.3263
+    B9-Deep-Expansion   0.1146 / 0.8303 / 0.3385
+    (every working B case, for scale:  u 0.11 .. 0.17,  P 0.018 .. 0.083)
+
+B9's 0.8303 reproduces the recorded no-birth plateau of 0.8347 — the same
+plateau `verify_canonical` check 6 treats as a FAIL ("flash birth develops,
+u-err < 0.60"). Upwind's u error is five to eight times the working cases'. So:
+
+    mean carrier    attempts the conversion, over-cools the donor liquid past
+                    the T_MIN bracket, and aborts
+    upwind carrier  completes, and sits on the no-birth plateau
+
+Neither is acceptable, which means **D2 as posed has no good answer among its
+two options** and the defect is upstream of the carrier choice: the transfer is
+debiting the donor too much energy. That is the territory of the (E.1)
+density-preserving derivation and the section 5.2 contraction-ratio diagnostic,
+not of a weighting flag. D2 should be re-opened on those terms rather than
+decided.

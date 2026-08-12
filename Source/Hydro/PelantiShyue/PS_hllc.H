@@ -331,7 +331,10 @@ enum PsFlCause {
     PS_FL_FACE       = 1,   // face_from_state invalid (rho_mix <= 0 or c <= 0)
     PS_FL_WS_DENOM   = 2,   // mixture mass-flux denominator degenerate
     PS_FL_WS_SM      = 3,   // contact speed non-finite
-    PS_FL_WS_PSTAR   = 4,   // linearised contact pressure non-finite or <= 0
+    PS_FL_WS_PSTAR   = 4,   // RETIRED 2026-08-12; number kept so the cause
+                            // numbering in the worklog stays comparable.  Can
+                            // no longer fire -- the test is gone.
+
     PS_FL_ST_DENOM   = 5,   // star: S_K - S_M degenerate
     PS_FL_ST_MASSNEG = 6,   // star: a partial mass came out negative
     PS_FL_ST_RHO     = 7,   // star: mixture density <= 0
@@ -345,7 +348,10 @@ enum PsFlCause {
 // -------------------------------------------------------------------
 struct WaveSpeeds {
     amrex::Real S_L, S_M, S_R;
-    amrex::Real P_star;   // linearised HLLC pressure at the contact
+    //  There was a `P_star` here -- the PVRS linearised contact pressure --
+    //  written on every successful face and READ NOWHERE.  Removed 2026-08-12
+    //  together with the positivity test it existed to feed; see the block
+    //  above wave_speeds().
     bool        valid;
     //  Which test refused, for the W0 refusal-cause audit (see face_diag).
     //  0 = none.  Set on every early return so the caller never has to guess.
@@ -381,14 +387,42 @@ WaveSpeeds wave_speeds(const Face& fL, const Face& fR) noexcept
     w.cause = PS_FL_WS_SM;
     if (!std::isfinite(S_M)) return w;
 
-    const Real P_star = fL.P_mix + fL.rho_mix * (S_L - fL.u_n) * (S_M - fL.u_n);
-    w.cause = PS_FL_WS_PSTAR;
-    if (!std::isfinite(P_star) || P_star <= Real(0.0)) return w;
-
+    //  RETIRED 2026-08-12 -- the PVRS contact-pressure positivity test.
+    //
+    //      P_star = P_L + rho_L (S_L - u_L)(S_M - u_L)
+    //      if (!finite(P_star) || P_star <= 0) refuse the face
+    //
+    //  Measured cause of 33/33 fluctuation refusals on B7-Rupture-Sonic, and
+    //  through them of the phase-energy identity defect that aborted the run
+    //  63 steps later (WORKLOG 2026-08-12).  Three reasons it went:
+    //
+    //  1. P_star was READ NOWHERE.  It was computed only in order to be
+    //     tested.  The star states are built from S_K and S_M alone, and
+    //     hllc_flux takes its pressures from the face state, so the test could
+    //     only ever subtract information.
+    //  2. It is the PVRS linearisation, whose textbook failure mode is the
+    //     strong double-rarefaction: it returns a negative pressure where the
+    //     exact solution has a small positive one (Toro 9.5 -- the reason
+    //     adaptive/two-rarefaction estimates exist).  B7 is 100 bar liquid
+    //     discharging into 1 bar vapour, precisely that regime.  So P_star <= 0
+    //     was a failure of the ESTIMATE, never evidence of a bad state -- and
+    //     the states it rejected were demonstrably fine, because ps_star_state's
+    //     own five tests were never once REACHED on a refused face (the audit
+    //     reported star side L=0 R=0).
+    //  3. It was built from the L side only, so it was not symmetric under
+    //     swapping L and R even though the face is.
+    //
+    //  What still guards this path: ps_star_state's five tests, which inspect
+    //  quantities that are actually USED (the contraction denominator, the star
+    //  partial masses and density, the per-phase mass-flux denominators, and the
+    //  star phase energies).  A face that would genuinely produce a bad star
+    //  state is still refused there.
+    //
+    //  The same test survives at hem_pelanti_shyue.H:837-843, equally unread; it
+    //  is in the ps_flux family, which has no production caller, and dies with it.
     w.S_L    = S_L;
     w.S_M    = S_M;
     w.S_R    = S_R;
-    w.P_star = P_star;
     w.valid  = true;
     w.cause  = PS_FL_OK;
     return w;
