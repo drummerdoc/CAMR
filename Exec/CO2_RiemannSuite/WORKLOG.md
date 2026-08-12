@@ -2188,3 +2188,59 @@ A/C battery mean 0.0350, unchanged, still the headline gate.  The two remaining
 FAILs are checks 3 and 6, both reading exactly 1.000 — the run-failed signature
 for B9 at the mean carrier.  They are NOT re-baselined: they are the open defect,
 and they should stay red until it is fixed.
+
+### The tau_theta sweep, and a STALE MEASUREMENT that invalidates the D2 argument (2026-08-12)
+
+**Latent heat IS in the EOS, verified.**  `h = e + P/rho` (PS_relaxation.H:165) is
+the only enthalpy in the code; there is no separate latent-heat bookkeeping.  At
+saturation the EOS's own states give h_v - h_l:
+
+    T[K]     220     240     260     280     300
+    L_EOS   348.2   314.6   270.7   208.1    89.8   kJ/kg
+    L_CC    361.8   315.3   264.8   202.0    90.1   kJ/kg   (Clausius-Clapeyron
+                                                             from the EOS's own Psat)
+    lit.    ~340    ~310    ~262    ~205    ~122
+
+Good to a few per cent below 280 K; **-26 % at 300 K**, the expected cubic
+weakness near T_crit = 304.13 K (B7 initialises at 310 K, supercritical).
+The 0.2-3.7 % Clausius-Clapeyron mismatch is itself a finding: `Psat` is a
+separately fitted Wagner-type correlation, NOT derived from the PR cubic's
+equal-area construction, so saturation pressure and saturation densities are two
+sources of truth agreeing only to ~3 %.  Probe: /tmp/lprobe.cpp pattern.
+
+**The tau_theta sweep REFUTED the prediction it was built on.**  Predicted: donor
+and mean converge as thermal relaxation gets fast, diverge as it slows.  B9,
+tau_mt = 1e-7 fixed:
+
+    tau_theta    1e-9    1e-8    1e-7    1e-6    1e-5
+    mean 0.5    ABORT   ABORT   ABORT   ABORT   ABORT
+    donor -1    0.8890  0.8890  0.8890  0.8890  0.8871
+
+Neither happened.  Mean aborts even with thermal relaxation 100x FASTER than
+MT; donor is flat to 0.2 % over four orders of magnitude.  **The thermal
+relaxation is inert in these cells** — its rate cannot matter if it never fires.
+
+**The flash metastability margin is NOT the confound.**  My runs use the default
+`PS_FLASH_METASTABLE_MARGIN = 0.10`; `verify_canonical` sets it to 0.  Tested
+both: B9 0.8890 either way, B2 0.9186 either way.  Flash is not firing at either
+margin, so the harness difference is real but does not explain the plateau.
+
+**What the plateau actually is.**  In the donor run the max phase-2 specific
+energy is FLAT at 1.26e5 -> 1.30e5 J/kg across all 103 steps.  Nothing runs away
+and nothing converts.  MT fires a handful of times (seen = 2-4).  The plateau is
+not a wrong equilibrium being converged to — it is **almost no phase change
+happening at all**.  "No-birth plateau" is literally accurate.
+
+**CORRECTION — the D2 argument rests on a stale measurement.**  "B7 is
+carrier-insensitive (mean and upwind bit-identical)" was measured on the
+PRE-W2-2 binary.  On the current binary:
+
+    B7-Rupture-Sonic   mean h_w=0.5   ok, u = 0.8557
+                       upwind h_w=-1  ABORT
+
+The opposite way round, and no longer insensitive.  So the argument recorded as
+task #15 — "upwind reproduces the carrier-free answer that B7 gives natively" —
+**is invalid as stated** and must be re-derived on the current binary before D2
+is decided either way.  This is exactly the failure mode this log exists to
+prevent: a conclusion outliving the binary it was measured on.  Any B2/B9/B7
+carrier statement dated before W2-2 (90c8b76) should be treated as unverified.
