@@ -1899,3 +1899,93 @@ a code change to make on a hunch.
       steps).  Small, but a strictly signed bias in a +/- paired operator is the
       kind of thing that is wrong for a nameable reason.
   N6  Only then: the energy-conditioning gate as a presence-note design item.
+
+### N4 CLOSES IT: the BL-2 second-order correction drains the liquid (2026-08-12)
+
+**V9 added** to `ps_validate_state`: `e1_min` / `e2_max`, the per-phase specific
+energy extrema with locations, piggybacked on V7's already-checked quotient so a
+second construction cannot drift from it.  Reported per stage.  V8 asked a proxy
+question (cancellation); V9 asks the direct one.
+
+**The trajectory of the most-negative liquid energy on B7, per step:**
+
+    step    1   -1.759e4      <- healthy
+    step   11   -5.368e4
+    step   21   -1.313e5
+    step   41   -4.528e5
+    step   61   -6.901e5
+    step   81   -9.409e5
+    step  101   -1.251e6
+    step  106   -1.365e6      <- aborts
+
+A **steady, near-linear drain**, not a jump.  From step ~40 the rate is
+essentially constant: -1.327e4, -1.127e4, -1.207e4, -1.252e4, -1.223e4 J/kg per
+step at steps 41/51/61/71/81.  Attribution:
+
+    hydro    sum -1.067e6   mean -1.016e4   negative on 92 of 105 steps
+    sources  sum -2.809e5   mean -2650      negative on 21 of 106 steps
+
+So the hydro does ~79 % of the cooling and does it almost every step, while the
+sources act early and then stop entirely (dS = 0 from step ~41 on).
+
+**Then a bisection with existing flags, instead of another hypothesis:**
+
+    variant                     status   final e1_min   drift/step
+    wp, 2nd order (default)     ABORT      -1.3653e6      -1.431e4
+    wp, 1st order only          ok            -17904        -1.662
+    hllc flux instead of wp     ABORT (21 steps)  -26875    -1951
+    wp, recon off               ABORT      -1.3653e6      -1.431e4
+
+**At first order the drift falls by four orders of magnitude and B7 RUNS TO
+COMPLETION.**  Reconstruction is irrelevant (identical to default), confirming
+the code's own comment that the wp path does not use it.  So the defect is in
+the **BL-2 second-order limited-wave correction** as applied to the
+non-conservative slots -- the `wp_ft` term in `PS_umeth.cpp`, differenced like a
+flux and added to `dsdt[UALPHA1]`, `dsdt[UE1]`, `dsdt[UE2]`.
+
+Why that is a credible mechanism rather than a coincidence: the correction is
+limited PER COMPONENT.  For the conserved slots that is fine -- they go through
+the telescoping flux route and the limiter cannot break conservation.  For the
+non-conservative slots there is nothing tying UE1's limited correction to UE2's,
+so the limiter can shave them by different amounts.  The mixture total is
+computed on the conservative route and stays right; the SPLIT absorbs the
+difference.  Sum exact, split biased, one-signed, constant per step, invisible to
+V4/V5/V7 -- which is precisely the measured signature.
+
+**Extent, measured on all three cases:**
+
+    case                order 2 e1_min   order 1 e1_min   order 1 status
+    B7-Rupture-Sonic      -1.3653e6        -1.7904e4      ok
+    B2-Evap-wave          -3.4497e6        -4.9816e5      still ABORT
+    B9-Deep-Expansion     -4.1345e6        -4.9935e5      still ABORT
+
+So the second-order correction is the DOMINANT contributor in all three (a 7x to
+76x reduction in the over-cooling) and is the WHOLE story for B7.  B2 and B9 have
+a second, smaller contributor -- consistent with the earlier carrier probe, where
+B2/B9 responded to `ps_mt_h_weight` and B7 was bit-identical under both settings.
+Two contributors, both now localised, and they explain every observation:
+
+    B7        2nd-order correction only            -> order 1 completes
+    B2, B9    2nd-order correction + an MT/carrier -> order 1 improves 7-8x but
+                                                      does not complete
+
+**Three hypotheses of mine were refuted by measurement along the way** and should
+not be resurrected: the +/- paired source operators as driver (N1); "the split
+runs away" as a characterisation (it fluctuates 1.4 to 2097 with no trend); and
+the two-pressure star energy `CAMR.ps_pk_energy_flux` (0 vs 1 changes e1_min by
+0.01 % on B7 and not at all on B2/B9).  The bisection found in one run what three
+hypotheses did not.
+
+**NEXT:**
+
+  N7  First order is a DIAGNOSTIC, not a proposal -- it costs the scheme's
+      second-order accuracy.  Measure that cost: run the full exact_suite at
+      `ps_wp_order=1` so the price of the workaround is on the record.
+  N8  The fix: make the second-order correction preserve the phase-energy split.
+      The natural form is to limit the phase-energy corrections as a PAIR, or to
+      derive UE2's correction from UE1's and the mixture's so the split cannot
+      drift by construction.  This is a design question for
+      DESIGN_ps_wp_front.md -- it is squarely in that note's territory (the note
+      is marked CLOSED and should be re-opened for it).
+  N9  Then B2/B9's second contributor, with D2 re-opened on the (E.1) / 5.2
+      terms as already recorded.

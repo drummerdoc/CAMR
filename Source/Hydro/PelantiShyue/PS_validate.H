@@ -123,6 +123,27 @@ ps_validate_state(amrex::MultiFab& S, const char* label, int nghost = 0)
     int  v8_i = 0, v8_j = 0, v8_k = 0;
     Real v8_a1 = 0.0, v8_E1 = 0.0, v8_E2 = 0.0, v8_sum = 0.0;
     bool v8_seen = false;
+    // ---------------------------------------------------------------------
+    //  V9  PHASE SPECIFIC-ENERGY EXTREMA  (added 2026-08-12, "N4")
+    //
+    //  V8 measures CANCELLATION, and cancellation turns out to be normal at a
+    //  sharp liquid/vapour contact (R ~ 7 on a healthy front at step 1), so it
+    //  is the right instrument for making this defect CLASS visible but the
+    //  wrong discriminator for the specific pathology.  What is actually
+    //  unphysical is e_k itself: -8.80e5 J/kg for a liquid whose physical value
+    //  is near -1.3e5.  So track e_k directly.
+    //
+    //  Reported per stage with locations, which answers the question R could
+    //  not: does e_1 DRIFT steadily toward the EOS floor over many steps
+    //  (an accumulation -- look for a biased operator), or JUMP at one
+    //  identifiable step (an event -- look at that step)?  Those need
+    //  different investigations and R's proxy could not separate them.
+    //
+    //  Extrema only, no threshold, nothing gated -- same discipline as V8.
+    Real w_e1_min =  1.0e300, w_e2_max = -1.0e300;
+    int  e1_i = 0, e1_j = 0, e1_k = 0, e2_i = 0, e2_j = 0, e2_k = 0;
+    Real e1_a = 0.0, e1_r = 0.0, e2_a = 0.0, e2_r = 0.0;
+    bool e1_seen = false, e2_seen = false;
     bool abort_hit = false;
     int  ab_i=0, ab_j=0, ab_k=0;
 
@@ -222,6 +243,17 @@ ps_validate_state(amrex::MultiFab& S, const char* label, int nghost = 0)
                         const PsPhaseQuot q =
                             ps_phase_quot(a_k, m_k, E_k, ke, l_pr_v7);
                         if (!q.exists) continue;
+                        //  V9 extrema (see the block above).  Piggybacks on
+                        //  V7's already-formed, already-checked quotient so no
+                        //  second construction can drift from it.
+                        if (kk == 1 && q.e < w_e1_min) {
+                            w_e1_min = q.e; e1_i=i; e1_j=j; e1_k=k;
+                            e1_a = a_k; e1_r = q.rho; e1_seen = true;
+                        }
+                        if (kk == 2 && q.e > w_e2_max) {
+                            w_e2_max = q.e; e2_i=i; e2_j=j; e2_k=k;
+                            e2_a = a_k; e2_r = q.rho; e2_seen = true;
+                        }
                         hem::PsPhase ph{};
                         ph.alpha = double(a_k);
                         api_v7.state_from_rho_e_phase(kk, double(q.rho),
@@ -254,6 +286,8 @@ ps_validate_state(amrex::MultiFab& S, const char* label, int nghost = 0)
     amrex::ParallelDescriptor::ReduceRealMax(w_v4);
     amrex::ParallelDescriptor::ReduceRealMax(w_v5);
     amrex::ParallelDescriptor::ReduceRealMax(w_v8);
+    amrex::ParallelDescriptor::ReduceRealMin(w_e1_min);
+    amrex::ParallelDescriptor::ReduceRealMax(w_e2_max);
 
     amrex::Print() << "[PS-VALIDATE] " << label
                    << ": nonfinite=" << n_v1
@@ -265,7 +299,24 @@ ps_validate_state(amrex::MultiFab& S, const char* label, int nghost = 0)
                    << " trace=" << n_v6_trace
                    << " reachable bulk=" << n_v7_bulk
                    << " trace=" << n_v7_trace
-                   << " splitamp=" << w_v8 << "\n";
+                   << " splitamp=" << w_v8
+                   << " e1_min=" << (e1_seen ? w_e1_min : Real(0.0))
+                   << " e2_max=" << (e2_seen ? w_e2_max : Real(0.0)) << "\n";
+
+    //  Locate the extrema whenever either leaves a generously physical band for
+    //  CO2 (liquid roughly -3e5 .. 0, vapour 0 .. +2e6 J/kg on this EOS's energy
+    //  reference).  A PRINTING cut only -- nothing is gated, and the values
+    //  themselves are on the line above unconditionally.
+    if ((e1_seen && w_e1_min < Real(-3.0e5)) ||
+        (e2_seen && w_e2_max > Real(2.0e6))) {
+        amrex::Print() << "[PS-VALIDATE]   phase-e extrema:"
+                       << "  e1_min " << w_e1_min << " at (" << e1_i << ","
+                       << e1_j << "," << e1_k << ") alpha=" << e1_a
+                       << " rho=" << e1_r
+                       << " |  e2_max " << w_e2_max << " at (" << e2_i << ","
+                       << e2_j << "," << e2_k << ") alpha=" << e2_a
+                       << " rho=" << e2_r << "\n";
+    }
 
     //  Name the worst split cell whenever the parts exceed their whole by more
     //  than a factor of two.  Two is not a physical threshold and nothing is
