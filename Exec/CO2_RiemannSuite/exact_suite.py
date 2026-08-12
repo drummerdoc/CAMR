@@ -30,7 +30,20 @@ N     = int(os.environ.get('NCELL', '64'))
 SINGLE = ('A1-Sod-strong','A2-Sod-weak','A3-Lax-like','A4-Double-rare',
           'A5-Two-shock','A6-Near-vacuum','C1-Identity','C2-Acoustic-limit',
           'C3-Strong-shock-V')
-TWOPHASE = {'B4-Cross-critical':'B4', 'B9-Deep-Expansion':'B9'}
+#  All ten B cases now have an independent HEM reference in the standalone's
+#  suite/ (B1/B2/B4/B9 pre-existed; B3/B5/B6/B7/B8/B10 generated 2026-08-11 by
+#  exact_riemann.py, whose CASES table was extended with their initial
+#  conditions -- regenerating B9 with that edit reproduced the stored reference
+#  BIT-IDENTICALLY, which is the check that the edit changed nothing).
+#  B3 is the exception: it is a STATIONARY CONTACT (saturated liquid | saturated
+#  vapour at the same T, hence equal P, both at rest), so its exact solution is
+#  the initial condition for all time and it is built analytically -- the star
+#  solve degenerates at P* == P_L == P_R and returned the PR pole density.
+TWOPHASE = {'B1-Comp-L-expand':'B1',        'B2-Evap-wave':'B2',
+            'B3-Sat-LV-contact':'B3',       'B4-Cross-critical':'B4',
+            'B5-Both-2P':'B5',              'B6-Sat-V-shock':'B6',
+            'B7-Rupture-Sonic':'B7',        'B8-Wall-Reflection':'B8',
+            'B9-Deep-Expansion':'B9',       'B10-Cross-critical-hot':'B10'}
 
 def load_profile(name):
     rows=[l for l in open('%s/suite/profiles/%s.csv'%(STAND,name)) if not l.startswith('#') and l.strip()]
@@ -71,10 +84,24 @@ def read(pref):
                 u=R.rd1d(p,'xmom')/rho, P=R.rd1d(p,'pressure'))
 
 def l2(num, ana):
+    """rel-L2 per field, EXCEPT where the exact field is identically zero.
+
+    B3-Sat-LV-contact is a stationary contact: the exact u is 0 everywhere, so a
+    RELATIVE norm has no denominator.  The old 1e-30 floor turned that into
+    ~3.1e19, which reads as a catastrophic failure and is really a
+    divide-by-nothing.  There, report the ABSOLUTE RMS error in the field's own
+    units (m/s for u) and mark it, so it can never be misread as a fraction.
+    Returns {field: (value, is_absolute)}."""
     out={}
     for k in ('rho','u','P'):
         ni=np.interp(ana['x'], num['x'], num[k])
-        out[k]=np.sqrt(np.mean((ni-ana[k])**2))/max(np.sqrt(np.mean(ana[k]**2)),1e-30)
+        e_rms = np.sqrt(np.mean((ni-ana[k])**2))
+        a_rms = np.sqrt(np.mean(ana[k]**2))
+        n_rms = np.sqrt(np.mean(ni**2))
+        if a_rms <= 1e-12*max(n_rms, 1e-300):
+            out[k]=(e_rms, True)
+        else:
+            out[k]=(e_rms/a_rms, False)
     return out
 
 def main():
@@ -92,6 +119,8 @@ def main():
         cases = ALL
     print('flux=%s  n_cell=%d   rel-L2 vs EXACT solution (not a recording)'%(flux,N))
     print('%-22s %10s %10s %10s   %s'%('case','rho','u','P','status'))
+    print('%-22s (a = ABSOLUTE rms error in field units: the exact field is'
+          ' identically zero there)' % '')
     for case in cases:
         pref='ex_%s_%s_'%(flux,case.split('-')[0])
         rc,out=run(case,flux,pref)
@@ -103,6 +132,10 @@ def main():
         if num is None: print('%-22s no plotfile'%case); continue
         ana = load_hem(TWOPHASE[case]) if case in TWOPHASE else load_profile(case)
         e=l2(num,ana)
-        print('%-22s %10.4f %10.4f %10.4f   ok'%(case,e['rho'],e['u'],e['P']))
+        def fmt(t):
+            v,absol = t
+            return ('%9.4g a' % v) if absol else ('%10.4f' % v)
+        print('%-22s %s %s %s   ok'
+              % (case, fmt(e['rho']), fmt(e['u']), fmt(e['P'])))
 
 main()

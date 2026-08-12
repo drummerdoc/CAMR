@@ -22,7 +22,8 @@
 #include "IndexDefines.H"
 #ifdef USE_PS_HYDRO
 #include "PS_relaxation.H"   // ps_resync_phase_energy / ps_apply_floor (#84)
-#include "PS_guards.H"      // ps_guard counters (clean_state repairs)
+#include "PS_guards.H"
+#include "PS_wavespeed.H"      // ps_guard counters (clean_state repairs)
 #endif
 
 bool CAMR::signalStopJob = false;
@@ -599,6 +600,12 @@ amrex::Real CAMR::estTimeStep(amrex::Real /*dt_old*/)
 #endif
 
     amrex::Real AMREX_D_DECL(dx1 = dx[0], dx2 = dx[1], dx3 = dx[2]);
+#ifdef USE_PS_HYDRO
+    //  Use the flux's own wave speed for dt when the PS integrator is on
+    //  (PS_dt.H).  Host reads, captured by value.
+    const int    l_ps_hydro_dt = ps_hydro;
+    const PsPres l_pr_dt       = ps_presence_params();
+#endif
 
 #ifdef AMREX_USE_EB
     amrex::Real dt = amrex::ReduceMin( stateMF, flag, 0,
@@ -608,6 +615,9 @@ amrex::Real CAMR::estTimeStep(amrex::Real /*dt_old*/)
           ) -> amrex::Real {
           return CAMR_estdt_hydro(
             bx, fab_arr, flag_arr,
+#ifdef USE_PS_HYDRO
+            l_ps_hydro_dt, l_pr_dt,
+#endif
             AMREX_D_DECL(dx1, dx2, dx3));
         });
 #else
@@ -615,7 +625,11 @@ amrex::Real CAMR::estTimeStep(amrex::Real /*dt_old*/)
         [=] AMREX_GPU_HOST_DEVICE(
           amrex::Box const& bx, const amrex::Array4<const amrex::Real>& fab_arr
           ) -> amrex::Real {
-            return CAMR_estdt_hydro( bx, fab_arr, AMREX_D_DECL(dx1, dx2, dx3));
+            return CAMR_estdt_hydro( bx, fab_arr,
+#ifdef USE_PS_HYDRO
+                                     l_ps_hydro_dt, l_pr_dt,
+#endif
+                                     AMREX_D_DECL(dx1, dx2, dx3));
         });
 #endif
 
@@ -632,7 +646,11 @@ amrex::Real CAMR::estTimeStep(amrex::Real /*dt_old*/)
           for (amrex::MFIter mfi(stateMF); mfi.isValid(); ++mfi) {
             const amrex::Box& dbx = mfi.validbox();
             auto const& sarr = stateMF.const_array(mfi);
-            CAMR_dt_diag_t dd = CAMR_estdt_hydro_diag(dbx, sarr, dx[0]);
+            CAMR_dt_diag_t dd = CAMR_estdt_hydro_diag(dbx, sarr,
+#ifdef USE_PS_HYDRO
+                                                      l_ps_hydro_dt, l_pr_dt,
+#endif
+                                                      dx[0]);
             amrex::Print() << "[DT-DIAG] i=" << dd.i << " dt=" << dd.dt * cfl
                            << " c=" << dd.c << " absu=" << std::abs(dd.ux)
                            << " rho=" << dd.rho << " eint=" << dd.eint

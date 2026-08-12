@@ -205,8 +205,11 @@ ps_muscl_reconstruct(int i, int j, int k, int dir,
 //  box layout (the standing constraint).
 // =====================================================================
 
-// Local finite-or-fallback (ps_finite_or lives in PS_umeth.cpp, defined
-// after this header is included, so we keep a header-local copy).
+// Local finite-or-fallback.  HISTORICAL: ps_finite_or used to live in
+// PS_umeth.cpp, so this header could not reach it.  It now lives in
+// PS_wavespeed.H (moved 2026-08-11) and this copy is redundant -- identical
+// body -- but is left in place rather than folded in the same commit as the
+// timestep fix.  Safe to delete; call ps_finite_or instead.
 AMREX_GPU_HOST_DEVICE
 AMREX_FORCE_INLINE
 amrex::Real

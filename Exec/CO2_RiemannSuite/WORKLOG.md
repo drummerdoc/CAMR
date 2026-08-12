@@ -993,3 +993,240 @@ So the open question is no longer "what broke B9-stiff" but "what accuracy is
 this leg actually capable of once nothing is laundering it", and the gate value
 itself needs revisiting against a reference that has authority.
 
+## INDEPENDENT REFERENCES FOR ALL TEN B CASES (2026-08-11) — basis item 1 closed
+
+Correction to what I said earlier: `<standalone>/suite/profiles/` already held
+CSVs for all 19 cases, and HEM references `exact_B{1,2,4,9}_pr.csv` already
+existed.  The gap was that `exact_suite.py` compared only 9 A/C cases plus B4/B9;
+B1 and B2 had references that were never wired up.
+
+**Generated 6 new HEM references** (B3, B5, B6, B7, B8, B10) by extending
+`<standalone>/suite/exact_riemann.py`:
+  - `CASES` gained the six entries, initial conditions transcribed from
+    `full_suite.py` (tuple order kind, T[K], P[bar], quality, phase, u).
+  - New IC kinds `SATL` / `SATV` / `TX` (quality), needed because B3/B5/B6 are
+    specified on the saturation locus or by quality rather than by (T,P).  TX
+    uses the volume lever then `state()`, which supplies the dome-lever mixture
+    and Wood sound speed.  `kindL/kindR` default to 'TP' so the four pre-existing
+    entries take the original code path untouched.
+  - **Validation of the edit: regenerating B9 reproduced the stored
+    `exact_B9_pr.csv` BIT-IDENTICALLY** (max abs diff 0 in all five columns).
+
+**B3 is built ANALYTICALLY, not by the star solve.**  Saturated liquid |
+saturated vapour at the same T have the same P_sat and both are at rest, so it is
+a stationary contact and the exact solution is the initial condition for all t.
+`solve_star` degenerates there (P* == P_L == P_R) and returned
+rho*L = rho*R = 1650.43 -- the PR pole.  Recorded as a solver limitation: it is
+specific to equal pressure AND equal velocity, so B6/B8 (equal P, different u)
+are unaffected.
+
+**Independent checks the new references passed:**
+  - B6 (identical saturated vapour, u_L = 120, u_R = 0): u* = 60.0000 exactly,
+    the symmetry answer.
+  - B8 (identical liquid, u_L = +50, u_R = -50): u* = -0.0000 exactly, and
+    P* = 2.20e7 > P_L as a collision requires.
+  - B10: u* = 13.05, matching this file's recorded "B10 ... vs analytic ~13".
+  - B5: P* = 2.73072e6 / u* = 21.3092 against the stored profile header's
+    2.730790e6 / 21.30906 -- agreement to 5 significant figures with a value
+    computed independently and earlier.
+
+**Harness metric fixed.**  `l2()` floored the denominator at 1e-30, so a field
+that is identically zero in the exact solution produced ~3.1e19.  B3's exact u is
+0 everywhere and printed 3.14e19, reading as catastrophic.  Now: when the exact
+field's RMS is negligible against the numerical field's, report the ABSOLUTE RMS
+in field units with a trailing 'a'.  B3's u is then **3.14e-11 m/s absolute** --
+the contact stays put -- and its P error is 0.0000, i.e. no spurious pressure
+waves.  A genuine pass that the old metric reported as the worst failure in the
+suite.
+
+**Full suite, N=64, wp, HEM-limit config (mode 4, theta = mt = flash = 1e-7),
+default mean carrier** -- rel-L2 vs the exact solutions:
+
+    A1 0.0118/0.0101/0.0153   A2 0.0130/0.0890/0.0150   A3 0.0271/0.0835/0.0281
+    A4 0.0244/0.0551/0.0286   A5 0.0540/0.1063/0.0668   A6 0.0122/0.0103/0.0153
+    C1 0.0000/0.0000/0.0000   C2 0.0001/0.1248/0.0001   C3 0.0269/0.1028/0.0248
+    B1 0.0051/0.1106/0.0485   B3 0.0486/3.14e-11 a/0.0000
+    B4 0.0635/0.1266/0.0491   B5 0.0468/0.2018/0.0234   B6 0.0236/0.0665/0.0307
+    B8 0.0116/0.1654/0.0531   B10 0.0705/0.1208/0.0826
+    B2, B7, B9: RUN FAILED (no root)
+
+**16 of 19 cases now have an accuracy number against an independent solution**
+(was 11, of which one had an unanchored gate).  The three failures are B2, B7 and
+B9 -- EXACTLY `full_suite`'s `FLASH = {B2, B7, B9}` set, the strong flashing
+cases.  That is a systematic result, not three unrelated bugs.
+
+**With the donor-enthalpy carrier (`ps_mt_h_weight=-1`)**: B2 completes at
+0.0740/0.9154/0.3263 and B9 at 0.1145/0.8347/0.3382; **B7 still fails.**  So D2's
+carrier choice accounts for two of the three flashing failures and B7 has
+something additional.
+
+**New pattern, visible only now that 16 cases have references:** density and
+pressure errors sit in a 5.1e-3 .. 7.1e-2 band across A, B and C alike, while
+VELOCITY errors are systematically larger, 6.7e-2 .. 2.0e-1 (and 9.2e-1 on the
+flashing cases that only run with the upwind carrier).  u is the weak field
+everywhere, not just in C2's known anomaly (1.248e-1).  Worth its own
+investigation: a systematic velocity error across single-phase AND two-phase
+cases points at the momentum update or the wave speeds, not at the phase model.
+
+## The "systematic velocity error" — mostly the METRIC (2026-08-11)
+
+Yesterday's reading -- "u is the weak field everywhere, points at the momentum
+update or the wave speeds" -- is WRONG for the healthy cases.  Diagnosed with
+`udiag2.py` (kept in /tmp, not the repo): rel-L2 divides each field's error by
+THAT FIELD's RMS.  rho and P sit on a large BACKGROUND (30 bar, 1e3 kg/m3) while
+u has NO background -- it is pure signal on a zero base.  So the metric flatters
+rho and P by their background and is honest about u.  Normalising every field
+instead by its own VARIATION across the exact solution, max-min, puts them on the
+same footing:
+
+    case                 err/RMS (suite)          err/VARIATION (fair)
+                       rho      u      P        rho      u      P
+    A1-Sod-strong    0.0118 0.0101 0.0153     0.0075 0.0059 0.0085
+    A2-Sod-weak      0.0130 0.0890 0.0150     0.0325 0.0790 0.0374
+    A3-Lax-like      0.0271 0.0835 0.0281     0.0243 0.0655 0.0250
+    A4-Double-rare   0.0244 0.0551 0.0286     0.0315 0.0158 0.0303
+    A5-Two-shock     0.0540 0.1063 0.0668     0.0794 0.0428 0.0779
+    A6-Near-vacuum   0.0122 0.0103 0.0153     0.0076 0.0056 0.0084
+    C2-Acoustic      0.0001 0.1248 0.0001     0.0426 0.1115 0.0558
+    C3-Strong-shk-V  0.0269 0.1028 0.0248     0.0229 0.0776 0.0209
+    B1-Comp-L-exp    0.0051 0.1106 0.0485     0.0427 0.0938 0.0481
+    B4-Cross-crit    0.0635 0.1266 0.0491     0.0493 0.0966 0.0578
+    B5-Both-2P       0.0468 0.2018 0.0234     0.0541 0.1613 0.0843
+    B6-Sat-V-shock   0.0236 0.0665 0.0307     0.0887 0.0449 0.0881
+    B8-Wall-Refl     0.0116 0.1654 0.0531     0.0865 0.0432 0.0862
+    B10-Cross-hot    0.0705 0.1208 0.0826     0.0516 0.0936 0.0530
+
+Fairly normalised, all three fields land in one band, 5.6e-3 .. 1.6e-1, and in
+FIVE cases (A4, A5, A6, B6, B8) u is the BEST-resolved field, not the worst.
+
+**C2's anomaly dissolves entirely.**  It is a 0.05 bar perturbation on a 30 bar
+background, so the P denominator is ~6e2 times the actual signal: 1e-4 relative
+to background is 5.6e-2 relative to the signal, against u's 1.1e-1.  Same order.
+There was never a factor-1e3 discrepancy between fields in that case.
+
+**Residual real effect, and it is structurally expected.**  In about half the
+cases u's fair error is still ~1.5-2.5x rho's.  u is NOT a stored field: it is
+`xmom/rho`, so its error combines the momentum and density errors and they do not
+cancel.  A factor ~sqrt(2)-2 over the density error is what that composition
+gives.  No solver defect needed.
+
+**Where the velocity error IS real: the flashing cases.**  B2 and B9 (which only
+run at all with the donor-enthalpy carrier) keep u errors of 4.16e-1 and 4.26e-1
+against density errors of 5.20e-2 and 7.82e-2 -- a factor of 5-8 that SURVIVES
+fair normalisation.  That is a genuine anomaly and it is confined to exactly the
+set that fails outright with the mean carrier.  So the velocity anomaly and the
+D2 carrier problem are ONE phenomenon, not two, and it is not the momentum update
+or the wave speeds.
+
+**Invalid row warning:** B7-Rupture-Sonic in that table is from a step-0
+plotfile (its run failed), which is why its rel-L2(u) is exactly 1.0000 -- the
+signature of numerical u == 0 against a finite exact u.  Ignore B7's numbers.
+
+**Recommendation, NOT applied:** `exact_suite` should report the
+variation-normalised error alongside rel-L2, because cross-field comparison on
+the current metric is meaningless and it invites exactly the wrong conclusion I
+drew.  I have not changed it, because the acceptance thresholds in this file
+(A/C mean <= 0.0350) are stated against rel-L2 and re-basing them is Marc's call.
+
+## dt now uses the wave speed the flux propagates with (2026-08-11, landed)
+
+**The gap.**  `CAMR_estdt_hydro` (`Utils/Timestep.H`) took its sound speed from
+the SINGLE-FLUID mixture inversion -- `REY2P` + `REY2Gam` on (rho_mix, e_mix),
+then c = sqrt(gam P/rho).  The PS flux propagates with
+`ps_max_wave_speed_from_state` (`PS_umeth.cpp` 496): per-phase branch-locked P
+and c with the presence-aware Wallis FROZEN mixture c, returning |u_n| + c_mix.
+Nothing in PS computed a dt, so the CFL number was formed against a speed the
+scheme never uses.  (The comment at PS_umeth.cpp ~590 says this function's result
+"feeds c_mix and therefore dt" -- that was stale; it fed only the face fluxes.)
+
+**Landed.**  New `PS_dt.H` declares `ps_estdt_hydro`, DEFINED in PS_umeth.cpp
+beside the wave-speed function so there is ONE wave speed and no second copy to
+drift.  `CAMR::estTimeStep` dispatches to it when `ps_hydro != 0` (both the EB
+and non-EB ReduceMin sites); the non-PS path is untouched, and no existing flux
+code was moved, so the flux is unchanged by construction.
+
+**Measured effect.**  Production-config battery, 19/19 complete, identities at
+round-off (worst massid 1.55e-16, worst energyid 2.62e-15).  Step counts show the
+direction: single-phase cases unchanged, two-phase cases take MORE steps --
+B5 109 -> 271, B7 122 -> 130, B3 96 -> 103, B2 103 -> 108, B9 103 -> 104.  That
+is expected and is the point: in a two-phase cell the FROZEN Wallis speed exceeds
+the single-fluid equilibrium mixture speed, so the correct CFL bound is tighter
+than the old one.  **dt was previously too large on every two-phase cell.**
+
+Accuracy (HEM-limit config, rel-L2, vs the previous numbers): every case
+identical to 4 decimal places EXCEPT B5, which improves in all three fields --
+rho 0.0468 -> 0.0420, u 0.2018 -> 0.1604, P 0.0234 -> 0.0184 (u down 21%).  So
+the consistent dt is a strict improvement where it changes anything at all.
+
+**B7 progressed but still fails, at a FOURTH site of the same class.**  It no
+longer aborts in the estimator (25 -> 30 advances); it now aborts in
+`CAMR::construct_hydro_source` -> `EOS::REY2_prim` -> `hem::state_from_rho_e`,
+mixture pair rho = 13.52, e = -11375 J/kg, gap -3829 J/kg.
+
+**Structural conclusion — this is one missing invariant, not four bugs.**  The
+single-fluid mixture inversion is reachable from at least FOUR independent places
+for a genuinely two-phase PS cell:
+    1. computeTemp, per-phase branch-locked query   (fixed, aed52ff)
+    2. computeTemp, mixture query                   (fixed, 41e6fca)
+    3. estTimeStep / CAMR_estdt_hydro               (fixed, this commit)
+    4. construct_hydro_source / REY2_prim           (OPEN)
+Each fix so far has moved the wall to the next site.  Under presence the
+invariant wanted is: **for a cell with two INDEPENDENT phases the single-fluid
+mixture inversion must be unreachable**, because (rho_mix, e_mix) pairs a light
+phase's volume with a heavy phase's mass and need not be a state.  Fixing site 4
+in isolation should be expected to reveal site 5.  The right next move is an
+audit for every caller of `REY2*` on mixture (rho, e) under `ps_hydro`, not
+another point fix -- that is contract 2's audit, and it now has a concrete,
+enumerable shape.
+
+## Redone as a MOVE, and a self-audit for the same mistake (2026-08-11)
+
+The first version of the dt fix added `ps_estdt_hydro` in PS_umeth.cpp with its
+own box loop -- a THIRD copy of the dt loop (Timestep.H already had two:
+`CAMR_estdt_hydro` and `CAMR_estdt_hydro_diag`).  I justified that as
+"lower risk to the flux path's inlining", which was weak: I had already measured
+that today's changes shift results at the 1e-16 level and had explicitly said
+bit-identity was not demonstrated, so I was paying a structural cost to protect a
+property I knew I was not preserving.  Worse, the copy left
+`CAMR_estdt_hydro_diag` -- the reporter whose whole purpose is to say WHICH cell
+and state sets dt -- computing the OLD single-fluid speed while the estimator
+used the new one.  A diagnostic that describes something the code no longer does
+is the exact defect class this whole work item is about.
+
+**Redone as a move.**  `PS_wavespeed.H` now holds `ps_finite_or` and
+`ps_max_wave_speed_from_state`, moved VERBATIM out of PS_umeth.cpp.  Timestep.H
+includes it and BOTH existing loops take `(l_ps_hydro, pr)` and branch on it, so
+estimator, diagnostic and flux share one speed and cannot disagree.
+`ps_estdt_hydro` and the third loop are gone; `PS_dt.H` is reduced to a deletion
+note (the sandbox cannot delete files on the mount -- **delete it from a
+terminal**).  Timestep.H's own comment had already diagnosed this in so many
+words: "c from a SINGLE-FLUID EOS call on the MIXTURE state, which is not a
+characteristic speed of the 7-equation system.  This reporter is what exposed
+that."  In the PS branch the diag reports c = lam - |u| and leaves P and gam at
+zero, because those are the single-fluid mixture quantities that are precisely
+what a two-phase cell does not have.
+
+Verified: accuracy numbers IDENTICAL to the copy-based version (B5
+0.0420/0.1604/0.0184, all others unchanged), identities at round-off.
+
+**Self-audit -- two more of the same, both now fixed:**
+1. **The 5.2 contraction re-solve built its own solver params** with the comment
+   "mirrors the dm_eq solve above".  Two copies plus a promise that they match is
+   how they drift: change the dm_eq settings and the contraction ratio keeps
+   reporting a number while measuring against a different target.  Now one
+   `eq_solver_params` lambda used by both.  (I had hoisted `nest_pr` to single-
+   source it and then duplicated the params around it anyway.)
+2. **The `h_w == 0.5` special case** in the enthalpy carrier existed to preserve
+   `0.5*(a+b)` bit-for-bit against `(1-w)*a + w*b`.  Those are identical --
+   scaling by a power of two commutes with rounding -- which I had reasoned
+   through before writing the branch.  Removed; one formula.
+Both verified no-ops: accuracy and identities unchanged.
+
+**Not fixed, named:** `PS_reconstruction.H` still carries `ps_recon_finite`, a
+byte-identical private copy of `ps_finite_or` that existed only because the
+original lived in a .cpp.  Its comment is corrected to say so; the deletion is a
+separate commit.  And the analysis scripts that produced today's most important
+findings (the census, the two velocity-error decompositions) live only in /tmp,
+which was already wiped once mid-session -- the durable record is this file, not
+the scripts.
+

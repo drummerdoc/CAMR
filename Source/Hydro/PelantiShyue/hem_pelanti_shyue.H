@@ -3157,6 +3157,19 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
         return (v && *v) ? std::atoi(v) : 0; }();
     double dm_eq_saved = 0.0;   // equilibrium-endpoint transfer, for 5.2
 
+    //  ONE construction of the equilibrium-solver settings, used by BOTH the
+    //  dm_eq solve and the 5.2 contraction re-solve.  These were two copies
+    //  with a "mirrors the above" comment on the second -- which is precisely
+    //  how the two silently drift: change the dm_eq settings and the
+    //  contraction ratio starts measuring against a different target while
+    //  still reporting a number.  Single-sourced 2026-08-11.
+    auto eq_solver_params = [nest_pr](PsMassTransferParams& mt_o,
+                                      PsPressureRelaxParams& pr_o) {
+        mt_o.dome_gate = false;                    // gate enforced upstream
+        if (nest_pr == 0)      mt_o.nest_pressure_relax = false;
+        else if (nest_pr > 1)  pr_o.max_iter = nest_pr;
+    };
+
     // ---- finite-rate mass-transfer amount dm ----------------------------
     // OPTION 2 (default, task #39): EXACT RELAXATION toward the
     // instantaneous MT equilibrium.  The transferred mass relaxes toward
@@ -3209,7 +3222,6 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
 
         V6 Ueq = U;
         PsMassTransferParams mt_eq;
-        mt_eq.dome_gate = false;   // dome gate already enforced above
         // A/B lever (PS_MT_NEST_PR=0): drop the nested pressure relaxation
         // from the equilibrium-TARGET solve.  Measured nesting multiplier is
         // ~21.6 inner Newton iterations per outer Gibbs iteration.
@@ -3238,8 +3250,7 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
         //                   99-100% eqfail, i.e. it silently disables MT while
         //                   looking fast and "converging" in 1 outer iteration.
         PsPressureRelaxParams pr_eq;
-        if (nest_pr == 0)      mt_eq.nest_pressure_relax = false;
-        else if (nest_pr > 1)  pr_eq.max_iter = nest_pr;
+        eq_solver_params(mt_eq, pr_eq);
         ++ps_mt_stats().eqsolve;                           // CAMR.ps_mt_diag
         if (!ps_mass_transfer_relax_cell(Ueq, eos, mt_eq, pr_eq)) ++ps_mt_stats().eqfail;
         const double dm_eq = m1 - Ueq[1];               // mass leaving phase 1
@@ -3290,10 +3301,12 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
     //                      the D2 alternative worth testing: with the mean, a
     //                      stiff one-step transfer can leave the donor holding
     //                      an energy its own density cannot support.
-    double h_I;
-    if (h_w < 0.0)            h_I = (dm > 0.0) ? p1.h : p2.h;   // upwind
-    else if (h_w == 0.5)      h_I = 0.5 * (p1.h + p2.h);        // exact old form
-    else                      h_I = (1.0 - h_w) * p1.h + h_w * p2.h;
+    //  No special case for h_w == 0.5: (1-w)*a + w*b with w = 0.5 is
+    //  0.5*a + 0.5*b, and scaling by a power of two commutes with rounding, so
+    //  it is bit-identical to the old 0.5*(a+b).  The special case guarded a
+    //  property that already held.  Removed 2026-08-11.
+    const double h_I = (h_w < 0.0) ? ((dm > 0.0) ? p1.h : p2.h)      // upwind
+                                   : (1.0 - h_w) * p1.h + h_w * p2.h;
     const double H_I = h_I + 0.5 * u_mix * u_mix;
 
     // Apply.  Session 89bg option: PS_MT_UPDATE_ALPHA=1 also updates
@@ -3362,10 +3375,8 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
     if (diag_contract != 0 && dm != 0.0) {
         V6 Ucr = U;                       // post-transfer state
         PsMassTransferParams mt_cr;
-        mt_cr.dome_gate = false;          // mirrors the dm_eq solve above
         PsPressureRelaxParams pr_cr;
-        if (nest_pr == 0)      mt_cr.nest_pressure_relax = false;
-        else if (nest_pr > 1)  pr_cr.max_iter = nest_pr;
+        eq_solver_params(mt_cr, pr_cr);   // same settings BY CONSTRUCTION
         PsMtStats& st = ps_mt_stats();
         if (!ps_mass_transfer_relax_cell(Ucr, eos, mt_cr, pr_cr)) {
             ++st.cr_refused;
