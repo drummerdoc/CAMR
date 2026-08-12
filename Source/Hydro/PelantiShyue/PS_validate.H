@@ -89,6 +89,40 @@ ps_validate_state(amrex::MultiFab& S, const char* label, int nghost = 0)
     Real v7_a=0.0, v7_r=0.0, v7_e=0.0;
     bool v7_seen=false;
     Real w_v4 = 0.0, w_v5 = 0.0;              // worst relative identity drift
+    // ---------------------------------------------------------------------
+    //  V8  PHASE-ENERGY SPLIT AMPLIFICATION  (added 2026-08-12)
+    //
+    //  V5 checks UE1 + UE2 == UEDEN.  That is the ONLY energy invariant this
+    //  validator had, and it is structurally blind to how the total is SPLIT:
+    //  UE1 = -8.676e6 and UE2 = +8.027e6 summing to -6.487e5 satisfies it to
+    //  1e-10 while both phase energies are thirteen times their own sum and
+    //  neither is physical.  That is the state that aborted B7, B2 and B9
+    //  (measured 2026-08-12) -- with every existing check passing, including
+    //  V7, because the vapour side stayed inside its EOS bracket the whole way.
+    //  ps_resync_phase_energy makes it worse rather than better: it restores
+    //  the SUM by rescaling at FIXED RATIO, so a bad split is preserved exactly.
+    //
+    //  The metric is a pure cancellation ratio, with no tuned constant:
+    //
+    //      R = ( |UE1| + |UE2| ) / |UE1 + UE2|
+    //
+    //  R == 1 exactly when the two phase energies share a sign and no
+    //  cancellation is occurring.  R is the factor by which the parts exceed
+    //  their own whole.  For CO2 the phases legitimately have OPPOSITE signs
+    //  (liquid e ~ -1.3e5 J/kg, vapour ~ +4e5), so R > 1 is normal and a
+    //  sign test would be useless -- measured healthy cells sit near 1.4,
+    //  the failing cells reach 26.
+    //
+    //  Deliberately REPORTED, not gated: no threshold is asserted, because
+    //  none is derived.  It is an observable, in the [PS-GUARD] tradition that
+    //  a defect which cannot be watched cannot be reasoned about.  Reported at
+    //  every labelled stage, which is what makes it name the operator
+    //  responsible -- A is post-hydro, C is post P/T/MT relaxation, D is
+    //  post-flash, so where R jumps identifies which one is driving it.
+    Real w_v8 = 1.0;
+    int  v8_i = 0, v8_j = 0, v8_k = 0;
+    Real v8_a1 = 0.0, v8_E1 = 0.0, v8_E2 = 0.0, v8_sum = 0.0;
+    bool v8_seen = false;
     bool abort_hit = false;
     int  ab_i=0, ab_j=0, ab_k=0;
 
@@ -127,6 +161,24 @@ ps_validate_state(amrex::MultiFab& S, const char* label, int nghost = 0)
                     const Real d = std::abs(Et - (E1 + E2)) / std::abs(Et);
                     if (d > w_v5) w_v5 = d;
                     if (d > tol_id) ++n_v5;
+                }
+                // V8 phase-energy split amplification (see the block above).
+                //  Guarded on a non-zero sum only -- no threshold, no floor
+                //  chosen by hand.  A cell whose phase energies sum to exactly
+                //  zero has no meaningful ratio and is skipped; it would be
+                //  caught by V5/V7 if it were also wrong.
+                {
+                    const Real sum = E1 + E2;
+                    if (std::abs(sum) > Real(0.0)) {
+                        const Real R = (std::abs(E1) + std::abs(E2))
+                                     / std::abs(sum);
+                        if (R > w_v8) {
+                            w_v8 = R;
+                            v8_i = i; v8_j = j; v8_k = k;
+                            v8_a1 = a1; v8_E1 = E1; v8_E2 = E2; v8_sum = sum;
+                            v8_seen = true;
+                        }
+                    }
                 }
                 // V6 per-phase density inside the EOS domain, bucketed
                 const Real a2 = Real(1.0) - a1;
@@ -201,6 +253,7 @@ ps_validate_state(amrex::MultiFab& S, const char* label, int nghost = 0)
     amrex::ParallelDescriptor::ReduceLongSum(n_v7_trace);
     amrex::ParallelDescriptor::ReduceRealMax(w_v4);
     amrex::ParallelDescriptor::ReduceRealMax(w_v5);
+    amrex::ParallelDescriptor::ReduceRealMax(w_v8);
 
     amrex::Print() << "[PS-VALIDATE] " << label
                    << ": nonfinite=" << n_v1
@@ -211,7 +264,22 @@ ps_validate_state(amrex::MultiFab& S, const char* label, int nghost = 0)
                    << " rho_domain bulk=" << n_v6_bulk
                    << " trace=" << n_v6_trace
                    << " reachable bulk=" << n_v7_bulk
-                   << " trace=" << n_v7_trace << "\n";
+                   << " trace=" << n_v7_trace
+                   << " splitamp=" << w_v8 << "\n";
+
+    //  Name the worst split cell whenever the parts exceed their whole by more
+    //  than a factor of two.  Two is not a physical threshold and nothing is
+    //  gated on it -- it is a PRINTING cut, chosen only so a healthy run (R
+    //  near 1.4) stays quiet while a developing runaway is named early.  The
+    //  ratio itself is on the line above unconditionally.
+    if (v8_seen && w_v8 > Real(2.0)) {
+        amrex::Print() << "[PS-VALIDATE]   worst phase-energy split: ("
+                       << v8_i << "," << v8_j << "," << v8_k << ")"
+                       << "  alpha_1=" << v8_a1
+                       << "  UE1=" << v8_E1 << "  UE2=" << v8_E2
+                       << "  sum=" << v8_sum
+                       << "  |parts|/|whole|=" << w_v8 << "\n";
+    }
 
     // Name the first unreachable phase state in a form that can be replayed:
     //   echo "<rho> <e> 1.0 0.0" | ./probe_pr

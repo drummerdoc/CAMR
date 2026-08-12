@@ -1808,3 +1808,94 @@ the two signals appeared to contradict each other.
       a silent runaway into a named counter.
   N3  Only after N1: fix the named operator.  D2 (the carrier) stays parked --
       B7 proves the carrier is not the driver.
+
+### N1/N2 done — and N1 REFUTES the hypothesis it was built to test (2026-08-12)
+
+**N2 landed.** `ps_validate_state` gains V8, a phase-energy split amplification
+
+        R = ( |UE1| + |UE2| ) / |UE1 + UE2|
+
+reported as `splitamp=` on every `[PS-VALIDATE]` line, plus a named worst cell
+when R > 2 (a PRINTING cut only — nothing is gated, and no threshold is
+asserted, because none is derived).  R == 1 means no cancellation; R is the
+factor by which the parts exceed their own whole.  This closes the
+instrumentation hole: the state that aborted B7/B2/B9 passed V5, V7 and the mass
+identity simultaneously, and V8 is the first check that can see it.
+Verified inert: 16 exact_suite numbers bit-identical with it compiled in.
+(B3's absolute-u figure moves in its 4th significant digit, 3.138e-11 ->
+3.141e-11 — that column is an ABSOLUTE rms on an identically-zero exact field,
+i.e. round-off noise, not an accuracy change.)
+
+**N1 was cheaper than planned.** `ps_validate_state` already runs at the five
+labelled stages, and those five separate the three candidate operators (A =
+post-hydro, C = post P/T/MT relaxation, D = post-flash).  No `CAMR_PS_DIAG`
+build was needed — just as well: `USE_PS_DIAG=TRUE` only appends
+`-DCAMR_PS_DIAG` to DEFINES without changing the build directory, so mixing it
+into an existing tree gives objects compiled both ways with no dependency
+tracking to catch it.  A stale-binary trap; avoided rather than sprung.
+
+**Result — every change in R attributed to where it happened, 106 steps of B7:**
+
+    hydro    A(N) - D(N-1)   mean -0.986   median -0.851   max +1763   min -1553
+    sources  D(N) - A(N)     mean +1.175   median +0.006   max   +24   min +0.000
+
+    total |change| from the hydro:    8342
+    total |change| from the sources:   123
+    steps on which the sources moved R at all:  58 of 105
+
+**So the +/- paired source operators are NOT the driver.**  The hydro moves R by
+68x more than all source stages combined.  I predicted the driver would be one
+of interfacial-pressure work, mass transfer, or thermal relaxation; the
+measurement says none of them dominates.  The previous entry's hypothesis is
+refuted.
+
+**And R is not a runaway.**  Over the run: 6.74, 2.13, 1.60, 1.40, 1.74, 2.03,
+2.30, 2.72, 4.45, 8.42, ... spiking to **2097 at step 67**, ending near 27.
+Three orders of magnitude of fluctuation with no monotone trend.  "The split
+runs away" was the wrong characterisation and should not be carried forward.
+
+**What IS real in the numbers:**
+
+  * The hydro churns R violently both ways (+1763 / -1553 in single steps) with
+    a near-zero net of -104.  That is the front moving; large cancellation is
+    INHERENT to a sharp liquid/vapour contact, where the phase energies
+    legitimately have opposite signs (liquid e ~ -1.3e5 J/kg, vapour ~ +4e5).
+    R ~ 7 at step 1, before anything is wrong, is the healthy-front baseline —
+    R alone does not indicate pathology.
+  * The source stages are a weak but strictly ONE-WAY ratchet: `min +0.000` over
+    105 steps means they NEVER reduce R, and they add +123 net.  A real bias,
+    worth understanding, but an order of magnitude too small to be the primary
+    mechanism.
+
+**Where the diagnosis stands.**  R measures cancellation, cancellation is normal
+here, so R is the wrong discriminator for the pathology even though it is the
+right instrument for making the class visible.  What is actually unphysical is
+`e_1` itself: -8.80e5 J/kg against a physical liquid value near -1.3e5.  The
+arithmetic does not close on conditioning alone — R = 26 costs about 1.4
+significant digits, which cannot turn -1.3e5 into -8.80e5.  Catastrophic
+cancellation is a contributing condition, not a sufficient explanation, and I am
+not asserting a mechanism I cannot demonstrate.
+
+**Standing structural observation (NOT yet a measurement).**  Contract 3 says
+`rho_k = m_k/alpha_k` and `e_k = UE_k/m_k` have different denominators and that a
+test on one does not license the other.  `alpha_cond` is derived as a
+conditioning bound for the DENSITY quotient.  **Nothing in the presence ladder
+bounds the conditioning of the ENERGY quotient** — a phase can sit far above
+`alpha_cond`, with a large, perfectly well-conditioned `m_k`, and still have an
+`e_k` dominated by cancellation.  The failing cells are exactly that: `m_1` is
+9.98, the mass MAJORITY, while `alpha_1` is 0.010, the volume minority.  If that
+gap is the real hole, the fix is a second presence gate on energy conditioning,
+derived the way `alpha_cond` was — a design question for the presence note, not
+a code change to make on a hunch.
+
+**NEXT, in the order I would take them:**
+
+  N4  Track `e_1` (most negative) and `e_2` (most positive) per stage with
+      locations, exactly as V8 now tracks R, and attribute their change the same
+      way.  Asks the direct question — does e_1 drift steadily from -1.3e5 to
+      -8.8e5, or jump at an identifiable event? — rather than R's proxy
+      question.  One build, one run.
+  N5  Understand the one-way source ratchet (+123, never negative over 105
+      steps).  Small, but a strictly signed bias in a +/- paired operator is the
+      kind of thing that is wrong for a nameable reason.
+  N6  Only then: the energy-conditioning gate as a presence-note design item.
