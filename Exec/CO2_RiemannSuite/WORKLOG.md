@@ -1713,3 +1713,98 @@ debiting the donor too much energy. That is the territory of the (E.1)
 density-preserving derivation and the section 5.2 contraction-ratio diagnostic,
 not of a weighting flag. D2 should be re-opened on those terms rather than
 decided.
+
+### STEP 1 ANSWERED: the phase-energy SPLIT has run away (2026-08-12)
+
+`[PS-TQUERY]` added to `computeTemp` (`CAMR.cpp`, diagnostic only: asks the
+non-aborting entry first, prints the presence context if refused, then lets the
+ordinary aborting call proceed unchanged; `#ifdef USE_PR_EOS`, host-only; the 16
+exact_suite numbers are bit-identical with it in).
+
+The question was: is the refused phase INDEPENDENT (query allowed, real state
+defect) or CORRIDOR (query forbidden, gate hole)?  The answer is a THIRD thing
+neither option covered, and it is the same in all three cases.
+
+**The phase is Independent, but only just.**
+
+    case  cell        alpha_1        alpha_1 - alpha_cond
+    B7    (35,0,0)    0.0100179497   +1.79e-5
+    B2    (33,0,0)    0.0100777528   +7.78e-5
+    B9    (33,0,0)    0.0101741931   +1.74e-4
+
+All three sit within 1.7 % of `alpha_cond` on the Independent side.  So the query
+was contractually allowed and there is no gate hole -- but the cell is parked
+essentially ON the threshold.
+
+**And the real finding: the SUM is exact while the SPLIT is nonsense.**
+
+    case  UE1          UE2          UEDEN       sum-UEDEN   e_1          e_2         e_mix
+    B7    -8.676e6     +8.027e6     -6.487e5    -3.5e-10    -8.80e5 (N)  +1.450e7    -7.29e4
+    B2    -8.228e6     +7.615e6     -6.131e5    -3.1e-9     -1.450e6(N)  +2.804e6    -7.91e4
+    B9    -1.444e7     +1.136e7     -3.073e6    +4.7e-10    -1.595e6(N)  +2.527e6    -2.369e5
+                                                            (N) = unreachable on its branch
+
+Read the last column first: **the mixture specific energy is perfectly healthy**
+in every case -- -7.3e4, -7.9e4, -2.4e5 J/kg, all physically sensible for CO2.
+The mixture state is fine.  What has diverged is the model's INTERNAL split:
+`UE1` and `UE2` are individually about **thirteen times the magnitude of their
+own sum**, equal and opposite, cancelling to the correct total.
+
+This is catastrophic cancellation in the phase-energy split, and **every
+invariant we own is blind to it**:
+
+  * V5 / `energyid` checks `UE1 + UE2 == UEDEN`.  It reads 1e-10 here.  PASSES.
+  * V7 checks per-phase reachability.  Phase 2 at e = 1.45e7 J/kg is INSIDE the
+    vapour bracket, so V7 reports it reachable and says nothing.  PASSES.
+  * `[PS-MASS]` checks the mass identity.  Untouched.  PASSES.
+  * `ps_resync_phase_energy` restores the sum by rescaling at FIXED RATIO, so it
+    preserves a bad split exactly rather than correcting it.
+
+**This is also the SAME defect as the earlier "vapour too hot" abort, seen from
+the other end.**  Before the P_star fix, phase 2 crossed its T_MAX ceiling first
+(2.2136e7 vs a 2.2101e7 bound).  Now phase 1 crosses its T_MIN floor first.
+Same cell neighbourhood in B7 (34,0,0) -> (35,0,0), same mechanism: the split
+runs away symmetrically and whichever phase leaves its EOS domain first fires the
+abort.  So the P_star removal did NOT fix this -- it removed a DIFFERENT defect
+(the identity violation, energyid 1e-1 -> 1e-14) that was one of the drivers.
+With that driver gone the split still runs away, so there is at least one more.
+
+**What the signature points at.**  A process that adds +X to one phase energy and
+-X to the other, every step, with the sum exactly preserved.  Three operators do
+exactly that by construction, and nothing else does:
+
+  1. the non-conservative interfacial-pressure work, -/+ P_I d(alpha_1)/dt
+  2. the finite-rate mass-transfer energy exchange
+  3. the thermal relaxation between phases
+
+Note this also explains B7's carrier-insensitivity: if the driver is (1) or (3),
+changing `ps_mt_h_weight` cannot move it, which is exactly what was measured
+(rho and e bit-identical under mean and upwind).
+
+Also worth noting about the failing cells: phase 1 is the volume MINORITY
+(alpha_1 ~ 0.01) but the mass MAJORITY (m_1 = 9.98 vs m_2 = 0.55 on B7, since
+rho_1 ~ 996 and rho_2 ~ 0.56).  A source term scaled by volume fraction but
+applied to a per-unit-mass energy is the shape of thing that would misbehave
+precisely here, and these cells are the only place in the suite where the volume
+and mass majorities disagree that strongly.
+
+**Instrumentation gap found on the way.**  `ps_validate_state` reports
+`reachable bulk = 0` at all 530 of its sampling points on B7 and yet the abort
+happens on a bulk-Independent phase.  `clean_state` (`CAMR_advance.cpp:543`)
+runs BETWEEN validator sample points, mutates the state, and calls `computeTemp`
+on the result -- so no validator ever sees the state that aborts.  That is why
+the two signals appeared to contradict each other.
+
+**NEXT (not started, needs Marc's go-ahead):**
+
+  N1  Measure the per-stage INCREMENT to UE_1 and UE_2 at the offending cell.
+      The stage labels A / A2 / B / C / D already exist; what is missing is the
+      delta rather than the identity residual.  That names which of the three
+      +/- operators is driving the runaway.  One build, one run per case.
+  N2  Add a SPLIT-credibility invariant to ps_validate_state -- e.g. flag
+      max(|UE_k|) / |UE1 + UE2| above some bound, and/or per-phase e_k outside a
+      physically credible band.  This defect class is currently invisible to
+      every check, which is why it survived three sessions.  Cheap, and it turns
+      a silent runaway into a named counter.
+  N3  Only after N1: fix the named operator.  D2 (the carrier) stays parked --
+      B7 proves the carrier is not the driver.
