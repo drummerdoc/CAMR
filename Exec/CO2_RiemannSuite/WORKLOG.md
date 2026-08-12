@@ -920,3 +920,76 @@ the added `probe` parameter changing inlining -- the GNUmakefile's own warning
 that "even unexecuted added code shifts it".  Bit-identity was NOT demonstrated;
 accuracy invariance was.
 
+## Census re-runs with the split counters (2026-08-11) — one correction to my own reading
+
+Diag build rebuilt, `[PS-FLOOR]` now prints the split floor counts and the
+clamped-mass magnitude:
+
+    case                 P_floor_INUSE   P_floor_PROBE   mass_neg   mass_neg_kg
+    A1-Sod-strong                    0         120,618          0    0.0
+    B2-Evap-wave               117,455          62,530         56    5.98e-15
+    B3-Sat-LV-contact           12,452          14,830         55    6.69e-13
+    B4-Cross-critical           79,392          63,537         43    2.90e-14
+
+**Mass clamps: closed.**  The magnitude is round-off dust -- 6e-15 to 7e-13
+kg/m3 summed over an entire run against mixture densities of 10-1000.  Named,
+counted AND bounded; contract 4's mass-path item is done and it is not a defect.
+
+**P floor: my earlier conclusion was WRONG for the two-phase cases.**  Earlier
+today I concluded from the aggregate count plus the T=1K strict trap that this
+floor was "dominated by bracket probes, benign".  That holds for the A cases
+(A1: 0 in-use, 120,618 probe -- the floor's own "inert" comment vindicated), and
+it is FALSE for the B cases: B2 has **117,455 IN-USE floors**, B4 79,392, B3
+12,452.  Those are real per-phase pressures below 0.01 bar being overridden in
+states the solver then uses -- a six-figure silent substitution per run, of
+exactly the class contract 4 targets, which the aggregate count hid.  Basis item
+3 is therefore NOT met.  The split is what made it visible; the single number
+could not have.
+
+## BISECTION of the B9-stiff "regression" (2026-08-11) — it is not a regression
+
+First, **the 0.427 I have been citing all day is the wrong number.**  It is
+verify_canonical CHECK 6, a different quantity (this file's own acceptance-basis
+section lists "check 3's 0.643, check 6's 0.427" together).  The reproducible
+recorded number for the B9 HEM-limit leg is **0.643**.  I conflated them and then
+called the difference a regression.
+
+Measured like-for-like via `hem_limit.py` (the harness that produces the recorded
+number: mode 4, flash on, margin 0, alpha_trace=1e-6, tau=1e-7, N=64), building
+each commit from `git archive` into /tmp with the AMReX objects reused:
+
+    commit     what it is                              u-err vs HEM analytic
+    0d6b54f    baseline, W2-1 just landed              0.6433   (reproduces 0.643)
+    2d20ffa    EOS contracts step 1: bracketed EOS     RUN FAILED
+    HEAD       default (mean carrier)                  RUN FAILED
+    HEAD       upwind carrier (ps_mt_h_weight=-1)      0.8347
+
+**The change point is `2d20ffa` -- the bracketed EOS, the FIRST commit of the
+contracts campaign.**  Everything after it inherits the abort.  That is precisely
+what this file already says in its own words: "the aborts replace silent floors
+that were hiding the same defects."  Before 2d20ffa the branch-locked EOS
+returned a clamped or non-converged value ~20,414 times per run instead of
+refusing; those repairs were holding this leg together, and 0.643 was produced
+with them active.  By the acceptance-basis rule -- no stored CAMR output has
+authority -- **0.643 has none either: it is a cap-assisted number.**
+
+Consequences:
+1. There is no code regression to hunt.  The degradation is the intended effect
+   of contract 1.
+2. `HEAD + upwind carrier = 0.8347` is the FIRST number for this leg produced
+   with zero silent EOS repairs.  It is worse than 0.643 and it is the first
+   honest one.
+3. **The gate was never met.**  u-err < 0.60 is not satisfied by 0.8347, and was
+   not satisfied by the cap-assisted 0.6433 either.  `DESIGN_ps_wp_front.md` §8's
+   "THE ORIGINAL KNOWN-FAIL PASSES ... u-err = 0.427" does not hold up under this
+   harness and should be corrected there: 0.427 is check 6's number, and the
+   figure this leg actually produces is 0.643 with caps / 0.835 without.
+4. The exact_suite variant (alpha_trace=0) gives 0.7234 at the baseline vs
+   hem_limit's 0.6433 -- the trace seed is worth ~0.08 in u-err at the baseline,
+   and nothing at HEAD (both harnesses give 0.8347 there), consistent with the
+   trace fiction having been removed.
+
+So the open question is no longer "what broke B9-stiff" but "what accuracy is
+this leg actually capable of once nothing is laundering it", and the gate value
+itself needs revisiting against a reference that has authority.
+
