@@ -1445,3 +1445,106 @@ changed step counts on two-phase cases by design.  Checks 3 and 6 read exactly
 1.000, the documented "run failed" signature, which is the pre-existing
 B2/B7/B9 HEM-leg failure (D2 carrier), already recorded above.
 
+
+## B7's phase-energy defect traced to the LLF fallback (2026-08-12)
+
+**The question.** Yesterday's V7 trace showed a stage-A phase-energy identity
+residual of 1e-2..1e-1 on the steps before B7's abort, against 1e-14 for every
+other case, with stage B returning it to ~1e-15.  Two hypotheses: the defect is
+BORN in the wave decomposition, or it arrives from somewhere else and the
+fluctuations are innocent.
+
+**No new instrument was needed.**  `PS_hllc.H`'s `fluctuations()` already
+computes the per-face identity-increment mismatch
+`|Am[UE1] + Am[UE2] - Am[UEDEN]|` per fluctuation, and its own comment states
+the discriminator: the star states are identity-consistent by construction, so
+a nonzero value falsifies the consistency argument, and zero shifts suspicion to
+the fallback flips or the coarse-fine path.  It surfaces as `incmis` in
+`[PS-FACE]` under `CAMR.ps_face_diag=1`, alongside `fl:seen/fail`, bucketed by
+face class (II = both phases INDEPENDENT both sides, C = a corridor phase, A =
+an ABSENT phase).
+
+**Result: the fluctuations are innocent, and the correlation with fallback
+flips is exact.**  63 stage-A samples, B7 in the exact_suite HEM-limit config:
+
+    eid > 1e-6  AND  fl_fail > 0  :  22
+    eid > 1e-6  AND  fl_fail = 0  :   0
+    eid <= 1e-6 AND  fl_fail > 0  :   0
+    eid <= 1e-6 AND  fl_fail = 0  :  41
+
+Zero counterexamples in either direction.  And the COUNTS track, not just the
+presence: in all 22 samples the number of cells violating the identity is
+exactly `fl_fail + 1` --
+
+    fl_fail = 1 -> n_eid = 2      fl_fail = 2 -> n_eid = 3
+    fl_fail = 3 -> n_eid = 4
+
+which is the signature of a per-FACE defect: one failed face touches two cells,
+and contiguous failed faces share a cell, so k of them give k+1 affected cells.
+
+`incmis` peaks at 2.25e-5 ABSOLUTE over the whole run, and the values are exact
+small dyadic multiples of 2^-24 -- a few ulps at the 1e8..1e10 magnitude of the
+fluctuations themselves, i.e. pure cancellation.  Against a defect that is
+1e-2..1e-1 RELATIVE, the separation is seven-plus orders of magnitude.  The
+star-state fluctuations preserve the identity; DESIGN_ps_wp_front.md §2's
+consistency argument stands.
+
+**Which faces fail.**  Class A carries 60-62 of the ~66 faces per step and
+fails NEVER.  Every failure is in class II or class C -- genuinely two-phase
+faces, not trace-phase edges.
+
+**The mechanism, start to finish.**
+
+1. On a two-phase face the wave decomposition refuses -- `fluctuations()`
+   returns false (invalid face state, degenerate wave-speed denominator, or a
+   non-positive star density).
+2. That face falls back to LLF.  Per `PS_umeth.cpp:690-692`, the fallback gives
+   the CONSERVED slots a locally-conservative LLF flux and the NON-CONSERVED
+   slots {UALPHA1, UE1, UE2} an INDEPENDENT symmetric -/+ 1/2 lambda dU
+   fluctuation split.
+3. Those two constructions know nothing about each other.  UEDEN is updated by
+   the LLF flux difference; UE1 and UE2 by the symmetric split.  Nothing makes
+   d(UE1) + d(UE2) = d(UEDEN).  So the identity breaks at exactly the two cells
+   adjacent to each failed face -- which is the k+1 count above.
+   THIS IS THE DEFECT.  It is the same "two independently-constructed
+   discretizations that do not cancel" pathology the wp form exists to avoid,
+   surviving inside the fallback path.
+4. At stage A2, `ps_resync_phase_energy` (`CAMR_advance.cpp:368`) enforces
+   UE1 + UE2 = UEDEN by rescaling BOTH by f = UEDEN/(UE1+UE2), deliberately
+   PRESERVING their ratio, because UEDEN is the conserved/refluxed quantity and
+   the split is auxiliary.  Total energy is kept exact.  The discrepancy is
+   therefore not removed -- it is pushed into the PHASE SPLIT.
+5. Repeat for 63 steps with 1-3 defective cells per step at the 1e-2..1e-1
+   level.  Because the rescale preserves the ratio, a cell that keeps receiving
+   a biased correction drifts its vapour specific energy monotonically upward.
+6. Step 63: cell (34,0,0), phase 2, alpha_2 = 0.9522 -- the HOST phase --
+   reaches e_2 = 2.2136e7 J/kg, which is 3.4835e4 past the vapour branch's
+   reachable bound at the T_MAX = 5000 K bracket end, and the branch-locked
+   query in `computeTemp` refuses.  The abort is THREE layers downstream of the
+   cause.
+
+**Why no guard caught it.**  `ps_resync_phase_energy` has exactly the right
+guard for this shape -- `CAMR.ps_phase_e_cap`, default 1e9 J/kg, which diverts
+an incredible split to a mass-fraction split instead of renormalising garbage.
+But the drift runs from ~1e5 to 2.2e7 J/kg, entirely inside the credible range.
+The cap is set for the pipe-break failure it was written for (|UE1|/m1 = 1.4e15
+J/kg), which is eight orders of magnitude away.  Nothing was wrong with the
+guard; this defect simply never leaves the plausible band until the EOS bracket
+ends it.
+
+**What this does NOT tell us, and the cheap next measurement.**
+`n_fl_fail` is a single counter covering three distinct refusals:
+`face_from_state` invalid, `wave_speeds` invalid, `ps_star_state` invalid.  That
+matters for the fix: if the refusals are themselves spurious the right answer is
+to stop refusing, and the fallback's consistency becomes moot; if they are
+legitimate the fallback has to be made identity-consistent.  Splitting that
+counter three ways is a few lines and one run.
+
+**Proposed fix direction, NOT implemented.**  Derive the fallback's
+non-conservative deposit FROM the same LLF flux the conserved slots use, so that
+d(UE1) + d(UE2) = d(UEDEN) identically at a fallback face -- the same
+one-face-computation-two-exits discipline the wp path already has for
+successful faces (STATUS_multiphase.md §1.2).  Then `ps_resync_phase_energy`
+becomes the no-op on interior cells its own header claims it already is, and the
+accumulating channel closes.  Awaiting the refusal-cause split and Marc's
+decision.
