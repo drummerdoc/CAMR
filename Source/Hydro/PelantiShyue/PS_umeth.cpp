@@ -417,25 +417,44 @@ ps_physical_flux_from_state(int idir, const Real U[NVAR], Real F[NVAR],
     Y[0] = Real(1.0);
     for (int n = 1; n < NUM_SPECIES; ++n) Y[n] = Real(0.0);
 
-    // Per-phase P via branch-locked EOS (task #185): phase 1 → liquid
-    // branch, phase 2 → vapor/SC branch.  Mixture P_stock uses auto-
-    // detect because it's a single-fluid EOS query on the mixture
-    // (ρ, e), which is well-defined even inside the saturation dome.
-    Real P1, P2, P_stock;
-    EOS::REY2P       (rho,   e_mix, Y, P_stock);
-    P_stock = ps_guard::sanitize_stock_pressure(P_stock);
-    Real P_mix;
-    //  Branch-locked query ONLY for a phase that exists AND is independent.
-    //  Corridor / absent phases take the mixture pressure by definition.
-    if (q1.exists && rg1 == PsRegime::Independent) {
+    // Per-phase P via branch-locked EOS (task #185): phase 1 -> liquid
+    // branch, phase 2 -> vapor/SC branch.  No mixture query here -- see below.
+    //  HOST DISPATCH, mirroring ps_augment_primitives (PS_ctoprim.H) and
+    //  PS_hllc's face_from_state.  This function is described above as
+    //  "essentially PS_ctoprim's ps_augment_primitives, unrolled to a
+    //  local-array signature" -- but it never tracked that function's presence
+    //  conversion.  It still asked EOS::REY2P for a SINGLE-FLUID mixture
+    //  pressure and handed that to corridor/absent phases, with the comment
+    //  that the query "is well-defined even inside the saturation dome":
+    //  true INSIDE the dome, false in general.  For a two-phase cell
+    //  (rho_mix, e_mix) pairs the light phase's VOLUME with the heavy phase's
+    //  MASS and can have no root at all -- the abort that stopped B2, B7 and
+    //  B9 (measured 2026-08-11).  The host phase always HAS a state, so it is
+    //  both the correct fallback and a reference that cannot refuse.
+    //
+    //  ONE rule: wherever a phase's own pressure is unavailable -- no state,
+    //  not independent, or a non-physical branch-locked result -- it takes the
+    //  HOST's.  That is what sanitize_phase_pressure already does (it
+    //  SUBSTITUTES its reference), so passing the host pressure makes the
+    //  fallback and the guard the same rule instead of two.
+    Real P1, P2;
+    const bool host_is_1 = (alpha_1 >= alpha_2);
+    if (host_is_1) {
         EOS::REY2P_liquid(rho_1, e1, Y, P1);
-        ps_guard::sanitize_phase_pressure(P1, P_stock);
-    } else { P1 = P_stock; }
-    if (q2.exists && rg2 == PsRegime::Independent) {
+        P1 = ps_guard::sanitize_stock_pressure(P1);      // host: floor only
+        if (q2.exists && rg2 == PsRegime::Independent) {
+            EOS::REY2P_vapor(rho_2, e2, Y, P2);
+            ps_guard::sanitize_phase_pressure(P2, P1);
+        } else { P2 = P1; }
+    } else {
         EOS::REY2P_vapor(rho_2, e2, Y, P2);
-        ps_guard::sanitize_phase_pressure(P2, P_stock);
-    } else { P2 = P_stock; }
-    P_mix = alpha_1 * P1 + alpha_2 * P2;
+        P2 = ps_guard::sanitize_stock_pressure(P2);
+        if (q1.exists && rg1 == PsRegime::Independent) {
+            EOS::REY2P_liquid(rho_1, e1, Y, P1);
+            ps_guard::sanitize_phase_pressure(P1, P2);
+        } else { P1 = P2; }
+    }
+    const Real P_mix = alpha_1 * P1 + alpha_2 * P2;
 
     // ---- Assemble the flux exactly as ps_physical_flux does --------
     for (int n = 0; n < NVAR; ++n) F[n] = Real(0.0);

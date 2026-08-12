@@ -1268,3 +1268,57 @@ Current table (rel-L2 | variation), HEM-limit config, mean carrier:
     B10 0.0705/0.1208/0.0826 | 0.0516/0.0936/0.0530
     B2, B7, B9: RUN FAILED (B2/B9 complete with ps_mt_h_weight=-1)
 
+## Contract-2 AUDIT of mixture-state queries, and the P_stock cleanup (2026-08-11)
+
+**The enumeration.**  Every `EOS::REY2*` / `hem::state_from_rho_e` entry on a
+MIXTURE (rho,e) outside Source/EOS, excluding branch-locked variants:
+
+    CAMR.cpp:1606          REY2T              GATED today (computeTemp)
+    Timestep.H:72,73       REY2P/REY2Gam      GATED today (dt estimator)
+    Timestep.H:148,149     REY2P/REY2Gam      GATED today (dt diagnostic)
+    Hydro_ctoprim.H:83     REY2_prim          OPEN -- B7's abort
+    PS_umeth.cpp:425       REY2P (P_stock)    CLOSED this commit
+    PS_umeth.cpp:906       REY2P/REY2Gam      dormant: ps_wp_transverse < 2
+    PS_nscbc.H:149         REY2P              open (NSCBC BC; 2-D cases)
+    Derive.cpp:615,616,655,656,699             open (plotfile derived fields)
+
+**Two of my earlier "core site" alarms were FALSE.**  `PS_wavespeed.H:145` and
+`PS_umeth.cpp:338` are COMMENTS mentioning REY2P, not calls -- the wave speed
+makes no mixture query at all, and the comment at 145 explains why it
+deliberately does not.  I raised those from grep output without reading the
+lines.  The flux and wave speed are not riddled with mixture queries.
+
+**P_stock closed.**  `PS_umeth.cpp`'s local-array augment (the MUSCL
+reconstruction path, `ps_recon=1`, live on every suite run) computed its own
+single-fluid `EOS::REY2P` and used it BOTH as the corridor/absent fallback
+pressure AND as `sanitize_phase_pressure`'s substitute.  Its own header comment
+calls it "essentially ps_augment_primitives, unrolled to a local-array
+signature" -- and `ps_augment_primitives` (PS_ctoprim.H) had ALREADY been
+converted to presence: host dispatch, corridor/absent take the HOST's
+branch-locked pressure, no mixture query, with a comment saying it mirrors
+PS_hllc's `face_from_state`.  So this was not a design decision to make; it was
+an unfinished conversion in a copy.  Now host-dispatched like the other two.
+Since `sanitize_phase_pressure` SUBSTITUTES its reference, passing the host
+pressure makes the fallback and the guard one rule instead of two, and the
+reference is a value that cannot refuse.
+
+Retired with it: the claim that the mixture query "is well-defined even inside
+the saturation dome".  True INSIDE the dome (the bracketed solve returns a
+lever-rule state); false in general, which is the whole B2/B7/B9 story.
+
+**Measured: no change, which is the expected result.**  All 16 accuracy numbers
+identical to 4 dp; battery 19/19 with identities at round-off (worst massid
+1.54e-16, worst energyid 1.65e-15).  Where both phases are Independent both
+versions query both branches; where one is corridor/absent its alpha weight in
+`P_mix = a1 P1 + a2 P2` is small, so swapping mixture-P for host-P there is
+below scheme error.  The value of the change is that a reachable abort is gone,
+not that the answer moved.
+
+**B7 re-isolated after the change** (its own run, not a stale Backtrace):
+still `construct_hydro_source` -> `EOS::REY2_prim`, rho = 13.52, e = -11379,
+gap -3834 J/kg, 30 advances.  So site 1 is the sole remaining live blocker, and
+it is the one that CANNOT be closed by gating alone: `hydro_ctoprim` supplies
+QTEMP/QC/QCSML/QGAME which `ps_augment_primitives` does not overwrite.  Closing
+it means extending the presence conversion to those slots -- the same
+conversion PS_ctoprim.H and PS_hllc.H already had and PS_umeth.cpp lacked.
+
