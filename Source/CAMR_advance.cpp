@@ -332,6 +332,38 @@ CAMR::CAMR_advance (Real time,
                                        << " incmis=" << fm;
                     }
                     amrex::Print() << "\n";
+                    //  Refusal-cause breakdown for the wp fluctuation path.
+                    //  Printed only when something actually refused, so a clean
+                    //  interval costs one comparison and no output.
+                    {
+                        static const char* cz[PS_HLLC::PS_FL_NCAUSE] = {
+                            "ok", "face", "ws_denom", "ws_SM", "ws_Pstar",
+                            "st_denom", "st_massneg", "st_rho", "st_q",
+                            "st_Estar" };
+                        amrex::Long tot = 0;
+                        amrex::Long cv[PS_HLLC::PS_FL_NCAUSE];
+                        for (int c = 0; c < PS_HLLC::PS_FL_NCAUSE; ++c) {
+                            cv[c] = PS_HLLC::face_diag::n_fl_cause(c);
+                            amrex::ParallelDescriptor::ReduceLongSum(cv[c]);
+                            if (c != PS_HLLC::PS_FL_OK) tot += cv[c];
+                        }
+                        amrex::Long sL = PS_HLLC::face_diag::n_fl_side(0);
+                        amrex::Long sR = PS_HLLC::face_diag::n_fl_side(1);
+                        amrex::ParallelDescriptor::ReduceLongSum(sL);
+                        amrex::ParallelDescriptor::ReduceLongSum(sR);
+                        if (tot > 0) {
+                            amrex::Print() << "[PS-FLCAUSE] L" << level << " step "
+                                           << parent->levelSteps(level) << " "
+                                           << label << ": total=" << tot;
+                            for (int c = 1; c < PS_HLLC::PS_FL_NCAUSE; ++c) {
+                                if (cv[c] > 0) {
+                                    amrex::Print() << "  " << cz[c] << "=" << cv[c];
+                                }
+                            }
+                            amrex::Print() << "  | star side L=" << sL
+                                           << " R=" << sR << "\n";
+                        }
+                    }
                 }
                 PS_HLLC::face_diag::reset();
             }

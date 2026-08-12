@@ -311,12 +311,45 @@ Face face_from_state(int idir, const amrex::Real U[NVAR],
 
 
 // -------------------------------------------------------------------
+//  REFUSAL CAUSES for the wp fluctuation path (2026-08-12).
+//
+//  `fluctuations()` returns false from six syntactically distinct places and
+//  the face then falls back to LLF.  Until now a single `n_fl_fail` counter
+//  covered all of them, which is not enough to act on: if the refusals are
+//  SPURIOUS the fix is to stop refusing, and the fallback's internal
+//  consistency is moot; if they are LEGITIMATE the fallback must be made
+//  identity-consistent.  Those are different pieces of work, and the counter
+//  could not tell them apart.
+//
+//  Measured 2026-08-12 (B7, exact_suite HEM leg): a refused face is the sole
+//  source of B7's stage-A phase-energy identity defect -- correlation 22/22
+//  with no counterexamples, and cells-affected == faces-failed + 1 exactly.
+//  See WORKLOG.md.
+// -------------------------------------------------------------------
+enum PsFlCause {
+    PS_FL_OK         = 0,
+    PS_FL_FACE       = 1,   // face_from_state invalid (rho_mix <= 0 or c <= 0)
+    PS_FL_WS_DENOM   = 2,   // mixture mass-flux denominator degenerate
+    PS_FL_WS_SM      = 3,   // contact speed non-finite
+    PS_FL_WS_PSTAR   = 4,   // linearised contact pressure non-finite or <= 0
+    PS_FL_ST_DENOM   = 5,   // star: S_K - S_M degenerate
+    PS_FL_ST_MASSNEG = 6,   // star: a partial mass came out negative
+    PS_FL_ST_RHO     = 7,   // star: mixture density <= 0
+    PS_FL_ST_Q       = 8,   // star: a per-phase mass-flux denominator vanished
+    PS_FL_ST_ESTAR   = 9,   // star: a phase energy came out non-finite
+    PS_FL_NCAUSE     = 10
+};
+
+// -------------------------------------------------------------------
 //  Davis wave speeds + HLLC contact speed for a P-S face.
 // -------------------------------------------------------------------
 struct WaveSpeeds {
     amrex::Real S_L, S_M, S_R;
     amrex::Real P_star;   // linearised HLLC pressure at the contact
     bool        valid;
+    //  Which test refused, for the W0 refusal-cause audit (see face_diag).
+    //  0 = none.  Set on every early return so the caller never has to guess.
+    int         cause;
 };
 
 AMREX_GPU_HOST_DEVICE
@@ -326,6 +359,7 @@ WaveSpeeds wave_speeds(const Face& fL, const Face& fR) noexcept
     using amrex::Real;
     WaveSpeeds w;
     w.valid = false;
+    w.cause = PS_FL_FACE;
     if (!fL.valid || !fR.valid) return w;
 
     // Davis outer wave speeds (baseline; matches the standalone default
@@ -338,14 +372,17 @@ WaveSpeeds wave_speeds(const Face& fL, const Face& fR) noexcept
     // HLLC contact speed from mixture mass/momentum balance (Toro §10.4).
     const Real denom = fL.rho_mix * (S_L - fL.u_n)
                      - fR.rho_mix * (S_R - fR.u_n);
+    w.cause = PS_FL_WS_DENOM;
     if (!std::isfinite(denom) || std::abs(denom) < Real(1.0e-30)) return w;
 
     const Real S_M = (fR.P_mix - fL.P_mix
                     + fL.rho_mix * fL.u_n * (S_L - fL.u_n)
                     - fR.rho_mix * fR.u_n * (S_R - fR.u_n)) / denom;
+    w.cause = PS_FL_WS_SM;
     if (!std::isfinite(S_M)) return w;
 
     const Real P_star = fL.P_mix + fL.rho_mix * (S_L - fL.u_n) * (S_M - fL.u_n);
+    w.cause = PS_FL_WS_PSTAR;
     if (!std::isfinite(P_star) || P_star <= Real(0.0)) return w;
 
     w.S_L    = S_L;
@@ -353,6 +390,7 @@ WaveSpeeds wave_speeds(const Face& fL, const Face& fR) noexcept
     w.S_R    = S_R;
     w.P_star = P_star;
     w.valid  = true;
+    w.cause  = PS_FL_OK;
     return w;
 }
 
@@ -533,25 +571,32 @@ AMREX_FORCE_INLINE
 bool ps_star_state(int idir, const Face& fK, const amrex::Real UK[NVAR],
                    amrex::Real S_K, amrex::Real S_M,
                    amrex::Real U_star[NVAR],
-                   int pk_ef = 0) noexcept   // #85: per-phase P_k in star energy
+                   int pk_ef = 0,          // #85: per-phase P_k in star energy
+                   int* cause = nullptr) noexcept   // W0 refusal-cause audit
 {
     using amrex::Real;
+    //  Every early return names itself.  `cause` is optional so the signature
+    //  stays usable from paths that do not audit.
+#define PS_ST_REFUSE(c) do { if (cause) *cause = (c); return false; } while (0)
     const Real denom = S_K - S_M;
-    if (!std::isfinite(denom) || std::abs(denom) < Real(1.0e-30)) return false;
+    if (!std::isfinite(denom) || std::abs(denom) < Real(1.0e-30))
+        PS_ST_REFUSE(PS_FL_ST_DENOM);
     const Real r_K = (S_K - fK.u_n) / denom;
     const Real m1s = fK.m_1 * r_K;
     const Real m2s = fK.m_2 * r_K;
-    if (m1s < Real(0.0) || m2s < Real(0.0)) return false;
+    if (m1s < Real(0.0) || m2s < Real(0.0)) PS_ST_REFUSE(PS_FL_ST_MASSNEG);
     const Real rhos = m1s + m2s;
-    if (rhos <= Real(0.0)) return false;
+    if (rhos <= Real(0.0)) PS_ST_REFUSE(PS_FL_ST_RHO);
     const Real q1 = fK.rho_1 * (S_K - fK.u_n);
     const Real q2 = fK.rho_2 * (S_K - fK.u_n);
-    if (std::abs(q1) < Real(1.0e-30) || std::abs(q2) < Real(1.0e-30)) return false;
+    if (std::abs(q1) < Real(1.0e-30) || std::abs(q2) < Real(1.0e-30))
+        PS_ST_REFUSE(PS_FL_ST_Q);
     const Real Pe1 = (pk_ef != 0) ? fK.P_1 : fK.P_mix;   // #85 two-pressure
     const Real Pe2 = (pk_ef != 0) ? fK.P_2 : fK.P_mix;
     const Real E1s = fK.E_1 + (S_M - fK.u_n) * (S_M + Pe1 / q1);
     const Real E2s = fK.E_2 + (S_M - fK.u_n) * (S_M + Pe2 / q2);
-    if (!std::isfinite(E1s) || !std::isfinite(E2s)) return false;
+    if (!std::isfinite(E1s) || !std::isfinite(E2s)) PS_ST_REFUSE(PS_FL_ST_ESTAR);
+#undef PS_ST_REFUSE
 
     Real ux = fK.ux, uy = fK.uy, uz = fK.uz;   // transverse advected; normal → S_M
     if      (idir == 0) ux = S_M;
@@ -606,11 +651,19 @@ inline double& max_estar(int c) { static double v[3] = {0,0,0}; return v[c]; }
 inline long&   n_fl_seen(int c) { static long n[3] = {0,0,0};   return n[c]; }
 inline long&   n_fl_fail(int c) { static long n[3] = {0,0,0};   return n[c]; }
 inline double& max_incmis(int c){ static double v[3] = {0,0,0}; return v[c]; }
+//  Refusal cause (PsFlCause), NOT keyed by face class -- the class attribution
+//  is already known from n_fl_fail, and a 10 x 3 table is unreadable.
+inline long& n_fl_cause(int c) { static long n[PS_FL_NCAUSE] = {0}; return n[c]; }
+//  Which SIDE's star state refused: 0 = L, 1 = R.  Answers "is it systematically
+//  one side" without doubling the cause table.
+inline long& n_fl_side(int s_)  { static long n[2] = {0,0}; return n[s_]; }
 inline void reset() {
     for (int c = 0; c < 3; ++c) {
         n_seen(c) = 0; n_drop(c) = 0; max_def(c) = 0.0; max_estar(c) = 0.0;
         n_fl_seen(c) = 0; n_fl_fail(c) = 0; max_incmis(c) = 0.0;
     }
+    for (int c = 0; c < PS_FL_NCAUSE; ++c) n_fl_cause(c) = 0;
+    n_fl_side(0) = 0; n_fl_side(1) = 0;
 }
 }
 #endif
@@ -659,21 +712,28 @@ bool fluctuations(int idir, const amrex::Real UL[NVAR], const amrex::Real UR[NVA
     ++face_diag::n_fl_seen(fcls_fl);
 #endif
 #if !defined(AMREX_USE_GPU)
-#define PS_W0_FL_FAIL() (++face_diag::n_fl_fail(fcls_fl))
+#define PS_W0_FL_FAIL(c) do { ++face_diag::n_fl_fail(fcls_fl); \
+                              ++face_diag::n_fl_cause(c); } while (0)
+#define PS_W0_FL_SIDE(s_) (++face_diag::n_fl_side(s_))
 #else
-#define PS_W0_FL_FAIL() ((void)0)
+#define PS_W0_FL_FAIL(c)  ((void)0)
+#define PS_W0_FL_SIDE(s_) ((void)0)
 #endif
 
     const Face fL = face_from_state(idir, UL, pr);
     const Face fR = face_from_state(idir, UR, pr);
-    if (!fL.valid || !fR.valid) { PS_W0_FL_FAIL(); return false; }
+    if (!fL.valid || !fR.valid) { PS_W0_FL_FAIL(PS_FL_FACE); return false; }
     const WaveSpeeds w = wave_speeds(fL, fR);
-    if (!w.valid) { PS_W0_FL_FAIL(); return false; }
+    if (!w.valid) { PS_W0_FL_FAIL(w.cause); return false; }
 
     Real UsL[NVAR], UsR[NVAR];
-    if (!ps_star_state(idir, fL, UL, w.S_L, w.S_M, UsL, pk_ef)) { PS_W0_FL_FAIL(); return false; }
-    if (!ps_star_state(idir, fR, UR, w.S_R, w.S_M, UsR, pk_ef)) { PS_W0_FL_FAIL(); return false; }
+    int stc = PS_FL_OK;
+    if (!ps_star_state(idir, fL, UL, w.S_L, w.S_M, UsL, pk_ef, &stc)) {
+        PS_W0_FL_FAIL(stc); PS_W0_FL_SIDE(0); return false; }
+    if (!ps_star_state(idir, fR, UR, w.S_R, w.S_M, UsR, pk_ef, &stc)) {
+        PS_W0_FL_FAIL(stc); PS_W0_FL_SIDE(1); return false; }
 #undef PS_W0_FL_FAIL
+#undef PS_W0_FL_SIDE
 
     f.s[0] = w.S_L; f.s[1] = w.S_M; f.s[2] = w.S_R;
     for (int n = 0; n < NVAR; ++n) {

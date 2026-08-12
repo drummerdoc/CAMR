@@ -1548,3 +1548,91 @@ successful faces (STATUS_multiphase.md §1.2).  Then `ps_resync_phase_energy`
 becomes the no-op on interior cells its own header claims it already is, and the
 accumulating channel closes.  Awaiting the refusal-cause split and Marc's
 decision.
+
+### Refusal-cause split: it is ALL the P_star positivity test (2026-08-12)
+
+`n_fl_fail` split ten ways by cause (`PsFlCause`, `PS_hllc.H`), reported as
+`[PS-FLCAUSE]` alongside `[PS-FACE]`.  B7, exact_suite HEM leg, whole run:
+
+    ws_Pstar     33
+    (every other cause)   0
+    star side    L=0  R=0
+
+All 33 refusals — every one, across 22 affected steps — come from a single
+line, `PS_hllc.H:386`:
+
+    const Real P_star = fL.P_mix + fL.rho_mix * (S_L - fL.u_n) * (S_M - fL.u_n);
+    if (!std::isfinite(P_star) || P_star <= 0.0) return w;     // <-- all of them
+
+Nothing else ever refused.  `face_from_state` never failed, the mass-flux
+denominator never degenerated, `S_M` was always finite, and `ps_star_state`'s
+five tests were never even REACHED (hence L=0 R=0 — the run never got as far as
+building a star state on a refused face).
+
+**And `P_star` is never read.**  It is written to `w.P_star` at `PS_hllc.H:391`
+and consumed NOWHERE in the module: inside `fluctuations()` only `w.valid`,
+`w.cause`, `w.S_L`, `w.S_M`, `w.S_R` are used, and `hllc_flux` takes its
+pressures from `fK.P_mix` / `fK.P_1` / `fK.P_2`.  The only other `P_star`
+symbols in the tree are in the exact Riemann solver and in the dead
+`hem_pelanti_shyue.H` kernel (`:837-843`, the same test, equally unread).
+So the quantity is computed **solely in order to be tested**, and that test is
+the entire cause of B7's phase-energy defect.
+
+**Why the test is wrong here, not merely unlucky.**  `P_star` as written is the
+PVRS / linearised contact-pressure estimate.  Its known failure mode is the
+strong double-rarefaction, where it predicts a negative pressure although the
+exact solution has a small positive one (Toro §9.5 is why adaptive or
+two-rarefaction estimates exist).  B7-Rupture-Sonic is 100 bar liquid
+discharging into 1 bar vapour — precisely that regime.  So `P_star <= 0` here is
+a failure of the ESTIMATE, not evidence of a bad state, and the states it
+rejects go on to produce perfectly good star states (we know this because
+`ps_star_state`'s own tests never fire).
+
+Two further reasons to distrust it as written: it is built from the **L side
+only**, so it is not symmetric under swapping L and R even though the underlying
+face is; and it gates a quantity nothing consumes, which means it can only ever
+subtract information.
+
+**Full causal chain, now complete:**
+
+    PVRS P_star estimate goes negative on a strong rarefaction  (PS_hllc.H:386)
+      -> fluctuations() refuses a face that has no actual defect
+      -> face falls back to LLF: conserved slots get an LLF flux, non-conserved
+         slots an INDEPENDENT symmetric split, nothing ties them
+      -> UE1+UE2 != UEDEN in that face's two cells  (n_eid == fl_fail + 1)
+      -> ps_resync_phase_energy restores the identity by rescaling at FIXED
+         RATIO, so the discrepancy moves into the phase split, not away
+      -> 63 steps of biased correction drift cell (34,0,0)'s vapour phase from
+         ~1e5 to 2.2136e7 J/kg, always inside ps_phase_e_cap's credible band
+      -> branch-locked vapour query refuses 3.4835e4 J/kg past the T_MAX
+         bracket end, and the run aborts in computeTemp
+
+Five layers between cause and symptom, which is why three sessions attributed
+this to the wrong thing.
+
+**The counter split is diagnostic-only and cost nothing:** all 16 exact_suite
+numbers bit-identical, B2/B7/B9 fail exactly as before.
+
+**Proposed fix, NOT implemented — needs Marc's call.**
+
+  A (recommended) Delete the `P_star` computation and its test from
+    `wave_speeds()`, and the unread `WaveSpeeds::P_star` field with it.  It
+    guards nothing.  A genuinely bad face is still caught by
+    `ps_star_state`'s five tests, which are the ones that inspect quantities
+    that are actually USED.  This removes the fallback flips entirely rather
+    than making the fallback consistent — no fallback, no inconsistency.
+    Verification is sharp and pre-specified: stage-A `energyid` on B7 must drop
+    to the 1e-14 every other case shows, `[PS-FLCAUSE]` must go silent, and B7
+    must either pass step 63 or fail somewhere new.  The 16 accuracy numbers
+    must not move (no A/C case ever refuses).
+  B  Keep a positivity guard but base it on a positivity-preserving
+    (two-rarefaction) estimate, so it refuses only genuinely unphysical faces.
+    More code; only worth it if A shows the guard was load-bearing after all.
+  C  Independently, make the LLF fallback's non-conservative deposit derive
+    from the same LLF flux the conserved slots use, so
+    d(UE1)+d(UE2) == d(UEDEN) at a fallback face.  Worth doing as defence in
+    depth whatever we choose above — otherwise any future refusal, on any case,
+    silently reopens the same channel.
+
+Also worth re-measuring once A lands: B2 and B9 fail on the same leg, and
+`[PS-FLCAUSE]` will now say whether they share this mechanism.
