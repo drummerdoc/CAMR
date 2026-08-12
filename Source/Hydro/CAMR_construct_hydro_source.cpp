@@ -181,6 +181,13 @@ CAMR::construct_hydro_source (const MultiFab& S,
 #endif
 #ifdef USE_PS_HYDRO
             const PsPres l_pres = ps_presence_params();   // S2 (one host read)
+            //  One host read, captured by value (GPU rule 12.2).  Tells
+            //  hydro_ctoprim to skip the single-fluid mixture EOS inversion,
+            //  whose every output is dead on the PS advance path and which is
+            //  ill-posed on a two-phase (rho_mix, e_mix) pair.
+            const int l_ps_hydro_ctop = ps_hydro;
+#else
+            const int l_ps_hydro_ctop = 0;
 #endif
             ParallelFor(
               qbx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
@@ -188,7 +195,8 @@ CAMR::construct_hydro_source (const MultiFab& S,
                 if (!flag_arr(i,j,k).isCovered()) {
 #endif
                     hydro_ctoprim(i, j, k, sarr, qarr, qauxar, *lpmap,
-                                  small_num, dual_energy_eta, l_allow_negative_energy);
+                                  small_num, dual_energy_eta, l_allow_negative_energy,
+                                  l_ps_hydro_ctop);
 #ifdef USE_PS_HYDRO
                     // Populate the P-S 2014 six-equation primitive
                     // slots (QALPHA1, QRHO1, QRHO2, QP1, QP2) and

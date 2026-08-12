@@ -281,7 +281,21 @@ CAMR::CAMR_advance (Real time,
                            << "  rho_clamp_hi = " << rh;
             amrex::Long sl = ps_guard::n_slaved();
             amrex::ParallelDescriptor::ReduceLongSum(sl);
-            amrex::Print() << " | slaved = " << sl << "\n";
+            amrex::Print() << " | slaved = " << sl;
+            //  Ctoprim reference audit (PS_guards.H): the cells on which the
+            //  host-phase reference and the retired single-fluid reference can
+            //  disagree.  ctop_sub = 0 over a run means no cell reached the
+            //  reference at all.
+            amrex::Long ck_ = ps_guard::n_ctop_seen();
+            amrex::Long cs_ = ps_guard::n_ctop_sub();
+            amrex::Long cf_ = ps_guard::n_ctop_host_floor();
+            amrex::ParallelDescriptor::ReduceLongSum(ck_);
+            amrex::ParallelDescriptor::ReduceLongSum(cs_);
+            amrex::ParallelDescriptor::ReduceLongSum(cf_);
+            amrex::Print() << " | ctop_seen = " << ck_
+                           << "  ctop_sub = " << cs_
+                           << "  ctop_host_floor = " << cf_ << "\n";
+            ps_guard::reset_ctop_counts();
             ps_guard::reset_counts();
             ps_guard::reset_rho_counts();
             ps_guard::reset_slaved();

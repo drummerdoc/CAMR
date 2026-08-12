@@ -295,6 +295,66 @@ inline void  reset_slaved() { n_slaved() = 0; }
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_slaved() noexcept {}
 #endif
 
+// ---------------------------------------------------------------------
+//  CTOPRIM REFERENCE AUDIT  (2026-08-12)
+//
+//  ps_augment_primitives used to take its per-phase pressure reference from
+//  the SINGLE-FLUID mixture query that hydro_ctoprim leaves in q[QPRES] --
+//  EOS::REY2_prim(rho_mix, e_mix) -- and to LEAVE q[QPRES] at that value
+//  whenever either phase substituted.  The comment there argued the query "is
+//  always sane for PR within its calibrated range".  It is not.  For a
+//  two-phase cell (rho_mix, e_mix) pairs the light phase's VOLUME with the
+//  heavy phase's MASS and the inversion can have no root at all: that is the
+//  abort which stops B7-Rupture-Sonic at rho = 1.352e1 kg/m3,
+//  e = -1.1379e4 J/kg, 30 advances in.  A reference that can REFUSE cannot
+//  serve as a fallback.  The reference is now the HOST phase's pressure,
+//  matching PS_hllc's face_from_state and ps_physical_flux_from_state
+//  (b6d468c); ctoprim was the last of the three still asking the mixture.
+//
+//  WHAT THESE COUNT.  `ctop_sub` is a cell where an independent MINORITY
+//  phase's branch-locked pressure was rejected and replaced by the reference.
+//  That is exactly the set on which the old rule and the new one can disagree,
+//  and it is simultaneously the set on which the old code would have skipped
+//  the alpha-weighted q[QPRES] override (the badness predicate,
+//  phase_pressure_ok, ignores the reference -- see its signature -- so the
+//  DECISION to substitute is identical under both rules; only the substituted
+//  VALUE and the override branch differ).  If this reads zero over a run, no
+//  cell reached the reference, the rule change cannot have altered any value,
+//  and bit-identity of the accuracy numbers is a proof rather than a
+//  coincidence.
+//
+//  `ctop_seen` counts every VISIT to the reference.  Without it a zero in
+//  `ctop_sub` is ambiguous between "reached on every cell and never tripped"
+//  (the reassuring reading) and "never reached at all" (no information) --
+//  which is the precise ambiguity the n_seen/n_reject split above exists to
+//  resolve, and repeating that mistake one screen below its own lesson would
+//  be unforgivable.  ctop_sub == 0 with ctop_seen >> 0 is the measurement.
+//
+//  `ctop_host_floor` is the second, smaller behaviour change, named because it
+//  is a floor: the HOST phase's own pressure is no longer testable against an
+//  external reference (it IS the reference), so a host pressure below
+//  P_FLOOR_PA is floored to it rather than replaced by the mixture value.
+//
+//  The MAGNITUDE of a difference is deliberately not reported here.  It would
+//  need the single-fluid value alongside the host value, and that query is
+//  precisely what this change removes -- keeping it to measure the difference
+//  would keep the abort that motivated the change.  The count decides whether
+//  the magnitude is even a question.
+#if !defined(AMREX_USE_GPU)
+inline long& n_ctop_seen()       { static long n = 0; return n; }
+inline long& n_ctop_sub()        { static long n = 0; return n; }
+inline long& n_ctop_host_floor() { static long n = 0; return n; }
+inline void  count_ctop_seen()       { ++n_ctop_seen(); }
+inline void  count_ctop_sub()        { ++n_ctop_sub(); }
+inline void  count_ctop_host_floor() { ++n_ctop_host_floor(); }
+inline void  reset_ctop_counts() { n_ctop_seen() = 0; n_ctop_sub() = 0;
+                                   n_ctop_host_floor() = 0; }
+#else
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_ctop_seen()       noexcept {}
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_ctop_sub()        noexcept {}
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_ctop_host_floor() noexcept {}
+#endif
+
 // Which phase (if either) is slaved?  0 = neither, 1 = phase 1, 2 = phase 2.
 // If BOTH are below the threshold the cell is degenerate and we slave neither
 // (there is no host to slave to); the ordinary guards then apply.

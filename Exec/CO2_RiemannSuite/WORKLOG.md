@@ -1322,3 +1322,126 @@ QTEMP/QC/QCSML/QGAME which `ps_augment_primitives` does not overwrite.  Closing
 it means extending the presence conversion to those slots -- the same
 conversion PS_ctoprim.H and PS_hllc.H already had and PS_umeth.cpp lacked.
 
+
+## Site 1 closed: ctoprim's mixture reference retired (2026-08-12)
+
+**The approved plan rested on a false premise, and I found it by checking the
+read side.**  I had proposed skipping `EOS::REY2_prim` at `Hydro_ctoprim.H:83`
+for PS cells on the grounds that all six slots it fills are unread on the PS
+advance path.  Five are.  The sixth is not: `q[QPRES]` is read one line later,
+inside the same per-cell lambda, at `PS_ctoprim.H:193`, as
+`sanitize_stock_pressure(q(i,j,k,QPRES))`.  So the call was not dead work to
+delete; it was a live reference, and removing it is a substitution-rule change.
+
+The five that ARE dead, verified by reading consumers rather than write sets:
+
+    q[QTEMP], q[QGAME]     no reference anywhere under Source/Hydro/PelantiShyue/
+    qa[QDPDR], qa[QDPDE]   read only by hydro_srctoprim; its output src_q reaches
+                           only Godunov_umeth (PS_umeth's and MOL_umeth's
+                           argument lists omit it), and hydro_consup's signature
+                           is (bx, dsdt, flx, vol, pdivu) -- no q/qa/srcq at all
+    qa[QGAMC], qa[QC],     read only by Godunov_umeth / MOL_umeth.  PS_umeth
+    qa[QCSML]              declares its qaux parameter UNNAMED at both entries
+                           (PS_umeth.cpp:1117, 2362)
+
+`hydro_divu` reads only QU/QV/QW.  That also answers, ahead of schedule, the
+check I had flagged as outstanding: nothing on the PS path reads `srcqarr`.
+
+**The rule that replaces it is not new.**  `PS_hllc.H`'s `face_from_state`
+already takes its reference from the host phase
+(`P_ref = (alpha_1 >= alpha_2) ? P_1 : P_2`), and its own comment names the
+ctoprim sites as the outliers "compar[ing] against the single-fluid EOS(rho,e)
+value".  `ps_physical_flux_from_state` adopted the same rule yesterday in
+`b6d468c`.  ctoprim was the third of three.  The argument is identical in all
+three: a single-fluid inversion on (rho_mix, e_mix) pairs the light phase's
+VOLUME with the heavy phase's MASS, so the pair need not be a single-fluid state
+and the inversion can have no root.  A reference that can REFUSE cannot be a
+fallback.  The host phase always has a state (alpha_host >= 1/2 >> alpha_cond),
+so it is both the correct fallback and a reference that cannot refuse.
+
+Two behaviour changes follow, both named and counted:
+  * a rejected independent MINORITY phase now takes the HOST's pressure instead
+    of the single-fluid mixture value  (`ctop_sub`);
+  * the HOST's own pressure can no longer be substituted (it IS the reference),
+    only floored at P_FLOOR_PA  (`ctop_host_floor`);
+and one branch is deleted: `q[QPRES]` is now ALWAYS the volume-fraction rule.
+It used to be written only `if (!P1_bad && !P2_bad)`, leaving the single-fluid
+value in place to keep "the timestep estimator, plotfile derives" away from an
+unhealthy per-phase inversion.  Neither consumer it named still reads the slot:
+the dt estimator dispatches to `ps_max_wave_speed_from_state`, which reads the
+CONSERVED state (f0b22e1), and the pressure derive calls
+`ps_mixture_pressure_from_cons` on the State MultiFab, not on this per-FAB
+scratch.  The only surviving reader is `ps_physical_flux`'s P_mix
+(PS_umeth.cpp:132), which wants the mixture rule.
+
+**The measurement, and why the count is the whole answer.**
+`phase_pressure_ok` ignores its `P_stock` argument (`return P >= P_FLOOR_PA`),
+so the DECISION to substitute is identical under both rules; only the
+substituted value differs.  The cells where the two rules can disagree are
+therefore exactly the substitution cells, and if there are none the change
+cannot have altered a number.  Over all 19 cases:
+
+    ctop_sub = 0    ctop_host_floor = 0    ctop_seen = 7 416 .. 25 632
+
+`ctop_seen` exists because I first reported `ctop_sub = 0` from a run in which
+the `[PS-GUARD]` line never printed (it is gated on `CAMR.ps_diag_mass`, and the
+suite runs with `CAMR.v=0`).  Zero-because-never-reached and
+zero-because-never-tripped are the exact ambiguity the `n_seen`/`n_reject` split
+in PS_guards.H was written to resolve, one screen above where I repeated the
+mistake.  With `ctop_seen` in the thousands per case, `ctop_sub = 0` is a
+measurement: the reference is consulted on every cell of every advance and its
+value is never once used.
+
+Consistent with that, all 16 `exact_suite` accuracy numbers are BIT-IDENTICAL to
+the recorded table, and the 11-case `run_ac_suite` identity battery is unchanged
+(A1 rho 3.33e-09, B9 CHECK as before).
+
+**The magnitude of a difference is deliberately not measured.**  It would need
+the single-fluid value alongside the host value, and that query is precisely
+what aborts.  Keeping it to measure the difference would keep the abort that
+motivated the change.  The count decides whether the magnitude is a question,
+and it answers no.
+
+**B7-Rupture-Sonic: site 1 is gone, and the blocker has MOVED, not vanished.**
+In the full_suite (production) config B7 now runs to completion (step 130; it
+previously died at step 107).  In the exact_suite HEM-limit config it reaches
+step 63 -- 33 steps further than the old step-30 death -- and aborts at a
+DIFFERENT site with a DIFFERENT character:
+
+    CAMR.cpp:1547  EOS::REY2PTS_phase, branch = VAPOR, via computeTemp <- clean_state
+    rho_2 = 1.134406186 kg/m^3   e_2 = 2.2135982e7 J/kg
+    reachable bound at T_MAX = 5000 K is 2.2101147e7 J/kg   (gap +3.4835e4 J/kg)
+
+This is NOT a mixture query and NOT a presence-gate hole.  The query is properly
+presence-dispatched, and V7 (`CAMR.ps_validate=1`) names the cell:
+
+    first unreachable phase state: (34,0,0) phase 2 (VAPOR)
+      alpha = 0.9522017954   rho = 1.134406186   e = 22135981.75
+
+alpha_2 = 0.952: the offender is the HOST phase, overwhelmingly INDEPENDENT.
+So the quotient is well-conditioned and the ENERGY is wrong.  e = 2.21e7 J/kg
+for CO2 vapour is roughly a 3e4 K state; the gap past the bracket end is only
+1.6e-3 of e, so the bracket is not the issue -- the phase energy has blown up
+and merely stopped just past the ceiling.
+
+**Where it comes from, from the V7 stage trace.**  V7 reports `reachable bulk=0`
+at stage A (post-hydro) and `reachable bulk=1` first at stage B (post
+floor/fold/clean) -- the state is reachable leaving the hydro and unreachable
+after B.  And `energyid` at stage A is NOT at round-off on this case: over the
+steps preceding the abort it reads 0.00992, 0.0402, 0.00850, 0.107, 0.00352,
+which stage B then returns to ~1e-15.  Every other case in the battery shows
+energyid at 1e-14/1e-15 at every stage.  So the chain is: the hydro leaves a
+1e-2..1e-1 phase-energy identity defect -> stage B enforces the identity by
+moving energy into a phase -> on step 63 the vapour phase absorbs enough to land
+past the T_MAX ceiling.  The phase-energy identity defect at stage A is the
+upstream defect and is where to look next; the abort is the messenger.
+
+**Also noted, not acted on:** `verify_canonical.py` checks 3 and 4 have STALE
+thresholds.  Check 4 (B9, mode 2, tau=1e-4) expects 0.880/0.771 and measures
+0.862/0.794 -- and both configurations run to completion with
+`ctop_sub = ctop_host_floor = 0` (7 416 and 7 488 visits), so this change
+provably did not touch them.  The drift dates from the dt-consistency fix, which
+changed step counts on two-phase cases by design.  Checks 3 and 6 read exactly
+1.000, the documented "run failed" signature, which is the pre-existing
+B2/B7/B9 HEM-leg failure (D2 carrier), already recorded above.
+

@@ -18,7 +18,12 @@ hydro_ctoprim(
   PassMap const& pmap,
   amrex::Real l_small_num,
   amrex::Real l_dual_energy_eta1,
-  const int l_allow_negative_energy)
+  const int l_allow_negative_energy,
+  //  Non-zero when the Pelanti-Shyue six-equation integrator owns this
+  //  advance.  Passed as an int rather than compiled out because
+  //  CAMR.ps_hydro is a RUNTIME query: the same binary also serves
+  //  Godunov_umeth / MOL_umeth, which need every slot below.
+  const int l_ps_hydro)
 {
     const amrex::Real rho = u(i, j, k, URHO);
 
@@ -72,6 +77,58 @@ hydro_ctoprim(
           massfrac[sp] = q(i, j, k, sp + QFS);
         }
 
+        //  Volumetric internal energy: arithmetic, not an EOS query, so it is
+        //  written on both paths below.
+        q(i, j, k, QREINT) = e * rho;
+
+        if (l_ps_hydro) {
+            //  PELANTI-SHYUE PATH.  The single-fluid EOS inversion below is
+            //  not merely unused here, it is ILL-POSED.  It solves
+            //  EOS(rho_mix, e_mix) for one temperature, but a two-phase cell's
+            //  mixture pair couples the light phase's VOLUME to the heavy
+            //  phase's MASS: it does not identify a single-fluid state and the
+            //  inversion can have no root.  That is the abort which stopped
+            //  B7-Rupture-Sonic here at rho = 1.352e1 kg/m3,
+            //  e = -1.1379e4 J/kg, energy gap -3.834e3 J/kg, 30 advances in
+            //  (measured 2026-08-11) — the last live mixture-EOS site on the
+            //  PS advance path.
+            //
+            //  Every slot it filled is dead on this path.  Verified on the
+            //  READ side, not inferred from what gets overwritten:
+            //    q[QTEMP], q[QGAME]        no reference anywhere under
+            //                              Source/Hydro/PelantiShyue/.
+            //    qa[QDPDR], qa[QDPDE]      read only by hydro_srctoprim, whose
+            //                              output src_q reaches only
+            //                              Godunov_umeth — PS_umeth's and
+            //                              MOL_umeth's argument lists omit it,
+            //                              and hydro_consup takes no q/qa/srcq
+            //                              at all.
+            //    qa[QGAMC], qa[QC],        read only by Godunov_umeth /
+            //    qa[QCSML]                 MOL_umeth.  PS_umeth declares its
+            //                              qaux parameter UNNAMED at both
+            //                              entries (PS_umeth.cpp:1117, 2362).
+            //    q[QPRES]                  was live until 2026-08-12: it fed
+            //                              ps_augment_primitives' per-phase
+            //                              pressure reference.  That reference
+            //                              is now the HOST PHASE's pressure —
+            //                              see PS_ctoprim.H — which is the one
+            //                              reference that cannot refuse.
+            //
+            //  Defined values are written rather than left as whatever the
+            //  Async_Arena handed back, so that nothing downstream can read an
+            //  indeterminate float even by accident.  They are placeholders
+            //  and are named as such; they are not physics.
+            q(i, j, k, QTEMP) = T;              // == u(UTEMP), as stored
+            q(i, j, k, QPRES) = amrex::Real(0.0);   // ps_augment_primitives
+                                                    // overwrites, next call
+            q(i, j, k, QGAME) = amrex::Real(0.0);
+            qa(i, j, k, QDPDR) = amrex::Real(0.0);
+            qa(i, j, k, QDPDE) = amrex::Real(0.0);
+            qa(i, j, k, QGAMC) = amrex::Real(0.0);
+            qa(i, j, k, QC)    = amrex::Real(0.0);
+            qa(i, j, k, QCSML) = amrex::Real(0.0);
+        } else {
+
         amrex::Real dpdr_e, dpde, gam1, cs,  p;
 
         // One EOS state solve fills all five primitives (T, p, gam1, dpde,
@@ -83,7 +140,6 @@ hydro_ctoprim(
         EOS::REY2_prim(rho, e, massfrac, T, p, gam1, dpde, dpdr_e);
 
         q(i, j, k, QTEMP)  = T;
-        q(i, j, k, QREINT) = e * rho;
         q(i, j, k, QPRES)  = p;
         q(i, j, k, QGAME)  = p / (e * rho) + 1.0;
 
@@ -103,6 +159,7 @@ hydro_ctoprim(
                ? std::sqrt(cs2) : amrex::Real(0.0);
         qa(i, j, k, QC) = cs;
         qa(i, j, k, QCSML) = std::max(l_small_num, l_small_num * cs);
+        }
     }
 }
 

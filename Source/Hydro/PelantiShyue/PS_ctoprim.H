@@ -150,11 +150,13 @@ ps_augment_primitives(int i, int j, int k,
     // never evaluated at the trace phase's undefined (rho_k, e_k), so there is
     // nothing for the pressure ceiling to catch.  Subsumes PS_P_CLIP.
     amrex::Real P1, P2;
+    //  The HOST phase is the one with the larger volume fraction.  Hoisted out
+    //  of the fork below because the pressure REFERENCE now needs it too.
+    const bool host_is_1 = (a1 >= a2);
     if (pr.enabled) {
         // S2 presence dispatch (mirrors PS_hllc face_from_state): the host
         // phase defines the cell; corridor/absent phases take its pressure
         // by DEFINITION (transport-only corridor, design §1).
-        const bool host_is_1 = (a1 >= a2);
         if (host_is_1) {
             EOS::REY2P_liquid(rho1, e1, Y, P1);
             if (rg2 == PsRegime::Independent) { EOS::REY2P_vapor(rho2, e2, Y, P2); }
@@ -181,24 +183,52 @@ ps_augment_primitives(int i, int j, int k,
     // Pressure floor — real-fluid PR can return negative P for
     // deeply compressed or two-phase-envelope-adjacent states.
     // Downstream ps_max_wave_speed calls sqrt(γ P / ρ) which NaNs
-    // on P < 0.  If EITHER per-phase EOS call went bad, keep the
-    // mixture pressure the stock ctoprim already computed (it's a
-    // single-fluid EOS evaluation on (ρ, e), which is always sane
-    // for PR within its calibrated range).  This is a
-    // gentler recovery than clamping to 1 Pa which would create a
-    // huge pressure gradient at the recovered cell.
+    // on P < 0.
+    //
+    // THE REFERENCE IS THE HOST PHASE, not a single-fluid mixture query.
+    // This used to be `sanitize_stock_pressure(q(i,j,k,QPRES))` -- the value
+    // hydro_ctoprim's EOS::REY2_prim(rho_mix, e_mix) leaves behind -- on the
+    // argument that a single-fluid evaluation on (rho, e) "is always sane for
+    // PR within its calibrated range".  It is not: for a two-phase cell
+    // (rho_mix, e_mix) pairs the light phase's VOLUME with the heavy phase's
+    // MASS and the inversion can have no root at all.  That is the abort which
+    // stopped B7-Rupture-Sonic at rho = 1.352e1 kg/m3, e = -1.1379e4 J/kg,
+    // 30 advances in (measured 2026-08-11).  A reference that can REFUSE
+    // cannot be a fallback.
+    //
+    // The host phase always HAS a state: alpha_host >= 1/2 >> alpha_cond, so
+    // it is INDEPENDENT by construction whenever the cell is physical.  It is
+    // therefore both the correct fallback and a reference that cannot refuse.
+    // Same rule as PS_hllc's face_from_state and ps_physical_flux_from_state
+    // (b6d468c) -- whose own comment already named the ctoprim sites as the
+    // outliers "compar[ing] against the single-fluid EOS(rho,e) value".
+    // ctoprim was the last of the three; ps_mixture_pressure_from_cons (the
+    // plotfile derive) is the remaining one and is on the audit list.
+    //
+    // Because the host IS the reference it cannot be substituted, only
+    // floored -- counted as ctop_host_floor (see PS_guards.H).
     // SINGLE-SOURCE (see PS_guards.H).  This test used to be local and
     // one-sided -- it caught P too small / non-finite but not absurdly large --
     // and was duplicated in three other functions with three different bodies.
-    const amrex::Real P_stock = ps_guard::sanitize_stock_pressure(q(i,j,k, QPRES));
+    ps_guard::count_ctop_seen();
+    amrex::Real& P_host = host_is_1 ? P1 : P2;
+    //  phase_pressure_ok's second argument is ignored by construction (see its
+    //  signature); passing 0 asks only "is this above P_FLOOR_PA?" without
+    //  restating the constant here.
+    if (!ps_guard::phase_pressure_ok(P_host, amrex::Real(0.0))) {
+        ps_guard::count_ctop_host_floor();
+    }
+    P_host = ps_guard::sanitize_stock_pressure(P_host);
+    const amrex::Real P_ref = P_host;
     bool P1_bad = false, P2_bad = false;
     if (pr.enabled) {   // slaved pressures ARE the host's; test independents only
-        if (rg1 == PsRegime::Independent) P1_bad = ps_guard::sanitize_phase_pressure(P1, P_stock);
-        if (rg2 == PsRegime::Independent) P2_bad = ps_guard::sanitize_phase_pressure(P2, P_stock);
+        if (rg1 == PsRegime::Independent) P1_bad = ps_guard::sanitize_phase_pressure(P1, P_ref);
+        if (rg2 == PsRegime::Independent) P2_bad = ps_guard::sanitize_phase_pressure(P2, P_ref);
     } else {
-        P1_bad = ps_guard::sanitize_phase_pressure(P1, P_stock);
-        P2_bad = ps_guard::sanitize_phase_pressure(P2, P_stock);
+        P1_bad = ps_guard::sanitize_phase_pressure(P1, P_ref);
+        P2_bad = ps_guard::sanitize_phase_pressure(P2, P_ref);
     }
+    if (P1_bad || P2_bad) ps_guard::count_ctop_sub();
 
     // Write the extended primitive slots.
     q(i,j,k, QALPHA1) = a1;
@@ -207,17 +237,26 @@ ps_augment_primitives(int i, int j, int k,
     q(i,j,k, QP1    ) = P1;
     q(i,j,k, QP2    ) = P2;
 
-    // Override QPRES with the P-S 2014 volume-fraction rule ONLY if
-    // BOTH per-phase pressures were computed sanely.  Otherwise
-    // leave QPRES = mixture single-fluid EOS result (already in
-    // q[QPRES] from stock hydro_ctoprim) so the outer hydro
-    // machinery (timestep estimator, plotfile derives) never sees a
-    // garbage pressure originating from an unhealthy per-phase
-    // inversion.  This decouples the PS numerical stability from
-    // the outer CAMR advance's dt estimation.
-    if (!P1_bad && !P2_bad) {
-        q(i,j,k, QPRES) = a1 * P1 + a2 * P2;
-    }
+    // QPRES is ALWAYS the P-S 2014 volume-fraction rule now.  It used to be
+    // written only `if (!P1_bad && !P2_bad)`, otherwise leaving the
+    // single-fluid EOS result in place "so the outer hydro machinery
+    // (timestep estimator, plotfile derives) never sees a garbage pressure
+    // originating from an unhealthy per-phase inversion".  Three reasons that
+    // branch goes:
+    //   (1) the value it fell back to no longer exists -- see P_ref above.
+    //   (2) It is no longer needed.  A rejected phase now carries the HOST's
+    //       pressure, which is a state that EXISTS, so the alpha-weighted sum
+    //       is a convex combination of two real pressures rather than of one
+    //       real and one garbage.  Avoiding the latter was the entire reason
+    //       for the wholesale fallback.
+    //   (3) Neither consumer it named still reads this slot.  The timestep
+    //       estimator dispatches to ps_max_wave_speed_from_state, which reads
+    //       the CONSERVED state, not q (f0b22e1); the plotfile pressure
+    //       derive calls ps_mixture_pressure_from_cons on the State MultiFab,
+    //       not on this per-FAB scratch.  The only surviving reader of
+    //       q[QPRES] on the PS path is ps_physical_flux's P_mix
+    //       (PS_umeth.cpp:132), which wants the mixture rule.
+    q(i,j,k, QPRES) = a1 * P1 + a2 * P2;
 }
 
 // ---------------------------------------------------------------------
