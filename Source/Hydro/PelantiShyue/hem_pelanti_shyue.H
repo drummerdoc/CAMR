@@ -105,6 +105,65 @@ struct PsMtStats {
 };
 inline PsMtStats& ps_mt_stats() { static PsMtStats s; return s; }
 
+// ---- MT EARLY-RETURN CAUSE SPLIT (2026-08-13) ---------------------------
+//  Measured first: on B9-Deep-Expansion (exact_suite HEM leg, donor carrier,
+//  103 steps) [ps_mt_diag] reads seen = 1..3, gated = 0, and eqsolve = 0 on
+//  102 of the 103 steps.  So the kernel is ENTERED every step and returns
+//  without ever computing an equilibrium target -- and the return is taken by
+//  one of TEN early exits between ++seen and ++eqsolve, none of which was
+//  counted.  `gated` lumped three of them together in its own comment and in
+//  fact only ever increments on the two alpha_floor cases.
+//
+//  Same instrument as PsFlCause (PS_hllc.H:329), which found the BL-2 limiter
+//  defect in one run after three wrong hypotheses: do not reason about which
+//  return looks guilty, count them.
+//
+//  PS_MT_COEXIST additionally records WHICH of the four coexistence
+//  inequalities closed and the per-phase T that closed it, read from the
+//  branch-locked query.  That number is otherwise unobtainable: the plotfile
+//  `Temp` field is clamped UP to the triple point at CAMR.cpp:1702-1703, i.e.
+//  censored at exactly the threshold this gate tests.
+//
+//  Counting only.  No control flow, no threshold and no default is touched.
+enum PsMtCause {
+    PS_MT_OK          = 0,
+    PS_MT_A_NONFIN    = 1,   // alpha_1 non-finite                    (was gated)
+    PS_MT_A_FLOOR     = 2,   // alpha_1 outside (alpha_floor, 1-floor) (was gated)
+    PS_MT_A_MTTHR     = 3,   // alpha_1 outside the legacy PS_MT_ALPHA_THR band
+    PS_MT_MK          = 4,   // m_1 or m_2 non-positive
+    PS_MT_RHOMIX      = 5,   // rho_mix non-positive
+    PS_MT_PHASE_INVAL = 6,   // a branch-locked phase query returned !valid
+    PS_MT_GH_NONFIN   = 7,   // g or h non-finite on a phase
+    PS_MT_COEXIST     = 8,   // coexistence/dome gate: a T outside (T_trip,T_crit)
+    PS_MT_FRAC        = 9,   // 1-exp(-dt/tau) below 1e-12: MT effectively off
+    PS_MT_GSCREEN     = 10,  // |g1-g2| < tol_g_rel*g_scale: already at Gibbs eq.
+    PS_MT_DM_ZERO     = 11,  // post-solve: dm non-finite or exactly zero
+    PS_MT_WRITEBACK   = 12,  // write-back refused (non-finite / non-positive m)
+    PS_MT_NCAUSE      = 13
+};
+
+inline long& ps_mt_cause(int c) { static long n[PS_MT_NCAUSE] = {0}; return n[c]; }
+inline void  ps_mt_cause_reset() { for (int c = 0; c < PS_MT_NCAUSE; ++c) ps_mt_cause(c) = 0; }
+
+//  Which side of the coexistence gate closed, and the extreme T seen there.
+//  T_lo/T_hi are initialised to sentinels a real query cannot produce, so
+//  "never written" and "written with a physical value" stay distinguishable
+//  (the n_seen/n_reject lesson, PS_guards.H:46-49).
+struct PsMtCoexist {
+    long n_p1_lo = 0, n_p1_hi = 0, n_p2_lo = 0, n_p2_hi = 0;
+    double T1_min =  1.0e300, T1_max = -1.0e300;   // over gate-closing cells
+    double T2_min =  1.0e300, T2_max = -1.0e300;
+    double a1_at_min = -1.0;                       // alpha_1 at the coldest cell
+    void reset() { n_p1_lo = n_p1_hi = n_p2_lo = n_p2_hi = 0;
+                   T1_min = T2_min =  1.0e300;
+                   T1_max = T2_max = -1.0e300;
+                   a1_at_min = -1.0; }
+};
+inline PsMtCoexist& ps_mt_coexist() { static PsMtCoexist c; return c; }
+
+#define PS_MT_REFUSE(cause_, ret_) do { ++hem::ps_mt_cause(cause_); return ret_; } while (0)
+
+
 // ---- iso-pressure-relaxation instrumentation (CAMR.ps_relax_diag) -------
 //  Same question as PsMtStats, for ps_iso_pressure_relax_cell: is the Newton
 //  converging, or falling through to the #41 validity-guarded bracketing
@@ -3065,9 +3124,10 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
     if (!eos.valid()) return false;
     ++ps_mt_stats().seen;                                  // CAMR.ps_mt_diag
     double alpha1 = U[0];
-    if (!std::isfinite(alpha1)) { ++ps_mt_stats().gated; return false; }
+    if (!std::isfinite(alpha1)) { ++ps_mt_stats().gated;
+        PS_MT_REFUSE(PS_MT_A_NONFIN, false); }
     if (alpha1 <= alpha_floor || alpha1 >= 1.0 - alpha_floor) {
-        ++ps_mt_stats().gated; return true; }
+        ++ps_mt_stats().gated; PS_MT_REFUSE(PS_MT_A_FLOOR, true); }
 
     // Skip cells where either phase is in the deep-trace regime.  In
     // those cells the trace phase's rho_k = m_k / α_k is enormously
@@ -3080,13 +3140,14 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
         const char* v = std::getenv("PS_MT_ALPHA_THR");
         return (v && *v) ? std::atof(v) : 5.0e-3;
     }();
-    if (alpha1 <= alpha_mt_thr || alpha1 >= 1.0 - alpha_mt_thr) return true;
+    if (alpha1 <= alpha_mt_thr || alpha1 >= 1.0 - alpha_mt_thr)
+        PS_MT_REFUSE(PS_MT_A_MTTHR, true);
 
     const double m1 = U[1];
     const double m2 = U[2];
-    if (m1 <= 0.0 || m2 <= 0.0) return false;
+    if (m1 <= 0.0 || m2 <= 0.0) PS_MT_REFUSE(PS_MT_MK, false);
     const double rho_mix = m1 + m2;
-    if (rho_mix <= 0.0) return false;
+    if (rho_mix <= 0.0) PS_MT_REFUSE(PS_MT_RHOMIX, false);
     const double u_mix = U[3] / rho_mix;
     const double alpha2 = 1.0 - alpha1;
     const double rho_1 = m1 / alpha1;
@@ -3098,7 +3159,7 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
     p1.alpha = alpha1; p2.alpha = alpha2;
     eos.state_from_rho_e_phase(1, rho_1, e_1, p1);
     eos.state_from_rho_e_phase(2, rho_2, e_2, p2);
-    if (!p1.valid || !p2.valid) return false;
+    if (!p1.valid || !p2.valid) PS_MT_REFUSE(PS_MT_PHASE_INVAL, false);
 
     // The `valid` flag only checks T > 0, P > 0, c > 0.  Gibbs (g) and
     // enthalpy (h) can still be non-finite when a phase is deep in the
@@ -3108,7 +3169,7 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
     // NaN so a bad Newton step doesn't poison U[4]/U[5].
     if (!std::isfinite(p1.g) || !std::isfinite(p2.g) ||
         !std::isfinite(p1.h) || !std::isfinite(p2.h))
-        return false;
+        PS_MT_REFUSE(PS_MT_GH_NONFIN, false);
 
     // Two-phase-coexistence gate (task #35).  Mass transfer is only
     // physical where the two phases form a genuine liquid-vapor
@@ -3129,8 +3190,19 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
     }();
     if (!mt_no_dome_gate) {
         const double T_trip = eos.t_triple(), T_crit = eos.t_crit();  // fluid props from EOS
-        if (p1.T <= T_trip || p1.T >= T_crit ||
-            p2.T <= T_trip || p2.T >= T_crit)
+        const bool cx_p1_lo = (p1.T <= T_trip), cx_p1_hi = (p1.T >= T_crit);
+        const bool cx_p2_lo = (p2.T <= T_trip), cx_p2_hi = (p2.T >= T_crit);
+        if (cx_p1_lo || cx_p1_hi || cx_p2_lo || cx_p2_hi) {
+            PsMtCoexist& cx = ps_mt_coexist();
+            if (cx_p1_lo) ++cx.n_p1_lo;   if (cx_p1_hi) ++cx.n_p1_hi;
+            if (cx_p2_lo) ++cx.n_p2_lo;   if (cx_p2_hi) ++cx.n_p2_hi;
+            if (p1.T < cx.T1_min) { cx.T1_min = p1.T; cx.a1_at_min = alpha1; }
+            if (p1.T > cx.T1_max)   cx.T1_max = p1.T;
+            if (p2.T < cx.T2_min)   cx.T2_min = p2.T;
+            if (p2.T > cx.T2_max)   cx.T2_max = p2.T;
+            ++ps_mt_cause(PS_MT_COEXIST);
+        }
+        if (cx_p1_lo || cx_p1_hi || cx_p2_lo || cx_p2_hi)
             return true;   // not a two-phase cell → no mass transfer
     }
 
@@ -3206,7 +3278,7 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
         //     solve still ran, so CAMR.ps_mt_tau did NOT actually switch MT
         //     off.  Compute frac FIRST and bail when it cannot matter.
         const double frac = -std::expm1(-dt / tau_g);   // 1 - exp(-dt/tau)
-        if (!(frac > 1.0e-12)) return true;             // MT effectively off
+        if (!(frac > 1.0e-12)) PS_MT_REFUSE(PS_MT_FRAC, true);             // MT effectively off
         //
         // (b) Gibbs-equilibrium screen, using the SOLVER'S OWN convergence
         //     test on the CURRENT state.  If it already passes, the Newton
@@ -3217,7 +3289,8 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
         {
             const PsMassTransferParams mt_ref;          // default tol_g_rel
             const double g_scale = std::max({std::abs(p1.g), std::abs(p2.g), 1.0});
-            if (std::abs(g_diff) < mt_ref.tol_g_rel * g_scale) return true;
+            if (std::abs(g_diff) < mt_ref.tol_g_rel * g_scale)
+                PS_MT_REFUSE(PS_MT_GSCREEN, true);
         }
 
         V6 Ueq = U;
@@ -3287,7 +3360,7 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
         if (dm > dm_max_growth) dm = dm_max_growth;
     }
 
-    if (!std::isfinite(dm) || dm == 0.0) return true;
+    if (!std::isfinite(dm) || dm == 0.0) PS_MT_REFUSE(PS_MT_DM_ZERO, true);
 
     //  Energy transfer: interface enthalpy carrier (D2).  Historically HARD-
     //  CODED to the arithmetic mean here, even though PsMassTransferParams
@@ -3351,7 +3424,7 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
     if (!std::isfinite(U1_new) || !std::isfinite(U2_new) ||
         !std::isfinite(U4_new) || !std::isfinite(U5_new) ||
         U1_new <= 0.0 || U2_new <= 0.0)
-        return false;
+        PS_MT_REFUSE(PS_MT_WRITEBACK, false);
     U[1] = U1_new;
     U[2] = U2_new;
     U[4] = U4_new;

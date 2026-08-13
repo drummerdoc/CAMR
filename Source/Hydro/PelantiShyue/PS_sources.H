@@ -341,6 +341,52 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                                << " refused=" << st.cr_refused;
             }
             amrex::Print() << std::endl;
+            //  [PS-MTCAUSE] -- the early-return CAUSE SPLIT (2026-08-13).
+            //  Why it exists: on B9 the line above read seen=1..3, gated=0 and
+            //  eqsolve=0 on 102 of 103 steps, i.e. every cell entering the
+            //  kernel returned before the equilibrium solve, through one of ten
+            //  UNCOUNTED early exits.  `seen` minus `eqsolve` must now be fully
+            //  accounted for by the causes printed here; anything left over is
+            //  an exit this list has missed.  Same instrument as [PS-FLCAUSE].
+            {
+                long tot = 0;
+                for (int c = 1; c < hem::PS_MT_NCAUSE; ++c) tot += hem::ps_mt_cause(c);
+                if (tot > 0) {
+                    static const char* nm[hem::PS_MT_NCAUSE] = {
+                        "ok", "a_nonfin", "a_floor", "a_mtthr", "mk", "rhomix",
+                        "phase_inval", "gh_nonfin", "coexist", "frac",
+                        "gscreen", "dm_zero", "writeback" };
+                    amrex::Print() << "[PS-MTCAUSE]";
+                    for (int c = 1; c < hem::PS_MT_NCAUSE; ++c) {
+                        if (hem::ps_mt_cause(c) > 0) {
+                            amrex::Print() << "  " << nm[c] << "="
+                                           << hem::ps_mt_cause(c);
+                        }
+                    }
+                    amrex::Print() << "   (total=" << tot << ")" << std::endl;
+                    //  The coexistence gate is the one whose closing quantity is
+                    //  otherwise unobservable: the plotfile Temp field is clamped
+                    //  UP to the triple point (CAMR.cpp:1702-1703), so a
+                    //  sub-triple-point per-phase T cannot be read from output.
+                    //  These T come straight from the branch-locked query.
+                    if (hem::ps_mt_cause(hem::PS_MT_COEXIST) > 0) {
+                        hem::PsMtCoexist& cx = hem::ps_mt_coexist();
+                        amrex::Print()
+                            << "[PS-MTCOEX]  p1_lo=" << cx.n_p1_lo
+                            << " p1_hi="  << cx.n_p1_hi
+                            << " p2_lo="  << cx.n_p2_lo
+                            << " p2_hi="  << cx.n_p2_hi
+                            << "  T1=["   << cx.T1_min << ", " << cx.T1_max << "]"
+                            << "  T2=["   << cx.T2_min << ", " << cx.T2_max << "]"
+                            << "  alpha_1 at coldest T1 = " << cx.a1_at_min
+                            << "  (T_triple=" << EOS::T_triple()
+                            << ", T_crit="   << EOS::T_crit() << ")"
+                            << std::endl;
+                    }
+                }
+                hem::ps_mt_cause_reset();
+                hem::ps_mt_coexist().reset();
+            }
             st.reset();
         }
 

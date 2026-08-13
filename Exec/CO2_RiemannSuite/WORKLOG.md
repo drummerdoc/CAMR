@@ -2341,3 +2341,189 @@ grown.
 thermal rate, flash margin, MT carrier, split runaway).  The plateau is a
 starved hand-off between a nucleator that stops at 2 % and a transfer operator
 whose driving force has already been spent.
+
+### MT CAUSE SPLIT: the plateau is the COEXISTENCE GATE, and it self-locks (2026-08-13)
+
+**The previous entry's diagnosis was wrong, and the counter that refutes it took
+one run.**  "The plateau is a starved hand-off: MT's gate is open but its Gibbs
+driving force is 1.5e-3 relative" does not survive contact with the run.
+
+**First, two facts read off the existing instrument.**  B9-Deep-Expansion,
+exact_suite HEM leg, donor carrier, 103 steps, completes:
+
+    dt = 7.6356e-06 s   tau_mt = 1e-7   dt/tau = 76.4
+      ->  frac = 1 - exp(-dt/tau) = 1.0000000 to machine precision
+
+    [ps_mt_diag]  seen = 1..3 per step   gated = 0 always
+                  eqsolve = 1 on step 1, and 0 on the other 102 steps
+
+`frac = 1` matters as much as `eqsolve = 0`.  On the default path
+(`ps_mass_transfer_finite_cell`, OPTION 2) the transfer is `dm = frac * dm_eq`,
+an EXACT relaxation onto the equilibrium target, and the function's own comment
+states `g_ref` is unused there because "magnitude comes from dm_eq".  So at the
+gate settings MT is not rate-limited at all: when it acts it applies the WHOLE
+equilibrium transfer in one step.  The Gibbs difference enters only as a yes/no
+screen at `tol_g_rel = 1e-4`.  **A "1.5e-3 relative driving force" therefore
+cannot be a rate statement about this path, and the 0-D probe that produced it
+was reading a quantity that sets no magnitude.**
+
+And `eqsolve = 0` with `seen >= 1` and `gated = 0` says the kernel is ENTERED
+every step and returns before computing a target, through one of TEN early
+exits between `++seen` and `++eqsolve` — **none of which was counted.**  `gated`
+covers only the two `alpha_floor` cases despite its comment claiming "trace
+phase / dome / coexistence gate".
+
+**The instrument** (`PsMtCause`, `hem_pelanti_shyue.H`; reported as
+`[PS-MTCAUSE]` / `[PS-MTCOEX]` under the existing `CAMR.ps_mt_diag`).  Thirteen
+named causes, one `++` per early return, no control flow touched.  Same
+instrument as `PsFlCause`, for the same reason: do not reason about which return
+looks guilty, count them.  `[PS-MTCOEX]` additionally records WHICH of the four
+coexistence inequalities closed and the per-phase T that closed it.
+
+**RESULT — one cause, all three cases, zero unaccounted:**
+
+    case   seen   eqsolve   seen-eqsolve   causes                unaccounted
+    B9      204        3            201    coexist 201                     0
+    B2      145        2            143    coexist 143                     0
+    B7      492        2            490    coexist 490                     0
+
+Over 834 refusals, `coexist` is the ONLY cause that ever fires.  `gscreen` = 0.
+`frac` = 0.  `phase_inval` = 0.  `gh_nonfin` = 0.  `a_mtthr` = 0.  The Gibbs
+screen — the mechanism the previous entry blamed — never fires once.
+
+**And it is always the VAPOUR, from opposite ends of the band:**
+
+    case  side     T_1 [K]              T_2 [K]                alpha_1 at onset
+    B9    p2_lo    268.67 .. 268.96     183.67 .. 202.08       0.0208
+    B2    p2_lo    254.87 .. 255.29     195.38 .. 205.62       0.0145
+    B7    p2_hi    279.62 .. 280.59     304.71 .. 1811.20      0.0407
+
+    T_triple = 216.592 K      T_crit = 304.13 K
+
+`p1_lo = p1_hi = 0` in all three: the liquid never trips the gate.  B2/B9's
+vapour is 14-33 K BELOW the triple point; B7's is ABOVE the critical point.
+The gate is `hem_pelanti_shyue.H`:
+
+    if (p1.T <= T_trip || p1.T >= T_crit ||
+        p2.T <= T_trip || p2.T >= T_crit)
+        return true;   // not a two-phase cell -> no mass transfer
+
+**THE GATE SELF-LOCKS.**  `ps_canonical_relax_cell`'s finite-rate thermal leg
+(mode 4) is gated by the SAME coexistence test (`coexist = ... q.T > Ttr &&
+q.T < Tcr`).  So the one operator that could bring `T_2` back inside the band is
+disabled by the test that requires `T_2` to be inside the band.  Once a cell's
+vapour leaves the band it can never return: MT off, thermal off, and flash is
+separately gated off for a both-Independent cell (`PS_sources.H` S4 gate).  Zero
+conversion channels.  **That is the plateau.**
+
+Note the onset alpha in every case: 0.0145 - 0.0407, i.e. at or just above
+`alpha_birth = 2e-2`.  The vapour is OUTSIDE the coexistence band from the first
+step of its life — born there by the flash, not driven there over time.  "Seeded
+but never grown" is exactly right, and now has a mechanism.
+
+**This retires, with a measurement rather than an argument:**
+  * the starved hand-off / spent driving force (gscreen 0 of 834);
+  * the tau_theta sweep's puzzle — donor flat to 0.2 % over four orders of
+    magnitude BECAUSE the thermal leg is behind the closed gate.  Its rate
+    cannot matter if the gate never opens.  Recorded then as "the thermal
+    relaxation is inert in these cells"; now attributed;
+  * the flash metastability margin (flash is nucleation-only AND the cell is
+    born out of band);
+  * the MT carrier as the plateau's cause (the carrier is consulted only AFTER
+    the gate; it can only matter on the 2-3 steps per case where MT acts).
+
+**It also unifies B7 with B2/B9.**  B7's "vapour too hot" abort and B2/B9's
+"liquid too cold" abort are the same defect from the two ends of the same band,
+with the gate keeping the runaway un-relaxed in both directions.  B7's `T_2`
+reaching 1811 K is that runaway with nothing permitted to damp it.
+
+**The diagnostic that should have shown this is censored.**  `CAMR.cpp`:
+
+    if (l_ps_hydro != 0 && Sarr(i,j,k,UTEMP) < l_T_trip)
+      Sarr(i,j,k,UTEMP) = l_T_trip;
+
+clamps the reported `Temp` UP to the triple point — at exactly the threshold the
+gate tests.  The plotfile reads 216.592 in the parked cells; the true `T_2` is
+183.7.  The file already names it ("a surviving silent floor on a diagnostic
+field; it now also masks a legitimately sub-triple-point per-phase T"); this is
+that mask costing a session.  `[PS-MTCOEX]` reads T from the branch-locked query
+instead, so it cannot be censored the same way.
+
+**Verified inert, MEASURED not argued.**  The pre-edit binary was rebuilt from
+`git show HEAD:` and `exact_suite` run on both: the two 19-case tables are
+identical line for line, including B3's absolute-u column at 3.125e-11.  (That
+figure is recorded here because it differs in its third digit from the 3.141e-11
+in the V8 entry, which predates W2-2/W2-2b — 3.125e-11 is the W2-2b value, and
+it was NOT moved by this change.)  B2 and B9 still abort at the default mean
+carrier, unchanged.
+
+**SEPARATE FINDING, recorded per Marc's decision, not acted on: the D2 knob does
+not reach the equilibrium target.**  Three ways in which
+`ps_mass_transfer_finite_cell`'s STEP and its TARGET `dm_eq` are computed under
+different rules:
+
+  1. PATH.  `dm_eq` comes from `ps_mass_transfer_relax_cell`, whose
+     `apply_dm_and_query` moves mass at FIXED alpha, and whose nested pressure
+     relaxation is OFF by default (`PS_MT_NEST_PR = 0`, turned off for cost with
+     the comment conceding `dm_eq` changes "at order unity").  The STEP applies
+     (E.1), `dalpha_1 = -dm/rho_1`.  Along fixed-alpha `d(rho_1)/dm = 1/alpha_1`;
+     along (E.1) it is exactly 0.  So the target's Gibbs sensitivity carries a
+     `1/alpha_1` amplification the step does not have, and the target transfer
+     is systematically too small — worst at small alpha_1.
+  2. CARRIER.  `mt_eq` is default-constructed, so `h_interface_weight = 0.5`
+     always; `eq_solver_params` sets only `dome_gate` and `nest_pressure_relax`.
+     **`CAMR.ps_mt_h_weight` changes the step's carrier and never the target's.**
+     So `-1` is not "the upwind convention" — it is an upwind step against a mean
+     target.  Every `ps_mt_h_weight` measurement on record, including today's
+     B7 mean-completes / upwind-aborts reversal, is comparing consistent-mean
+     against inconsistent, NOT one carrier convention against another.  **Task
+     #15 and the D2 re-derivation cannot be answered with the knob in this
+     state.**  D2 stays parked.
+  3. NO THERMAL CONDITION.  The MT target solves `g1 = g2` only — one equation,
+     one unknown.  Nothing anywhere asserts that the composite of {mechanical,
+     thermal, MT} has saturation (`P1=P2, T1=T2, g1=g2`) as its fixed point.
+     Task #14's question is a confirmed structural gap, not a suspicion.
+
+Also consistent with (1): the 5.2 contraction-ratio diagnostic measures the step
+against `ps_mass_transfer_relax_cell` — the same fixed-alpha target — which is
+why it was measured ANTI-correlated with trouble (worst at the clean production
+tau, ~1 at the failing tau).  It is scoring the step against a manifold the step
+does not travel.
+
+**DO NOT RESURRECT** (this session): the Gibbs driving force as the plateau's
+limiter; MT's rate or `tau_mt` as the limiter (frac = 1.0 — MT is fully relaxed
+whenever it runs); `tau_theta` (the thermal leg is behind the closed gate).
+
+**NEXT — and this is now a DESIGN question, not a code change.**  The gate is
+not obviously wrong: it was added (task #35/#37) for a real defect, the B10
+cross-critical over-development, where `g1 != g2` between a liquid and a
+SUPERCRITICAL vapour is not a phase-change driving force.  The question is what
+the correct response is for a phase that has left the coexistence band, given
+that `return true` — do nothing — provably makes the state permanent:
+
+  Q1  Is a vapour at 183 K and 5.5 bar a physical state of this problem (CO2
+      sub-triple-point is the SOLID region; `Psat(216.592) = 5.18e5 Pa`, so at
+      5.5 bar the saturation temperature is barely above the triple point), or
+      is the vapour phase being numerically over-cooled at the birth front?
+      The flash injects the newborn phase at its SATURATION DENSITY (E1b,
+      `ps_flash_project_sat`); if its ENERGY is not the matching saturation
+      energy the newborn vapour lands off the dome, cold, and the gate shuts on
+      it immediately.  That is checkable in 0-D with the existing dilute probe
+      and is the first thing to measure.
+  Q2  Should the coexistence gate gate MASS TRANSFER and THERMAL RELAXATION
+      identically?  They are different claims: "g1-g2 is not a phase-change
+      driving force here" does not imply "T1 and T2 must not equilibrate".
+      Ungating the thermal leg alone breaks the self-lock and is the smallest
+      change that could — but B4's measured history is the counter-argument
+      (the same gate was added to the thermal leg because driving T1->T2 at a
+      cross-critical contact collapsed B4's star velocity, u-err 0.13 -> 0.44),
+      so it must not be ungated blindly.
+  Q3  Should leaving the band be an EVENT with a named response (fold, abort,
+      or a counted metastable continuation) rather than a silent no-op? The
+      ground rules say anything that must survive gets named and counted; a
+      permanent, unrecoverable state entered by a silent `return true` is the
+      shape of thing they forbid.
+
+Q1 is a measurement and comes first.  Q2/Q3 are the design note, and the
+coupling question now has a concrete referent: three operators sharing ONE
+eligibility predicate that each of them can invalidate for the others.
