@@ -2527,3 +2527,94 @@ that `return true` — do nothing — provably makes the state permanent:
 Q1 is a measurement and comes first.  Q2/Q3 are the design note, and the
 coupling question now has a concrete referent: three operators sharing ONE
 eligibility predicate that each of them can invalidate for the others.
+
+### THE DRIVING FORCE IN THE REFUSED CELLS IS OF ORDER ONE (2026-08-13)
+
+`[PS-MTDRIVE]`, two lines added to the cause-split instrument: `p1.g` and
+`p2.g` are already formed when the coexistence gate fires, so the Gibbs driving
+force in the refused cells costs nothing to record.  It had never been measured,
+because **the gate returns before `g_diff` is constructed** — the only number on
+record, 1.5e-3 relative, came from a hand-built 0-D state at T1 = T2 = 280 K
+near saturation, which is not a state these cells are ever in.
+
+Also recorded: `P_1 / Psat(T_1)`, the flash's OWN metastability criterion, so
+the number is interpretable rather than merely large.
+
+**Measured, first step and last step of each run:**
+
+    case  step   g1 - g2 [J/kg]              |g1-g2|/g        P_1/Psat(T_1)
+    B9    first  3.535e4                     1.227            0.136
+    B9    last   1.954e4 .. 3.000e4          0.679 .. 1.039   0.163 .. 0.176
+    B2    first  2.796e4                     1.352            0.200
+    B2    last   2.069e4 .. 2.515e4          1.011 .. 1.220   0.231 .. 0.240
+    B7    first  2.018e5                     1.192            0.025
+    B7    last   2.128e5 .. 3.335e6          1.010 .. 1.181   0.029 .. 0.124
+
+    for scale:  tol_g_rel = 1e-4  (the Gibbs screen these cells would have met
+                                   next, had the gate not fired first)
+                L_EOS ~ 2.7e5 J/kg at 260 K (latent heat, this EOS)
+
+**The relative driving force is of ORDER ONE — 0.68 to 1.35 — which is FOUR
+ORDERS OF MAGNITUDE above the screen and about a THOUSAND TIMES the 1.5e-3
+the 0-D probe reported.**  In absolute terms `g1 - g2` is 2.0e4 to 3.3e6 J/kg,
+i.e. comparable to and on B7 an order of magnitude beyond the latent heat
+itself.
+
+`P_1/Psat(T_1) = 0.025 .. 0.24`: the liquid is at 2.5-24 % of its own
+saturation pressure.  For scale, the 2026-08-12 flash sweep called 0.869,
+0.686 and 0.415 "METASTABLE, eligible".  **These liquids are far more stretched
+than anything in that sweep** — B7's is at 2.5 % of Psat, a 39x superheat.
+
+**So the cells the gate refuses are the most violently evaporating cells in the
+problem.**  Not a spent driving force — the largest one anywhere in the run.
+This retires "starved hand-off" completely, including the arithmetic it rested
+on: the 1.5e-3 figure was measured at a state the failing cells are nowhere
+near, and generalising it was the error.
+
+**What it makes of the earlier measurements, now consistent end to end:**
+
+  * `frac = 1 - exp(-dt/tau_mt) = 1.0` at the gate settings, so the
+    "finite-rate" MT operator is running in its INSTANTANEOUS limit.  Combined
+    with a driving force of order one, ungating it (M1) asks it to apply the
+    ENTIRE equilibrium transfer of an enormous disequilibrium in ONE step — and
+    the measured result was exactly that: all three cases abort with a phase
+    driven past the reachable bound at the T = 1 K bracket end.  The gate is
+    not suppressing a small correction; it is the only thing standing between
+    a full-strength one-step projection and the EOS domain edge.
+  * The transfer's DIRECTION is right (liquid strongly superheated, g_1 > g_2,
+    dm > 0 = evaporation).  Its SIZE, and the path it is computed on, are not.
+  * Evaporation would deposit latent heat in the vapour and raise the pressure
+    toward the reference's two-phase fan.  So **the gate blocks the one process
+    that would cure the condition the gate is testing for.**  The self-lock,
+    now quantified from both ends.
+
+**And the exact solutions contain no solid CO2** — the reference two-phase fan
+sits at 10.19-31.32 bar (B9) and 8.31-19.78 bar (B2), against
+`Psat(T_triple) = 5.18` bar.  `Psat` is monotone in T, so every two-phase state
+in the reference is above the triple point by a factor 1.6-6 in pressure.  The
+5 bar far field is a superheated vapour at 280 K, not a solid-region state.
+CAMR's own two-phase cells sit at 5.1-5.5 bar, i.e. at the FAR-FIELD pressure:
+the evaporation wave never develops, so the star pressure never climbs, so the
+saturation temperature there is at the triple point.  **The sub-triple-point
+vapour is not physics the model is missing.  It is the consequence of the wave
+not forming.**
+
+**This reopens a decision that was deferred for want of exactly this
+measurement.**  DESIGN_ps_extinction.md 5.2 recorded (Marc, 2026-08-10):
+"a CONTROLLER is a deferred decision, taken only if measurements show
+non-contractive cells at production or stiff-sweep settings."  The stiff-sweep
+setting is `tau_mt = 1e-7` with `dt = 7.6e-6`; `frac = 1`; and the one-step
+transfer is measured to leave the EOS domain in all three cases.  That is the
+triggering measurement.  Options (a) stage-uniform sub-cycling, (b) per-cell
+contractivity-controlled sub-cycling, (c) lagged global dt backstop are on the
+record there, ranked for GPU lock-step friendliness.  Note (b) was already
+argued to "demote D2 from must-get-right to affects-path-not-endpoint" — which
+is now doubly relevant, since D2's knob does not reach the target anyway.
+
+Caveat kept explicit: the 5.2 contraction ratio itself cannot arbitrate this,
+because it scores the step against `ps_mass_transfer_relax_cell`, the same
+fixed-alpha target the step does not travel (12.3 D-B(1)).  The controller
+question is live; the metric that was supposed to decide it is not yet sound.
+
+**Verified inert, again measured not argued**: `exact_suite` identical to the
+rebuilt-HEAD baseline on all 19 rows, including B3's 3.125e-11.

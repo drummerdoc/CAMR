@@ -382,6 +382,18 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                             << "  (T_triple=" << EOS::T_triple()
                             << ", T_crit="   << EOS::T_crit() << ")"
                             << std::endl;
+                        //  The driving force in the refused cells.  The gate
+                        //  returns before g_diff is formed, so this has never
+                        //  been measured where it matters.  grel is what the
+                        //  Gibbs screen (tol_g_rel = 1e-4) would have seen next.
+                        amrex::Print()
+                            << "[PS-MTDRIVE] g1-g2=[" << cx.gd_min << ", "
+                            << cx.gd_max << "] J/kg"
+                            << "   |g1-g2|/g=[" << cx.grel_min << ", "
+                            << cx.grel_max << "]  vs tol_g_rel=1e-4"
+                            << "   P1/Psat(T1)=[" << cx.pr1_min << ", "
+                            << cx.pr1_max << "] on " << cx.n_pr1 << " cells"
+                            << std::endl;
                     }
                 }
                 hem::ps_mt_cause_reset();

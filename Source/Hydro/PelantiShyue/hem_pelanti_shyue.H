@@ -154,10 +154,29 @@ struct PsMtCoexist {
     double T1_min =  1.0e300, T1_max = -1.0e300;   // over gate-closing cells
     double T2_min =  1.0e300, T2_max = -1.0e300;
     double a1_at_min = -1.0;                       // alpha_1 at the coldest cell
+    //  THE DRIVING FORCE THE GATE NEVER LETS ANYONE SEE (2026-08-13).
+    //  The dome gate returns BEFORE g_diff is formed, so no measurement of the
+    //  Gibbs driving force has ever been taken in the cells that are actually
+    //  refused.  The only number on record -- 1.5e-3 relative -- comes from a
+    //  hand-built 0-D state at T1 = T2 = 280 K near saturation, which is not
+    //  the state these cells are in.  p1.g and p2.g are already computed at
+    //  the gate, so this costs nothing.
+    //  Compare grel against tol_g_rel = 1e-4, the screen these cells WOULD
+    //  have met next had the gate not fired first.
+    double gd_min   =  1.0e300, gd_max   = -1.0e300;   // signed g1-g2 [J/kg]
+    double grel_min =  1.0e300, grel_max = -1.0e300;   // |g1-g2|/max(|g1|,|g2|,1)
+    //  Liquid metastability, on the flash's OWN criterion: P_1 / Psat(T_1).
+    //  < 1 means the liquid is stretched below its saturation pressure, i.e.
+    //  superheated and wanting to evaporate; the flash fires below ~0.9.
+    double pr1_min  =  1.0e300, pr1_max  = -1.0e300;
+    long   n_pr1    = 0;                               // cells where it was formed
     void reset() { n_p1_lo = n_p1_hi = n_p2_lo = n_p2_hi = 0;
                    T1_min = T2_min =  1.0e300;
                    T1_max = T2_max = -1.0e300;
-                   a1_at_min = -1.0; }
+                   a1_at_min = -1.0;
+                   gd_min = grel_min = pr1_min =  1.0e300;
+                   gd_max = grel_max = pr1_max = -1.0e300;
+                   n_pr1 = 0; }
 };
 inline PsMtCoexist& ps_mt_coexist() { static PsMtCoexist c; return c; }
 
@@ -3200,6 +3219,24 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
             if (p1.T > cx.T1_max)   cx.T1_max = p1.T;
             if (p2.T < cx.T2_min)   cx.T2_min = p2.T;
             if (p2.T > cx.T2_max)   cx.T2_max = p2.T;
+            const double gd_here = p1.g - p2.g;
+            const double gs_here = std::max({std::abs(p1.g), std::abs(p2.g), 1.0});
+            const double gr_here = std::abs(gd_here) / gs_here;
+            if (gd_here < cx.gd_min)   cx.gd_min   = gd_here;
+            if (gd_here > cx.gd_max)   cx.gd_max   = gd_here;
+            if (gr_here < cx.grel_min) cx.grel_min = gr_here;
+            if (gr_here > cx.grel_max) cx.grel_max = gr_here;
+            //  Only where Psat is defined -- outside (T_triple, T_crit) the
+            //  correlation has no meaning, and a sentinel-free count says so.
+            if (eos.Psat_of_T && p1.T > T_trip && p1.T < T_crit) {
+                const double ps1 = eos.Psat_of_T(p1.T);
+                if (std::isfinite(ps1) && ps1 > 0.0) {
+                    const double r1 = p1.P / ps1;
+                    if (r1 < cx.pr1_min) cx.pr1_min = r1;
+                    if (r1 > cx.pr1_max) cx.pr1_max = r1;
+                    ++cx.n_pr1;
+                }
+            }
             ++ps_mt_cause(PS_MT_COEXIST);
         }
         if (cx_p1_lo || cx_p1_hi || cx_p2_lo || cx_p2_hi)
