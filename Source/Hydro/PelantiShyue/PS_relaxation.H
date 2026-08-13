@@ -121,6 +121,7 @@ ps_make_camr_eos_api()
     // two-phase gates stay agnostic to the specific fluid — no hardcoded
     // triple point / critical temperature in the gate code.
     api.T_crit_K   = double(EOS::T_crit());
+    api.P_crit_Pa  = double(EOS::P_crit());
     api.T_triple_K = double(EOS::T_triple());
     // E2' (DESIGN_ps_extinction.md §10, Marc-approved 2026-08-10): under
     // presence, hand the mechanical-relax kernels the backend's density
@@ -540,6 +541,7 @@ ps_ptg_relax_cell(int i, int j, int k,
 
 inline int ps_mech_kernel();   // fwd decl (defined with the cached flags)
 inline int ps_coexist_action();  // fwd decl (defined with the cached flags)
+inline int ps_theta_model();     // fwd decl (defined with the cached flags)
 
 // -----------------------------------------------------------------
 //  ps_canonical_relax_cell (ps_relax_mode=4): the canonical-chain
@@ -716,8 +718,19 @@ ps_canonical_relax_cell(int i, int j, int k,
             else if (cxa == 4 && lo_side)  run_thermal = true;
         }
         if (run_thermal) {
+            //  CAMR.ps_theta_model = 1: theta from the HRM correlation at this
+            //  cell's own state instead of the global constant.  q1/q2 are the
+            //  post-mechanical phase states built just above, so P is the
+            //  relaxed (P_1 == P_2) pressure and T_1 is the liquid temperature
+            //  -- the two choices named in ps_hrm_theta's header.
+            double theta_use = double(theta);
+            if (ps_theta_model() == 1) {
+                const double alpha_v = 1.0 - a1n;      // phase 2 is the vapour
+                theta_use = hem::ps_hrm_theta(eos, alpha_v, q1.P, q1.T,
+                                              double(theta));
+            }
             hem::ps_iso_thermal_relax_cell_finite(Uv, eos, double(dt),
-                                                  double(theta));
+                                                  theta_use);
         }
 #ifdef CAMR_PS_DIAG
         {
@@ -1010,6 +1023,25 @@ inline int ps_coexist_action()
         return v;
     }();
     return a;
+}
+
+// -----------------------------------------------------------------
+//  CAMR.ps_theta_model (default 0) -- where the THERMAL relaxation time comes
+//  from.  0 = the constant CAMR.ps_theta_tau, exactly as before and
+//  bit-identical.  1 = the HRM correlation of Downar-Zapolski et al. (1996),
+//  evaluated per cell; see hem::ps_hrm_theta and
+//  LITERATURE_relaxation_rates.md.  ps_theta_tau is then the FALLBACK used
+//  wherever the correlation is undefined, and every such use is counted.
+// -----------------------------------------------------------------
+inline int ps_theta_model()
+{
+    static const int m = []() -> int {
+        int v = 0;
+        amrex::ParmParse pp("CAMR");
+        pp.query("ps_theta_model", v);
+        return v;
+    }();
+    return m;
 }
 
 // GPU-port B2 (default 0 = host MFIter+LoopOnCpu path).  When 1, modes 0/2/3

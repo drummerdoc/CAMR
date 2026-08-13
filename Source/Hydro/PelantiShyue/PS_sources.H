@@ -254,6 +254,13 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
             double v = 0.5; amrex::ParmParse pp("CAMR");
             pp.query("ps_mt_h_weight", v); return v; }();
         const double l_mt_h_w = mt_h_w;
+        //  CAMR.ps_mt_tau_model: 0 = the constant CAMR.ps_mt_tau (default,
+        //  bit-identical); 1 = the HRM correlation per cell.  Host-read once,
+        //  threaded by value (GPU rules 12.2).
+        static const int mt_tau_model = []() -> int {
+            int v = 0; amrex::ParmParse pp("CAMR");
+            pp.query("ps_mt_tau_model", v); return v; }();
+        const int l_mt_tau_model = mt_tau_model;
         for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
             const amrex::Box bx = mfi.growntilebox(nghost);
             amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
@@ -295,7 +302,8 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                 const hem::V6 Uv_pre = Uv;
                 if (hem::ps_mass_transfer_finite_cell(Uv, eos, double(dt), double(tau),
                                                       1.0e-6, double(gref), l_mt_upd,
-                                                      l_mt_cr, l_mt_h_w)) {
+                                                      l_mt_cr, l_mt_h_w,
+                                                      l_mt_tau_model)) {
                     // B3 reproject: only when MT actually transferred mass
                     // (the kernel returns true on its internal gates too,
                     // with Uv untouched -- the bitwise test excludes those,
@@ -533,6 +541,46 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
         }
         BL_PROFILE_VAR_STOP(ps_src_tp);
     }
+    // ---- [PS-HRM]: one report per step, AFTER both consumers -------------
+    //  theta is taken in ps_apply_relaxation and tau_mt here, so this is the
+    //  only point at which a step's whole HRM usage is visible.  Deliberately
+    //  NOT gated on either dial: the first version was gated on
+    //  ps_theta_model==1 and therefore printed NOTHING for a run using the
+    //  correlation on tau_mt -- a guard that cannot be observed firing, which
+    //  is the exact failure PS_guards.H:46-49 exists to prevent.  It printed a
+    //  clean zero and I nearly drew a conclusion from it.
+    {
+        hem::PsHrmRange& r = hem::ps_hrm_range();
+        long nfb = 0;
+        for (int c = 1; c < hem::PS_HRM_NCAUSE; ++c) nfb += hem::ps_hrm_cause(c);
+        if (r.n > 0 || nfb > 0) {
+            static const int rx = []() -> int {
+                int v = 0; amrex::ParmParse pp("CAMR");
+                pp.query("ps_prdiag", v); return v; }();
+            if (rx != 0) {
+                static const char* hn[hem::PS_HRM_NCAUSE] = {
+                    "ok","supercrit","psat_bad","denom","psi_zero","alpha_zero","nonfin" };
+                amrex::Print() << "[PS-HRM] used=" << r.n;
+                if (r.n > 0) {
+                    amrex::Print() << "  theta=[" << r.th_min << ", " << r.th_max << "] s"
+                                   << "  psi=["   << r.psi_min << ", " << r.psi_max << "]";
+                }
+                if (nfb > 0) {
+                    amrex::Print() << "   FALLBACK=" << nfb << " (";
+                    for (int c = 1; c < hem::PS_HRM_NCAUSE; ++c) {
+                        if (hem::ps_hrm_cause(c) > 0) {
+                            amrex::Print() << " " << hn[c] << "=" << hem::ps_hrm_cause(c);
+                        }
+                    }
+                    amrex::Print() << " )";
+                }
+                amrex::Print() << std::endl;
+            }
+            r.reset();
+            hem::ps_hrm_reset();
+        }
+    }
+
 }
 
 #endif // PS_SOURCES_H

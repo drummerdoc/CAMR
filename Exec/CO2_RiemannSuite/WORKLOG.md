@@ -2873,3 +2873,101 @@ knows whether it is a mixture or a smeared contact.
 discriminator (mode 2 aborts, mode 4 aborts, both from a one-sided pump);
 a single theta serving both regimes (disjoint windows, three orders apart);
 a smaller timestep as a cure (mode 0 moves 0.15 % at 10x and aborts at 76x).
+
+### HRM IMPLEMENTED AND MEASURED: it works, and it does not close the wall
+### (2026-08-13)
+
+Marc: "Let's try HRM.  That seems consistent with work done in my group."
+Built as two independent dials, both default 0 and bit-identical
+(`exact_suite` identical to the rebuilt-HEAD baseline on all 19 rows):
+
+    CAMR.ps_theta_model  = 1   theta   from the HRM correlation, per cell
+    CAMR.ps_mt_tau_model = 1   tau_mt  from the HRM correlation, per cell
+
+    theta = 3.84e-7 * alpha_v^(-0.54) * psi^(-1.76),
+    psi   = |Psat(T_1) - P| / (P_crit - Psat(T_1))
+
+Downar-Zapolski et al. 1996, high-pressure set; full sourcing and the two
+named choices (Psat at the LIQUID temperature; which knob it drives) are in
+LITERATURE_relaxation_rates.md.  Six degeneracies are named, counted and fall
+back to the constant; `[PS-HRM]` reports the theta range produced and every
+fallback by cause.  `EOS::P_crit()` added to PR/EOS.H (one more entry on the
+7.1 debt, noted in place).
+
+**RESULT 1 — driving THETA with it is the WRONG MAPPING, measured.**  B9 aborts.
+`[PS-HRM]` shows why: theta spans 1.8e-6 to 2.44e-4 s, and B9's measured abort
+threshold is 1e-5.  The correlation SLOWS DOWN as psi -> 0, i.e. approaching
+saturation.  That is right for phase change and wrong for heat exchange: two
+phases in contact conduct heat regardless of how close to equilibrium they are.
+Suppressing the thermal leg near saturation simply re-creates the self-lock.
+This confirms the caveat written into the literature note before the test.
+
+**RESULT 2 — driving TAU_MT with it is the right mapping, works, and changes
+almost nothing.**  Mode 3, B9:
+
+    theta 3e-6 constant, tau_mt constant    0.0652 / 0.4187 / 0.2184
+    theta 3e-6 constant, tau_mt HRM         0.0653 / 0.4195 / 0.2089
+    theta 1e-7 constant, tau_mt HRM         0.0913 / 0.4930 / 0.2624
+    theta 1e-7 constant, tau_mt constant    0.0912 / 0.4924 / 0.2625
+
+The correlation IS being exercised -- 191 evaluations, spanning
+
+    tau = 2.68e-9 s  (psi = 17.3, far from saturation)
+       .. 1.39e-1 s  (psi = 7.0e-4, essentially at saturation)
+
+**eight orders of magnitude, from local state alone** -- and the answer does not
+move.  The reason is structural and worth recording: the default MT path is
+`dm = (1 - exp(-dt/tau)) * dm_eq`, an EXACT relaxation onto the equilibrium
+target.  It ALREADY slows to nothing near equilibrium, because `dm_eq -> 0`
+there.  A state-dependent tau that also grows near equilibrium is
+**double-counting the same physics**.  Where tau becomes large, `dm_eq` is
+already small; where `dm_eq` is large, tau is small and `frac` is 1 either way.
+The two mechanisms are redundant by construction.
+
+**RESULT 3 — as a drop-in with the default gate it does nothing**, as expected,
+because MT is gated off there: B9 0.8890 -> 0.8611, B2 0.9186 -> 0.9213, B7
+bit-identical.
+
+**RESULT 4 — it does not touch the B4/B10 side, exactly as predicted in the
+literature note 4.2** (mode 3, theta 3e-6):
+
+    B4   tau const 0.6988  ->  HRM 0.6838      baseline 0.1262
+    B10  tau const 0.4861  ->  HRM 0.4474      baseline 0.1202
+    B2, B7  abort either way
+
+`psi` needs `Psat(T)`, which does not exist above the critical point, so at a
+cross-critical contact the correlation declines and falls back to the constant.
+A flashing correlation has nothing to say about a smeared material contact.
+
+**THE ONE GENUINELY NEW RESULT, and it is not about HRM at all.**  Under mode 3
+mass transfer starts working, for the first time in this project:
+
+    B9, [ps_mt_diag] summed over the run     mode 0        mode 3
+      cells entering the MT kernel  seen        204           487
+      reaching the equilibrium solve  eqsolve     3           197
+      committed transfers                         6           394
+
+**eqsolve goes from 3 to 197 and MT commits 394 times, with MT's own gate
+completely unchanged.**  Ungating the THERMAL leg warms the vapour back into the
+coexistence band, which opens MASS TRANSFER's gate by itself.  That is the
+self-lock demonstrated end to end from the other direction, and it is the
+mechanism, not a correlation, that produced B9's improvement.
+
+**INSTRUMENT BUG OF MINE, caught by its own discipline.**  The first `[PS-HRM]`
+report was gated on `ps_theta_model == 1`, so a run using the correlation on
+`tau_mt` printed NOTHING -- a clean zero from which I nearly concluded "HRM is
+inert".  That is precisely the failure `PS_guards.H:46-49` exists to prevent: a
+guard that cannot be observed firing cannot be reasoned about.  The report now
+lives at the end of `ps_apply_sources`, after BOTH consumers, and is gated on
+the counters being non-zero rather than on any dial.
+
+**WHERE THIS LEAVES THE WALL.**  Unmoved.  The flashing half of it is closed by
+`ps_coexist_action=3` -- ungating the thermal leg -- and not by HRM.  The
+cross-critical half is untouched by anything tried today.  HRM's value is that
+it removes `tau_mt` as a hand-set constant and is defensible from the literature
+for this exact application; its measured effect on these cases is nil, and it
+should be adopted, if at all, on those grounds rather than on results.
+
+**DO NOT RE-TRY**: HRM on theta (wrong mapping, B9 aborts); HRM as a cure for
+B4/B10 (undefined above the critical point); HRM expecting it to change the
+answer where MT uses exact relaxation onto dm_eq (redundant by construction).

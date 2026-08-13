@@ -105,6 +105,15 @@ namespace EOS {
   amrex::Real T_crit()   { return co2_fluid().pr.Tc; }        // critical T [K]
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   amrex::Real T_triple() { return amrex::Real(216.592); }     // triple-point T [K]
+
+  //  Critical pressure, needed by the HRM relaxation-time correlation
+  //  (LITERATURE_relaxation_rates.md 4).  Same source as T_crit: the PR
+  //  parameter set, not a second hard-coded constant.
+  //  NOTE this adds one more entry to the documentary-only EOS contract
+  //  (STATUS_multiphase.md 4/7.1); GERG, GERGTab and PRTab do not define
+  //  it, exactly as they do not define REY2PTS_phase_try.
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  amrex::Real P_crit()   { return co2_fluid().pr.Pc; }        // critical P [Pa]
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   amrex::Real P_triple() { return amrex::Real(5.1795e5); }    // triple-point P [Pa]
 

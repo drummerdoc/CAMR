@@ -180,6 +180,72 @@ struct PsMtCoexist {
 };
 inline PsMtCoexist& ps_mt_coexist() { static PsMtCoexist c; return c; }
 
+// ---------------------------------------------------------------------
+//  HRM THERMAL RELAXATION TIME (2026-08-13).  See
+//  LITERATURE_relaxation_rates.md 4 for the sources and the reasoning.
+//
+//  WHY.  Measured 2026-08-13: a single global theta cannot serve this suite.
+//  B9 needs theta <= 3e-6 s and B4/B10 need >= 1e-2 s, disjoint by three orders
+//  of magnitude, because theta is set by the interfacial area a cell's two
+//  phases share and the cases are morphologically different objects.  The
+//  flashing-flow literature does not derive theta from geometry; it correlates
+//  it against local thermodynamic state:
+//
+//      theta = theta_0 * alpha_v^(-0.54) * psi^(-1.76)
+//      psi   = |Psat(T) - P| / (P_crit - Psat(T))
+//      theta_0 = 3.84e-7 s
+//
+//  Downar-Zapolski, Bilicki, Bolle & Franco, Int. J. Multiphase Flow 22(3)
+//  473-493 (1996), high-pressure parameter set as quoted by Saha, Som &
+//  Battistoni, J. Eng. Gas Turbines Power 138(5) 052208 (2016).  Applied to
+//  full-bore rupture of dense-phase CO2 pipelines by Brown, Martynov, Proust &
+//  Mahgerefteh, Int. J. Greenhouse Gas Control (2013).
+//
+//  The physics it encodes is the right shape: far from saturation (large psi,
+//  strongly metastable) relaxation is FAST; approaching saturation it slows.
+//
+//  TWO CHOICES ARE MADE HERE AND NAMED RATHER THAN BURIED:
+//   (a) WHICH TEMPERATURE.  Psat is evaluated at the LIQUID temperature T_1.
+//       The liquid is the phase that flashes, and P_1/Psat(T_1) is already the
+//       metastability measure this project reports ([PS-MTDRIVE]).  With
+//       T_1 != T_2 the correlation is ambiguous; this resolves it explicitly.
+//   (b) WHICH KNOB.  HRM's theta relaxes vapour QUALITY in a model with ONE
+//       relaxation process.  Ours is the THERMAL time, with tau_mt separate.
+//       Driving theta is defensible -- the measured sensitivity is
+//       overwhelmingly to it, and at the gate settings frac = 1 makes tau_mt
+//       inert -- but it IS a choice.  See the literature note, 7.
+//
+//  DEGENERACIES.  The correlation is undefined or singular in four places.  Per
+//  the ground rules none of them is silently floored: each is NAMED, COUNTED,
+//  and falls back to the constant theta so the fallback is visible in a counter
+//  rather than hidden in a value.  theta -> +inf is NOT a degeneracy: the
+//  kernel forms frac = 1 - exp(-dt/theta), so a huge theta means "do not
+//  relax", which is exactly the intended meaning and needs no cap.
+// ---------------------------------------------------------------------
+enum PsHrmCause {
+    PS_HRM_OK        = 0,
+    PS_HRM_SUPERCRIT = 1,   // T_1 >= T_crit: Psat does not exist
+    PS_HRM_PSAT_BAD  = 2,   // Psat non-finite or non-positive
+    PS_HRM_DENOM     = 3,   // P_crit - Psat <= 0 (at or past the critical point)
+    PS_HRM_PSI_ZERO  = 4,   // P == Psat exactly: psi = 0, theta singular
+    PS_HRM_ALPHA_ZERO= 5,   // alpha_v == 0: no vapour to relax with
+    PS_HRM_NONFIN    = 6,   // the result came out non-finite
+    PS_HRM_NCAUSE    = 7
+};
+inline long& ps_hrm_cause(int c) { static long n[PS_HRM_NCAUSE] = {0}; return n[c]; }
+inline void  ps_hrm_reset() { for (int c = 0; c < PS_HRM_NCAUSE; ++c) ps_hrm_cause(c) = 0; }
+//  Range of theta actually produced -- the whole question is whether it spans
+//  the orders of magnitude the wall demands, so it is reported, not assumed.
+struct PsHrmRange {
+    double th_min = 1.0e300, th_max = -1.0e300;
+    double psi_min = 1.0e300, psi_max = -1.0e300;
+    long   n = 0;
+    void reset() { th_min = psi_min = 1.0e300; th_max = psi_max = -1.0e300; n = 0; }
+};
+inline PsHrmRange& ps_hrm_range() { static PsHrmRange r; return r; }
+
+
+
 #define PS_MT_REFUSE(cause_, ret_) do { ++hem::ps_mt_cause(cause_); return ret_; } while (0)
 
 
@@ -274,6 +340,7 @@ struct PsPhaseAPI {
     // gates below stay agnostic to the specific fluid.  <= 0 means "unset";
     // the accessors then fall back to the CO2 values as a safety default.
     double T_crit_K   = 0.0;
+    double P_crit_Pa  = 0.0;   // HRM theta correlation; 0 = not set
     double T_triple_K = 0.0;
     // E2' (DESIGN_ps_extinction.md §10): the backend's density-validity
     // domain.  When SET (>0), the alpha-adjusting mechanical relax kernels
@@ -287,6 +354,7 @@ struct PsPhaseAPI {
     double rho_dom_hi = 0.0;
     bool has_rho_dom() const { return rho_dom_lo > 0.0 && rho_dom_hi > rho_dom_lo; }
     double t_crit()   const { return (T_crit_K   > 0.0) ? T_crit_K   : 304.13; }
+    double p_crit()   const { return (P_crit_Pa  > 0.0) ? P_crit_Pa  : 7.3773e6; }
     double t_triple() const { return (T_triple_K > 0.0) ? T_triple_K : 216.6; }
 
     bool valid() const {
@@ -297,6 +365,35 @@ struct PsPhaseAPI {
             && static_cast<bool>(rf2.P) && static_cast<bool>(rf2.c);
     }
 };
+
+//  Returns the HRM theta, or theta_fallback with a counted cause.
+inline double ps_hrm_theta(const PsPhaseAPI& eos, double alpha_v, double P,
+                           double T_liquid, double theta_fallback)
+{
+    constexpr double THETA_0 = 3.84e-7;   // s, Downar-Zapolski high-pressure set
+    if (!(alpha_v > 0.0)) { ++ps_hrm_cause(PS_HRM_ALPHA_ZERO); return theta_fallback; }
+    const double Tc = eos.t_crit();
+    if (!(T_liquid < Tc))  { ++ps_hrm_cause(PS_HRM_SUPERCRIT);  return theta_fallback; }
+    if (!eos.Psat_of_T)    { ++ps_hrm_cause(PS_HRM_PSAT_BAD);   return theta_fallback; }
+    const double Psat = eos.Psat_of_T(T_liquid);
+    if (!std::isfinite(Psat) || Psat <= 0.0) {
+        ++ps_hrm_cause(PS_HRM_PSAT_BAD); return theta_fallback; }
+    const double denom = eos.p_crit() - Psat;
+    if (!(denom > 0.0)) { ++ps_hrm_cause(PS_HRM_DENOM); return theta_fallback; }
+    const double psi = std::abs(Psat - P) / denom;
+    if (!(psi > 0.0))   { ++ps_hrm_cause(PS_HRM_PSI_ZERO); return theta_fallback; }
+    const double th = THETA_0 * std::pow(alpha_v, -0.54) * std::pow(psi, -1.76);
+    if (!std::isfinite(th) || th <= 0.0) {
+        ++ps_hrm_cause(PS_HRM_NONFIN); return theta_fallback; }
+    PsHrmRange& r = ps_hrm_range();
+    if (th  < r.th_min)  r.th_min  = th;
+    if (th  > r.th_max)  r.th_max  = th;
+    if (psi < r.psi_min) r.psi_min = psi;
+    if (psi > r.psi_max) r.psi_max = psi;
+    ++r.n;
+    ++ps_hrm_cause(PS_HRM_OK);
+    return th;
+}
 
 
 // ---------------------------------------------------------------------
@@ -3137,7 +3234,8 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
                                           double g_ref = 0.0,
                                           int update_alpha = -1,
                                           int diag_contract = 0,
-                                          double h_w = 0.5)
+                                          double h_w = 0.5,
+                                          int tau_model = 0)
 {
     if (tau_g <= 0.0 || dt <= 0.0) return false;
     if (!eos.valid()) return false;
@@ -3241,6 +3339,19 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
         }
         if (cx_p1_lo || cx_p1_hi || cx_p2_lo || cx_p2_hi)
             return true;   // not a two-phase cell → no mass transfer
+    }
+
+    //  CAMR.ps_mt_tau_model = 1: take the MASS-TRANSFER time from the HRM
+    //  correlation at this cell's own state instead of the global constant.
+    //  This is the mapping the literature actually supports: HRM's theta
+    //  relaxes vapour QUALITY, i.e. it is a mass-transfer time, in a model
+    //  whose single relaxation process IS the phase change.  Driving our
+    //  THERMAL time with it was measured 2026-08-13 to be the wrong mapping --
+    //  the correlation slows down near saturation, which is right for phase
+    //  change and wrong for heat exchange between two phases in contact.
+    //  See LITERATURE_relaxation_rates.md 7.
+    if (tau_model == 1) {
+        tau_g = ps_hrm_theta(eos, 1.0 - alpha1, p1.P, p1.T, tau_g);
     }
 
     // Finite-rate dm/dt = +k (g_1 - g_2) with k = rho_mix / tau_g.
