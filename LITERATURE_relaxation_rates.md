@@ -333,6 +333,27 @@ matters for us, because CAMR is an AMR code and 2-D is the destination.
 **Cost:** lowest of any option.  **Verdict:** cheap and structurally unsound in
 the geometry we are heading for.
 
+**MEASURED 2026-08-13 AND REFUTED OUTRIGHT, for a reason better than any of the
+three above.**  `[PS-MORPH]` reports `s`, the largest one-cell jump in `alpha_1`
+at a cell.  Over full runs of the matched pair:
+
+    B11  smeared CONTACT     worst s per step: median 0.374   (spread ~3 cells)
+    B9   dispersed MIXTURE   worst s per step: median 0.861   (spread ~1 cell)
+
+The MIXTURE is sharper than the CONTACT.  The indicator does not merely fail to
+separate them, it separates them BACKWARDS: "sharp => contact => slow theta"
+would have applied the wrong theta to both.  The reason is that sharpness
+measures how much NUMERICAL DIFFUSION a feature has accumulated -- a function of
+how far and how fast it has advected -- and not of sub-grid morphology.  B11's
+contact is translated 8.7 cells and smears; B9's flashing front is nearly
+stationary in the mesh and is continually re-sharpened by the dynamics.
+
+Note this failure is dimension-independent: it happens in 1-D, at 64 cells, and
+owes nothing to orientation, `dx`-scaling or AMR.  The multi-D objections stand
+but were never the binding ones.  **The corollary is the positive result: the
+two cells differ in their HISTORY, which a local field cannot carry and a
+TRANSPORTED variable can.  That is a measured argument for 8.3/8.4.**
+
 ### 8.2 Flow-regime maps  (nuclear system codes)
 
 Algebraic classification of a cell into bubbly / slug / churn / annular from

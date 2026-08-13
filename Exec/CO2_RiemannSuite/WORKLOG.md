@@ -3052,3 +3052,66 @@ mixture can carry the same alpha, the same phase densities and energies, the sam
 P and the same two temperatures, and still need theta four orders of magnitude
 apart.  No function of the six-equation state can separate them.  That is the
 DESIGN_ps_extinction 12.9 Y1/Y2 question, now with its premise measured.
+
+### [PS-MORPH]: the morphology assumption made observable — and on its FIRST
+### RUN it kills the gradient-indicator family outright (2026-08-13)
+
+`CAMR.ps_diag_morph = 1`, default off, verified inert (`exact_suite` identical
+on all 20 rows).  Counts, per step, how many cells are being treated as a
+DISPERSED mixture while carrying an interface that is sharp at the grid scale.
+It fixes nothing; it makes an assumption that has always been implicit into a
+number.  Two populations, because the exposure differs:
+
+    RELAXING   both phases INDEPENDENT -> theta and tau_mt act on the cell
+    TWOPHASE   alpha_1 strictly interior -> the Wallis MIXTURE SOUND SPEED is
+               formed for it regardless, and that feeds S_L/S_R, hence every
+               flux and the timestep.  The larger and less examined exposure.
+
+The measure is `s` = the largest one-cell jump in `alpha_1` touching the cell,
+dimensionless in [0,1], needing no length scale (so no 1/dx).  Sharp contact ->
+s ~ 1; smooth mixture -> s small.  Four cut levels are printed rather than one,
+deliberately: this is a COUNTER, not a classifier, and no single threshold is
+allowed to decide anything.
+
+**AND THE FIRST RUN REFUTES 8.1 OF THE LITERATURE NOTE.**  Over full runs:
+
+    case                        steps  relaxing cells/step   worst s on relaxing cells
+                                          mean              min     median    max
+    B11  smeared CONTACT         140      4.2              0.334    0.374    0.937
+    B9   dispersed MIXTURE       191      2.5              0.844    0.861    0.989
+
+**The MIXTURE is SHARPER than the CONTACT, by more than a factor of two in the
+median.**  Not "fails to discriminate" -- discriminates BACKWARDS.  Had we built
+the obvious indicator ("sharp => contact => slow theta"), it would have called
+B9's mixture a contact at s = 0.86 and B11's contact a mixture at s = 0.37, and
+applied precisely the wrong theta to both.
+
+**Why, and this is the useful part.**  `s` measures how much NUMERICAL DIFFUSION
+has acted on a feature, which depends on how far and how fast it has advected --
+not on sub-grid morphology.  B11's contact is carried 8.7 cells at 200 m/s over
+140 steps and accumulates smearing, so it spreads over ~3 cells (s ~ 0.37).
+B9's flashing front is nearly stationary in the mesh and is continually
+re-sharpened by the dynamics, so it stays ~1 cell wide (s ~ 0.86).
+
+**So the discriminator cannot be the instantaneous alpha field, at all.**  The
+two cells differ in their HISTORY -- B9's interface has been stretched and
+broken up by an expansion, B11's has merely been translated -- and the local
+alpha profile does not carry history.  Only a TRANSPORTED quantity can.
+
+That is a measured argument for the Sigma-transport family (literature note 8.3
+/ 8.4) and against every instantaneous-field indicator (8.1, 8.5), and it is far
+stronger than the orientation / dx-scaling / AMR-jump objections I had been
+making, which were all theoretical.  It also means the gradient family fails at
+64 cells for a reason that has nothing to do with dimensionality -- so it would
+fail in 1-D too, and Marc's multi-D concern, though correct, was not even the
+binding objection.
+
+**What the diagnostic says about our current exposure**, both cases, per step:
+relaxing cells are few (mean 2.5-4.2 of 64) but the TWOPHASE population -- every
+cell for which a single mixture sound speed is manufactured -- is the same order
+and is present on every two-phase case in the suite.  The sound-speed assumption
+is therefore live everywhere, not just at the handful of relaxing cells, which is
+the point recorded in LITERATURE_relaxation_rates.md 9 and still untested.
+
+**DO NOT BUILD**: any morphology classifier keyed on the instantaneous alpha
+field or its derivatives.  Measured backwards on the one matched pair we have.

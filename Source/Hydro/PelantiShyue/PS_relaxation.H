@@ -1074,6 +1074,147 @@ inline amrex::Real ps_theta_tau()
 }
 
 // Cached CAMR.ps_prehydro_diag (#88 diagnostic, default 0 = off).  When 1,
+// -----------------------------------------------------------------
+//  ps_report_morphology  --  CAMR.ps_diag_morph (default 0 = off).
+//
+//  WHAT IT IS FOR.  Measured 2026-08-13 (B11, WORKLOG): the correct thermal
+//  relaxation time differs by three and a half orders of magnitude between a
+//  cell that is a DISPERSED two-phase mixture and one that is a numerically
+//  SMEARED MATERIAL CONTACT, and the six-equation state cannot tell them apart.
+//  CAMR currently assumes DISPERSED everywhere, silently, in at least these
+//  places (LITERATURE_relaxation_rates.md 9):
+//      - theta, the thermal relaxation time
+//      - tau_mt, the mass-transfer time
+//      - the Wallis frozen mixture sound speed c^2 = Y_1 c_1^2 + Y_2 c_2^2,
+//        which presumes ONE acoustic speed describes the cell and which feeds
+//        S_L/S_R directly, hence every flux and the timestep
+//  This report does not fix any of that.  It makes the assumption OBSERVABLE:
+//  it counts, per step, how many cells are being treated as a dispersed mixture
+//  while actually carrying an interface that is sharp at the grid scale.
+//
+//  THIS IS A COUNTER, NOT A CLASSIFIER, and the distinction is the whole point.
+//  A gradient-based test is unsound as a SWITCH -- it is orientation-dependent,
+//  its threshold scales with dx, and it jumps at AMR coarse-fine boundaries
+//  (8.1 of the literature note).  None of that matters for REPORTING, and to
+//  keep it honest no single cut is used to decide anything: four levels are
+//  printed so the distribution is visible rather than a threshold's verdict.
+//
+//  THE MEASURE.  s = the largest one-cell jump in alpha_1 touching the cell,
+//      s = max over directions d of max(|a(i+e_d) - a(i)|, |a(i) - a(i-e_d)|)
+//  dimensionless, in [0,1], and needing no length scale -- so it does not carry
+//  the 1/dx that makes |grad alpha| awkward.  It also behaves correctly under
+//  refinement: a genuine contact stays one to two cells wide, so s stays O(1),
+//  while a physically smooth alpha field gives s ~ dx/L and falls toward zero.
+//  Sharp interface -> s near 1.  Real mixture -> s small.
+//
+//  TWO POPULATIONS are reported because the exposure differs:
+//    RELAXING  both phases INDEPENDENT, so theta and tau_mt act on the cell.
+//    TWOPHASE  alpha_1 strictly interior, so the MIXTURE SOUND SPEED is formed
+//              for it whether or not any relaxation runs.  This is the larger
+//              population and the larger unexamined exposure.
+//  Host-only, no reductions in the solution path, no state mutated.
+// -----------------------------------------------------------------
+inline int ps_diag_morph()
+{
+    static const int v = []() -> int {
+        int x = 0; amrex::ParmParse pp("CAMR");
+        pp.query("ps_diag_morph", x); return x; }();
+    return v;
+}
+
+inline void
+ps_report_morphology(amrex::MultiFab& S_new, const char* label, int level,
+                     long step)
+{
+#if !defined(AMREX_USE_GPU)
+    using amrex::Real;
+    if (ps_diag_morph() == 0) return;
+    const PsPres pr = ps_presence_params();
+    constexpr int NLEV = 4;
+    const Real cut[NLEV] = {Real(0.1), Real(0.3), Real(0.5), Real(0.9)};
+    long n_two = 0, n_rel = 0;
+    long two_above[NLEV] = {0,0,0,0}, rel_above[NLEV] = {0,0,0,0};
+    Real s_worst_rel = Real(0.0), s_worst_two = Real(0.0);
+    int  iw = -1, jw = 0, kw = 0;
+
+    for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
+        const amrex::Box bx = mfi.validbox();
+        amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
+        const amrex::Box fb = amrex::grow(mfi.validbox(), S_new.nGrow());
+        amrex::LoopOnCpu(bx, [&] (int i, int j, int k) noexcept
+        {
+            const Real a1 = U(i,j,k, UALPHA1);
+            if (!std::isfinite(a1)) return;
+            const Real m1 = U(i,j,k, UM1RHO1), m2 = U(i,j,k, UM2RHO2);
+            //  TWOPHASE: alpha strictly interior -> a mixture sound speed is
+            //  formed for this cell.  Uses the presence vanish level, not a
+            //  new constant.
+            const bool twophase = (a1 > pr.alpha_vanish) &&
+                                  (a1 < Real(1.0) - pr.alpha_vanish);
+            if (!twophase) return;
+            //  RELAXING: both phases INDEPENDENT -> theta / tau_mt act here.
+            const bool relaxing =
+                (ps_regime(a1, m1, pr) == PsRegime::Independent) &&
+                (ps_regime(Real(1.0) - a1, m2, pr) == PsRegime::Independent);
+            //  s: the largest one-cell jump in alpha_1 touching this cell,
+            //  over every coordinate direction.  Neighbours are clamped into
+            //  the grown box so an edge cell uses a one-sided difference
+            //  instead of reading outside the FAB.
+            Real s = Real(0.0);
+            auto jump = [&](int di, int dj, int dk) {
+                const int ii = amrex::min(amrex::max(i+di, fb.smallEnd(0)), fb.bigEnd(0));
+#if (AMREX_SPACEDIM >= 2)
+                const int jj = amrex::min(amrex::max(j+dj, fb.smallEnd(1)), fb.bigEnd(1));
+#else
+                const int jj = j; amrex::ignore_unused(dj);
+#endif
+#if (AMREX_SPACEDIM == 3)
+                const int kk = amrex::min(amrex::max(k+dk, fb.smallEnd(2)), fb.bigEnd(2));
+#else
+                const int kk = k; amrex::ignore_unused(dk);
+#endif
+                const Real an = U(ii,jj,kk, UALPHA1);
+                if (std::isfinite(an)) s = amrex::max(s, std::abs(an - a1));
+            };
+            jump(+1,0,0); jump(-1,0,0);
+#if (AMREX_SPACEDIM >= 2)
+            jump(0,+1,0); jump(0,-1,0);
+#endif
+#if (AMREX_SPACEDIM == 3)
+            jump(0,0,+1); jump(0,0,-1);
+#endif
+            ++n_two;
+            if (s > s_worst_two) s_worst_two = s;
+            for (int L = 0; L < NLEV; ++L) if (s > cut[L]) ++two_above[L];
+            if (relaxing) {
+                ++n_rel;
+                for (int L = 0; L < NLEV; ++L) if (s > cut[L]) ++rel_above[L];
+                if (s > s_worst_rel) { s_worst_rel = s; iw = i; jw = j; kw = k; }
+            }
+        });
+    }
+    if (n_two == 0) return;
+    amrex::Print() << "[PS-MORPH] L" << level << " step " << step << " " << label
+                   << ": twophase=" << n_two << " relaxing=" << n_rel << "\n"
+                   << "           s = largest one-cell |d alpha_1| at the cell"
+                   << "   (sharp contact -> s ~ 1, real mixture -> s small)\n"
+                   << "           RELAXING  (theta/tau_mt act):";
+    for (int L = 0; L < NLEV; ++L) {
+        amrex::Print() << "  s>" << cut[L] << ":" << rel_above[L];
+    }
+    amrex::Print() << "   worst s=" << s_worst_rel;
+    if (iw >= 0) amrex::Print() << " at (" << iw << "," << jw << "," << kw << ")";
+    amrex::Print() << "\n"
+                   << "           TWOPHASE  (mixture sound speed formed):";
+    for (int L = 0; L < NLEV; ++L) {
+        amrex::Print() << "  s>" << cut[L] << ":" << two_above[L];
+    }
+    amrex::Print() << "   worst s=" << s_worst_two << std::endl;
+#else
+    amrex::ignore_unused(S_new, label, level, step);
+#endif
+}
+
 // ps_report_temps prints per-phase T extremes at the labeled point so we can
 // see whether the dilute-phase overheat is born in the HYDRO (pre-relax) or the
 // RELAXATION (post-relax).  Diagnostic only; no effect on the solution.

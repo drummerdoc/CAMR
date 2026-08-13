@@ -439,6 +439,10 @@ CAMR::CAMR_advance (Real time,
         PS_CELL_PROBE(S, "B  post clean_state    ");
         diag_a1(S, "reaction pre-relax");   // entering: reflects hydro/advection/C-F
         ps_report_temps(S, "pre-relax (post-hydro)", geom, ng);  // #88 diag
+        //  CAMR.ps_diag_morph: how many cells are being treated as a dispersed
+        //  mixture while carrying a grid-sharp interface.  Reported BEFORE the
+        //  relaxation, i.e. on the state the relaxation is about to act on.
+        ps_report_morphology(S, "pre-relax ", level, parent->levelSteps(level));
         if (ps_do_relax_cached != 0) {
             ps_apply_relaxation(S, dt_r, ng, do_print);   // dt for finite-rate thermal (mode 2)
             clean_state(S, false); // intermediate: skip the UTEMP diagnostic sweep
