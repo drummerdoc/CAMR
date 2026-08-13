@@ -300,3 +300,181 @@ the correlation should drive is itself a decision.  Given that our measured
 sensitivity is overwhelmingly to `theta` (B9 spans working-to-abort across it)
 and that with `frac = 1.0` our `tau_mt` is currently inert, driving `theta` is
 the defensible first choice — but it should be stated as a choice.
+
+---
+
+## 8. The morphology-indicator families, and what they cost in 2-D and 3-D
+
+Added 2026-08-13 after B11 established that the discriminator is morphology and
+not criticality.  Ordered by ambition.  The 2-D/3-D column is the one that
+matters for us, because CAMR is an AMR code and 2-D is the destination.
+
+### 8.1 Gradient / sharpness indicators  (this note's old Y2)
+
+`|grad alpha| * dx` as a dimensionless sharpness, or any variant.
+
+**1-D:** trivial, one stencil pass, like a derive.
+**2-D/3-D — and Marc's objection is correct, with three distinct failure modes:**
+
+  1. ORIENTATION.  A contact aligned with the mesh smears over one or two cells;
+     the same physical contact at 45 degrees smears over more.  The indicator
+     therefore reads differently for the same physical object depending on how
+     it happens to lie on the grid.
+  2. RESOLUTION.  At a genuinely sharp interface `|grad alpha| ~ 1/dx` by
+     construction, so any threshold has to be scaled by `dx` -- and then it is
+     a threshold on a quantity whose value is set by the mesh, not the flow.
+  3. AMR, which is fatal for us.  The same interface gives a different indicator
+     on level 0 and level 1, so the classification -- and hence theta -- JUMPS
+     at every coarse-fine boundary.  We would be inserting a discontinuous
+     closure switch precisely where the solution is already most delicate.
+     This is the G1/G3 and min-phi failure shape again, and it would be
+     self-inflicted.
+
+**Cost:** lowest of any option.  **Verdict:** cheap and structurally unsound in
+the geometry we are heading for.
+
+### 8.2 Flow-regime maps  (nuclear system codes)
+
+Algebraic classification of a cell into bubbly / slug / churn / annular from
+superficial velocities and void fraction, each regime carrying its own
+correlation set.  RELAP5, TRACE, CATHARE.
+
+The criticism is not mine; it comes from inside that community.  Wang, Sun,
+Doup & Zhao, NURETH-14 (2011), INL/CON-11-20869 **[verified]**: the maps were
+"developed for steady-state, fully-developed flows" yet are "widely applied" to
+transient and developing flows, and the codes "assume that one flow regime can
+potentially be switched to a different flow regime instantaneously without
+considering any time scale or length scale", whereas "in reality, the
+occurrence of the flow regime transition is not instantaneous".
+
+**2-D/3-D:** this family does not port at all.  Superficial velocity is a
+pipe-cross-section concept; there is no meaningful regime map for a general 3-D
+cell.  **Verdict:** the frank-engineering end, and 1-D-pipe-shaped by
+construction.
+
+### 8.3 Interfacial area density Sigma as ONE transported scalar
+
+Two lineages with the same state variable:
+  * IATE (Ishii), from nuclear thermal-hydraulics -- closures for coalescence
+    and breakup;
+  * ELSA / Sigma-Y (Vallet & Borghi lineage), used in 3-D LES of atomizing
+    sprays -- the same variable, used practically at scale.
+
+**2-D/3-D — this is the important structural point.**  `Sigma` is a SCALAR.
+Storage, flux, AMR interpolation, reflux and the presence bookkeeping all cost
+exactly what any other conserved scalar costs.  There is no
+orientation-dependence, no threshold, and nothing that jumps at a coarse-fine
+boundary -- the indicator is advected and refluxed like mass.  **Dimensionality
+enters only in the SOURCE terms**, where stretching by the resolved flow
+involves the full velocity-gradient tensor.  That is more algebra in 3-D, not a
+different kind of problem.
+
+**Verdict:** the only family whose *structure* ports cleanly.  Its weakness is
+entirely in the closures (8.4 below), not in the geometry.
+
+### 8.4 Sigma plus curvature — the two-scale geometric family
+
+Drui/Larat/Kokh/Massot; Cordesse et al. **[the Cordesse derivation verified]**.
+Carries `Sigma` and mean curvature (and in the fuller "geometric method"
+further moments of the interface geometry), derived by variational calculus,
+with both scales assumed present everywhere so that **there is no switch and no
+threshold anywhere in the formulation**.
+
+**2-D/3-D:** more variables, all still per-cell scalars; the derivation is
+dimension-general.  The difficulty is not dimensionality -- it is that the
+augmented system's hyperbolicity and its numerics are themselves open research
+questions, and that `Sigma` feeds back into the sound speed, so the wave
+structure changes.  **Verdict:** the principled answer; research-grade.
+
+### 8.5 Sub-grid interface reconstruction (PLIC-style, from VOF)
+
+Reconstruct a plane per cell from `alpha` and its gradient and read the area off
+directly.
+
+**2-D:** manageable, well-trodden.  **3-D:** PLIC with AMR is a substantial
+piece of machinery in its own right, and it inherits every one of 8.1's
+gradient pathologies plus reconstruction ambiguity at thin filaments.
+**Verdict:** the worst 2-D -> 3-D scaling of the five.
+
+(A sixth direction, learned regime classifiers, has appeared recently.  I did
+not research it and make no claim about it.)
+
+---
+
+## 9. Would a morphology indicator change decisions elsewhere in CAMR?
+
+**Yes — and the more important half of the answer is that CAMR ALREADY makes a
+morphology assumption in several places, silently, and always in the DISPERSED
+direction.**  An indicator would not be adding a new concept; it would be making
+an existing hidden one explicit.  Audited in the source:
+
+| site | the hidden assumption | consequence at a resolved contact |
+|:--|:--|:--|
+| `theta`, thermal relaxation | phases share enough interfacial area to equilibrate in ~1e-7 s | **measured**: B4/B10/B11 damaged; 3.5 orders wrong |
+| `tau_mt`, mass transfer | same | same argument; HRM keys on state, not morphology |
+| coexistence gate | a binary proxy for morphology | would be replaced outright |
+| **mixture sound speed** `c^2 = Y_1 c_1^2 + Y_2 c_2^2` (`PS_hllc.H:303`) | the cell's phases are mixed finely enough that ONE acoustic speed describes them | **there is no mixture sound speed at a contact** — waves reflect and transmit at the interface.  It feeds `S_L`/`S_R` directly (`PS_hllc.H:375-376`), so it sets the fan width, EVERY flux, and the timestep |
+| shared contraction ratio `r_K` (`PS_hllc.H:488-495`, Pelanti 2022 B.14) | both phase masses scale by the SAME factor through the acoustic fan, i.e. acoustic compression does not change composition | true for a dispersed mixture; false at a contact, where the acoustic wave lives in one phase only |
+| flash eligibility (`w_alpha` dominance ramp) | nucleation happens in bulk metastable liquid | a morphology statement already, just an implicit one |
+| (E.1) transfer at donor density, and the D1/D2 carrier questions | the mental picture is an evaporating droplet | the interface-displacement picture at a contact is different |
+| surface tension | **absent entirely** (grepped: no capillarity anywhere) | consistent for a dispersed model; a morphology-aware model that knows it has a resolved interface would want it, and in 2-D/3-D it is what keeps interfaces from wrinkling without bound |
+
+**The sound-speed row is the one nobody has been looking at.**  It is a bigger
+lever than `theta`: it sets the wave fan and the timestep on every cell of every
+case, whereas `theta` only acts where the relaxation runs.  If morphology is
+real -- and B11 says it is -- then the frozen mixture speed is wrong at
+contacts, and it has been wrong at every contact in every run.
+
+**What would NOT change, and this matters for the project's exposure.**  The
+presence model is untouched: `alpha_cond` is a CONDITIONING bound on the
+quotient `m_k/alpha_k`, a statement about the scheme's advection error, with no
+morphology content at all.  ABSENT / CORRIDOR / INDEPENDENT survives intact.  So
+does the wave-propagation front work (W2-1, W2-2, W2-2b), the phase-energy
+identity, and the conservation machinery -- all morphology-neutral.  **A
+morphology indicator would not invalidate this year's work; it would sit beside
+it.**
+
+---
+
+## 10. Solved problem, or engineering hack?
+
+Neither, and the split is worth being precise about.
+
+  * **Mature but narrow.**  IATE for adiabatic bubbly flow in pipes: decades of
+    work, benchmark experiments, and at least five competing closure sets (Wu;
+    Ishii & Kim; Hibiki & Ishii; Yao & Morel; Nguyen), typically 2-4 empirical
+    constants per mechanism.  The 2021 *Entropy* review **[verified]** states the
+    closures are "strongly dependent on the channel size and geometry", with
+    different sets for narrow confined channels, round pipes and larger pipes,
+    and its scope is explicitly ADIABATIC -- it discusses no flashing
+    applications.  This is a solved problem for a regime that is not ours.
+  * **Frank engineering.**  Flow-regime maps (8.2), criticised from within the
+    nuclear community as static, steady-state-derived, and switching with no
+    time or length scale.
+  * **Practical, widely used in 3-D, and tuned.**  ELSA/Sigma-Y in atomization.
+  * **Principled but unproven.**  The two-scale geometric family: recent,
+    variational, threshold-free -- and with hyperbolicity and numerics still
+    open, and nothing validated for flashing CO2.
+  * **Absent.**  The strongest single data point is a negative one: the 2025
+    open-access review of diffuse-interface methods **[verified]** gives NO
+    criterion for distinguishing a resolved interface from a mixture, NO guidance
+    on which relaxation applies where, and NO discussion of interfacial area as a
+    closure for relaxation rates.
+
+**Verdict: not a solved problem.**  There is a mature apparatus for a regime
+that is not ours, a promising theory not validated for our fluid or our regime,
+and a good deal of case-specific correlation in between.  Going there is
+research, not implementation.  The honest framing is that **our wall is a known
+open problem in the field rather than a defect in our model** -- which is worth
+saying plainly in any writeup, because it changes what "done" means for the
+1-D work item.
+
+**The cheapest defensible position, available now.**  Because the code already
+assumes dispersed everywhere (9) and B11 shows contacts are damaged at the
+default today, the minimal honest step is not to build an indicator at all: it
+is to make the existing assumption EXPLICIT AND COUNTED -- state in
+STATUS_multiphase.md that every relaxation and the mixture sound speed presume a
+dispersed cell, and add a diagnostic that reports how many cells per step are
+being treated as dispersed while carrying a sharp interface.  That costs
+essentially nothing, it is exactly the discipline this project already applies to
+guards, and it converts an invisible modelling assumption into a measured one.
