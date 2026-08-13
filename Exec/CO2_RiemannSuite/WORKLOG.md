@@ -2298,3 +2298,46 @@ This supersedes the plateau explanations tried today: it is not a wrong
 equilibrium, not the thermal rate, not the flash margin, and not the carrier.
 Nothing converts because the one operator that can nucleate a two-phase cell
 returns without acting.
+
+### RESOLVED (diagnosis): flash is NUCLEATION-ONLY, and the hand-off to MT starves
+
+Cause found without the counter split -- the 0-D probe localised it directly.
+`ps_flash_source_cell` seeds the minority phase up to `alpha_seed_target = 0.02`
+and **declines once that is reached** (`hem_pelanti_shyue.H:3778`,
+`if (alpha_2_new <= alpha_2) return false;`).  Measured, T = 280 K,
+rho_1 = 820 (P = 0.686 Psat, strongly metastable), deep-liquid regime:
+
+    alpha_2 = 0.001   FLASH fired=1   alpha_1 0.999 -> 0.9952
+    alpha_2 = 0.005   FLASH fired=1   alpha_1 0.995 -> 0.9920
+    alpha_2 = 0.020   FLASH fired=0   no change
+    alpha_2 = 0.050   FLASH fired=0   no change
+
+So flash is not a conversion operator at all.  It is a NUCLEATOR: it creates a
+2 % seed and hands over.  Nothing is wrong with it -- it is doing exactly its
+documented job, and my earlier "flash declines when its own criterion is met"
+was reading it as something it never claimed to be.
+
+**The defect is the HAND-OFF.**  Past alpha = 0.02 conversion is MT's job.  MT's
+gate is open (measured: coexist = 1 at every alpha across the mid range).  But MT
+fires only 2-4 times per run because the Gibbs driving force it needs is tiny --
+measured `g1 - g2 = 57.9 J/kg` against `g ~ 3.83e4`, i.e. **1.5e-3 relative** --
+at near-saturated states.  And cells ARE near-saturated when MT sees them,
+because the instantaneous mechanical (and mode-4 thermal) relaxation runs FIRST
+and pins them there.  The code already says this out loud, in the
+`ps_relax_mode=2` rationale: mode 2 exists so finite-rate thermal relaxation
+"lets the finite-rate MT source keep a Gibbs driving force (cells are not
+re-pinned on the dome)".
+
+That closes the loop on Marc's coupling question with a measurement: **the
+relaxation operators consume the thermodynamic driving force that mass transfer
+needs, before mass transfer runs.**  Not a wrong fixed point -- a starved one.
+
+Consistent with where the failures sit: flash seeds to alpha = 0.02, erosion
+takes it down toward `alpha_cond = 0.01`, and the failing cells were found at
+alpha_1 = 0.0100-0.0102 -- parked on the conditioning threshold, seeded but never
+grown.
+
+**This supersedes every plateau explanation attempted today** (wrong equilibrium,
+thermal rate, flash margin, MT carrier, split runaway).  The plateau is a
+starved hand-off between a nucleator that stops at 2 % and a transfer operator
+whose driving force has already been spent.
