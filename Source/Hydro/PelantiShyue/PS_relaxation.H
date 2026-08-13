@@ -539,6 +539,7 @@ ps_ptg_relax_cell(int i, int j, int k,
 
 
 inline int ps_mech_kernel();   // fwd decl (defined with the cached flags)
+inline int ps_coexist_action();  // fwd decl (defined with the cached flags)
 
 // -----------------------------------------------------------------
 //  ps_canonical_relax_cell (ps_relax_mode=4): the canonical-chain
@@ -682,7 +683,22 @@ ps_canonical_relax_cell(int i, int j, int k,
         const bool coexist = q1.valid && q2.valid &&
                              q1.T > Ttr && q1.T < Tcr &&
                              q2.T > Ttr && q2.T < Tcr;
-        if (coexist) {
+        //  CAMR.ps_coexist_action (see its accessor for the full rationale).
+        //  Modes 2 and 3 let the thermal leg run for an OUT-OF-BAND cell, on
+        //  the grounds that heat exchange between two phases in contact does
+        //  not require that either can turn into the other.  The states must
+        //  still be VALID -- ungating the predicate does not license running
+        //  the kernel on a phase that has no state at all.
+        //    2: low-side exits only (some T <= T_triple, none >= T_crit)
+        //    3: any exit
+        bool run_thermal = coexist;
+        if (!coexist && q1.valid && q2.valid) {
+            const int cxa = ps_coexist_action();
+            const bool hi_side = (q1.T >= Tcr) || (q2.T >= Tcr);
+            if (cxa == 3)                 run_thermal = true;
+            else if (cxa == 2 && !hi_side) run_thermal = true;
+        }
+        if (run_thermal) {
             hem::ps_iso_thermal_relax_cell_finite(Uv, eos, double(dt),
                                                   double(theta));
         }
@@ -920,6 +936,56 @@ inline int ps_relax_mode()
         return v;
     }();
     return m;
+}
+
+// -----------------------------------------------------------------
+//  CAMR.ps_coexist_action (default 0) -- what happens when a phase leaves the
+//  two-phase coexistence band (T outside (T_triple, T_crit)).
+//
+//  WHY THIS DIAL EXISTS.  Measured 2026-08-13: every one of 834 mass-transfer
+//  refusals on B2/B7/B9 is the coexistence gate, it always closes on the
+//  VAPOUR (below T_triple on B2/B9, above T_crit on B7), and the SAME
+//  predicate gates the finite-rate thermal leg -- so the operator that would
+//  bring T_2 back into the band is disabled by the test requiring it to be
+//  there.  The state is permanent, and it is entered by a silent `return true`.
+//  See DESIGN_ps_extinction.md 12 and the WORKLOG entries of that date.
+//
+//  The response is a DECISION (design 12.4 X0), not a calculation, so the
+//  options are selectable and measured rather than chosen by argument:
+//
+//    0  CURRENT.  Silent no-op, now counted by [PS-MTCAUSE]/[PS-MTCOEX].
+//                 Default; bit-identical to the pre-dial code.
+//    1  ABORT on the first band exit, printing the full cell context.
+//                 X0-(i): a liquid-vapour model holding a "vapour" in the
+//                 solid region is holding a state it cannot describe, and
+//                 should say so rather than keep producing numbers.  Under
+//                 this mode B2/B7/B9 abort DELIBERATELY and early -- that is
+//                 the mode working, not a regression.
+//    2  THERMAL leg runs when the exit is LOW side only (T <= T_triple);
+//                 mass transfer stays gated.  X0-(ii) via 12.5 X1: the two
+//                 predicates are separated, because "these phases cannot
+//                 exchange MASS" does not imply "these phases must not
+//                 exchange HEAT".  LOW side only, because the measurement
+//                 that put this gate on the thermal leg is a HIGH-side one
+//                 (B4 cross-critical, u-err 0.13 -> 0.44).
+//    3  THERMAL leg runs on ANY band exit; mass transfer stays gated.
+//                 As 2, but also tests whether B4's high-side veto is still
+//                 load-bearing -- design 12.6 M4, never measured, inherited.
+//
+//  MT-ungated is reachable independently via PS_MT_NO_DOME_GATE=1, so the
+//  combinations need no further code.
+//  Scope: ps_relax_mode=4 (the canonical chain).  Mode 4 has no device twin
+//  (it aborts loudly under ps_relax_device=1), so there is no twin to update.
+// -----------------------------------------------------------------
+inline int ps_coexist_action()
+{
+    static const int a = []() -> int {
+        int v = 0;
+        amrex::ParmParse pp("CAMR");
+        pp.query("ps_coexist_action", v);
+        return v;
+    }();
+    return a;
 }
 
 // GPU-port B2 (default 0 = host MFIter+LoopOnCpu path).  When 1, modes 0/2/3

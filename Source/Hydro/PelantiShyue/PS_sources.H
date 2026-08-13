@@ -313,6 +313,36 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                 }
             });
         }
+        //  CAMR.ps_coexist_action = 1 (X0-(i)): a band exit is a state this
+        //  liquid-vapour model cannot describe, so STOP rather than keep
+        //  producing numbers from it.  Deliberate and expected on B2/B7/B9.
+        //  MUST run BEFORE the diagnostics block below, which RESETS these
+        //  counters -- placing it after made the mode a silent no-op whenever
+        //  CAMR.ps_mt_diag was on, which is exactly how it was first measured.
+        if (ps_coexist_action() == 1) {
+            const long ncx = hem::ps_mt_cause(hem::PS_MT_COEXIST);
+            if (ncx > 0) {
+                hem::PsMtCoexist& cxa = hem::ps_mt_coexist();
+                amrex::Print()
+                  << "\n[PS-COEXIT] a phase has left the two-phase coexistence band.\n"
+                  << "  CAMR.ps_coexist_action = 1: ABORT BY REQUEST, not a solver failure.\n"
+                  << "  cells this sweep = " << ncx
+                  << "   p1_lo=" << cxa.n_p1_lo << " p1_hi=" << cxa.n_p1_hi
+                  << " p2_lo=" << cxa.n_p2_lo << " p2_hi=" << cxa.n_p2_hi << "\n"
+                  << "  T_1 = [" << cxa.T1_min << ", " << cxa.T1_max << "] K\n"
+                  << "  T_2 = [" << cxa.T2_min << ", " << cxa.T2_max << "] K\n"
+                  << "  band = (" << EOS::T_triple() << ", " << EOS::T_crit() << ") K\n"
+                  << "  g_1-g_2 = [" << cxa.gd_min << ", " << cxa.gd_max << "] J/kg"
+                  << "   |g_1-g_2|/g = [" << cxa.grel_min << ", " << cxa.grel_max << "]\n"
+                  << "  P_1/Psat(T_1) = [" << cxa.pr1_min << ", " << cxa.pr1_max
+                  << "] on " << cxa.n_pr1 << " cells\n"
+                  << "  alpha_1 at coldest T_1 = " << cxa.a1_at_min << "\n"
+                  << "  ps_coexist_action=0 restores the silent no-op; =2/=3 let the"
+                  << " thermal leg run through it.\n";
+                amrex::Abort("ps_coexist_action=1: phase outside the coexistence band");
+            }
+        }
+
         // ---- MT cost/convergence report (CAMR.ps_mt_diag = 1) -----------
         // Answers: is the equilibrium Gibbs-Newton converging cheaply, or
         // burning max_iter (=30) on most cells?  Printed per call (once per

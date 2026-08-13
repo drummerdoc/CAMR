@@ -2618,3 +2618,131 @@ question is live; the metric that was supposed to decide it is not yet sound.
 
 **Verified inert, again measured not argued**: `exact_suite` identical to the
 rebuilt-HEAD baseline on all 19 rows, including B3's 3.125e-11.
+
+### ps_coexist_action: THE PLATEAU LIFTS ON B9, AND THE HIGH-SIDE VETO IS
+### LOAD-BEARING (2026-08-13)
+
+Marc, at the design impasse: "I do not understand the problem well enough to
+suggest a way forward.  Can we implement the first two and see what happens?"
+Right call — X0's options were not separable by argument.  Built as one dial,
+`CAMR.ps_coexist_action`, default 0 and bit-identical, scoped to
+`ps_relax_mode=4`:
+
+    0  current silent no-op (default)
+    1  ABORT on the first band exit, with full context          [X0-(i)]
+    2  thermal leg runs for LOW-side exits only, MT stays gated [X0-(ii) / X1]
+    3  thermal leg runs for ANY band exit, MT stays gated       [X1 full, tests M4]
+
+**RESULT 1 — mode 3 lifts the plateau on B9, and a smaller dt sharpens it.**
+
+    B9-Deep-Expansion, rel-L2 rho / u / P
+      mode 0, CFL 0.25     0.1136 / 0.8890 / 0.3397     <- the plateau
+      mode 3, CFL 0.25     0.0912 / 0.4924 / 0.2625
+      mode 3, CFL 0.025    0.0857 / 0.4501 / 0.2418     <- best
+      mode 3, CFL 0.0033   0.0870 / 0.5552 / 0.2564
+      S4 reference                    0.43
+      working B cases                 0.11 .. 0.17
+
+**u falls from 0.889 to 0.450, against a reference of 0.43.**  All three fields
+improve together, which is what a real fix looks like as against a cancellation.
+And B9 now completes at the DEFAULT (mean) carrier, where the baseline aborts —
+so this also removes the abort that D2 was invented to explain.
+
+The self-lock hypothesis is CONFIRMED.  Direct evidence, from `[PS-MTCOEX]` in
+the same cells:
+
+    mode 3, late in the run:  T_1 = [130.7013484, 175.3426567]
+                              T_2 = [130.7013483, 175.3426567]
+
+T_1 and T_2 agree to seven significant figures — the thermal leg doing exactly
+its job, in cells where mode 0 held a 71 K split indefinitely.
+
+**RESULT 2 — Marc's dt question, answered separately: the plateau is NOT a
+temporal-resolution artefact.**
+
+    B9, mode 0:   CFL 0.25   u 0.8890
+                  CFL 0.025  u 0.8877      (0.15 % — nothing)
+                  CFL 0.0033 ABORT
+
+Refining dt does not move the baseline plateau and eventually breaks it.  Note
+also the quantitative reason a smaller dt cannot act through the MT rate:
+`dt/tau_mt = 76.4`, so `frac = 1 - exp(-dt/tau)` is 1 to within 1e-33, and a 10x
+dt cut leaves it at 0.9995.  **frac does not move until dt approaches tau — a
+76x cut.**  What the 10x cut DOES do is reduce the disequilibrium the projection
+has to remove each step, and that is the channel through which mode 3 improves
+from 0.492 to 0.450.  Two different mechanisms; only the second is available at
+moderate dt.
+
+**RESULT 3 — M4 ANSWERED.  The high-side veto is load-bearing; the low-side
+veto is pure loss.**  Full 19-case suite under mode 3:
+
+    unchanged, bit-identical:  A1-A6, C1-C3 (ps_do_relax=0 there, so the dial
+                               cannot reach them — as predicted), B1, B3, B5,
+                               B6, B8
+    B9    RUN FAILED    ->  0.0910 / 0.4787 / 0.2634        FIXED
+    B4    0.0635/0.1262/0.0493 -> 0.0652/0.6988/0.0585      u 5.5x WORSE
+    B10   0.0705/0.1202/0.0833 -> 0.0700/0.4861/0.0819      u 4.0x WORSE
+    B7    0.2464/0.8557/0.6597 -> RUN FAILED                REGRESSED
+
+The casualties are exactly the two CROSS-CRITICAL cases (B4 T_R = 350 K, B10
+T_R = 400 K, both > T_crit) plus B7, whose band exits are all `p2_hi`.  The gain
+is on the case whose exits are all `p2_lo`.  This is the measurement the gate's
+own history asked for and never got: the historical B4 number was u 0.13 -> 0.44;
+it is now 0.126 -> 0.699, i.e. the veto is MORE load-bearing than recorded.
+
+**And a smaller dt does not rescue them** — so it is the mode, not the timestep:
+
+    B4   mode 3  CFL 0.25  u 0.6988    CFL 0.025  u 0.7563
+    B10  mode 3  CFL 0.25  u 0.4861    CFL 0.025  u 0.5179
+    B4   mode 0  CFL 0.025 u 0.1312    B10 mode 0 CFL 0.025 u 0.1251  (dt control)
+
+**RESULT 4 — and this is the interesting failure: mode 2, which was DESIGNED to
+be "drop the low-side veto, keep the high-side one", ABORTS on B9 and B2 at
+every dt tried (CFL 0.25, 0.025, 0.0033).**  The reason is visible in the
+instrument, and it is not a dt problem:
+
+    B9, mode 2, near the abort:  p1_lo=2  p1_hi=0  p2_lo=0  p2_hi=2
+                                 T_1 = [46.06, 59.95] K
+                                 T_2 = [4471.7, 4999.9] K
+
+A 46 K liquid beside a 4500 K vapour in the same cell.  Mode 2 relaxes a cell
+whose exit is low-side only, but stops the moment ANY phase passes T_crit — so
+it drives the split one way and then abandons the cell mid-relaxation.  **A
+one-sided pump.**  Mode 3, in the same cells, has T_1 = T_2 to seven figures.
+
+So a partial rule is worse than either extreme, which is the same lesson as the
+min-phi pair limiter (DESIGN_ps_wp_front 9.3) and the retired G1/G3 caps: a hard
+predicate that flips the numerics at exactly the delicate cells.
+
+**WHERE THIS LEAVES THE DESIGN.**  The two vetoes are not the same object:
+
+  * LOW side (T <= T_triple).  A supercooled vapour is still a vapour of the
+    same substance.  Refusing to let it exchange heat with the liquid beside it
+    has no physical basis, and the refusal is what freezes B9.  **Removing it is
+    what fixes B9.**
+  * HIGH side (T >= T_crit).  Above the critical point there is no distinct
+    liquid and vapour, so a liquid against a supercritical fluid is two
+    different single-phase fluids and driving T_1 -> T_2 between them is
+    physically wrong.  **B4 and B10 measure that, and the veto stays.**
+
+But mode 2 shows the rule cannot be a hard side test on the CURRENT
+temperature, because cells transiently cross T_crit during the very
+equilibration we are enabling and then get abandoned.  The discriminator has to
+separate a GENUINE cross-critical contact (B4/B10: supercritical by initial
+condition, permanently) from a TRANSIENT numerical excursion (B9 under mode 2:
+T_2 = 4500 K is the split blowing up, not physics).  That is the open design
+question, and it is sharper than anything X0 had.
+
+**Mode 1 works as specified** (a placement bug of mine first made it silent
+whenever `ps_mt_diag` was on — it read the counters after the diagnostic block
+reset them; moved ahead of the reset).  It prints the full cell context and
+aborts by request, e.g. on B9: T_1 = 269.03, T_2 = 198.44, band (216.592,
+304.13), |g_1-g_2|/g = 1.227, P_1/Psat(T_1) = 0.136, alpha_1 = 0.0208.
+
+**Mode 0 verified bit-identical**: the A/C battery and every neutral B case
+reproduce the recorded table exactly under the dial compiled in.
+
+**DO NOT RESURRECT**: a smaller timestep as a cure for the plateau (0.15 % at
+10x, abort at 76x); mode 2 as coded (one-sided pump); "ungate the thermal leg"
+as a global fix (three cases regress, two of them the cases the veto was added
+for).
