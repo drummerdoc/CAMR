@@ -490,6 +490,55 @@ inline int ps_dilute_relax_probe()
     std::snprintf(b,sizeof b,"  OUT:      P1=%.4e T1=%.2f | P2=%.4e T2=%.2f   (dE_mix=%.3e)\n",
                   q1.P,q1.T,q2.P,q2.T, (Uo[4]+Uo[5])-(U[4]+U[5]));
     amrex::Print()<<b;
+    //  CONVERSION-GATE PROBE (2026-08-12).  The measured problem is not that
+    //  conversion goes wrong, it is that it does not HAPPEN: on B2/B9 the MT
+    //  operator fires 2-4 times in a whole run and flash never develops.  Every
+    //  operator that could convert mass is behind a gate; report each gate's
+    //  verdict on THIS cell so the closed one is named rather than guessed.
+    {
+        const double Tt = eos.t_triple(), Tc = eos.t_crit();
+        const double Ps1 = double(EOS::Psat(amrex::Real(p1.T)));
+        const double Ps2 = double(EOS::Psat(amrex::Real(p2.T)));
+        //  Flash's alpha-dominance window: it fires ONLY in nominally
+        //  single-phase cells (alpha_1 > 1-thr deep liquid, or < thr deep
+        //  vapour, thr = 0.1 by default).  The mid range is DELEGATED to MT --
+        //  so if MT is also gated off, the mid range has no conversion channel
+        //  at all.  That is the hypothesis this block exists to test.
+        const double thr = 0.1;
+        const bool flash_liq = (a1 > 1.0 - thr);
+        const bool flash_vap = (a1 < thr);
+        const double marg = 0.10;   // PS_FLASH_METASTABLE_MARGIN default
+        const bool meta_liq = flash_liq && (p1.P < (1.0 - marg) * Ps1);
+        const bool meta_vap = flash_vap && (p2.P > (1.0 + marg) * Ps2);
+        //  MT / thermal gate: both phase temperatures inside (T_triple, T_crit).
+        const bool Tok1 = (p1.T > Tt && p1.T < Tc);
+        const bool Tok2 = (p2.T > Tt && p2.T < Tc);
+        std::snprintf(b,sizeof b,
+            "  GATES  T_triple=%.2f T_crit=%.2f | Psat(T1)=%.4e Psat(T2)=%.4e\n"
+            "         P1/Psat1=%.4f  P2/Psat2=%.4f   g1=%.6e g2=%.6e  g1-g2=%.4e\n"
+            "         flash alpha-window: liq=%d vap=%d  (mid range -> delegated to MT)\n"
+            "         flash metastable  : liq=%d vap=%d  (needs P beyond (1+/-0.10)Psat)\n"
+            "         MT/thermal T-window: phase1=%d phase2=%d  -> coexist=%d\n",
+            Tt, Tc, Ps1, Ps2, p1.P/Ps1, p2.P/Ps2, p1.g, p2.g, p1.g - p2.g,
+            (int)flash_liq,(int)flash_vap,(int)meta_liq,(int)meta_vap,
+            (int)Tok1,(int)Tok2,(int)(p1.valid && p2.valid && Tok1 && Tok2));
+        amrex::Print()<<b;
+        //  Does flash actually move anything?  dt/tau = 1 (one e-folding).
+        hem::V6 Uf = U;
+        const bool fok = hem::ps_flash_source_cell(Uf, eos, 1.0e-7, 1.0e-7);
+        std::snprintf(b,sizeof b,
+            "  FLASH  fired=%d   alpha1: %.6f -> %.6f   (delta = %+.3e)\n",
+            (int)fok, a1, Uf[0], Uf[0]-a1);
+        amrex::Print()<<b;
+        const char* verdict =
+            (meta_liq || meta_vap) ? "flash IS eligible here"
+          : (flash_liq || flash_vap)
+              ? "deep single-phase but NOT metastable -> flash declines, correctly"
+              : ((p1.valid && p2.valid && Tok1 && Tok2)
+                   ? "mid-range: flash declines by design, MT gate is OPEN -> MT owns it"
+                   : "MID-RANGE WITH THE MT GATE SHUT -> NO CONVERSION CHANNEL EXISTS");
+        amrex::Print() << "  VERDICT: " << verdict << "\n";
+    }
     amrex::Print() << "===== end #88 probe =====\n\n";
     return 0;
 }

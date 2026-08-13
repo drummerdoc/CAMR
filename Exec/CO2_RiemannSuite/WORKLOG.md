@@ -2244,3 +2244,57 @@ task #15 — "upwind reproduces the carrier-free answer that B7 gives natively" 
 is decided either way.  This is exactly the failure mode this log exists to
 prevent: a conclusion outliving the binary it was measured on.  Any B2/B9/B7
 carrier statement dated before W2-2 (90c8b76) should be treated as unverified.
+
+### ZERO-D: flash declines on a state that meets its own metastability criterion (2026-08-12)
+
+Conversion-gate probe added to `ps_dilute_relax_probe` (`CAMR.ps_dilute_probe=1`,
+state via `CAMR.probe_a1/_r1/_r2/_T1/_T2`).  It reports every gate's verdict on
+one hand-built cell -- no hydro, no accumulated damage -- then calls
+`ps_flash_source_cell` and reports whether alpha moved.
+
+**Structural fact found first.**  Flash fires ONLY in nominally single-phase
+cells: `alpha_1 > 1-thr` (deep liquid) or `< thr` (deep vapour), thr = 0.1.  The
+mid range is DELEGATED to MT by an explicit comment.  So the mid range has
+exactly one conversion channel, and MT fires 2-4 times per run.
+
+**Sweep at T1=T2=280 K, rho2=122 (near-saturated), across alpha_1:**
+
+    alpha_1   0.95   0.70   0.50   0.30   0.10   0.029
+    MT/thermal T-window gate:  OPEN at every alpha  (coexist = 1)
+    g1 - g2 = +57.9 J/kg against g ~ 3.83e4  ->  relative driving force 1.5e-3
+
+So the gates are NOT shut for a healthy state, and MT is eligible throughout the
+mid range.  At saturation the Gibbs driving force is correctly tiny -- MT has
+almost nothing to do, which is right.  The blocker is not a closed gate.
+
+**Then a genuinely stretched liquid, alpha_1 = 0.95 (deep liquid, flash's own
+regime), T = 280 K, Psat = 41.95 bar:**
+
+    rho_1     P1/Psat   my replication of the criterion   ps_flash_source_cell
+    851       0.9845    not metastable                    fired=0   correct
+    840       0.8688    METASTABLE, eligible              fired=0   dalpha = 0
+    820       0.6861    METASTABLE, eligible              fired=0   dalpha = 0
+    780       0.4153    METASTABLE, eligible              fired=0   dalpha = 0
+
+**Flash declines at 42 % of saturation pressure, in a 95 %-liquid cell, with
+dt/tau = 1.**  That is the conversion failure, isolated to one call on a clean
+constructed state.  It is not a hydro artefact, not accumulated drift, and not
+the carrier.
+
+Two possibilities, and they need different fixes:
+  (a) my replication of the trigger criteria is incomplete -- the real function
+      also has a dome gate, a `w_alpha` dominance ramp, a `w_meta` smooth window
+      and a blend factor, any of which could legitimately veto; or
+  (b) a genuine early-return defect.
+
+**NEXT, and the technique is proven:** split `ps_flash_source_cell`'s early
+returns by CAUSE and count them, exactly as `PsFlCause` did for the fluctuation
+refusals -- that measurement found the limiter defect in one run after three
+wrong hypotheses.  `ps_flash_source_cell` has at least six early returns
+(tau/dt, eos.valid, alpha finite, w_meta <= 0, w_alpha <= 0, plus the dome gate).
+Name them, count them, and the 0-D probe above becomes a direct read-out.
+
+This supersedes the plateau explanations tried today: it is not a wrong
+equilibrium, not the thermal rate, not the flash margin, and not the carrier.
+Nothing converts because the one operator that can nucleate a two-phase cell
+returns without acting.
