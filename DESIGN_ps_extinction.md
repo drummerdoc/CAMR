@@ -316,3 +316,256 @@ solution vs pre-E baseline rel-L2(rho) 2.7e-6 / inventory delta 2e-6 /
 roughness ratio 1.000 — the E-series operators are invisible at production
 stiffness and engage only where the old operators manufactured states.
 B9-stiff (tau<=1e-4) stays KNOWN-FAIL, blocked on the WP-front item.
+
+---
+
+## 12. RE-OPENED (2026-08-13): the coexistence gate, and why the three
+##     relaxation operators cannot be decided separately
+
+2026-08-13.  This note is re-opened because §5's D2 question and the plateau
+recorded in the WORKLOG turn out to be downstream of something neither had
+named: a single eligibility predicate shared by three operators, each of which
+can invalidate it for the other two.  This is Marc's coupling question
+(2026-08-12) with a concrete referent, arrived at by measurement rather than
+by argument.
+
+### 12.1 What was measured
+
+Instrument: `PsMtCause` / `PsMtCoexist` (`hem_pelanti_shyue.H`), thirteen named
+counters, one per early return in `ps_mass_transfer_finite_cell`, reported as
+`[PS-MTCAUSE]` / `[PS-MTCOEX]` under the existing `CAMR.ps_mt_diag`.  Counting
+only; verified inert against a rebuilt HEAD binary (`exact_suite` tables
+identical line for line).  Commit `0b19260`; full numbers in `WORKLOG.md`.
+
+**(a) Every MT refusal, in all three failing cases, is the coexistence gate.**
+
+    case   seen   eqsolve   refusals   causes         unaccounted
+    B9      204        3         201   coexist 201              0
+    B2      145        2         143   coexist 143              0
+    B7      492        2         490   coexist 490              0
+
+834 refusals, one cause.  `gscreen` (the Gibbs pre-screen at
+`tol_g_rel = 1e-4`) never fires.  Neither does any other.
+
+**(b) It is always the VAPOUR, from opposite ends of the band.**
+
+    case  side     T_1 [K]            T_2 [K]              alpha_1 at onset
+    B9    p2_lo    268.7 .. 269.0     183.7 .. 202.1       0.021
+    B2    p2_lo    254.9 .. 255.3     195.4 .. 205.6       0.014
+    B7    p2_hi    279.6 .. 280.6     304.7 .. 1811.2      0.041
+
+    T_triple = 216.592 K      T_crit = 304.13 K
+
+`p1_lo = p1_hi = 0` throughout: the liquid never trips it.  B9 and B2 both
+initialise their vapour side at 280 K, well inside the band — the expansion
+takes it out.  B7 goes out the top.
+
+**(c) MT is not rate-limited.**  `dt = 7.64e-6 s`, `tau_mt = 1e-7`, so
+`frac = 1 - exp(-dt/tau) = 1.0` to machine precision.  On the OPTION 2 path
+`dm = frac * dm_eq`, so whenever MT acts it applies the WHOLE equilibrium
+transfer in one step.  `tau_mt` and the Gibbs driving force set no magnitude
+here; the driving force enters only as the yes/no screen in (a), which never
+fires.
+
+**(d) Removing the gate is measured, and it is not a fix.**  Existing escape
+hatch `PS_MT_NO_DOME_GATE=1`, no code change:
+
+    case   gate ON (rel-L2 rho/u/P)          gate OFF
+    B9     0.1136 / 0.8890 / 0.3397          ABORT
+    B2     0.0740 / 0.9186 / 0.3263          ABORT
+    B7     0.2464 / 0.8557 / 0.6597          ABORT
+
+and the aborts are all the same shape — a phase driven past the reachable bound
+at the `T = 1 K` bracket end by the transfer itself:
+
+    B9  VAPOR   rho 36.50    e -2.3917e4   gap -3.396e3   J/kg
+    B2  VAPOR   rho 85.13    e -9.8199e4   gap -5.129e4
+    B7  LIQUID  rho 1030.7   e -4.1887e5   gap -5.466e3
+
+So the gate is LOAD-BEARING.  It is holding back a transfer that destroys the
+run.  The plateau is the price currently paid for it.
+
+### 12.2 The structural defect: one predicate, three operators, self-locking
+
+The coexistence test — both phase temperatures strictly inside
+`(T_triple, T_crit)` — is asked in three places, for three different questions:
+
+| site | operator | the question it is really asking |
+|:--|:--|:--|
+| `hem_pelanti_shyue.H` (MT finite + MT relax) | mass transfer | is `g_1 - g_2` a phase-change driving force? |
+| `PS_relaxation.H` `ps_canonical_relax_cell` | finite-rate thermal | should `T_1` and `T_2` equilibrate? |
+| `ps_flash_source_cell` | flash nucleation | is this cell metastable w.r.t. its other phase? |
+
+They are not the same question.  "These two phases cannot exchange MASS" does
+not imply "these two phases must not exchange HEAT" — two materials in contact
+exchange heat whether or not either can turn into the other.  But the
+implementation is one predicate, so:
+
+> **Once a cell's vapour leaves the coexistence band, the only operator that
+> could bring it back — thermal relaxation — is disabled by the same test that
+> requires it to be back.  Mass transfer is off, thermal is off, and flash is
+> separately off because the cell is both-Independent.  The cell has zero
+> conversion channels and cannot recover.  It is not a slow state; it is a
+> permanent one.**
+
+That is the plateau, and it is entered through a silent `return true`.
+
+It also explains, retrospectively, three measurements that had no explanation:
+the `tau_theta` sweep flat to 0.2 % over four orders of magnitude (the thermal
+leg is behind the closed gate, so its rate cannot matter); MT "firing 2-4 times
+per run" (seen, never acted); and the flash metastability margin making no
+difference.  All three were measuring operators that never ran.
+
+### 12.3 The two defects are coupled, and neither can be fixed alone
+
+    D-A  The model has no defined response to a phase leaving the coexistence
+         band.  The response it has is a silent, uncounted no-op applied
+         simultaneously to three operators, which makes the state permanent.
+
+    D-B  The MT operator, at these settings, is a full one-step projection onto
+         a target it does not agree with.  Three inconsistencies between the
+         STEP and its TARGET dm_eq, all verified in source:
+
+         1  PATH.  dm_eq comes from ps_mass_transfer_relax_cell, whose
+            apply_dm_and_query moves mass at FIXED alpha, with the nested
+            pressure relaxation OFF by default (PS_MT_NEST_PR=0, disabled for
+            cost, the comment conceding dm_eq changes "at order unity").  The
+            STEP applies (E.1), dalpha_1 = -dm/rho_1.  Along fixed-alpha
+            d(rho_1)/dm = 1/alpha_1; along (E.1) it is exactly 0.  The target's
+            Gibbs sensitivity therefore carries a 1/alpha_1 amplification the
+            step does not have, so dm_eq is systematically too small, worst at
+            small alpha_1 — which is where the failing cells sit.
+         2  CARRIER.  mt_eq is default-constructed (h_interface_weight = 0.5)
+            and eq_solver_params sets only dome_gate and nest_pressure_relax.
+            CAMR.ps_mt_h_weight therefore changes the step's carrier and NEVER
+            the target's.  D2 as currently wired does not compare two carrier
+            conventions; -1 is an upwind step against a mean target.
+         3  NO THERMAL CONDITION.  The MT target solves g1 = g2 only — one
+            equation, one unknown.  Nothing asserts that the composite of
+            {mechanical, thermal, MT} has saturation as its fixed point.
+
+Fixing D-A alone is measured in 12.1(d): all three cases abort, because D-B
+makes the unleashed transfer unsound.  Fixing D-B alone leaves the cells
+permanently out of band, because D-A never lets MT run there.  **They have to
+be decided together.  That is the coupling question, and this is the sense in
+which the three "independent knobs" are not independent.**
+
+Consistent with D-B(1): the 5.2 contraction-ratio diagnostic scores the step
+against `ps_mass_transfer_relax_cell` — the same fixed-alpha target — which is
+why it measured ANTI-correlated with trouble (worst 325 at the clean production
+tau, ~1 at the failing tau).  It is scoring the step against a manifold the step
+does not travel.  §5.2's controller decision cannot be taken on that metric.
+
+### 12.4 The physics question that has to be answered first  [DECIDE X0]
+
+`Psat(T_triple) = 5.18e5 Pa` and the parked cells sit at 5.4-5.5 bar, so the
+saturation temperature there is barely above the triple point and a vapour at
+183-202 K **is in the solid (dry-ice) region**.  The model is liquid-vapour.
+So before choosing a mechanism:
+
+  **X0  Is a sub-triple-point vapour a state this work item must represent?**
+
+Three self-consistent answers, and they lead to different designs:
+
+  (i)  NO — it is unphysical, and its appearance is a defect upstream.  Then the
+       correct response is an ABORT with a named diagnostic, not a silent no-op,
+       and B2/B7/B9 become three aborts instead of three plateaux.  By this
+       project's own policy that is an improvement: a located failure beats a
+       wrong number.  The upstream question then becomes why the expansion
+       over-cools the vapour phase.
+  (ii) YES, as a METASTABLE continuation.  Note the asymmetry this would remove:
+       the EOS is *required* to continue a branch past its physical limit
+       (STATUS 2.3 requirement 2) precisely because "a phase held out of
+       equilibrium by finite-rate transfer" is what metastability means, and the
+       flash exists to handle a metastable LIQUID above the dome.  The
+       branch-locked vapour query at 198 K, 5.5 bar returns `valid` — the EOS
+       does not refuse; only the gate does.  On this reading the gate imposes a
+       bound the EOS does not, and imposes it on only one of the two
+       metastable directions.
+  (iii) YES, and it needs SOLID CO2 — sublimation, a third phase.  Out of scope
+       for 1-D correctness; recorded so it is a decision and not an omission.
+
+X0 is not mine to answer.  Nothing below should be coded until it is.
+
+### 12.5 Candidate designs, to be selected AFTER X0
+
+  **X1  SEPARATE THE PREDICATES (minimal, and it breaks the self-lock).**
+  Give the thermal leg its own eligibility criterion instead of borrowing MT's.
+  Caution, on the record: the gate was added to the thermal leg for a measured
+  reason — at B4's cross-critical contact (T_R = 350 K > Tc) driving T_1 -> T_2
+  collapsed the star velocity, u-err 0.13 -> 0.44.  But that measurement is on
+  the HIGH side (supercritical), and B2/B9 are blocked on the LOW side, where
+  the veto has never been shown to be load-bearing.  Splitting the veto by side
+  is testable in one B4 run and is the cheapest thing that could work — but
+  "split by side because only one side was measured" is half-derived, and it
+  must be measured before it is adopted.
+
+  **X2  MAKE LEAVING THE BAND AN EVENT.**  Independent of X1 and required under
+  the ground rules whatever else is chosen: a phase leaving the coexistence band
+  is currently an uncounted silent `return true` that produces a permanent
+  state.  It must be named, counted and given an explicit response (abort /
+  counted metastable continuation / fold), chosen by X0.  `[PS-MTCOEX]` is the
+  counter; the response is the decision.
+
+  **X3  COUPLE THE RELAXATION SOURCE (structural; subsumes X1).**  Replace three
+  sequential projections, each with its own eligibility test, with one
+  relaxation source: the mechanical closure enforced as a CONSTRAINT (it is
+  instantaneous by the P-S closure, so the system is a DAE, not three ODEs), and
+  the thermal and MT rates evaluated on that constrained manifold, with one
+  eligibility question asked once.  This is what "fundamentally coupled" means
+  operationally, and it makes D-B(1) and D-B(3) unrepresentable rather than
+  fixed.  Prerequisite: 12.6 M2.
+
+  **X4  MAKE THE MT TARGET AGREE WITH THE MT STEP.**  Narrow, orthogonal to
+  X1-X3, and independently justified: compute `dm_eq` along the same (E.1) path
+  and with the same carrier the step uses.  This is not a tuning change, it is
+  removing a disagreement between two constructions that are supposed to
+  describe the same transfer — the same class of defect as the four-way per-face
+  state construction (STATUS 6.6) and the two copies of the equilibrium-solver
+  settings that were single-sourced on 2026-08-11.  It is also a precondition
+  for D2 being answerable at all.
+
+### 12.6 Pre-specified measurements, in order
+
+  **M1  DONE** (12.1(d)): gate off -> all three abort.  The gate is load-bearing.
+
+  **M2  The zero-D composite fixed-point test** (WORKLOG task #14).  Does the
+  composite of {mechanical, thermal, MT} converge to saturation
+  (`P1=P2, T1=T2, g1=g2`), and is the answer ORDER-DEPENDENT?  Order-dependence
+  proves the split is not a projection and settles X3 on evidence.
+  `ps_joint_pt_equilibrium` already exists for the (P,T) pair, and
+  `ps_mass_transfer_relax_cell` for the g leg, so the harness is a composition
+  of existing kernels — no new physics.  Report the fixed point reached by each
+  of the orderings, against the flash solution of the same (rho_mix, e_mix).
+
+  **M3  Why the vapour leaves the band.**  Track `T_2` per stage (the A/A2/B/C/D
+  labels exist) on B9 from step 1 and attribute its fall the way V9 attributed
+  `e1_min`: hydro vs sources.  Answers X0 by telling us whether the over-cooling
+  is the physical expansion or an operator.  One build, one run.
+
+  **M4  Is the low-side thermal veto load-bearing?**  B4 with the thermal leg's
+  coexistence test restricted to the high side.  One run.  Gates X1.
+
+  **M5  Only after X4**: re-derive D2 on a target/step-consistent binary.  Until
+  then every `ps_mt_h_weight` number on record, including the 2026-08-12 B7
+  reversal, is measuring an inconsistency rather than a carrier.
+
+### 12.7 [DECIDE] points for Marc
+
+  **X0**  Is a sub-triple-point vapour in scope: unphysical-so-abort (i),
+          metastable continuation (ii), or needs solid CO2 (iii)?  Everything
+          else waits on this.
+  **X-D1** M2 and M3 before any mechanism is chosen — agreed, or is M3 enough?
+  **X-D2** X2 (name and count the band exit, with an explicit response) —
+          adopt independently of X0, since the silent permanent no-op violates
+          the ground rules whatever the physics answer turns out to be?
+  **X-D3** X4 (make the MT target agree with the MT step) — take it now as a
+          correctness fix on its own merits, or hold it until X0/X3?  It is the
+          only item here that unblocks D2.
+  **X-D4** After M2/M4: X1 (separate predicates) as the minimal fix, or X3
+          (coupled relaxation source) as the structural one?
+
+GPU: everything proposed is pointwise, per-cell, by-value; the counters are
+host-only in the existing pattern.  Multicomponent: X0 is the item that ages —
+the coexistence test becomes phase-envelope membership (13), so whatever
+response is chosen for "outside the envelope" is the one that carries over.
