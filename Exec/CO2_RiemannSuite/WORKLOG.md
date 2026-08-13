@@ -2746,3 +2746,130 @@ reproduce the recorded table exactly under the dial compiled in.
 10x, abort at 76x); mode 2 as coded (one-sided pump); "ungate the thermal leg"
 as a global fix (three cases regress, two of them the cases the veto was added
 for).
+
+### THE WALL: theta must be 3e-6 for B9 and 1e-2 for B4.  One knob, two regimes.
+### (2026-08-13)
+
+**First, a mistake of mine, corrected by the instrument.**  I built mode 4 on
+the premise "B9's band exits are all low-side, B4/B10's are all high-side, so
+let the low side override the high-side veto".  Mode 4 leaves B4/B10/B7 EXACTLY
+at baseline (0.1262 / 0.1202 / 0.8557 — the high-side veto preserved perfectly)
+and B9/B2 ABORT.  The premise was false:
+
+    B9, mode 4, first band exit:  T_1 = 245.8   T_2 = 315.3   p2_hi = 1
+    B9, mode 3, first band exit:  T_1 = 213.460 T_2 = 213.459 (already relaxed)
+
+**B9's exits are low-side only in MODE 0** — the frozen baseline, where the
+thermal leg never fires and the vapour just sits cold.  The moment the thermal
+leg is active, B9's FIRST excursion is the vapour going SUPERCRITICAL at 315 K.
+Mode 4 vetoes exactly that, the split runs away (238/423 -> 224/575 -> 2065/2910)
+and the run dies.  I generalised a mode-0 measurement to a thermally-active
+configuration.  Same trap as the "B7 is carrier-insensitive" stale measurement;
+the log exists to catch it and it caught it in one run.
+
+So B9 needs the HIGH-side exits relaxed — the very thing that destroys B4/B10.
+**The side cannot be the discriminator.**
+
+**Then the question that actually mattered: is it a GATE question or a RATE
+question?**  The 2026-08-12 tau_theta sweep found donor flat to 0.2 % over four
+orders of magnitude — but that was at mode 0, where the thermal leg is behind
+the closed gate.  **It was measuring an inert operator.**  Under mode 3 it fires,
+so the sweep is meaningful for the first time:
+
+    theta        B9 (mode 3, donor)        B4 (mode 3)         B10 (mode 3)
+    1e-7         0.4924                    0.6988
+    1e-6         0.4948                    0.6988
+    3e-6         0.4187  <- best           --                  --
+    1e-5         ABORT                     0.6711
+    1e-4         ABORT                     0.4520
+    3e-4         --                        --                  0.2866
+    1e-3         ABORT                     0.1660              0.1714
+    1e-2         --                        0.1276              --
+    baseline u   0.8890                    0.1262              0.1202
+
+**B9 works for theta <= 3e-6 and ABORTS at 1e-5.  B4/B10 are damaged until
+theta >= 1e-3 and clean only at 1e-2.  The two working windows are disjoint by
+more than three orders of magnitude, and B9's boundary is a cliff, not a
+gradient.  There is no value of theta that serves both.**
+
+B9 wants thermal relaxation FAST.  B4/B10 want it SLOW.  That is not a tuning
+problem; it is one parameter being asked to be two different things.
+
+**Full 19-case suite at the best B9 setting (mode 3, theta = 3e-6, default
+carrier):**
+
+    B9-Deep-Expansion   RUN FAILED  ->  0.0626 / 0.3912 / 0.1867
+                        u 0.3912, BELOW the S4 reference of 0.43; rho and P
+                        both roughly halved.  The best numbers B9 has ever had,
+                        and it completes at the DEFAULT carrier.
+    B4-Cross-critical   0.1262 u  ->  0.6954       5.5x worse
+    B10-Cross-crit-hot  0.1202 u  ->  0.4840       4.0x worse
+    B7-Rupture-Sonic    completes ->  RUN FAILED
+    B2-Evap-wave        RUN FAILED -> RUN FAILED   (unchanged; fails at the
+                        default carrier in the baseline too)
+    B5-Both-2P          .0419/.1601/.0183 -> .0420/.1605/.0184   4th digit --
+                        a genuine two-phase case, so theta legitimately reaches it
+    A1-A6, C1-C3, B1, B3, B6, B8                   BIT-IDENTICAL
+                        (A/C run with ps_do_relax=0, so nothing can reach them)
+
+**WHAT THIS MEANS — and it reframes the whole item.**
+
+theta is the time for the two phases sharing a cell to reach a common
+temperature.  Physically that time is set by how much INTERFACIAL AREA the two
+phases share inside the cell, and the two groups of cases are morphologically
+different objects:
+
+  * B9's cells are a GENUINE TWO-PHASE MIXTURE — liquid and vapour finely
+    dispersed through the cell, enormous interfacial area, so equilibration is
+    genuinely fast.  theta ~ 1e-6 is physically right there.
+  * B4/B10's cells are a NUMERICALLY SMEARED MATERIAL CONTACT — liquid on one
+    side, supercritical fluid on the other, separated by ONE sharp interface
+    that the grid cannot resolve.  There is no dispersed interfacial area at
+    all; the cell is only "two-phase" because a discontinuity got smeared over
+    two or three cells.  Equilibration across it is ordinary conduction across
+    one surface, i.e. slow.  theta >= 1e-2 is physically right there.
+
+**So the coexistence gate was never really a thermodynamic test.  It is a crude
+BINARY PROXY for cell morphology:** it hard-codes theta = infinity (no
+relaxation at all) for cross-critical cells and theta = theta_global for
+everything else.  That proxy gets B4/B10 right for roughly the right reason —
+they ARE smeared contacts — and gets B9 wrong, because B9's cells are real
+mixtures that pass through the supercritical region transiently.
+
+The model carries ONE global theta and no notion of sub-grid morphology.  That
+is the missing physics, and it is Marc's coupling question at its root: the
+relaxation operators' RATES are properties of the interfacial structure inside
+a cell, which the six-equation state does not carry.
+
+**This supersedes the framing in DESIGN_ps_extinction 12.5 X1.**  "Separate the
+predicates by side" is dead — measured twice (mode 2, mode 4) and dead both
+times.  The question is not which side to veto.  The question is how a cell
+knows whether it is a mixture or a smeared contact.
+
+**Options, none of them coded, all needing a decision:**
+
+  Y1  INTERFACIAL AREA DENSITY as a transported quantity (a seventh equation,
+      standard in the two-fluid literature).  theta becomes a function of it.
+      Principled, well-established, and a real model extension.
+  Y2  A LOCAL MORPHOLOGY INDICATOR instead: at a smeared contact alpha_1 goes
+      0 -> 1 over two or three cells, while in a dispersed mixture alpha varies
+      smoothly.  So |grad alpha| discriminates them, computed once per step into
+      a scratch field like a derive.  Cheap, no new state, no new equation --
+      but it is a numerical proxy for a physical quantity, and it needs a
+      threshold, which this project has learned to distrust.
+  Y3  KEEP THE BINARY PROXY, FIX ITS TEST.  Accept theta = infinity at contacts
+      and theta_global in mixtures, but find a test that classifies B9's
+      transiently-supercritical mixture cells correctly.  Cheapest; but mode 2
+      and mode 4 are two failed attempts at exactly this, and both failed the
+      same way -- a hard predicate flipping at the delicate cells.
+  Y4  ACCEPT THE SPLIT AS A CASE PROPERTY.  Run the dispersed cases at
+      theta = 3e-6 and the cross-critical cases at 1e-2, and document that the
+      suite spans two regimes the current model cannot serve at once.  Honest,
+      immediately available, and it makes B9 the best it has been -- but it is
+      a per-case constant, which is exactly what this project has spent months
+      removing.
+
+**MEASURED AND NOT TO BE RE-TRIED**: the low-side/high-side split as the
+discriminator (mode 2 aborts, mode 4 aborts, both from a one-sided pump);
+a single theta serving both regimes (disjoint windows, three orders apart);
+a smaller timestep as a cure (mode 0 moves 0.15 % at 10x and aborts at 76x).

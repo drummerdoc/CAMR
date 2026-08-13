@@ -725,3 +725,83 @@ GPU: everything proposed is pointwise, per-cell, by-value; the counters are
 host-only in the existing pattern.  Multicomponent: X0 is the item that ages —
 the coexistence test becomes phase-envelope membership (13), so whatever
 response is chosen for "outside the envelope" is the one that carries over.
+
+### 12.8 THE WALL (2026-08-13): one theta, two morphologies
+
+12.5 X1 asked which side of the coexistence band to veto.  **That question is
+dead — measured twice and refuted both times** (`ps_coexist_action=2` and `=4`,
+WORKLOG).  Both fail the same way: a hard side test abandons a cell
+mid-equilibration and becomes a one-sided pump.  And the premise behind mode 4
+was itself false — B9's exits are low-side only in MODE 0, where the thermal leg
+never fires; the moment it is active B9's first excursion is the vapour going
+supercritical at 315 K.
+
+The real question was never the gate.  It is the RATE.  Under mode 3 the thermal
+leg fires, so `tau_theta` is a live parameter for the first time (the
+2026-08-12 sweep was taken at mode 0 and was measuring an inert operator):
+
+    theta      B9 (mode 3)    B4 (mode 3)   B10 (mode 3)     baseline u
+    1e-7       0.4924         0.6988                         B9  0.8890
+    1e-6       0.4948         0.6988                         B4  0.1262
+    3e-6       0.4187 best                                   B10 0.1202
+    1e-5       ABORT          0.6711
+    1e-4       ABORT          0.4520
+    3e-4                                    0.2866
+    1e-3       ABORT          0.1660        0.1714
+    1e-2                      0.1276
+
+**B9 works for theta <= 3e-6 and aborts at 1e-5.  B4/B10 need theta >= 1e-2.
+The windows are disjoint by three orders of magnitude and B9's edge is a cliff.
+No single theta serves both.**
+
+At B9's optimum (mode 3, theta = 3e-6, default carrier) B9 reads
+0.0626 / 0.3912 / 0.1867 — u BELOW the S4 reference of 0.43, rho and P roughly
+halved, and completing at the default carrier for the first time.  The cost is
+unchanged: B4 0.695, B10 0.484, B7 aborts; everything else bit-identical.
+
+**Why one parameter cannot be both.**  theta is the time for two phases sharing
+a cell to reach a common temperature, and physically that is set by the
+INTERFACIAL AREA they share inside the cell.  The two groups are different
+objects:
+
+  * B9's cells are a GENUINE DISPERSED MIXTURE — liquid and vapour finely
+    intermixed, enormous interfacial area, equilibration genuinely fast.
+  * B4/B10's cells are a SMEARED MATERIAL CONTACT — liquid against
+    supercritical fluid across ONE unresolved interface.  No dispersed area;
+    the cell is "two-phase" only because a discontinuity was smeared over two or
+    three cells.  Equilibration is conduction across one surface, i.e. slow.
+
+**So the coexistence gate was never a thermodynamic test.  It is a binary proxy
+for cell MORPHOLOGY** — theta = infinity at cross-critical cells, theta_global
+everywhere else.  It gets B4/B10 right for approximately the right reason and
+B9 wrong, because B9's cells are real mixtures that pass through the
+supercritical region transiently.
+
+The six-equation state carries no notion of sub-grid interfacial structure, and
+the relaxation rates are properties of exactly that.  **This is the coupling
+question at its root**: not that the three operators are applied in sequence,
+but that all three have rates the model cannot know.
+
+### 12.9 [DECIDE Y] — the options, none coded
+
+  **Y1  INTERFACIAL AREA DENSITY as a transported quantity** (a seventh
+       equation; standard in the two-fluid literature).  theta becomes a
+       function of it.  Principled, well established, a real model extension.
+  **Y2  A LOCAL MORPHOLOGY INDICATOR.**  At a smeared contact alpha_1 runs
+       0 -> 1 over two or three cells; in a dispersed mixture alpha is smooth.
+       So |grad alpha| discriminates, computed once per step into a scratch
+       field like a derive.  Cheap, no new state, no new equation — but a
+       numerical proxy for a physical quantity, and it needs a threshold, which
+       this project has learned to distrust.
+  **Y3  KEEP THE BINARY PROXY, FIX ITS TEST.**  Cheapest.  But modes 2 and 4
+       are two failed attempts at precisely this, failing identically.
+  **Y4  ACCEPT THE SPLIT AS A CASE PROPERTY.**  Run dispersed cases at
+       theta = 3e-6 and cross-critical cases at 1e-2, and document that the
+       suite spans two regimes the model cannot serve at once.  Honest,
+       available today, and it makes B9 the best it has ever been — but it is a
+       per-case constant, which is what this project has spent months removing.
+
+Recommendation: Y2 measured first (it is one scratch field and answers whether
+the morphology signal is even separable on this grid), Y1 if it is not.  Y4 is
+the honest interim record either way, and should be written down as such rather
+than left implicit in a default.

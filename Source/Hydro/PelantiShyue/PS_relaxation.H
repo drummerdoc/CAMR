@@ -694,9 +694,26 @@ ps_canonical_relax_cell(int i, int j, int k,
         bool run_thermal = coexist;
         if (!coexist && q1.valid && q2.valid) {
             const int cxa = ps_coexist_action();
+            const bool lo_side = (q1.T <= Ttr) || (q2.T <= Ttr);
             const bool hi_side = (q1.T >= Tcr) || (q2.T >= Tcr);
-            if (cxa == 3)                 run_thermal = true;
+            if (cxa == 3)                  run_thermal = true;
             else if (cxa == 2 && !hi_side) run_thermal = true;
+            //  MODE 4: a LOW-side violation OVERRIDES the high-side veto.
+            //  Rationale, from the mode 2/3 measurements (WORKLOG 2026-08-13):
+            //  the reason to veto is SUPERCRITICALITY -- above T_crit there is
+            //  no distinct liquid and vapour, so driving T_1 -> T_2 there
+            //  smears a material contact between two different single-phase
+            //  fluids, which is what collapses B4 and B10.  The reason NOT to
+            //  veto is SUB-TRIPLE-POINT-ness -- a supercooled vapour is still a
+            //  phase of the same substance, and refusing it heat exchange is
+            //  what freezes B9.  When BOTH occur in one cell the state is not a
+            //  cross-critical contact at all: no physical cell holds a 46 K
+            //  liquid beside a 4500 K vapour.  That is the energy split blowing
+            //  up, and mode 2's refusal to relax it is what entrenches it.
+            //  So: a cell containing a sub-triple-point phase is never a
+            //  cross-critical material contact, and the supercritical veto does
+            //  not apply to it.
+            else if (cxa == 4 && lo_side)  run_thermal = true;
         }
         if (run_thermal) {
             hem::ps_iso_thermal_relax_cell_finite(Uv, eos, double(dt),
@@ -971,6 +988,13 @@ inline int ps_relax_mode()
 //    3  THERMAL leg runs on ANY band exit; mass transfer stays gated.
 //                 As 2, but also tests whether B4's high-side veto is still
 //                 load-bearing -- design 12.6 M4, never measured, inherited.
+//                 MEASURED: it IS load-bearing (B4 u 0.126 -> 0.699, B10
+//                 0.120 -> 0.486, B7 completes -> aborts), while removing the
+//                 LOW-side veto is what fixes B9 (u 0.889 -> 0.450).
+//    4  THERMAL leg runs when a phase is below T_triple, EVEN IF another is
+//                 above T_crit; otherwise the coexistence veto stands.
+//                 The low side overrides the high side.  See the inline
+//                 rationale at the test itself.
 //
 //  MT-ungated is reachable independently via PS_MT_NO_DOME_GATE=1, so the
 //  combinations need no further code.
