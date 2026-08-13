@@ -440,11 +440,27 @@ an existing hidden one explicit.  Audited in the source:
 | (E.1) transfer at donor density, and the D1/D2 carrier questions | the mental picture is an evaporating droplet | the interface-displacement picture at a contact is different |
 | surface tension | **absent entirely** (grepped: no capillarity anywhere) | consistent for a dispersed model; a morphology-aware model that knows it has a resolved interface would want it, and in 2-D/3-D it is what keeps interfaces from wrinkling without bound |
 
-**The sound-speed row is the one nobody has been looking at.**  It is a bigger
-lever than `theta`: it sets the wave fan and the timestep on every cell of every
-case, whereas `theta` only acts where the relaxation runs.  If morphology is
-real -- and B11 says it is -- then the frozen mixture speed is wrong at
-contacts, and it has been wrong at every contact in every run.
+**The sound-speed row: I claimed it was the biggest lever, and MEASURED
+2026-08-13 IT IS NOT.**  The original claim here was that the frozen mixture
+speed must matter more than `theta` because it sets the wave fan and the
+timestep on every cell of every case.  Tested via `CAMR.ps_cmix_model` (0 frozen,
+1 max, 2 Wood):
+
+    B11 CONTACT   frozen 0.0768/0.0423/0.1786   max 0.0766/0.0411/0.1774
+                  Wood   0.0760/0.0517/0.2138
+    B9  MIXTURE   frozen 0.0652/0.4187/0.2184   max 0.0620/0.4198/0.5247
+                  Wood   ABORT
+
+MAX is indeed best on the contact, as the morphology argument predicts -- **by
+3 %, against the 85x `theta` gave on the same case.**  The reason is that
+`S_L`/`S_R` only have to BOUND the fan; once they contain the true waves the
+scheme is weakly sensitive to how generous the bound is, and the contact is
+carried by `S_M`, which never touches `c_mix`.  An approximation that only has
+to bracket is forgiving; a rate is not.
+
+**This NARROWS the problem**: morphology matters for the relaxation RATES and
+essentially not at all for the hyperbolic operator.  Every other row in this
+table should be assumed small in degree until measured, as this one was.
 
 **What would NOT change, and this matters for the project's exposure.**  The
 presence model is untouched: `alpha_cond` is a CONDITIONING bound on the

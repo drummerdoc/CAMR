@@ -3115,3 +3115,68 @@ the point recorded in LITERATURE_relaxation_rates.md 9 and still untested.
 
 **DO NOT BUILD**: any morphology classifier keyed on the instantaneous alpha
 field or its derivatives.  Measured backwards on the one matched pair we have.
+
+### THE SOUND SPEED IS NOT LOAD-BEARING — my own 9 claim, refuted (2026-08-13)
+
+I wrote in LITERATURE_relaxation_rates.md 9 that the Wallis frozen mixture sound
+speed was "a bigger lever than theta ... it sets the wave fan and the timestep on
+every cell of every case".  **Measured, it is a SMALLER lever by more than an
+order of magnitude.**
+
+`CAMR.ps_cmix_model`, default 0, bit-identical.  The three LIVE call sites
+(`PS_hllc.H` face_from_state, `PS_wavespeed.H` which feeds dt, `PS_umeth.cpp`)
+are now single-sourced through one `ps_cmix2()` helper -- the four-way
+duplication of exactly this expression is what left three copies carrying the
+wrong task-#199 alpha factor (STATUS 6.1), so the replacement is not duplicated
+again.  Refactor verified inert: `exact_suite` identical on all 20 rows.
+
+    0  FROZEN mass-weighted (default)   c^2 = Y_1 c_1^2 + Y_2 c_2^2
+    1  MAX                              c   = max(c_1, c_2)   -- contact-correct
+    2  WOOD / equilibrium               1/(rho c^2) = sum alpha_k/(rho_k c_k^2)
+
+**Prediction stated before the run:** if the sound speed carries the same
+morphology split as theta, B11 (contact) prefers MAX and B9 (mixture) prefers
+frozen or Wood.
+
+**Measured:**
+
+    B11  smeared CONTACT      rho       u        P
+      0  frozen            0.0768   0.0423   0.1786
+      1  max               0.0766   0.0411   0.1774     ~3 % better
+      2  Wood              0.0760   0.0517   0.2138     u and P worse
+
+    B9   dispersed MIXTURE
+      0  frozen            0.0652   0.4187   0.2184
+      1  max               0.0620   0.4198   0.5247     rho better, P 2.4x worse
+      2  Wood              ABORT
+
+The direction of the prediction is right on B11 -- MAX is best, as the contact
+argument says it should be -- but the **magnitude is 3 %, against the 85x that
+theta gave on the same case.**  The morphology assumption is real in the sound
+speed and it is not worth anything.
+
+**Why, and it is a satisfying reason.**  `S_L`/`S_R` are Davis estimates whose
+job is to BOUND the fan, not to be the physical signal speed.  Once they contain
+the true waves the scheme is only weakly sensitive to how generous the bound is
+-- a wider fan is more diffusive, and that is all.  The contact itself is carried
+by `S_M`, which is computed from the mass and momentum balance and never touches
+`c_mix`.  `theta`, by contrast, sets a physical RATE that changes the answer.
+An approximation that only has to bracket is forgiving; a rate is not.
+
+**Two further readings.**  Wood is worse everywhere and aborts B9, which
+confirms STATUS 2.1's "too-narrow is unstable" from the other side: the frozen
+form is doing robustness work, and the physically-correct dispersed speed is
+unusable as a fan estimate.  And MAX being simultaneously the contact-correct
+choice AND the safest bound means there is no tension to resolve -- if anyone
+ever wants to change it, MAX is defensible on both counts and costs 3 %.
+
+**THIS IS GOOD NEWS AND NARROWS THE WALL.**  The morphology problem is confined
+to the RELAXATION RATES.  It does not contaminate the hyperbolic operator, the
+fluxes or the timestep in any way that matters at this resolution.  So the
+exposure recorded in the literature note 9 table is real in kind but small in
+degree for every row except theta and tau_mt, and the two-scale question is
+about closures, not about the wave structure.
+
+**Correction filed against my own note**: LITERATURE_relaxation_rates.md 9's
+"the sound-speed row is the one nobody has been looking at ... a bigger lever
+than theta" is WRONG and is corrected in place.

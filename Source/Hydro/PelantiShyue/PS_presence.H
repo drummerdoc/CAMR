@@ -49,7 +49,70 @@ struct PsPres {
     //  correct.  This field stays 1 and is retained only until the remaining
     //  forks are removed; `CAMR.ps_presence` is no longer read.
     int         enabled      = 1;
+    //  CAMR.ps_cmix_model -- WHICH MIXTURE SOUND SPEED a two-phase cell gets.
+    //  A NUMERICS dial riding the presence params struct because that struct is
+    //  already the by-value carrier reaching all three live c_mix sites
+    //  (PS_hllc.H face_from_state, PS_wavespeed.H, PS_umeth.cpp) with no
+    //  signature churn and no ParmParse inside a device-callable function
+    //  (GPU rules, DESIGN_ps_presence_discrete.md 12.2 rule 1).  The naming is
+    //  a compromise and is flagged here rather than hidden.
+    //
+    //  WHY IT EXISTS.  Blending two sound speeds into one asserts the phases
+    //  are finely intermixed, so that a wave crossing the cell samples many
+    //  alternating layers and feels an average.  That is a MORPHOLOGY
+    //  assumption, the same one measured wrong for theta by B11 -- but applied
+    //  to EVERY two-phase cell of EVERY case, and feeding S_L/S_R, hence every
+    //  flux and the timestep.  See LITERATURE_relaxation_rates.md 9.
+    //
+    //    0  FROZEN mass-weighted (default, bit-identical):
+    //         c^2 = Y_1 c_1^2 + Y_2 c_2^2
+    //    1  MAX: c = max(c_1, c_2).  The contact-appropriate choice -- at a
+    //         resolved interface a wave travels in ONE phase, so the fastest
+    //         real signal is the faster phase speed.  Also the safest bound
+    //         for S_L/S_R, hence more diffusive, never narrower than truth.
+    //    2  WOOD / equilibrium:  1/(rho c^2) = alpha_1/(rho_1 c_1^2)
+    //                                        + alpha_2/(rho_2 c_2^2)
+    //         The strongly-dispersed choice, and famously LOWER than either
+    //         phase at intermediate alpha.  Physically right for a fine
+    //         mixture in equilibrium; as an S_L/S_R estimate it is narrower
+    //         than the frozen speed, so if the fan stops bounding the true
+    //         waves this is where it shows.
+    int         cmix_model   = 0;
 };
+
+//  Single-sourced mixture sound speed SQUARED.  One definition for all three
+//  live call sites -- the four-way duplication of exactly this expression is
+//  what left three copies carrying the wrong task-#199 alpha factor
+//  (STATUS_multiphase.md 6.1), so the replacement is not duplicated again.
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+amrex::Real ps_cmix2(int model, amrex::Real Y1, amrex::Real Y2,
+                     amrex::Real c1, amrex::Real c2,
+                     amrex::Real alpha_1, amrex::Real alpha_2,
+                     amrex::Real rho_1, amrex::Real rho_2, amrex::Real rho_mix)
+{
+    using amrex::Real;
+    if (model == 1) {                    // MAX -- contact-appropriate
+        const Real cm = amrex::max(c1, c2);
+        return cm * cm;
+    }
+    if (model == 2) {                    // WOOD / equilibrium
+        //  Guarded: a vanishing alpha_k contributes nothing (its phase owns no
+        //  volume), which is the correct limit and avoids 0/0.  If neither
+        //  phase contributes, fall through to the frozen form rather than
+        //  invent a number.
+        Real inv = Real(0.0);
+        if (alpha_1 > Real(0.0) && rho_1 > Real(0.0) && c1 > Real(0.0)) {
+            inv += alpha_1 / (rho_1 * c1 * c1);
+        }
+        if (alpha_2 > Real(0.0) && rho_2 > Real(0.0) && c2 > Real(0.0)) {
+            inv += alpha_2 / (rho_2 * c2 * c2);
+        }
+        if (inv > Real(0.0) && rho_mix > Real(0.0)) {
+            return Real(1.0) / (rho_mix * inv);
+        }
+    }
+    return Y1 * c1 * c1 + Y2 * c2 * c2;  // 0 = FROZEN mass-weighted (default)
+}
 
 // Per-phase regime.  alpha is THIS phase's volume fraction, m its
 // partial mass.  Degenerate inputs (NaN alpha) classify as ABSENT so a
@@ -112,6 +175,7 @@ inline const PsPres& ps_presence_params()
         //  CAMR.ps_presence deliberately NOT read: the legacy path is gone.
         pp.query("ps_alpha_cond",       v.alpha_cond);
         pp.query("ps_alpha_birth",      v.alpha_birth);
+        pp.query("ps_cmix_model",       v.cmix_model);
         pp.query("ps_presence_vanish",  v.alpha_vanish);   // unified with the
         // fold's CAMR.ps_alpha_vanish at S3 (that key currently means
         // "fold threshold, 0 = fold off"; this one is the presence

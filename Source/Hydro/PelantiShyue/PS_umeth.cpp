@@ -310,7 +310,8 @@ ps_max_wave_speed(int i, int j, int k,
             // the presence branch only, so ungated dt is untouched).
             const Real Y1 = alpha_1 * rho_1_safe / rho_mix;
             const Real Y2 = Real(1.0) - Y1;
-            c2_frozen = Y1 * c1 * c1 + Y2 * c2 * c2;
+            c2_frozen = ps_cmix2(pr.cmix_model, Y1, Y2, c1, c2,
+                                 alpha_1, alpha_2, rho_1, rho_2, rho_mix);
         } else {
             const Real Y1 = alpha_1 * rho_1_safe / rho_mix;
             const Real Y2 = alpha_2 * rho_2_safe / rho_mix;
