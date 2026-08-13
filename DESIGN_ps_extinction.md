@@ -565,6 +565,15 @@ would release latent heat, the vapour would warm, the pressure would rise
 toward the reference's two-phase fan, and the cell would climb back into the
 coexistence band under its own power.  That is precisely the outcome we want.
 
+**MEASURED 2026-08-13, and on B9 it happens.**  With the thermal leg allowed to
+run through the band exit (`ps_coexist_action=3`), B9's u error falls from 0.889
+to 0.450 against an S4 reference of 0.43, all three fields improve together, and
+the case completes at the DEFAULT carrier where it previously aborted.  In the
+cells that mode 0 held at a 71 K split, `T_1` and `T_2` now agree to seven
+significant figures.  So (ii)'s premise is not speculative — the state IS
+recoverable, and the thermal leg IS what recovers it.  What (ii) does not yet
+have is a rule that recovers B9 without destroying B4 and B10; see X1.
+
 What it commits us to, and this is the catch: (ii) is NOT "remove the gate".
 12.1(d) measured removing the gate and all three cases abort — because with
 `frac = 1.0` and a driving force of order one, mass transfer applies the ENTIRE
@@ -615,6 +624,27 @@ cannot be adopted as a one-line change, and it should not be adopted on a lean.
   "split by side because only one side was measured" is half-derived, and it
   must be measured before it is adopted.
 
+  **MEASURED 2026-08-13, and the naive side split FAILS.**  M4 confirms the two
+  vetoes are different objects.  But `ps_coexist_action=2`, which is exactly
+  "drop the low-side veto, keep the high-side one", ABORTS on B9 and B2 at every
+  timestep tried (CFL 0.25, 0.025, 0.0033).  The instrument shows why, and it is
+  not a timestep problem: near the abort the cell holds `T_1 = 46 .. 60 K`
+  beside `T_2 = 4472 .. 5000 K`, with `p1_lo=2` and `p2_hi=2`.  Mode 2 relaxes a
+  cell whose exit is low-side only, then stops the moment ANY phase passes
+  `T_crit` — so it drives the split one way and abandons the cell
+  mid-equilibration.  A ONE-SIDED PUMP.  Mode 3, in the same cells, has
+  `T_1 = T_2` to seven significant figures.
+
+  **So the rule cannot be a hard side test on the CURRENT temperature**, because
+  cells transiently cross `T_crit` during the very equilibration being enabled.
+  The discriminator has to separate a GENUINE cross-critical contact (B4/B10:
+  supercritical by initial condition, permanently) from a TRANSIENT excursion
+  (B9 under mode 2, where `T_2 = 4500 K` is the energy split blowing up, not
+  physics).  That is the open question, and it is sharper than anything X0 had.
+  It is also the same failure shape as the min-phi pair limiter
+  (DESIGN_ps_wp_front 9.3) and the retired G1/G3 caps: a hard predicate that
+  flips the numerics at exactly the delicate cells.
+
   **X2  MAKE LEAVING THE BAND AN EVENT.**  Independent of X1 and required under
   the ground rules whatever else is chosen: a phase leaving the coexistence band
   is currently an uncounted silent `return true` that produces a permanent
@@ -658,8 +688,16 @@ cannot be adopted as a one-line change, and it should not be adopted on a lean.
   `e1_min`: hydro vs sources.  Answers X0 by telling us whether the over-cooling
   is the physical expansion or an operator.  One build, one run.
 
-  **M4  Is the low-side thermal veto load-bearing?**  B4 with the thermal leg's
-  coexistence test restricted to the high side.  One run.  Gates X1.
+  **M4  ANSWERED 2026-08-13** (`CAMR.ps_coexist_action`; numbers in WORKLOG).
+  The two vetoes are different objects.  Removing the LOW-side veto is what
+  fixes B9: u 0.889 -> 0.450 at CFL 0.025, against an S4 reference of 0.43, all
+  three fields improving together, and B9 then completes at the DEFAULT carrier
+  where it used to abort.  Removing the HIGH-side veto destroys the two
+  cross-critical cases the veto was added for — B4 u 0.126 -> 0.699, B10
+  0.120 -> 0.486 — and B7, whose exits are all `p2_hi`, regresses from
+  completing to aborting.  A smaller timestep rescues none of them, so it is the
+  veto and not the timestep.  **The high-side veto stays.  The low-side veto is
+  pure loss.**
 
   **M5  Only after X4**: re-derive D2 on a target/step-consistent binary.  Until
   then every `ps_mt_h_weight` number on record, including the 2026-08-12 B7
