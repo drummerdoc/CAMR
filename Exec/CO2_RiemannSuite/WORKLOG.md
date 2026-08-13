@@ -2971,3 +2971,84 @@ should be adopted, if at all, on those grounds rather than on results.
 **DO NOT RE-TRY**: HRM on theta (wrong mapping, B9 aborts); HRM as a cure for
 B4/B10 (undefined above the critical point); HRM expecting it to change the
 answer where MT uses exact relaxation onto dm_eq (redundant by construction).
+
+### B11 BREAKS THE CONFOUND: it is MORPHOLOGY, not criticality — and the
+### current DEFAULT is damaging subcritical contacts today (2026-08-13)
+
+**The gap.**  I had been asserting that the coexistence veto should key on cell
+MORPHOLOGY (dispersed mixture vs smeared material contact) rather than on the
+critical point.  Checking the suite showed that claim was **not established**,
+because the two are perfectly correlated in the existing cases:
+
+    B3-Sat-LV-contact   SATL 250 | SATV 250   subcritical CONTACT, no dT
+                        -> T_1 == T_2 from the start, the thermal leg has
+                           nothing to do; verified identical at theta 1e-7 and
+                           1e-2.  Does not exercise the question at all.
+    B4 / B10            contacts WITH a dT    but also CROSS-CRITICAL
+    B9 / B2             big dT, need fast theta, but dispersed MIXTURES
+
+Every contact-with-a-temperature-jump was also cross-critical; every case
+needing fast theta was a mixture.  The suite could not distinguish the two
+hypotheses.
+
+**B11-Subcrit-contact-dT**, added: `TP(250 K, 30 bar, liquid) | TP(290 K,
+30 bar, vapour)`, both **subcritical** (T_crit = 304.13), equal pressure, both
+sides advected at 200 m/s.  Verified IC: rho 1077.58 / 68.5649, P 3e6 both
+sides, T 250 / 290, alpha_1 1 / 0.  P and u uniform, so no acoustic wave is
+generated and the exact solution is a contact TRANSLATING at 200 m/s with the
+40 K jump intact (inviscid Euler carries no conduction).  Any deviation is
+error.  Reference minted at `$CO2_STANDALONE/suite/exact_B11_pr.csv`.
+
+Two design points worth recording.  (i) The first version was STATIONARY
+(u = 0).  It is a null test: nothing advects, no cell ever becomes mixed, the
+relaxation is never reached, and the result was identical at every theta from
+1e-7 to 1e-2.  Advecting it ~8.7 cells lets numerical diffusion create the
+genuinely two-phase interface cells the test is about.  (ii) Both phases are
+inside the coexistence band, so **the thermal leg runs at the DEFAULT settings**
+— this case needs no dial to exercise the question.
+
+**RESULT — a subcritical smeared contact needs SLOW theta, exactly like B4:**
+
+    theta      rho       u        P
+    1e-7     0.0768   0.0423   0.1786      <- the shipped default
+    1e-6     0.0768   0.0423   0.1781
+    1e-5     0.0773   0.0398   0.1646
+    1e-4     0.0794   0.0241   0.1005
+    1e-3     0.0823   0.0047   0.0213
+    1e-2     0.0829   0.0005   0.0024
+
+The exact answer is a clean translating contact, so the u and P errors should be
+round-off.  At the default theta = 1e-7 they are 0.042 and **0.179** — the
+relaxation is manufacturing spurious pressure waves at a contact where nothing
+should happen.  Going to theta = 1e-2 improves u by **85x** and P by **74x**.
+(The rho error rises slightly, 0.0768 -> 0.0829: the contact smears a little more
+without the relaxation redistributing energy.  A small trade against two orders
+of magnitude.)
+
+**So the cross-criticality of B4 and B10 is a COINCIDENCE.  The discriminator is
+morphology.**  A smeared material contact needs slow thermal relaxation whether
+or not either phase is supercritical, and the coexistence gate's critical-point
+test gets B4/B10 right for the wrong reason while doing nothing at all for the
+subcritical case.  The geometric diagnosis in DESIGN_ps_extinction 12.8 is now
+established rather than argued.
+
+**AND IT IS A LIVE DEFECT, NOT A HYPOTHETICAL.**  B11 runs at the DEFAULT
+configuration — the coexistence gate is open because both phases are subcritical,
+so the thermal leg fires at theta = 1e-7 and damages the contact.  **The shipped
+default is doing this today, on any subcritical liquid/vapour contact carrying a
+temperature difference.**  The suite never caught it because it contained no such
+case: B3 is the only subcritical contact and it has no temperature jump.  This is
+the same shape as every other defect this log records — invisible for want of a
+case that could see it.
+
+**Suite status: B11 added, and all 19 pre-existing rows are IDENTICAL**
+(`exact_suite` diffed against the rebuilt-HEAD baseline).  B11 enters the table
+at 0.0768 / 0.0423 / 0.1786, i.e. RED by construction — it is a defect the code
+currently has, deliberately left visible, exactly as the B9 checks were.
+
+**What it does NOT tell us.**  It does not say what the morphology indicator
+should be, only that one is needed.  A cell of B11's contact and a cell of B9's
+mixture can carry the same alpha, the same phase densities and energies, the same
+P and the same two temperatures, and still need theta four orders of magnitude
+apart.  No function of the six-equation state can separate them.  That is the
+DESIGN_ps_extinction 12.9 Y1/Y2 question, now with its premise measured.

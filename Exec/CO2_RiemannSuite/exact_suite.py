@@ -43,7 +43,8 @@ TWOPHASE = {'B1-Comp-L-expand':'B1',        'B2-Evap-wave':'B2',
             'B3-Sat-LV-contact':'B3',       'B4-Cross-critical':'B4',
             'B5-Both-2P':'B5',              'B6-Sat-V-shock':'B6',
             'B7-Rupture-Sonic':'B7',        'B8-Wall-Reflection':'B8',
-            'B9-Deep-Expansion':'B9',       'B10-Cross-critical-hot':'B10'}
+            'B9-Deep-Expansion':'B9',       'B10-Cross-critical-hot':'B10',
+            'B11-Subcrit-contact-dT':'B11'}
 
 def load_profile(name):
     rows=[l for l in open('%s/suite/profiles/%s.csv'%(STAND,name)) if not l.startswith('#') and l.strip()]

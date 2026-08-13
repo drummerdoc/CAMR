@@ -49,6 +49,26 @@ CASES = [
  ('B8-Wall-Reflection',('TP',310,100,0,L2,50),('TP',310,100,0,L2,-50),1.082513e-3),
  ('B9-Deep-Expansion',('TP',280,120,0,L2,0),('TP',280,5,0,V,0),     7.818949e-4),
  ('B10-Cross-critical-hot',('TP',270,100,0,L2,0),('TP',400,30,0,V,0),7.339590e-4),
+ #  B11 (2026-08-13): the case the suite was MISSING.  Every existing contact
+ #  with a temperature jump across it (B4, B10) is ALSO cross-critical, and
+ #  every case needing fast thermal relaxation is a dispersed mixture -- so
+ #  morphology and criticality are perfectly correlated in the data and the
+ #  suite cannot tell which one the coexistence veto should key on.
+ #  B11 breaks that confound: a SUBCRITICAL liquid|vapour contact (250 K and
+ #  290 K, both below T_crit = 304.13) at EQUAL pressure and zero velocity, so
+ #  it is a pure stationary material contact with a 40 K jump across it.  At
+ #  30 bar, 250 K is compressed liquid (Psat ~ 17.9 bar) and 290 K is
+ #  superheated vapour (Psat ~ 53.2 bar).
+ #  ADVECTED at 200 m/s, not stationary: with u = 0 nothing moves, no cell
+ #  ever becomes mixed, and the relaxation is never reached -- measured, the
+ #  result was identical at every theta from 1e-7 to 1e-2.  Advecting the
+ #  contact ~8.7 cells lets numerical diffusion create the genuinely
+ #  two-phase interface cells the test is about.
+ #  Exact solution: the contact TRANSLATES at 200 m/s, unchanged.  P and u
+ #  are uniform so no acoustic wave is generated, and inviscid Euler has no
+ #  conduction, so the 40 K jump persists.  Any deviation is error.  Both phases are inside the coexistence
+ #  band, so the thermal leg runs at the DEFAULT settings -- no dial required.
+ ('B11-Subcrit-contact-dT',('TP',250,30,0,L2,200),('TP',290,30,0,V,200), 6.811637e-4),
  ('C1-Identity',   ('TP',400,30,0,V,50),   ('TP',400,30,0,V,50),    1.145450e-3),
  ('C2-Acoustic-limit',('TP',400,30.05,0,V,0),('TP',400,30.00,0,V,0),1.336864e-3),
  ('C3-Strong-shock-V',('TP',500,30,0,V,500),('TP',500,1,0,V,0),     4.769659e-4),
@@ -64,7 +84,8 @@ CD = {c[0]: c for c in CASES}
 # internally, mode 2 still gives the correct thermal coupling.)
 TWO_PHASE = {'B1-Comp-L-expand','B2-Evap-wave','B3-Sat-LV-contact','B4-Cross-critical',
              'B5-Both-2P','B6-Sat-V-shock','B7-Rupture-Sonic','B8-Wall-Reflection',
-             'B9-Deep-Expansion','B10-Cross-critical-hot'}
+             'B9-Deep-Expansion','B10-Cross-critical-hot',
+             'B11-Subcrit-contact-dT'}
 MT_TAU = 1.0e-4
 def case_cfg(name):
     """-> (camr_overrides dict, standalone env dict, standalone extra flags).

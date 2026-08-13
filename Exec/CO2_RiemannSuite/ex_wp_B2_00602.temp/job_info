@@ -1,0 +1,210 @@
+===============================================================================
+ CAMR Job Information
+===============================================================================
+job name: 
+
+inputs file: inputs
+
+number of MPI processes: 1
+
+CPU time used since start of simulation (CPU-hours): 0.000479459
+
+===============================================================================
+ Plotfile Information
+===============================================================================
+output data / time: Aug 12 2026 14:26:47
+output dir:         /sessions/rcw-01jahcrv4smmiekrrt7t7jya/mnt/src/CAMR/Exec/CO2_RiemannSuite
+
+
+===============================================================================
+ Build Information
+===============================================================================
+build date:    2026-08-10 17:31:39.458726
+build machine: Linux claude 6.8.0-124-generic #124~22.04.1-Ubuntu SMP PREEMPT_DYNAMIC Tue May 26 14:43:33 UTC  aarch64 aarch64 aarch64 GNU/Linux
+build dir:     /sessions/rcw-01jahcrv4smmiekrrt7t7jya/mnt/src/CAMR/Exec/CO2_RiemannSuite
+AMReX dir:     /sessions/rcw-01jahcrv4smmiekrrt7t7jya/mnt/src/PeleLMeX/Submodules/PelePhysics/Submodules/amrex
+
+COMP:          gnu
+COMP version:  11.4.0
+FCOMP:         
+FCOMP version: 
+
+
+CAMR       git hash: 4c8bc3b
+AMReX       git hash: 26.06-5-g65db2e4e
+
+
+===============================================================================
+ Grid Information
+===============================================================================
+ level: 0
+   number of boxes = 1
+   maximum zones   = 64 
+
+ Boundary conditions
+   -x: Inflow
+   +x: Inflow
+
+
+===============================================================================
+ Species Information
+===============================================================================
+ index                         name              A              Z
+--------------------------------------------------------------------------------
+
+
+===============================================================================
+ Inputs File Parameters
+===============================================================================
+CAMR.allow_negative_energy = 1
+CAMR.cfl = 0.25
+CAMR.cfl = 0.25
+CAMR.do_mol = 0
+CAMR.do_mol = 0
+CAMR.fixed_dt = 0
+CAMR.hi_bc = Inflow SlipWall SlipWall
+CAMR.lo_bc = Inflow SlipWall SlipWall
+CAMR.ppm_type = 1
+CAMR.ps_bc_nscbc_sigma = 0.25
+CAMR.ps_bc_use_nscbc = 0
+CAMR.ps_do_relax = 1
+CAMR.ps_flash_tau = 1e-07
+CAMR.ps_flux = wp
+CAMR.ps_flux = wp
+CAMR.ps_hydro = 1
+CAMR.ps_mt_tau = 1e-07
+CAMR.ps_recon = 1
+CAMR.ps_recon = 1
+CAMR.ps_relax_mode = 4
+CAMR.ps_theta_tau = 1e-07
+CAMR.ps_wp_order = 2
+CAMR.ps_wp_order = 2
+CAMR.redistribution_type = StateRedist
+CAMR.sum_interval = -1
+CAMR.v = 0
+CAMR.v = 0
+DistributionMapping.strategy = ROUNDROBIN
+DistributionMapping.verbose = 0
+amr.blocking_factor = 2
+amr.check_file = "chk"
+amr.check_input = true
+amr.check_int = -1
+amr.check_per = -1.0
+amr.checkpoint_files_output = 0
+amr.checkpoint_nfiles = 64
+amr.checkpoint_on_restart = false
+amr.compute_new_dt_on_regrid = false
+amr.derive_plot_vars = x_velocity y_velocity z_velocity vfrac pressure
+amr.file_name_digits = 5
+amr.force_regrid_level_zero = false
+amr.grid_eff = 0.99
+amr.loadbalance_with_workestimates = 0
+amr.max_grid_iterations = 4
+amr.max_grid_size = 128
+amr.max_level = 0
+amr.message_int = 10
+amr.n_cell = 256 2 2
+amr.n_cell = 64
+amr.n_error_buf = 0 0 0 0
+amr.n_proper = 1
+amr.plot_file = plt
+amr.plot_file = ex_wp_B2_
+amr.plot_files_output = 1
+amr.plot_int = -1
+amr.plot_int = -1
+amr.plot_log_per = -1.0
+amr.plot_max_level = 0
+amr.plot_nfiles = 64
+amr.plot_per = 0.000686757
+amr.plotfile_on_restart = false
+amr.ref_ratio(nvals = 4)  :: [2, 2, 2, 2]
+amr.refine_grid_layout = true
+amr.regrid_int(nvals = 4)  :: [2, 2, 2, 2]
+amr.regrid_on_restart = false
+amr.small_plot_file = "smallplt"
+amr.small_plot_int = -1
+amr.small_plot_log_per = -1.0
+amr.small_plot_per = -1.0
+amr.subcycling_mode = "Auto"
+amr.v = 0
+amr.v = 0
+amr.write_plotfile_with_checkpoint = true
+amrex.abort_on_out_of_gpu_memory = false
+amrex.abort_on_unused_inputs = false
+amrex.async_out = false
+amrex.async_out_nfiles = 64
+amrex.fpe_trap_invalid = 0
+amrex.fpe_trap_overflow = false
+amrex.fpe_trap_zero = false
+amrex.handle_sigabrt = true
+amrex.handle_sigfpe = true
+amrex.handle_sigill = true
+amrex.handle_sigint = true
+amrex.handle_sigsegv = true
+amrex.handle_sigterm = false
+amrex.init_snan = false
+amrex.mf.alloc_single_chunk = false
+amrex.signal_handling = true
+amrex.the_arena_defragmentation = true
+amrex.the_arena_init_size = 8388608
+amrex.the_arena_is_managed = false
+amrex.the_arena_release_threshold = 9223372036854775807
+amrex.the_comms_arena_defragmentation = true
+amrex.the_comms_arena_init_size = 8388608
+amrex.the_comms_arena_release_threshold = 9223372036854775807
+amrex.the_device_arena_defragmentation = true
+amrex.the_device_arena_init_size = 8388608
+amrex.the_device_arena_release_threshold = 9223372036854775807
+amrex.the_managed_arena_defragmentation = true
+amrex.the_managed_arena_init_size = 8388608
+amrex.the_managed_arena_release_threshold = 9223372036854775807
+amrex.the_pinned_arena_defragmentation = true
+amrex.the_pinned_arena_init_size = 8388608
+amrex.the_pinned_arena_release_threshold = 9223372036854775807
+amrex.throw_exception = false
+amrex.use_gpu_aware_mpi = false
+amrex.use_profiler_syncs = 0
+amrex.vector_growth_factor = 1.5
+amrex.verbose = 1
+fabarray.comm_tile_size = 1024000
+fabarray.mfiter_tile_size = 1024000
+geometry.coord_sys = 0
+geometry.is_periodic = 0 0 0
+geometry.prob_hi = 1.0 0.0078125 0.0078125
+geometry.prob_hi = 1.0
+geometry.prob_lo = 0.0 0.0 0.0
+geometry.prob_lo = 0.0
+max_step = 100000
+prob.T_L = 270.0
+prob.T_L = 260
+prob.T_R = 350.0
+prob.T_R = 260
+prob.alpha_trace = 1.0e-6
+prob.alpha_trace = 0.0
+prob.p_L = 1.0e7
+prob.p_L = 8000000.0
+prob.p_R = 5.0e6
+prob.p_R = 500000.0
+prob.p_amb = 5.0e6
+prob.p_amb = 5000000.0
+prob.phase_L = 1
+prob.phase_L = 1
+prob.phase_R = 0
+prob.phase_R = 0
+prob.u_L = 0.0
+prob.u_L = 0
+prob.u_R = 0.0
+prob.u_R = 0
+prob.x_diaph = 0.5
+prob.x_diaph = 0.5
+prob.x_qual_L = 1.0
+prob.x_qual_L = 0.0
+prob.x_qual_R = 1.0
+prob.x_qual_R = 1.0
+stop_time = 7.339590e-04
+stop_time = 0.0006867567
+tiny_profiler.device_synchronize_around_region = false
+tiny_profiler.enabled = true
+tiny_profiler.memprof_enabled = true
+tiny_profiler.print_threshold = 1.0
+tiny_profiler.verbose = 0
