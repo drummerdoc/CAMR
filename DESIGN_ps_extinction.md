@@ -385,6 +385,29 @@ at the `T = 1 K` bracket end by the transfer itself:
 So the gate is LOAD-BEARING.  It is holding back a transfer that destroys the
 run.  The plateau is the price currently paid for it.
 
+**(e) The driving force in the refused cells is of ORDER ONE.**  `p1.g` and
+`p2.g` are already formed when the gate fires, so recording them costs nothing;
+they had never been measured because the gate returns before `g_diff` is
+constructed.  `[PS-MTDRIVE]`, first and last step of each run:
+
+    case  step   g_1 - g_2 [J/kg]        |g_1-g_2|/g       P_1/Psat(T_1)
+    B9    first  3.535e4                 1.227             0.136
+    B9    last   1.954e4 .. 3.000e4      0.679 .. 1.039    0.163 .. 0.176
+    B2    first  2.796e4                 1.352             0.200
+    B2    last   2.069e4 .. 2.515e4      1.011 .. 1.220    0.231 .. 0.240
+    B7    first  2.018e5                 1.192             0.025
+    B7    last   2.128e5 .. 3.335e6      1.010 .. 1.181    0.029 .. 0.124
+
+    tol_g_rel = 1e-4        L_EOS ~ 2.7e5 J/kg at 260 K (this EOS)
+
+Four orders of magnitude above the Gibbs screen, and about a thousand times the
+1.5e-3 that a hand-built 0-D state at T1 = T2 = 280 K near saturation reported.
+`P_1/Psat(T_1) = 0.025 .. 0.24` says the liquid sits at 2.5-24 % of its own
+saturation pressure — more stretched than anything in the 2026-08-12 flash
+sweep, which called 0.869 / 0.686 / 0.415 "metastable, eligible".  **The cells
+the gate refuses are the most violently evaporating cells in the problem.**
+
+
 ### 12.2 The structural defect: one predicate, three operators, self-locking
 
 The coexistence test — both phase temperatures strictly inside
@@ -456,36 +479,128 @@ why it measured ANTI-correlated with trouble (worst 325 at the clean production
 tau, ~1 at the failing tau).  It is scoring the step against a manifold the step
 does not travel.  §5.2's controller decision cannot be taken on that metric.
 
-### 12.4 The physics question that has to be answered first  [DECIDE X0]
+### 12.4 The question that has to be answered first  [DECIDE X0]
 
-`Psat(T_triple) = 5.18e5 Pa` and the parked cells sit at 5.4-5.5 bar, so the
-saturation temperature there is barely above the triple point and a vapour at
-183-202 K **is in the solid (dry-ice) region**.  The model is liquid-vapour.
-So before choosing a mechanism:
+**What is actually in one of these cells.**  Take the representative B9 cell.
+It is mostly vapour, about 98 % by volume, with a little liquid at about 2 %.
+Both phases are at the same pressure, 5.5 bar, because the mechanical
+relaxation enforces that instantaneously — it is the model's closure, not an
+approximation.  The liquid is at 269 K.  Liquid CO2 at 269 K has a saturation
+pressure near 40 bar, so this liquid is being held at roughly one seventh of
+the pressure it would need to stay liquid.  In plain terms it is a liquid that
+should be boiling explosively.  The vapour in the same cell is at 198 K, which
+is 18 K below the CO2 triple point.  The Gibbs difference between the two is
+3.5e4 J/kg, of order one relative to g itself.
 
-  **X0  Is a sub-triple-point vapour a state this work item must represent?**
+**Why the vapour is that cold, and why it stays that way.**  It is the
+far-field vapour that the expansion cooled, and nothing has warmed it.  In
+reality the superheated liquid beside it would be boiling into it, and the
+latent heat that boiling releases is exactly what warms the vapour and raises
+the local pressure.  That process is the missing one.  It is missing because
+the model declines to run it: the coexistence test asks whether BOTH phase
+temperatures lie between the triple point and the critical point, the vapour at
+198 K does not, so mass transfer returns without acting.  The same test also
+gates the thermal relaxation, so the vapour is not warmed by conduction from
+the 269 K liquid either.  Nothing in the model can change this cell, ever.
 
-Three self-consistent answers, and they lead to different designs:
+**So the question X0 asks is:** the model has arrived at a state its own
+rulebook says cannot exist.  What should it do?  And the answer depends
+entirely on what one thinks that state IS.  Note what X0 is NOT asking.  It is
+not asking whether the coexistence test was a mistake — it was added for a real
+defect (B10's cross-critical over-development, where g_1 != g_2 between a
+liquid and a SUPERCRITICAL vapour is not a phase-change driving force), and
+12.1(d) measures that removing it aborts all three cases.  X0 asks what the
+RESPONSE should be for a phase that has left the band, which is a different
+question from whether the band is the right test.
 
-  (i)  NO — it is unphysical, and its appearance is a defect upstream.  Then the
-       correct response is an ABORT with a named diagnostic, not a silent no-op,
-       and B2/B7/B9 become three aborts instead of three plateaux.  By this
-       project's own policy that is an improvement: a located failure beats a
-       wrong number.  The upstream question then becomes why the expansion
-       over-cools the vapour phase.
-  (ii) YES, as a METASTABLE continuation.  Note the asymmetry this would remove:
-       the EOS is *required* to continue a branch past its physical limit
-       (STATUS 2.3 requirement 2) precisely because "a phase held out of
-       equilibrium by finite-rate transfer" is what metastability means, and the
-       flash exists to handle a metastable LIQUID above the dome.  The
-       branch-locked vapour query at 198 K, 5.5 bar returns `valid` — the EOS
-       does not refuse; only the gate does.  On this reading the gate imposes a
-       bound the EOS does not, and imposes it on only one of the two
-       metastable directions.
-  (iii) YES, and it needs SOLID CO2 — sublimation, a third phase.  Out of scope
-       for 1-D correctness; recorded so it is a decision and not an omission.
+---
 
-X0 is not mine to answer.  Nothing below should be coded until it is.
+**(i)  IT IS A MISTAKE, SO STOP.**
+
+In equilibrium, CO2 at 198 K and 5.5 bar is dry ice.  This model has no solid
+phase.  A liquid-vapour model that finds itself holding a "vapour" in the solid
+region is holding a state it cannot describe, and on this reading it should say
+so and abort rather than keep producing numbers from it.
+
+What it commits us to: B2, B7 and B9 become three located aborts instead of
+three wrong answers.  By this project's own standing policy that is an
+improvement, not a regression — the aborts are what replaced the silent floors,
+and a named failure beats a plausible number.  It then makes M3 (why does the
+vapour cool that far?) the next question rather than an optional one.
+
+What now argues against it: the state is not a numerical wreck.  The mixture
+quantities are sensible, the liquid is an ordinary 269 K liquid, and the
+branch-locked EOS query for the vapour at 198 K, 5.5 bar returns a VALID state
+without complaint.  What is unusual about the cell is not corruption but that
+its two phases are far out of equilibrium with each other — and describing
+phases far out of equilibrium with each other is the entire purpose of a
+six-equation model with finite-rate relaxation.  Aborting here means aborting
+on strong disequilibrium, which is the regime the model exists for.  12.1(e)
+sharpens this: the refused cells are not degenerate, they are the most
+thermodynamically active cells in the run.
+
+---
+
+**(ii)  IT IS A REAL BUT TEMPORARY OUT-OF-EQUILIBRIUM STATE, SO LET THE
+PHYSICS RUN.**
+
+In a fast depressurisation matter does not have time to reach equilibrium.  A
+liquid can be pulled below its boiling pressure and remain liquid for a while;
+that is superheat, it is entirely physical, and `ps_flash_source_cell` exists
+precisely to nucleate it.  The mirror case is a vapour cooled past the point
+where it "should" have deposited as solid, which stays a vapour for a while
+because forming dry ice requires nucleation and nucleation takes time.  On this
+reading the cell's vapour is a supercooled vapour, not a solid.
+
+Two things support it.  First, the EOS agrees: it is REQUIRED to continue a
+branch past its physical limit (STATUS 2.3 requirement 2) for exactly this
+reason, and it does so here without refusing.  **The gate is imposing a bound
+the equation of state does not.**  Second, it imposes that bound
+asymmetrically — metastable liquid above the dome is allowed and has a whole
+operator devoted to it, while metastable vapour below the triple point is
+refused outright.  That asymmetry needs justifying or removing.
+
+Where it leads, if true: the operators would be allowed to act, evaporation
+would release latent heat, the vapour would warm, the pressure would rise
+toward the reference's two-phase fan, and the cell would climb back into the
+coexistence band under its own power.  That is precisely the outcome we want.
+
+What it commits us to, and this is the catch: (ii) is NOT "remove the gate".
+12.1(d) measured removing the gate and all three cases abort — because with
+`frac = 1.0` and a driving force of order one, mass transfer applies the ENTIRE
+equilibrium transfer of an enormous disequilibrium in a single step, and walks
+straight off the EOS domain.  So (ii) is "remove the gate AND give mass
+transfer a step it can be trusted with", i.e. it makes the 5.2 controller
+REQUIRED rather than deferred, and it needs X2 (the band exit named and
+counted) and X1 (deciding what the gate should actually test) alongside.
+Answering (ii) is answering three questions at once, and none of them is free.
+
+---
+
+**(iii)  IT REALLY IS SOLID, SO MODEL THE SOLID.**
+
+Add a third phase.  One measured fact bears on it and should be on the record
+whatever is decided: **no state in any of the exact reference solutions is
+below the triple point.**  The reference two-phase fans sit at 10.19-31.32 bar
+(B9) and 8.31-19.78 bar (B2) against `Psat(T_triple) = 5.18` bar, and `Psat` is
+monotone in T, so every two-phase reference state is above the triple point by
+a factor 1.6 to 6 in pressure.  The 5 bar far field is a superheated vapour at
+280 K, not a solid-region state.  A solid phase would therefore not change any
+number in the acceptance table: the correct answers to these cases contain no
+dry ice.  Whether the APPLICATION needs solid CO2 is a real and separate
+question with its own justification; it is not a route to fixing B2/B7/B9.
+
+---
+
+**Where the evidence points, stated as a lean and not a conclusion.**  CAMR's
+own two-phase cells sit at 5.1-5.5 bar — the far-field pressure — where the
+reference's sit at 8-31 bar.  The evaporation wave never develops, so the star
+pressure never climbs, so the saturation temperature in those cells is at the
+triple point.  **The sub-triple-point vapour looks like a consequence of the
+wave not forming, not a cause of it.**  Together with 12.1(e) that weakens (i)
+and strengthens (ii).  But (ii) is only viable with a step-size control, so it
+cannot be adopted as a one-line change, and it should not be adopted on a lean.
+
 
 ### 12.5 Candidate designs, to be selected AFTER X0
 
@@ -552,9 +667,12 @@ X0 is not mine to answer.  Nothing below should be coded until it is.
 
 ### 12.7 [DECIDE] points for Marc
 
-  **X0**  Is a sub-triple-point vapour in scope: unphysical-so-abort (i),
-          metastable continuation (ii), or needs solid CO2 (iii)?  Everything
-          else waits on this.
+  **X0**  What IS the state in 12.4 — a mistake to abort on (i), a real
+          supercooled vapour to let the operators work on (ii), or genuinely
+          solid (iii)?  Everything else waits on this.  Be aware what (ii)
+          costs: it makes the 5.2 controller required, not deferred, because
+          removing the gate WITHOUT a step-size control is measured to abort
+          all three cases.
   **X-D1** M2 and M3 before any mechanism is chosen — agreed, or is M3 enough?
   **X-D2** X2 (name and count the band exit, with an explicit response) —
           adopt independently of X0, since the silent permanent no-op violates
