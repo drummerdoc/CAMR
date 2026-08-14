@@ -261,6 +261,14 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
             int v = 0; amrex::ParmParse pp("CAMR");
             pp.query("ps_mt_tau_model", v); return v; }();
         const int l_mt_tau_model = mt_tau_model;
+        //  CAMR.ps_mt_target: 0 = legacy target (default, bit-identical),
+        //  1 = target consistent with the step's carrier and (E.1) path,
+        //  2 = additionally nest the pressure relaxation.  See
+        //  hem::ps_mass_transfer_finite_cell's eq_solver_params.
+        static const int mt_target = []() -> int {
+            int v = 0; amrex::ParmParse pp("CAMR");
+            pp.query("ps_mt_target", v); return v; }();
+        const int l_mt_target = mt_target;
         for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
             const amrex::Box bx = mfi.growntilebox(nghost);
             amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
@@ -303,7 +311,8 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                 if (hem::ps_mass_transfer_finite_cell(Uv, eos, double(dt), double(tau),
                                                       1.0e-6, double(gref), l_mt_upd,
                                                       l_mt_cr, l_mt_h_w,
-                                                      l_mt_tau_model)) {
+                                                      l_mt_tau_model,
+                                                      l_mt_target)) {
                     // B3 reproject: only when MT actually transferred mass
                     // (the kernel returns true on its internal gates too,
                     // with Uv untouched -- the bitwise test excludes those,

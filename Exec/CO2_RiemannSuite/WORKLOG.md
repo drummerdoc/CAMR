@@ -3180,3 +3180,103 @@ about closures, not about the wave structure.
 **Correction filed against my own note**: LITERATURE_relaxation_rates.md 9's
 "the sound-speed row is the one nobody has been looking at ... a bigger lever
 than theta" is WRONG and is corrected in place.
+
+### ps_mt_target: the Lund & Aursand diagnosis CONFIRMED, and B9's best number
+### yet — but only in combination (2026-08-13)
+
+`CAMR.ps_mt_target`, default 0, bit-identical.  Makes the MT equilibrium TARGET
+travel the same path as the STEP:
+
+    0  legacy   -- target at FIXED alpha with a MEAN carrier, whatever the step does
+    1  CONSISTENT -- target uses the step's carrier (upwind honoured) AND the
+                  step's (E.1) alpha co-move, dalpha_1 = -dm/rho_1 at the entry
+                  donor density
+    2  as 1, plus the nested pressure relaxation
+
+Rationale from `lund-splitting-relaxation-twophase-flow.pdf` (Lund & Aursand,
+SINTEF/NTNU): their Eq. (23) says an ODE whose source always points at
+equilibrium is non-overshooting under both Backward Euler and their ASY1
+exponential form -- and our step IS that exponential form.  We forfeited the
+premise by computing the target on a path the step never travels.
+
+**THE PREDICTION, stated before the run:** if the aborts are the forfeited
+non-overshoot property, the cases should survive with the coexistence gate OFF --
+the configuration that aborted all three at the `T = 1 K` bound (M1).
+
+**CONFIRMED, 2 of 3:**
+
+    gate OFF (PS_MT_NO_DOME_GATE=1)      target 0        target 1
+      B9-Deep-Expansion                  ABORT T=1K      0.1166/0.9757/0.3481
+      B2-Evap-wave                       ABORT T=1K      0.0738/0.9634/0.3311
+      B7-Rupture-Sonic                   ABORT T=1K      ABORT T=1K
+
+B9 and B2 stop aborting.  B7 does not, so it carries a second mechanism -- which
+is consistent with everything else B7 has done today (it is the case whose band
+exits are all `p2_hi`, and the only one whose vapour runs to 1811 K).
+
+**BUT the accuracy in that configuration is WORSE than the plateau** (u 0.976 and
+0.963, against 0.889/0.919).  So consistency converts an abort into a poor
+number -- progress by this project's standard, not a solution.
+
+**AND IN THE SHIPPED CONFIGURATION IT IS HARMFUL:**
+
+    default gate                          target 0        target 1
+      B9    0.1136/0.8890/0.3397    ->    0.1166/0.9757/0.3481   worse
+      B2    0.0740/0.9186/0.3263    ->    0.0738/0.9628/0.3310   worse
+      B7    unchanged (MT barely runs there)
+
+Coherent reason: with the gate on, the cell is locked out of thermal equilibrium
+(the self-lock), so MT is acting on a state that is already wrong.  Sizing that
+action *more correctly* moves further in a wrong direction.
+
+**WHERE IT PAYS, AND IT PAYS WELL — combined with mode 3:**
+
+    B9, ps_coexist_action=3, theta 3e-6, donor carrier
+      target 0    0.0652 / 0.4187 / 0.2184
+      target 1    0.0606 / 0.3395 / 0.1831     <- all three fields better
+      target 2    ABORT   (nesting; consistent with the 2026-08-11 measurement
+                           that nesting makes the outer Gibbs Newton non-smooth)
+
+**Full 20-case suite, combined configuration** (`ps_coexist_action=3`,
+`theta=3e-6`, `ps_mt_target=1`, default carrier):
+
+    B9-Deep-Expansion   RUN FAILED  ->  0.0524 / 0.3826 / 0.1803
+                        u BELOW the S4 reference of 0.43, rho less than half the
+                        baseline, and completing at the DEFAULT carrier.  The
+                        best B9 has ever been by a wide margin.
+    B5-Both-2P          .0419/.1601/.0183 -> .0417/.1581/.0180   marginally better
+    B11                 .0768/.0423/.1786 -> .0769/.0426/.1763   unchanged
+    B4-Cross-critical   0.1262 u -> 0.7071 u        the mode-3 casualty
+    B10-Cross-crit-hot  0.1202 u -> 0.4857 u        the mode-3 casualty
+    B7-Rupture-Sonic    completes -> RUN FAILED     the mode-3 casualty
+    B2-Evap-wave        RUN FAILED -> RUN FAILED    unchanged at the default carrier
+    A1-A6, C1-C3, B1, B3, B6, B8                    IDENTICAL
+
+**Defaults verified inert row by row**: `exact_suite` at defaults reproduces every
+recorded value exactly (A1 .0119/.0119/.0154, B4 .0635/.1262/.0493, B7
+.2464/.8557/.6597, B10 .0705/.1202/.0833, B11 .0768/.0423/.1786, B3 3.125e-11,
+B5 .0419/.1601/.0183).
+
+**WHAT THIS ESTABLISHES.**  The paper's diagnosis is right and it was worth
+following: the target/step inconsistency was a real defect with a real
+consequence, and repairing it demonstrably restores the non-overshoot behaviour
+the theorem predicts.  It is also, so far, **not independently adoptable** -- on
+its own it makes the shipped configuration worse, and it only pays in company
+with `ps_coexist_action=3`, which carries its own three casualties.  So the
+option to not use it is the right default today, and that is where it is left.
+
+**The B9 trajectory over the session, for the record:**
+
+    RUN FAILED (default carrier) / 0.8890 u (donor)      start
+    0.4924   ungate the thermal leg (coexist_action=3)
+    0.4187   + theta 3e-6
+    0.3395   + consistent MT target                      donor carrier
+    0.3826   same, at the DEFAULT carrier, and completing
+    0.43     S4 reference
+    0.11-0.17  the working B cases
+
+**Still open and unchanged**: the theta wall (12.8), B7's second abort
+mechanism, and the three mode-3 casualties.  Next from the paper, and both
+independent of the above: ASY1's DERIVED tau in place of our hand-set `tau_mt`,
+and Backward Euler on the source, which would delete the equilibrium solve
+altogether rather than repair it.

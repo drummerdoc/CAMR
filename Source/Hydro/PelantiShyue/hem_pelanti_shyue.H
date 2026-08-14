@@ -2942,6 +2942,18 @@ struct PsMassTransferParams {
     // dome_gate=false for a non-CO2 / mock EOS.  Env PS_MT_NO_DOME_GATE=1
     // also disables it globally.
     bool   dome_gate = true;
+    //  CAMR.ps_mt_target (2026-08-13): make the EQUILIBRIUM TARGET travel the
+    //  same path as the STEP.  Lund & Aursand Eq. (23): an ODE whose source
+    //  always points at equilibrium is non-overshooting under both Backward
+    //  Euler and their ASY1 exponential form.  Our step IS that exponential
+    //  form -- dm = (1-exp(-dt/tau))*dm_eq -- but dm_eq has been computed at
+    //  FIXED alpha with a MEAN carrier while the step applies (E.1) with the
+    //  runtime carrier, so the target is not the equilibrium of the dynamics
+    //  being integrated and the guarantee is void.  That is the measured cause
+    //  of the T = 1 K aborts when the coexistence gate is opened.
+    //  Setting update_alpha co-moves alpha inside the target solve exactly as
+    //  the step does; h_interface_weight above is threaded to match too.
+    int    update_alpha = 0;
 };
 
 
@@ -3032,10 +3044,14 @@ inline bool ps_mass_transfer_relax_cell(
                                     double& g_scale_out) -> bool
     {
         U_out = U;
-        // Compute interface enthalpy h_I at CURRENT state (arithmetic
-        // mean or upwind-by-sign-of-dm; using arithmetic here).
+        //  Interface enthalpy.  The UPWIND branch (w < 0) is honoured here as
+        //  well as in the step -- previously this lambda always took the mean,
+        //  so ps_mt_h_weight changed the step's carrier and never the target's
+        //  (WORKLOG 2026-08-13, D-B(2)).  Upwinding is by the sign of the
+        //  CANDIDATE transfer, which is the same rule the step uses.
         const double w = mt_p.h_interface_weight;
-        const double h_I = (1.0 - w) * s0.p1.h + w * s0.p2.h;
+        const double h_I = (w < 0.0) ? ((dm_try > 0.0) ? s0.p1.h : s0.p2.h)
+                                     : (1.0 - w) * s0.p1.h + w * s0.p2.h;
         // Transfer mass: reduce m1, increase m2.  Ratio of transfer
         // affects (alpha_k * rho_k * E_k) via mass * carrier enthalpy.
         // Total mixture internal energy preserved: dm*h_I leaves
@@ -3054,6 +3070,24 @@ inline bool ps_mass_transfer_relax_cell(
         const double H_I = h_I + 0.5 * u * u;
         U_out[4] = U[4] - dm_try * H_I;
         U_out[5] = U[5] + dm_try * H_I;
+
+        //  (E.1) density-preserving alpha co-move, matching the step exactly:
+        //  dalpha_1 = -dm/rho_1 at the ENTRY donor density, both signs, as
+        //  ps_mass_transfer_finite_cell writes it.  Without this the target is
+        //  the equilibrium of a FIXED-alpha path the step never travels, and
+        //  along fixed alpha d(rho_1)/dm = 1/alpha_1 while along (E.1) it is
+        //  exactly zero -- so the target's Gibbs sensitivity carries a
+        //  1/alpha_1 amplification the step does not have, and dm_eq comes out
+        //  systematically too small, worst at small alpha_1.
+        if (mt_p.update_alpha != 0) {
+            const double rho_1_entry = U[1] / U[0];
+            if (rho_1_entry > 0.0 && std::isfinite(rho_1_entry)) {
+                double a_new = U[0] - dm_try / rho_1_entry;
+                if (a_new < 0.0) a_new = 0.0;
+                if (a_new > 1.0) a_new = 1.0;
+                U_out[0] = a_new;
+            }
+        }
 
         // Nested pressure relaxation: alpha_1 adjusts to keep
         // P_1 == P_2 after mass transfer.
@@ -3235,7 +3269,8 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
                                           int update_alpha = -1,
                                           int diag_contract = 0,
                                           double h_w = 0.5,
-                                          int tau_model = 0)
+                                          int tau_model = 0,
+                                          int target_mode = 0)
 {
     if (tau_g <= 0.0 || dt <= 0.0) return false;
     if (!eos.valid()) return false;
@@ -3377,17 +3412,47 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
         return (v && *v) ? std::atoi(v) : 0; }();
     double dm_eq_saved = 0.0;   // equilibrium-endpoint transfer, for 5.2
 
+    //  The (E.1) decision is hoisted ABOVE the equilibrium solve so the target
+    //  can be made to travel the same path as the step (CAMR.ps_mt_target).
+    //  It used to be taken only just before the write-back.
+    static const bool mt_upd_alpha_env_h = []{
+        const char* v = std::getenv("PS_MT_UPDATE_ALPHA");
+        return v && std::strcmp(v, "1") == 0;
+    }();
+    const bool upd_hoisted = (update_alpha < 0) ? mt_upd_alpha_env_h
+                                                : (update_alpha != 0);
+
     //  ONE construction of the equilibrium-solver settings, used by BOTH the
     //  dm_eq solve and the 5.2 contraction re-solve.  These were two copies
     //  with a "mirrors the above" comment on the second -- which is precisely
     //  how the two silently drift: change the dm_eq settings and the
     //  contraction ratio starts measuring against a different target while
     //  still reporting a number.  Single-sourced 2026-08-11.
-    auto eq_solver_params = [nest_pr](PsMassTransferParams& mt_o,
-                                      PsPressureRelaxParams& pr_o) {
+    auto eq_solver_params = [nest_pr, target_mode, h_w, upd_hoisted]
+                           (PsMassTransferParams& mt_o,
+                            PsPressureRelaxParams& pr_o) {
         mt_o.dome_gate = false;                    // gate enforced upstream
         if (nest_pr == 0)      mt_o.nest_pressure_relax = false;
         else if (nest_pr > 1)  pr_o.max_iter = nest_pr;
+        //  CAMR.ps_mt_target:
+        //    0  legacy -- target on a FIXED-alpha path with a MEAN carrier,
+        //       whatever the step does.  Default, bit-identical.
+        //    1  CONSISTENT -- same carrier and the same (E.1) alpha path as the
+        //       step.  Restores the premise of the Lund & Aursand Eq. (23)
+        //       non-overshoot theorem.
+        //    2  as 1, and additionally nest the pressure relaxation, so the
+        //       target also sees P_1 = P_2 re-established the way the B3
+        //       reproject does after the step.  More faithful, and it is the
+        //       configuration measured in 2026-08-11 to make the outer Gibbs
+        //       Newton non-smooth (26 % failures), so it is offered separately
+        //       rather than folded into 1.
+        if (target_mode >= 1) {
+            mt_o.h_interface_weight = h_w;
+            mt_o.update_alpha       = upd_hoisted ? 1 : 0;
+        }
+        if (target_mode >= 2) {
+            mt_o.nest_pressure_relax = true;
+        }
     };
 
     // ---- finite-rate mass-transfer amount dm ----------------------------
@@ -3536,12 +3601,7 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
     // (mass leaving phase 1 shrinks its volume proportional to the
     // current ρ_1).  Default: off (α untouched, matches historical
     // finite-rate MT behavior).
-    static const bool mt_update_alpha_env = []{
-        const char* v = std::getenv("PS_MT_UPDATE_ALPHA");
-        return v && std::strcmp(v, "1") == 0;
-    }();
-    const bool upd = (update_alpha < 0) ? mt_update_alpha_env
-                                        : (update_alpha != 0);
+    const bool upd = upd_hoisted;   // hoisted above the eq solve, see there
     const double U1_new = m1 - dm;
     const double U2_new = m2 + dm;
     const double U4_new = U[4] - dm * H_I;
