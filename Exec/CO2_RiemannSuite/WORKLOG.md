@@ -3345,3 +3345,70 @@ defects; only the first is absent.
 `|P_1 - P_2| / P` left by the thermal leg.  It is asserted above from structure,
 not measured.  One counter in `ps_canonical_relax_cell` after the thermal call
 would settle whether it is round-off or percent-level.
+
+### B11 attributed completely: the hydro is EXACT, the relaxation is 100 % of it
+### (2026-08-13)
+
+Two questions settled by measurement, prompted by Lund & Aursand's four-equation
+(equal p, T, v) model.
+
+**Q1 -- is it the SEQUENCING?**  Their model enforces equal p and equal T
+simultaneously and always; ours applies them one after the other through two
+different DOFs.  `ps_relax_mode=3` with `theta = 0` and `ps_p_tau = 0` is the
+closest our code gets to theirs: the instantaneous JOINT (P1=P2, T1=T2)
+equilibrium.
+
+    B11                                    rho       u        P
+      mode 4, theta 1e-7  sequential-fast  .0768   .0423   .1786
+      mode 4, theta 0     sequential-inst  .0768   .0423   .1786
+      mode 3, theta 0     JOINT-instant    .0768   .0428   .1804
+      mode 4, theta 1e-2  thermal ~off     .0829   .0005   .0024
+
+**No.**  Doing it their way -- both conditions at once, instantaneously -- is
+just as damaging.  Sequencing is not the mechanism, and neither is the isochoric
+constraint nor the choice of target.  Only HOW MUCH of the temperature
+difference gets destroyed matters, not the mechanism of destruction.
+
+**Q2 -- is the HYDRO implicated?**
+
+    B11, pure hydro (ps_do_relax=0, mt_tau=0, flash_tau=0)   .0830 / 0.0000 / 0.0002
+    B11, no relaxation but flash+MT on                       .0830 / 0.0000 / 0.0002
+    B11, full chain (shipped default)                        .0768 / 0.0423 / 0.1786
+
+**The hydro is innocent, exactly.**  `u` error is 0.0000 and `P` error 0.0002 --
+wave propagation preserves the translating contact to round-off, which is
+precisely what STATUS 1.1 claims for it ("its contribution to pressure and
+velocity is zero BY CONSTRUCTION").  Flash and MT do nothing here.  **100 % of
+B11's error is the relaxation operator.**
+
+**So the correct statement of B11, replacing my looser one.**  The hydro
+faithfully carries a mixed cell holding liquid at 250 K and vapour at 290 K --
+which is not a defect, it is simply the two sides of the jump caught in one box,
+and it is harmless.  The defect is that the relaxation then treats that pair as
+two coexisting phases needing equilibration, destroys the difference, and turns
+the released energy into a pressure pulse.
+
+**Why Lund & Aursand never meet this.**  Their model has ONE temperature, so a
+within-cell temperature difference cannot exist and there is nothing for a
+relaxation operator to destroy.  Their safety comes from NOT CARRYING THE DEGREE
+OF FREEDOM, not from handling it better -- which Q1 proves, since handling it
+their way in our model is equally damaging.  Note they are not exempt from the
+class: their one remaining relaxation (mass transfer) also fires in smeared
+cells, and they close its interfacial area by assuming stratified flow with a
+pipe diameter and a tuned `delta`.  Fewer operators, same unsolved question.
+
+**The trade, stated plainly.**  The second temperature is exactly what B9 needs
+(genuine thermal non-equilibrium in a real two-phase region) and exactly what
+B11 suffers from (a spurious difference in a cell that is an artefact).  It is a
+capability with a cost, not a defect to remove.
+
+**CAUTION for the acceptance basis.**  All ten B-case references are HEM
+(equal p, T, g) solutions.  A model that is permanently at equal p and T would
+therefore score BETTER on them while containing LESS physics.  Our suite rewards
+the equilibrium limit, and Brown et al. (2013) measured that neglecting delayed
+phase transition underestimates transient discharge rates -- the quantity that
+matters for the application.  Scoring well here is not the same as being right.
+
+**What it changes practically:** the fix has exactly one place to live.  The
+wave-propagation scheme needs no change; the question is entirely which cells
+the relaxation may act in.  That is much better news than a formulation change.
