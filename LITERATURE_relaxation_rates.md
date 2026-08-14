@@ -515,3 +515,156 @@ dispersed cell, and add a diagnostic that reports how many cells per step are
 being treated as dispersed while carrying a sharp interface.  That costs
 essentially nothing, it is exactly the discipline this project already applies to
 guards, and it converts an invisible modelling assumption into a measured one.
+
+---
+
+## 11. Lund & Aursand: what the splitting/relaxation paper offers us
+
+`lund-splitting-relaxation-twophase-flow.pdf`, read in full 2026-08-13.
+H. Lund (NTNU) and P. Aursand (**SINTEF Energy Research**), "Splitting methods
+for relaxation two-phase flow models", revised and expanded from ECCOMAS Young
+Investigators, Aveiro 2012.  Four-equation homogeneous pipe-flow model (one mass
+balance per phase, total momentum, total energy) with **equal p, T and v by
+construction**; phase transfer as a relaxation source `Gamma` from statistical
+rate theory; Godunov splitting; MUSTA-2-2 centred hyperbolic solver; CO2 pipe
+depressurization, 60 bar liquid | 10 bar gas.
+
+### 11.1 The two things it gives us that ARE morphology-free
+
+**(a) ASY1, and the fact that our own MT is a corrupted version of it.**  Their
+Eqs. (24)-(25):
+
+    q^{n+1} = q* + (q_eq - q*) * (1 - exp(-dt / tau_i))
+    tau_i   = (q_eq - q*) / s_i(q*)
+
+Compare `ps_mass_transfer_finite_cell`: `dm = (1 - exp(-dt/tau_g)) * dm_eq`.
+**Structurally identical -- except that our `tau_g` is a hand-set constant and
+theirs is DERIVED from the state**: distance to equilibrium divided by the
+instantaneous source at the current state.  The physical rate information lives
+in `s(q*)`; the exponential only supplies unconditional stability.
+
+That matters directly.  Ours has `dt/tau_mt = 76`, so `frac = 1` and MT applies
+the WHOLE equilibrium transfer every step regardless of how fast the physics
+actually is -- which is why ungating it (M1) drove three cases past the
+`T = 1 K` bound.  With `tau = dm_eq / Gamma(q*)` the step is bounded by the
+physical rate: large driving force gives a large step, small gives a small one,
+and **no relaxation time has to be chosen at all**.  The morphology dependence
+in our scheme enters through `tau_mt`; ASY1 has no `tau` to carry it.
+
+**(b) The non-overshoot theorem, and why we forfeit it.**  Their Eq. (23): an
+ODE is *component-wise monotonic* if
+
+    s_i(q_i) * (q_i^eq - q_i) > 0   for all q_i != q_i^eq
+
+i.e. the source always points toward equilibrium.  For such systems BOTH
+Backward Euler and ASY1 are provably non-overshooting (they cite Aursand et al.
+2010), and ASY1 is "unconditionally stable by construction".
+
+**Our scheme violates the premise, and that is a precise diagnosis of a defect
+we already measured.**  Our `dm_eq` is computed on a FIXED-alpha path with a
+MEAN carrier, while the step is applied on the (E.1) path with the RUNTIME
+carrier (12.3 D-B(1) and D-B(2)).  The equilibrium the exponential relaxes
+toward is therefore not the equilibrium of the dynamics being integrated, the
+monotonicity condition does not hold along the actual path, and the non-overshoot
+guarantee is void.  **Making the target consistent with the step would restore a
+PROVABLE non-overshoot property** -- and that is exactly the abort half of the
+wall, fixed with no morphology model anywhere.
+
+**(c) Backward Euler as the cheaper escape.**  It is equally non-overshooting for
+this ODE class and **needs no `q_eq` at all** -- it solves the implicit source
+directly.  For us that would delete the equilibrium solve, and with it both
+target/step inconsistencies, rather than repairing them.  Given that our
+equilibrium solve was measured at 82-86 % of a step and is the object computed
+on the wrong path, this is attractive: not a fix to `dm_eq`, a removal of it.
+Their Table 2 shows the two methods within ~15 % of each other in cost, with
+ASY1 slightly ahead, and "no reason to prefer one in front of the other" on
+their case.
+
+**(d) Statistical rate theory gives the kinetic coefficient with no tuning.**
+Their Eq. (5)-(7): `Gamma ∝ rho_g sqrt(m / 2 pi k_B T) (mu_l - mu_g)`, from a
+perturbation analysis of the Schrodinger equation plus the Boltzmann entropy --
+"able to yield an explicit expression without any parameters that need tuning".
+Our explicit path uses `k_rate = rho_mix / tau_g`, which the source itself
+labels "legacy (mis-scaled)".  SRT would replace a mis-scaled guess with a
+derived prefactor, and it is the same functional form we already use (rate
+proportional to the Gibbs/chemical-potential difference).
+
+### 11.2 What it does NOT give us — and this is the honest part
+
+**The paper does not escape the morphology problem.  It commits to one
+morphology and moves on.**  Their Eq. (6), the interfacial area:
+
+    A_int = 4 D L (alpha_g + delta) alpha_l      if mu_g <  mu_l
+            4 D L alpha_g (alpha_l + delta)      if mu_g >= mu_l
+
+"it is assumed that the flow is **stratified-like**", `D` is the **pipe
+diameter**, and `delta` is "a tunable initial volume fraction which ensures that
+the evaporation or condensation can start even when the mass-receiving phase has
+zero volume fraction" -- set to `delta = 0.01` in their runs.  So the kinetics
+are parameter-free and the GEOMETRY is not: one assumed regime, a pipe diameter
+we do not have in a Riemann problem, and a tuned constant.  (Their `delta = 0.01`
+and our `alpha_cond = 1e-2` play a strikingly similar "let it start from nothing"
+role, arrived at independently.)
+
+**And their model cannot exhibit our theta wall at all**, because it assumes
+equal temperatures.  It has no thermal relaxation, so there is no `theta` in it.
+The paper speaks precisely to our MASS-TRANSFER half and is silent by
+construction on the THERMAL half -- which is the half B11 showed to be
+3.5 orders wrong.
+
+Two smaller points worth keeping.  They use FIRST-order Godunov splitting
+deliberately, citing Jin (1995): **higher-order splitting reduces to first-order
+accuracy in the stiff limit anyway.**  So the order of our Strang splitting is
+not where our problem lives; its STRUCTURE (three sequential projections, each
+with its own eligibility test) still is.  And they note the method "is able to
+handle regions with volume fractions alpha_k of exactly zero", where others
+"report that numerical errors may be amplified when one phase disappears" --
+independent corroboration of the presence design's exact-zero choice.
+
+### 11.3 The sharper reframing it prompts, and one candidate already tested
+
+Reading their model -- equal T everywhere, no thermal relaxation, and it would
+handle B11 correctly BY CONSTRUCTION -- makes the cleanest statement of our
+theta wall available so far:
+
+> **B11's mixed cells do not exist in the exact solution at all.**  The exact
+> answer is a contact discontinuity; every two-phase cell there is an artefact of
+> smearing it over two or three cells.  So ANY physics applied in those cells is
+> spurious, and the "right" theta is whatever does least damage, i.e. infinity.
+> B9's mixed cells, by contrast, DO exist in the exact solution -- the HEM
+> reference has a genuine two-phase region with intermediate alpha.
+
+So the discriminator is not really "dispersed vs stratified".  It is **"is this
+two-phase cell physically real, or a numerically smeared discontinuity?"**  That
+also explains why the sharpness measure failed backwards (WORKLOG, `[PS-MORPH]`):
+sharpness measures accumulated numerical diffusion, which is a property of the
+smearing, not of whether the cell should be two-phase at all.
+
+**One candidate proxy, tested and it does not separate them.**  If a genuine
+two-phase cell is one where a phase is METASTABLE (a thermodynamic reason for
+phase change exists) and a smeared contact is two STABLE fluids in contact, then
+the HRM `psi = |Psat(T_1) - P| / (P_crit - Psat)` should separate them.  Measured
+on both:
+
+    B11  psi spans 0.0007 .. 3.36
+    B9   psi spans 0.0007 .. 0.50
+
+**Overlapping.**  `psi` takes an absolute value and so discards the sign -- which
+is precisely the information wanted (subcooled liquid `P > Psat` vs superheated
+liquid `P < Psat`).  The SIGNED ratio `P/Psat(T_1)` is untested and remains a
+candidate; given that the last plausible pointwise proxy measured BACKWARDS, it
+should be measured before it is believed.
+
+### 11.4 Recommended order of work, from this paper
+
+  1. **Make the MT target consistent with the MT step** (12.5 X4, now with a
+     theorem behind it): it restores a provable non-overshoot property and is the
+     abort half of the wall.  Morphology-free.  Independently justified.
+  2. **Then replace `tau_mt` with ASY1's derived `tau = (q_eq - q*)/s(q*)`**, or
+     drop `q_eq` entirely and use Backward Euler on the source.  Removes a
+     hand-set constant that we have already measured to be inert.
+  3. **Consider SRT for the kinetic prefactor**, replacing a coefficient the
+     source itself calls mis-scaled.
+  4. The THETA wall is untouched by all of the above and stays where 12.8 left
+     it.  Note, though, that 1-3 are worth doing on their own merits and none of
+     them requires the theta question to be settled first.
