@@ -3280,3 +3280,68 @@ mechanism, and the three mode-3 casualties.  Next from the paper, and both
 independent of the above: ASY1's DERIVED tau in place of our hand-set `tau_mt`,
 and Backward Euler on the source, which would delete the equilibrium solve
 altogether rather than repair it.
+
+### The ISOCHORIC thermal leg: a real defect, but NOT B11's mechanism
+### (prediction refuted, 2026-08-13)
+
+**The structural fact**, confirmed in source.  `ps_iso_thermal_relax_cell` reads
+`alpha_1` and writes ONLY `U[4]`, `U[5]`: heat moves between the phases at
+FIXED volume fraction.  And `ps_canonical_relax_cell` (mode 4) runs mechanical
+then thermal with **no mechanical pass afterwards**.  So a cell exits the
+relaxation with `P_1 != P_2`, and nothing restores it unless flash or MT fire
+(their B3 reprojects are conditional on the source having changed the state).
+
+Degrees of freedom make it unavoidable in that ordering.  With `m_k` fixed and
+`E_1 + E_2` fixed there are TWO free DOFs -- `alpha_1` and the energy split --
+and TWO conditions, `P_1 = P_2` and `T_1 = T_2`.  Mode 4 gives each condition
+its own DOF and applies them in sequence, so the second necessarily disturbs
+the first.  The alternative failure is on record: mode 2 alternates two
+FIXED-alpha projections that fight over the single split DOF, and was measured
+at `T_1 = T_2` to 2e-8 with **dP/P = 0.76**.  Mode 4 traded that for a
+first-order-in-sequence pressure residual, which is better but not zero.
+
+**PREDICTION (stated first):** if B11's spurious waves come from the thermal
+leg leaving `P_1 != P_2` at fixed alpha, then mode 3 -- which relaxes toward the
+JOINT `(P_1=P_2, T_1=T_2)` equilibrium via `ps_joint_pt_equilibrium`, with
+`ps_p_tau = 0` making its mechanical leg instantaneous -- should cut B11's
+pressure error hard and make it much less theta-sensitive.
+
+**REFUTED:**
+
+    B11              mode 4 (isochoric)         mode 3 (joint target)
+      theta 1e-7    .0768 / .0423 / .1786      .0768 / .0428 / .1804
+      theta 1e-4    .0794 / .0241 / .1005      .0772 / .0144 / .0953
+      theta 1e-2    .0829 / .0005 / .0024      .0755 / .0110 / .0751
+
+Identical at fast theta, and at slow theta the joint target is **30x WORSE**
+in P (0.0751 vs 0.0024).  So the isochoric constraint is not what damages B11.
+
+**Why, and it is a third instance of the same family.**  At `theta = 1e-2` the
+thermal leg is effectively frozen, so mode 4 leaves the cell at mechanical
+equilibrium with its temperature jump intact -- which IS the exact answer for a
+contact.  Mode 3 instead relaxes `alpha` INSTANTANEOUSLY toward the joint
+target's alpha, and that alpha is the one at which thermal equilibrium *has
+already happened*.  So the mechanical leg applies the alpha change that belongs
+to a thermal equilibration which the slow theta has not performed.  **Target and
+dynamics disagree again** -- the same shape as the MT target/step mismatch, now
+in the mechanical leg of mode 3.
+
+**What B11 therefore says.**  The damage is not the isochoric constraint; it is
+that thermal equilibration RUNS AT ALL in cells that do not exist in the exact
+solution.  No choice of target fixes that, because the process itself is the
+artefact.  Consistent with 12.8: the question is which cells should relax, not
+how the relaxation is projected.
+
+**Correction to the previous entry.**  I wrote that the thermal leg "does not
+have the target/step inconsistency because both are isochoric".  That is true of
+the narrow inconsistency (path mismatch between a target and its own step) and
+it remains true.  But it should not have been read as the thermal leg being
+sound: its target is self-consistent and *physically incomplete*, because real
+heat exchange at constant pressure changes the volumes, so an isochoric target
+cannot satisfy the model's own instantaneous-pressure closure.  Two different
+defects; only the first is absent.
+
+**NOT MEASURED, and the obvious next thing:** the actual size of the residual
+`|P_1 - P_2| / P` left by the thermal leg.  It is asserted above from structure,
+not measured.  One counter in `ps_canonical_relax_cell` after the thermal call
+would settle whether it is round-off or percent-level.
