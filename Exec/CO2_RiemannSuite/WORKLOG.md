@@ -5427,3 +5427,146 @@ through the device bridge (it needs an unlink the bridge refuses; the
 error is easy to filter away by accident).  `git show HEAD:<path> >
 <path>` restores by writing and works.  Two stale git lock files had to be
 moved aside for the same reason.
+
+## 2026-08-17 — PROBES P-A (ps_p_tau sensitivity) and P-B (does the
+## projection carry Roe5 diffusion).  PREDICTIONS FIRST.
+
+WHY THESE TWO.  Munkejord, Comput Fluids 36 (2007), finds the
+two-pressure-plus-relaxation route "significantly more diffusive,
+particularly for slow waves", with the diffusion a strong function of
+time step, grid, limiter and liquid sound speed.  Three of those four are
+already measured weak here (dt 0.15 % at 10x; c_mix 3 % on B11 against
+theta's 85 %; and B11 -- our slow-wave case -- reads .0830/.0000/.0006
+with the projection ON and the rates OFF, i.e. the projection alone costs
+it nothing).  Two gaps remain: the GRID axis for the projection in
+isolation (P-B), and the fact that NO 1-D measurement has ever varied
+ps_p_tau -- the finite-rate mechanical leg's rate is unmeasured (P-A).
+
+--- P-A: ps_p_tau sweep, mode 3, N = 64 -------------------------------
+Mode 3 is the only mode with a finite-rate mechanical leg
+(ps_pmech_finite_relax_cell).  Sweep ps_p_tau over
+{0, 1e-8, 1e-7, 1e-6, 1e-5, 1e-4, 1e-3} with the other channels at
+acceptance settings (theta = mt_tau = flash_tau = 1e-7).  Battery dt is
+~5e-6 s, so this brackets tau_p from far-below-dt (instantaneous) to
+far-above (frozen mechanical disequilibrium).  Cases: B11 (the slow-wave
+contact), B2 (the evaporation front), B4 (cross-critical control).
+
+  PA-1 FLAT below dt: for tau_p <= 5e-7 every case is unchanged from
+       tau_p = 0 to within 2 % relative in each error component.  Basis:
+       1 - exp(-dt/tau_p) is 1 to machine precision there.
+       FALSIFIER: motion below dt — the exponential blend is not doing
+       what its algebra says.
+  PA-2 MONOTONE and WORSE above dt: as tau_p grows past dt the errors move
+       monotonically, and vs HEM they get WORSE, because sustained
+       mechanical disequilibrium is unphysical for this application.
+       FALSIFIER, and this one is the interesting one: if any case gets
+       BETTER vs HEM at large tau_p, then our instantaneous-pressure
+       assumption is itself costing accuracy — Munkejord's concern in its
+       strongest form — and it gets its own entry and a follow-up.
+  PA-3 SCALE: the total spread across all seven tau_p values is SMALL
+       against theta's — B11 moved 85 % under theta.  Registered
+       threshold: max spread in u-error < 20 % relative on B11.
+       FALSIFIER: spread comparable to theta's — then the mechanical
+       channel is as load-bearing as the thermal one, the "P1 = P2 is
+       structural" conclusion needs re-examining, and mode 3 stops being
+       a deletion candidate at all.
+  Aborts are DATA here, not probe failures: mode 3 at large tau_p may
+  well abort, and where it aborts is itself the answer.
+
+--- P-B: grid refinement of the projection ALONE ----------------------
+Config: BARE DEFAULTS (theta = 0, so measured: thermal, MT and flash all
+inert and the coupled operator reduces to the P1 = P2 projection), scored
+against the FROZEN exact solution — which is the exact solution OF THAT
+MODEL (no phase change, metastable single-phase branch).  This is the
+only clean way to ask "does our projection diffuse?", because it removes
+the rates that dominate every other comparison.  Cases B9 and B2 (the two
+with frozen references minted).  N = 32, 64, 128 (the device shell caps a
+call at 45 s, so N = 256 is out of reach here and is recorded as not
+attempted rather than quietly dropped).
+
+  PB-1 CONVERGENT: the u-error vs FROZEN decreases monotonically with N,
+       with observed order >= 0.4 (a contact/discontinuity-dominated L2
+       error under a limiter; not asking for design order).
+       FALSIFIER: error flat or increasing under refinement — that IS
+       Roe5-style diffusion present in our scheme, it does not vanish
+       with resolution, and the one-pressure axis becomes a real project
+       rather than a curiosity.
+  PB-2 The full acceptance config at the same N improves TOO but LESS
+       (vs HEM), because the interfacial-area starvation is a modelling
+       limit and does not refine away.  Direction registered only.
+  PB-3 No aborts at any N in either configuration.
+
+**PROBE RESULTS (2026-08-17).  P-A: the mechanical rate is inert.  P-B:
+the projection CONVERGES; what does not converge is the MODEL.**
+
+--- P-A, ps_p_tau sweep at mode 3, N = 64 (dt ~ 5e-6 s) ---------------
+B11-Subcrit-contact-dT (rho/u/P vs HEM):
+    p_tau 0     .0771/.0419/.1732      p_tau 1e-5  .0773/.0414/.1697
+    p_tau 1e-8  .0771/.0419/.1732      p_tau 1e-4  .0774/.0410/.1677
+    p_tau 1e-7  .0771/.0419/.1732      p_tau 1e-3  .0774/.0410/.1675
+    p_tau 1e-6  .0771/.0419/.1731
+B2-Evap-wave:  u FIXED at .7109-.7110 across all five decades run
+    (.0880/.7109/.2549 at 0; .0882/.7109/.2480 at 1e-5;
+     .0880/.7110/.2575 at 1e-4; .0880/.7109/.2573 at 1e-3)
+B4-Cross-critical (control): .0653/.7214/.0600 at 0 -> .0651/.6873/.0622
+    at 1e-4.
+
+PA-1 CONFIRMED: identical to all printed digits for p_tau <= 1e-6, i.e.
+below dt.  The exponential blend does what its algebra says.
+PA-3 CONFIRMED, and this is the headline: the TOTAL spread across five
+decades of p_tau is 2.1 % in B11's u, 0.01 % in B2's u, 4.7 % in B4's u.
+Against theta's 85 % on B11.  At p_tau = 1e-3 the per-step relaxed
+fraction is 1 - exp(-dt/p_tau) ~ 0.005, i.e. mechanical disequilibrium is
+very nearly FROZEN — the two-pressure freedom exercised across its whole
+range — and the answers move a few percent.  **The mechanical relaxation
+RATE is not a lever in this application.**
+PA-2 PARTIALLY REFUTED, recorded as registered: the direction is NOT
+uniformly "worse vs HEM".  B11's u and P and B4's u get slightly BETTER
+as p_tau grows (2-5 %), and B2's P is non-monotone (.2549 -> .2480 ->
+.2575).  So instantaneous P1 = P2 is not free — but its cost is at the
+few-percent level, which is scheme error's neighbourhood, not a lever.
+CONSEQUENCE for the cleanup: mode 3's remaining purpose is discharged.
+This was the measurement it was being kept for, and it says the finite-rate
+mechanical leg buys nothing measurable.  Mode 3 returns to the Tier-2
+deletion list.
+
+--- P-B, grid refinement, N = 32/64/128 -------------------------------
+(a) PROJECTION ALONE (bare defaults: theta = 0, so thermal/MT/flash all
+inert), scored against FROZEN — the exact solution OF that model:
+    B9  rho .1012/.0754/.0583   order 0.42, 0.37
+        u   .1631/.1146/.0798   order 0.51, 0.52
+        P   .1770/.1097/.0642   order 0.69, 0.77
+    B2  rho .0902/.0728/.0526   order 0.31, 0.47
+        u   .1788/.1284/.0906   order 0.48, 0.50
+        P   .2230/.1513/.0966   order 0.56, 0.65
+PB-1 CONFIRMED: monotone and convergent, u at order ~0.5 on both cases,
+P better than that.  Order ~1/2 is what an L2 norm over a solution with a
+contact and a shock under a limiter gives; the point is that it does NOT
+STALL.  **The P1 = P2 projection does not carry a non-vanishing numerical
+diffusion in this scheme.**  Munkejord's Roe5 mechanism does not reproduce
+here — measured on the grid axis, which was the one axis still open after
+dt (0.15 % at 10x), sound speed (3 %) and the slow-wave case (B11 at
+round-off with the projection on and the rates off).
+
+(b) FULL acceptance config, B9, scored vs HEM:
+    rho .1000/.1125/.1164   order -0.17, -0.05   (WORSE with refinement)
+    u   .7794/.7565/.7314   order  0.04,  0.05   (stalled)
+    P   .1758/.1437/.1256   order  0.29,  0.19
+and the same runs vs FROZEN: u .5000/.6234/.7582, order -0.32, -0.28.
+PB-2 CONFIRMED in direction and sharper than registered.  This is a
+textbook MODEL-error signature: refinement does not approach HEM because
+the model does not approach HEM — it converges to its own
+interfacial-area-starved solution, moving away from FROZEN (u .50 -> .76)
+as the finer grid lets the nucleator and MT act on sharper gradients,
+while the density error GROWS because shrinking the numerical error
+exposes the model discrepancy.
+PB-3 CONFIRMED: no aborts at any N in either configuration.
+
+THE JOINT READING, which is what the two probes were for: the acceptance
+battery's B2/B9 u-errors near 0.75 vs HEM are MODEL error, not
+discretisation error.  Discretisation converges at ~0.5 order against the
+exact solution of the model actually being solved; the pressure treatment
+contributes a few percent at most across its whole dynamic range.  So the
+one-pressure axis is not where the accuracy is: Sigma (interfacial area)
+is, exactly as DESIGN_ps_sigma's G1 argues.  N = 256 was not attempted:
+the device shell caps a call at 45 s.
