@@ -8,7 +8,7 @@ import os, sys, subprocess, glob, re
 import numpy as np
 os.environ.setdefault('PS_FROZEN', '0')
 import full_suite as F
-import run_ac_suite as R
+import ps_plotfile as R
 
 EXE   = './CAMR1d.gnu.TPROF.PS.PR.ex'
 STAND = os.environ.get('CO2_STANDALONE', os.path.expanduser('~/mnt/co2-eos-cfd'))

@@ -271,9 +271,7 @@ Face face_from_state(int idir, const amrex::Real U[NVAR],
     // standalone.  Removed.
     const Real Y1 = f.alpha_1 * f.rho_1 / f.rho_mix;
     const Real Y2 = Real(1.0) - Y1;
-    const Real c2_frozen = ps_cmix2(pr.cmix_model, Y1, Y2, c1, c2,
-                                   f.alpha_1, f.alpha_2, f.rho_1, f.rho_2,
-                                   f.rho_mix);
+    const Real c2_frozen = ps_cmix2(Y1, Y2, c1, c2);
     f.c_frozen = (c2_frozen > Real(0.0)) ? std::sqrt(c2_frozen)
                                           : amrex::max(c1, c2);
 

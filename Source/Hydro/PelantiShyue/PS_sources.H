@@ -134,12 +134,7 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
         // phase grows at its SATURATION density (the (E.1) operator run
         // backwards).  CAMR.ps_flash_project_sat: -1 auto (presence ON -> 1,
         // legacy -> 0, bit-identical), 0 force off, 1 force on.
-        static const int fl_proj_key = []() {
-            int v = -1;
-            amrex::ParmParse pp("CAMR");
-            pp.query("ps_flash_project_sat", v);
-            return v;
-        }();
+        const int fl_proj_key = hem::ps_dial_flash_project_sat();
         const int l_fl_proj = (fl_proj_key >= 0) ? fl_proj_key
                               : (ps_presence_params().enabled != 0 ? 1 : 0);
         for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
@@ -161,10 +156,7 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                 //  exactly ONE present phase is routed into the kernel
                 //  (which constructs the newborn via the saturation
                 //  projection); both-absent stays excluded.
-                static const int fl_abs = []() -> int {
-                    int v = 1; amrex::ParmParse pp("CAMR");
-                    pp.query("ps_flash_from_absent", v); return v; }();
-                const bool one_absent = (fl_abs != 0) &&
+                const bool one_absent = (hem::ps_dial_flash_from_absent() != 0) &&
                     ((m1 > amrex::Real(0.0)) != (m2 > amrex::Real(0.0)));
                 if (!one_absent && (m1 <= amrex::Real(0.0)
                                     || m2 <= amrex::Real(0.0))) { return; }
@@ -342,10 +334,7 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
         const int l_mt_cr = (mt_diag_lvl >= 2) ? 1 : 0;
         // D2 experiment: CAMR.ps_mt_h_weight.  0.5 = mean (default, previous
         // behaviour bit-for-bit); negative = upwind by transfer direction.
-        static const double mt_h_w = []() -> double {
-            double v = 0.5; amrex::ParmParse pp("CAMR");
-            pp.query("ps_mt_h_weight", v); return v; }();
-        const double l_mt_h_w = mt_h_w;
+        const double l_mt_h_w = hem::ps_dial_mt_h_weight();
         //  CAMR.ps_mt_tau_model: 0 = the constant CAMR.ps_mt_tau (default,
         //  bit-identical); 1 = the HRM correlation per cell; 2 = ASY1, tau
         //  DERIVED from the state (Lund & Aursand eq. 25: |dm_eq|/Gamma_SRT,

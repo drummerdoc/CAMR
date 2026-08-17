@@ -20,7 +20,7 @@ import os, sys, csv, subprocess
 import numpy as np
 os.environ.setdefault('PS_FROZEN', '0')
 import full_suite as F
-import run_ac_suite as R          # only for rd1d (plotfile reader)
+import ps_plotfile as R           # plotfile reader (was run_ac_suite)
 
 EXE  = os.environ.get('EXE', F.CAMR)
 STAND = os.environ.get('CO2_STANDALONE',
@@ -84,7 +84,13 @@ def run(case, flux, pref):
         'prob.x_diaph':0.5,'prob.alpha_trace':0.0,'prob.p_amb':5.0e6,
         'CAMR.cfl':0.25,'CAMR.do_mol':0,'stop_time':tf,
         'CAMR.ps_flux':flux,'CAMR.ps_wp_order':2,'CAMR.ps_recon':1}
-    if case in TWOPHASE:                      # stiff relaxation -> HEM limit
+    #  PROBE MODES (S4, 2026-08-17): _probe_suite.py and _alldef_suite.py were
+    #  212-line copies of this file differing only in which dials they pass.
+    #  PS_NODIALS=1 passes NO relaxation dials at all (the "what do bare
+    #  defaults actually run" probe); PROBE_OV="k=v,k=v" appends overrides.
+    #  Both default off, so the acceptance path is untouched.
+    nodials = os.environ.get('PS_NODIALS', '0') != '0'
+    if case in TWOPHASE and not nodials:      # stiff relaxation -> HEM limit
         #  ps_relax_mode=5 (X3, the coupled source with P1=P2 as the DAE
         #  constraint) is the CANONICAL mode since 2026-08-17 (Marc's
         #  call, WORKLOG F4 session 4: the mode-4 score advantage on
@@ -103,13 +109,18 @@ def run(case, flux, pref):
         ov.update({'CAMR.ps_do_relax':1,
                    'CAMR.ps_theta_tau':1e-7,'CAMR.ps_mt_tau':1e-7,
                    'CAMR.ps_flash_tau':1e-7})
-    else:                                     # single phase: no phase change
+    elif not nodials:                         # single phase: no phase change
         ov.update({'CAMR.ps_do_relax':0})
+    for _kv in os.environ.get('PROBE_OV', '').split(','):
+        if _kv.strip():
+            _k, _v = _kv.split('='); ov[_k.strip()] = _v.strip()
     ov.update(F.camr_side(c[1],'L')); ov.update(F.camr_side(c[2],'R'))
     cmd=[EXE,'inputs']+['%s=%s'%(k,v) for k,v in ov.items()]
     cmd+=['amr.plot_int=-1','amr.plot_per=%g'%tf,'amr.plot_file=%s'%pref,
           'amr.v=0','CAMR.v=0']
     r=subprocess.run(cmd,capture_output=True,text=True,timeout=600)
+    if os.environ.get('PROBE_LOG'):
+        open(os.environ['PROBE_LOG'],'a').write('#### '+' '.join(cmd)+'\n'+r.stdout)
     return r.returncode, r.stdout
 
 def read(pref):

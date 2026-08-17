@@ -4,7 +4,7 @@ Riemann solution (co2-eos-cfd suite/profiles/<case>.csv). Lower error = more
 physically accurate numerics for the shared model. Uses the already-generated
 std_ref/ (standalone numerical) and fs_*/ (CAMR numerical) from full_suite."""
 import os, glob, csv, numpy as np
-import run_ac_suite as R
+import ps_plotfile as R
 # Standalone repo root.  Override with CO2_STANDALONE=... ; the old hard-coded
 # /sessions/<sandbox>/ path died with the sandbox that made it.
 STANDALONE = os.environ.get('CO2_STANDALONE', '/Users/marcusd/src/SINTEF/co2-eos-cfd')

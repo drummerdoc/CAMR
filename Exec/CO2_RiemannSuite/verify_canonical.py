@@ -38,7 +38,7 @@ import numpy as np
 
 os.environ.setdefault('PS_FROZEN', '0')
 import full_suite as F           # main-guarded; safe to import
-import run_ac_suite as R
+import ps_plotfile as R
 
 STANDALONE = os.environ.get('CO2_STANDALONE',
                             '/Users/marcusd/src/SINTEF/co2-eos-cfd')

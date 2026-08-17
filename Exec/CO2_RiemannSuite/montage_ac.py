@@ -5,7 +5,7 @@ import os, re, glob, numpy as np
 import matplotlib; matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
-import run_ac_suite as R   # reuse rd1d / hdr / case_name / overrides
+import ps_plotfile as R   # reuse rd1d / hdr / case_name / overrides
 
 def domain_hi(pdir):
     # geometry.prob_hi x from job_info (fallback 1.0)

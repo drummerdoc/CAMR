@@ -5913,3 +5913,53 @@ absolute, round-off").  Every other case has a nonzero exact velocity, and
 none of them moved — which is exactly the pattern a semantics-preserving
 change should produce, and the reason this is recorded as a PASS with a
 named exception rather than a silent one.
+
+**S2 + S3 + S4 RESULTS (2026-08-17): all pass.  Dial count 109 -> 93,
+multi-read dials 23 -> 17 with every PHYSICS one fixed, harness 13 scripts
+-> 11 with the retired one finally gone.**
+
+Verification for all three: the 20-case battery is identical on all 22 rows,
+with B3's u column compared as round-off per the artifact measured in S1+S5.
+verify_canonical still runs clean (ALL CHECKS PASS, two named [STALE]).
+
+S3 — DIALS RETIRED, each against a measurement, not a preference:
+  * ps_theta_model + hem::ps_hrm_theta (46 lines).  HRM on theta is the
+    WRONG MAPPING (the correlation slows as saturation approaches: right for
+    phase change, wrong for heat conduction) and B9 ABORTS under it, since it
+    spans theta 1.8e-6..2.4e-4 against B9's 1e-5 threshold.
+  * the HRM arm of ps_mt_tau_model.  Right mapping, MEASURED REDUNDANT BY
+    CONSTRUCTION: eight orders of tau from local state move B9 by 0.1 %,
+    because dm = (1-exp(-dt/tau)) dm_eq already vanishes near equilibrium.
+    The ASY1 arm (tau_model=2, derived from Gamma_SRT) STAYS — derived, not
+    correlated.
+  * ps_cmix_model, and with it two thirds of ps_cmix2 (29 lines -> 14).  MAX
+    is genuinely best on a contact — by 3 %, against theta's 85 % on the same
+    case — because S_L/S_R only have to BOUND the fan and the contact rides
+    S_M, which never touches c_mix.  WOOD, the equilibrium speed a
+    one-pressure model would need, ABORTS B9.  The frozen form is now the
+    only form, with both numbers recorded at the call site.
+
+S2 — ONE READ PER DIAL, targeted at the bug class rather than at the count.
+23 dials had two or three readers, each carrying its OWN default: exactly
+what applied the split MT source on top of X3 this morning.  Five hem
+accessors (ps_dial_flash_from_absent / _flash_project_sat / _mt_h_weight /
+_mt_srt_d / _mt_srt_delta) are now the single source of truth, and seven
+duplicate reads across hem, PS_relaxation.H and PS_sources.H call them.
+Every PHYSICS dial with divergent defaults is fixed; the 17 left are
+diagnostic gates and CAMR_queries.H parameter-struct pairs, where a
+disagreement changes what is PRINTED, not what is computed.  Note the
+ordering trap the compiler caught: the accessor block was first inserted
+below its first use, and an inline function in a header must be declared
+before use.
+
+S4 — HARNESS.  ps_plotfile.py extracted: 37 lines carrying hdr/rd1d/
+case_name, the ONLY part of run_ac_suite.py that ten scripts still imported
+— which is how a harness formally RETIRED as "must not be used to evaluate
+a change" (STATUS 5.5) stayed alive in the tree for weeks.  Eleven scripts
+repointed; run_ac_suite.py parked.  _probe_suite.py and _alldef_suite.py —
+212-line copies of exact_suite.py that THIS SESSION created and that
+differed only in which dials they passed — are folded back in as
+PS_NODIALS=1 (pass no relaxation dials at all) and PROBE_OV="k=v,..."
+(append overrides), both default off, acceptance path untouched and verified
+so.  PS_NODIALS reproduces the bare-defaults numbers the deleted copy
+produced (B11 .0805/.0278/.0928, B5 .0446/.1762/.0199).

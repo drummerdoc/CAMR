@@ -9,7 +9,7 @@ Usage:  python3 conv_montage.py            # all cases with data
 Env: CONV_OUT (default conv_data), RES (128,256,512), ANALYTIC (profiles dir).
 Writes convergence_montage.pdf.
 """
-import os, sys, glob, csv, numpy as np, run_ac_suite as R
+import os, sys, glob, csv, numpy as np, ps_plotfile as R
 import matplotlib; matplotlib.use('Agg'); import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 import full_suite as F

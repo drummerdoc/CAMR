@@ -12,7 +12,7 @@ No solver code is touched; runtime configuration only.
 """
 import os, sys, glob, subprocess, numpy as np
 import full_suite as F
-import run_ac_suite as R
+import ps_plotfile as R
 
 CASES = ['B4-Cross-critical', 'B9-Deep-Expansion']
 EXACT = {'B4-Cross-critical': 'exact_B4_pr.csv',

@@ -145,8 +145,7 @@ ps_max_wave_speed_from_state(int idir, const Real U[NVAR],
     // ABSENT (m = 0), well-conditioned everywhere else.
     const Real Y1 = m1 / rho;
     const Real Y2 = Real(1.0) - Y1;
-    c2_frozen = ps_cmix2(pr.cmix_model, Y1, Y2, c1, c2,
-                         alpha_1, alpha_2, rho_1, rho_2, rho);
+    c2_frozen = ps_cmix2(Y1, Y2, c1, c2);
     const Real c_mix = (c2_frozen > Real(0.0)) ? std::sqrt(c2_frozen)
                                                 : amrex::max(c1, c2);
     return std::abs(un) + c_mix;

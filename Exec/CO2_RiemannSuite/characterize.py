@@ -36,7 +36,7 @@ INTERPRETING compare
 """
 import os, sys, json, glob, hashlib, subprocess
 import numpy as np
-import run_ac_suite as R
+import ps_plotfile as R
 import full_suite as F
 
 STORE = 'characterization'

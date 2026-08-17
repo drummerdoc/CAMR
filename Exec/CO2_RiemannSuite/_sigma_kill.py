@@ -7,7 +7,7 @@ import os, sys, glob, re, shutil, subprocess
 import numpy as np
 os.environ.setdefault('PS_FROZEN', '0')
 import full_suite as F
-import run_ac_suite as R
+import ps_plotfile as R
 
 EXE='./CAMR1d.gnu.TPROF.PS.PR.ex'
 R_NUC = 1.0e-5     # nucleus scale [m]; contrast metric is invariant to it

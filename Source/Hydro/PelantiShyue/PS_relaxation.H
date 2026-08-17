@@ -563,7 +563,6 @@ ps_ptg_relax_cell(int i, int j, int k,
 
 inline int ps_mech_kernel();   // fwd decl (defined with the cached flags)
 inline int ps_coexist_action();  // fwd decl (defined with the cached flags)
-inline int ps_theta_model();     // fwd decl (defined with the cached flags)
 inline int ps_mech_close();      // fwd decl (defined with the cached flags)
 
 // -----------------------------------------------------------------
@@ -745,19 +744,15 @@ ps_canonical_relax_cell(int i, int j, int k,
             }
         }
         if (run_thermal) {
-            //  CAMR.ps_theta_model = 1: theta from the HRM correlation at this
-            //  cell's own state instead of the global constant.  q1/q2 are the
-            //  post-mechanical phase states built just above, so P is the
-            //  relaxed (P_1 == P_2) pressure and T_1 is the liquid temperature
-            //  -- the two choices named in ps_hrm_theta's header.
-            double theta_use = double(theta);
-            if (ps_theta_model() == 1) {
-                const double alpha_v = 1.0 - a1n;      // phase 2 is the vapour
-                theta_use = hem::ps_hrm_theta(eos, alpha_v, q1.P, q1.T,
-                                              double(theta));
-            }
+            //  (CAMR.ps_theta_model = 1 selected an HRM-correlation theta per
+            //   cell here.  RETIRED 2026-08-17, S3: measured 2026-08-13 to be
+            //   the WRONG MAPPING -- the correlation slows as saturation is
+            //   approached, right for phase change and wrong for heat exchange
+            //   between phases in contact -- and B9 ABORTS under it, since it
+            //   spans theta 1.8e-6..2.4e-4 against B9's 1e-5 threshold.
+            //   LITERATURE 7 keeps the reasoning; "DO NOT RE-TRY" stands.)
             hem::ps_iso_thermal_relax_cell_finite(Uv, eos, double(dt),
-                                                  theta_use);
+                                                  double(theta));
         }
         //  S5-F1(a) (CAMR.ps_mech_close, default 0 = previous behaviour):
         //  CLOSING MECHANICAL PASS.  Measured (WORKLOG 2026-08-15, M-A): the
@@ -914,18 +909,9 @@ ps_x3_grid_relax_cell(int i, int j, int k,
     //  Rate/carrier knobs pass through from the MT dial family so a Y4
     //  configuration means the same thing at mode 5.  CAMR.ps_mt_tau has
     //  no meaning here (no relaxation time exists on the SRT source).
-    static const double x3_h_w = []() -> double {
-        double v = 0.5; amrex::ParmParse pp("CAMR");
-        pp.query("ps_mt_h_weight", v); return v; }();
-    static const double x3_srt_d = []() -> double {
-        double v = 0.1; amrex::ParmParse pp("CAMR");
-        pp.query("ps_mt_srt_d", v); return v; }();
-    static const double x3_srt_delta = []() -> double {
-        double v = 0.01; amrex::ParmParse pp("CAMR");
-        pp.query("ps_mt_srt_delta", v); return v; }();
-    xp.h_w            = x3_h_w;
-    xp.srt_D          = x3_srt_d;
-    xp.srt_delta      = x3_srt_delta;
+    xp.h_w            = hem::ps_dial_mt_h_weight();
+    xp.srt_D          = hem::ps_dial_mt_srt_d();
+    xp.srt_delta      = hem::ps_dial_mt_srt_delta();
     xp.coexist_action = ps_coexist_action();
     int exit_code = 0;
     xp.exit_code = &exit_code;
@@ -1101,24 +1087,6 @@ inline int ps_mech_close()
     return v;
 }
 
-// -----------------------------------------------------------------
-//  CAMR.ps_theta_model (default 0) -- where the THERMAL relaxation time comes
-//  from.  0 = the constant CAMR.ps_theta_tau, exactly as before and
-//  bit-identical.  1 = the HRM correlation of Downar-Zapolski et al. (1996),
-//  evaluated per cell; see hem::ps_hrm_theta and
-//  LITERATURE_relaxation_rates.md.  ps_theta_tau is then the FALLBACK used
-//  wherever the correlation is undefined, and every such use is counted.
-// -----------------------------------------------------------------
-inline int ps_theta_model()
-{
-    static const int m = []() -> int {
-        int v = 0;
-        amrex::ParmParse pp("CAMR");
-        pp.query("ps_theta_model", v);
-        return v;
-    }();
-    return m;
-}
 
 
 // Cached CAMR.ps_theta_tau (thermal relaxation time [s], default 0 =

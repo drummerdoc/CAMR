@@ -64,7 +64,7 @@ struct PsPres {
     //  correct.  This field stays 1 and is retained only until the remaining
     //  forks are removed; `CAMR.ps_presence` is no longer read.
     int         enabled      = 1;
-    //  CAMR.ps_cmix_model -- WHICH MIXTURE SOUND SPEED a two-phase cell gets.
+
     //  A NUMERICS dial riding the presence params struct because that struct is
     //  already the by-value carrier reaching all three live c_mix sites
     //  (PS_hllc.H face_from_state, PS_wavespeed.H, PS_umeth.cpp) with no
@@ -92,7 +92,6 @@ struct PsPres {
     //         mixture in equilibrium; as an S_L/S_R estimate it is narrower
     //         than the frozen speed, so if the fan stops bounding the true
     //         waves this is where it shows.
-    int         cmix_model   = 0;
     //  CAMR.ps_rk_model -- HOW THE STAR-STATE PARTIAL MASSES CONTRACT through
     //  the acoustic fan (D7 instrument; PLAN_measurements_and_fixes.md S1 C5,
     //  REVIEW_RESPONSE.md D7).  Rides this struct for the same reason
@@ -122,33 +121,18 @@ struct PsPres {
 //  what left three copies carrying the wrong task-#199 alpha factor
 //  (STATUS_multiphase.md 6.1), so the replacement is not duplicated again.
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-amrex::Real ps_cmix2(int model, amrex::Real Y1, amrex::Real Y2,
-                     amrex::Real c1, amrex::Real c2,
-                     amrex::Real alpha_1, amrex::Real alpha_2,
-                     amrex::Real rho_1, amrex::Real rho_2, amrex::Real rho_mix)
+amrex::Real ps_cmix2(amrex::Real Y1, amrex::Real Y2,
+                     amrex::Real c1, amrex::Real c2)
 {
-    using amrex::Real;
-    if (model == 1) {                    // MAX -- contact-appropriate
-        const Real cm = amrex::max(c1, c2);
-        return cm * cm;
-    }
-    if (model == 2) {                    // WOOD / equilibrium
-        //  Guarded: a vanishing alpha_k contributes nothing (its phase owns no
-        //  volume), which is the correct limit and avoids 0/0.  If neither
-        //  phase contributes, fall through to the frozen form rather than
-        //  invent a number.
-        Real inv = Real(0.0);
-        if (alpha_1 > Real(0.0) && rho_1 > Real(0.0) && c1 > Real(0.0)) {
-            inv += alpha_1 / (rho_1 * c1 * c1);
-        }
-        if (alpha_2 > Real(0.0) && rho_2 > Real(0.0) && c2 > Real(0.0)) {
-            inv += alpha_2 / (rho_2 * c2 * c2);
-        }
-        if (inv > Real(0.0) && rho_mix > Real(0.0)) {
-            return Real(1.0) / (rho_mix * inv);
-        }
-    }
-    return Y1 * c1 * c1 + Y2 * c2 * c2;  // 0 = FROZEN mass-weighted (default)
+    //  FROZEN mass-weighted form, and now the only form.  CAMR.ps_cmix_model
+    //  offered MAX (1) and WOOD/equilibrium (2) as alternatives; both were
+    //  MEASURED 2026-08-13 and RETIRED 2026-08-17 (S3).  MAX is indeed best on
+    //  a contact, by 3 % on B11 -- against the 85 % theta gave on the same
+    //  case -- because S_L/S_R only have to BOUND the wave fan and the contact
+    //  is carried by S_M, which never touches c_mix.  WOOD, the equilibrium
+    //  speed a one-pressure model would require, ABORTS B9 with a real-fluid
+    //  EOS.  LITERATURE 8/12.6 keep both numbers and the argument.
+    return Y1 * c1 * c1 + Y2 * c2 * c2;
 }
 
 // Per-phase regime.  alpha is THIS phase's volume fraction, m its
@@ -212,7 +196,6 @@ inline const PsPres& ps_presence_params()
         //  CAMR.ps_presence deliberately NOT read: the legacy path is gone.
         pp.query("ps_alpha_cond",       v.alpha_cond);
         pp.query("ps_alpha_birth",      v.alpha_birth);
-        pp.query("ps_cmix_model",       v.cmix_model);
         pp.query("ps_rk_model",         v.rk_model);
         pp.query("ps_presence_vanish",  v.alpha_vanish);   // unified with the
         // fold's CAMR.ps_alpha_vanish at S3 (that key currently means

@@ -4,7 +4,7 @@
 Modes:  std <cases...> | camr <cases...> | montage
 Case list mirrors the standalone CASES[] (A1-A6, B1-B10, C1-C3)."""
 import os, sys, glob, csv, subprocess, numpy as np
-import run_ac_suite as R   # rd1d/hdr
+import ps_plotfile as R   # rd1d/hdr
 
 # Standalone driver binary.  Override with CO2_STANDALONE_BIN=... .  The old
 # hard-coded /sessions/<sandbox>/ path died with the sandbox that made it.

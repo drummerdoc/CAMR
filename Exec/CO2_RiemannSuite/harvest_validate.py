@@ -3,7 +3,7 @@
 solution is bit-identical (read-only harvester) and that shards are written.
 Usage: python3 harvest_validate.py [CASE] [N] [MAXSTEP]"""
 import os, sys, glob, subprocess, numpy as np
-import full_suite as F, run_ac_suite as R
+import full_suite as F, ps_plotfile as R
 
 CASE = sys.argv[1] if len(sys.argv) > 1 else 'B2-Evap-wave'
 N    = int(sys.argv[2]) if len(sys.argv) > 2 else 128

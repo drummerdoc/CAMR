@@ -383,34 +383,12 @@ struct PsPhaseAPI {
     }
 };
 
-//  Returns the HRM theta, or theta_fallback with a counted cause.
-inline double ps_hrm_theta(const PsPhaseAPI& eos, double alpha_v, double P,
-                           double T_liquid, double theta_fallback)
-{
-    constexpr double THETA_0 = 3.84e-7;   // s, Downar-Zapolski high-pressure set
-    if (!(alpha_v > 0.0)) { ++ps_hrm_cause(PS_HRM_ALPHA_ZERO); return theta_fallback; }
-    const double Tc = eos.t_crit();
-    if (!(T_liquid < Tc))  { ++ps_hrm_cause(PS_HRM_SUPERCRIT);  return theta_fallback; }
-    if (!eos.Psat_of_T)    { ++ps_hrm_cause(PS_HRM_PSAT_BAD);   return theta_fallback; }
-    const double Psat = eos.Psat_of_T(T_liquid);
-    if (!std::isfinite(Psat) || Psat <= 0.0) {
-        ++ps_hrm_cause(PS_HRM_PSAT_BAD); return theta_fallback; }
-    const double denom = eos.p_crit() - Psat;
-    if (!(denom > 0.0)) { ++ps_hrm_cause(PS_HRM_DENOM); return theta_fallback; }
-    const double psi = std::abs(Psat - P) / denom;
-    if (!(psi > 0.0))   { ++ps_hrm_cause(PS_HRM_PSI_ZERO); return theta_fallback; }
-    const double th = THETA_0 * std::pow(alpha_v, -0.54) * std::pow(psi, -1.76);
-    if (!std::isfinite(th) || th <= 0.0) {
-        ++ps_hrm_cause(PS_HRM_NONFIN); return theta_fallback; }
-    PsHrmRange& r = ps_hrm_range();
-    if (th  < r.th_min)  r.th_min  = th;
-    if (th  > r.th_max)  r.th_max  = th;
-    if (psi < r.psi_min) r.psi_min = psi;
-    if (psi > r.psi_max) r.psi_max = psi;
-    ++r.n;
-    ++ps_hrm_cause(PS_HRM_OK);
-    return th;
-}
+//  (ps_hrm_theta -- the Downar-Zapolski HRM correlation -- was RETIRED
+//   2026-08-17 (S3).  On theta it is the wrong mapping and B9 aborts; on
+//   tau_mt it is right in principle and MEASURED REDUNDANT: eight orders
+//   of tau from local state alone move B9 by 0.1 %, because
+//   dm = (1-exp(-dt/tau)) dm_eq already slows to nothing near equilibrium.
+//   LITERATURE 7 holds the reasoning and the numbers.)
 
 
 // ---------------------------------------------------------------------
@@ -455,6 +433,19 @@ inline bool ps_apply_vanish_fold(V6& U, double alpha_vanish)
     }
     return false;
 }
+
+//  ONE READ PER DIAL (S2, 2026-08-17).  Every dial below was read in two or
+//  three places, each carrying its OWN default -- the pattern that applied the
+//  split mass-transfer source on top of X3 this morning, because
+//  PS_sources.H's private copy of ps_relax_mode defaulted to 0 while the
+//  accessor said 5.  A dial with two readers is a dial with two defaults
+//  waiting to disagree.  These are the single source of truth; call them.
+inline int    ps_dial_flash_from_absent() { static const int    v = ps_knob_int ("ps_flash_from_absent", 1);  return v; }
+inline int    ps_dial_flash_project_sat() { static const int    v = ps_knob_int ("ps_flash_project_sat", -1); return v; }
+inline double ps_dial_mt_h_weight()       { static const double v = ps_knob_real("ps_mt_h_weight",      0.5); return v; }
+inline double ps_dial_mt_srt_d()          { static const double v = ps_knob_real("ps_mt_srt_d",         0.1); return v; }
+inline double ps_dial_mt_srt_delta()      { static const double v = ps_knob_real("ps_mt_srt_delta",    0.01); return v; }
+
 
 
 // Session 89av: T-floor fold.  When a phase's implied temperature falls
@@ -2574,18 +2565,16 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
             return true;   // not a two-phase cell → no mass transfer
     }
 
-    //  CAMR.ps_mt_tau_model = 1: take the MASS-TRANSFER time from the HRM
-    //  correlation at this cell's own state instead of the global constant.
-    //  This is the mapping the literature actually supports: HRM's theta
-    //  relaxes vapour QUALITY, i.e. it is a mass-transfer time, in a model
-    //  whose single relaxation process IS the phase change.  Driving our
-    //  THERMAL time with it was measured 2026-08-13 to be the wrong mapping --
-    //  the correlation slows down near saturation, which is right for phase
-    //  change and wrong for heat exchange between two phases in contact.
-    //  See LITERATURE_relaxation_rates.md 7.
-    if (tau_model == 1) {
-        tau_g = ps_hrm_theta(eos, 1.0 - alpha1, p1.P, p1.T, tau_g);
-    }
+    //  (tau_model == 1 took the MASS-TRANSFER time from the HRM correlation
+    //   per cell.  RETIRED 2026-08-17 (S3): the mapping is the defensible one
+    //   -- HRM's theta relaxes vapour quality, so it IS a mass-transfer time --
+    //   but it was MEASURED REDUNDANT BY CONSTRUCTION on 2026-08-13: eight
+    //   orders of magnitude of tau derived from local state moved B9 by 0.1 %,
+    //   because dm = (1 - exp(-dt/tau)) dm_eq already vanishes near
+    //   equilibrium, so a state-dependent tau that also grows there
+    //   double-counts the same physics.  tau_model == 2 (ASY1, derived from
+    //   Gamma_SRT, Lund & Aursand Eq. 25) STAYS -- that one is derived, not
+    //   correlated.  LITERATURE 7 keeps the numbers.)
 
     // Finite-rate dm/dt = +k (g_1 - g_2) with k = rho_mix / tau_g.
     // Sign convention: dm > 0 means U[1] shrinks (m_1 → m_2, evaporation
@@ -2700,8 +2689,8 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
             if (std::abs(g_diff) < mt_ref.tol_g_rel * g_scale)
                 PS_MT_REFUSE(PS_MT_GSCREEN, true);
         }
-        static const double srt_D     = ps_knob_real("ps_mt_srt_d", 0.1);
-        static const double srt_delta = ps_knob_real("ps_mt_srt_delta", 0.01);
+        const double srt_D     = ps_dial_mt_srt_d();
+        const double srt_delta = ps_dial_mt_srt_delta();
         constexpr double two_pi = 6.283185307179586;
         constexpr double R_u    = 8.314462618;          // J/(mol K)
         //  Direction is FIXED by the entry state: the rate vanishes at
@@ -2940,10 +2929,8 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
         //  Degenerate Gamma falls back to the constant-tau_g frac formed
         //  above, so the dial can never invent a rate.
         if (tau_model == 2) {
-            static const double srt_D =
-                ps_knob_real("ps_mt_srt_d", 0.1);
-            static const double srt_delta =
-                ps_knob_real("ps_mt_srt_delta", 0.01);
+            const double srt_D     = ps_dial_mt_srt_d();
+            const double srt_delta = ps_dial_mt_srt_delta();
             constexpr double two_pi = 6.283185307179586;
             constexpr double R_u    = 8.314462618;         // J/(mol K)
             //  Evaporation (g_1 > g_2): vapour receives; else liquid receives.
@@ -3800,8 +3787,7 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
     //  cell whose TRACE phase is ABSENT is accepted and the newborn phase
     //  is CONSTRUCTED by the saturation projection (enforced below);
     //  both-absent stays excluded.
-    static const bool from_absent =
-        ps_knob_int("ps_flash_from_absent", 1) != 0;
+    const bool from_absent = ps_dial_flash_from_absent() != 0;
     const bool abs_trace = from_absent &&
         ((liq_dominant && m_2 <= 0.0 && m_1 > 0.0) ||
          (vap_dominant && m_1 <= 0.0 && m_2 > 0.0));
@@ -3915,8 +3901,7 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
     //     equilibrium sat locus by construction.  Closes the B7
     //     HEM-analytic gap and eliminates the trace-phase T_2 spike
     //     at α transitions.
-    static const bool project_sat_key =
-        ps_knob_int("ps_flash_project_sat", 0) != 0;
+    const bool project_sat_key = ps_dial_flash_project_sat() > 0;
     const bool project_sat = (project_sat_in < 0) ? project_sat_key
                                                   : (project_sat_in != 0);
 
