@@ -56,13 +56,8 @@ ps_augment_primitives(int i, int j, int k,
     // matches the standalone driver's default PS_ALPHA_TRACE = 1e-6.
     constexpr amrex::Real alpha_floor = amrex::Real(1.0e-6);
     amrex::Real a1 = alpha_1;
-    if (pr.enabled) {   // S2 presence: exact alpha; 0/1 legal (ABSENT)
-        if (a1 < amrex::Real(0.0)) a1 = amrex::Real(0.0);
-        if (a1 > amrex::Real(1.0)) a1 = amrex::Real(1.0);
-    } else {
-        if (a1 < alpha_floor)          a1 = alpha_floor;
-        if (a1 > amrex::Real(1.0) - alpha_floor) a1 = amrex::Real(1.0) - alpha_floor;
-    }
+    if (a1 < amrex::Real(0.0)) a1 = amrex::Real(0.0);
+    if (a1 > amrex::Real(1.0)) a1 = amrex::Real(1.0);
     const amrex::Real a2 = amrex::Real(1.0) - a1;
     //  Contract 3: regime computed honestly on BOTH paths (was: forced
     //  Independent on legacy, i.e. asserting both phases exist).
@@ -153,31 +148,17 @@ ps_augment_primitives(int i, int j, int k,
     //  The HOST phase is the one with the larger volume fraction.  Hoisted out
     //  of the fork below because the pressure REFERENCE now needs it too.
     const bool host_is_1 = (a1 >= a2);
-    if (pr.enabled) {
-        // S2 presence dispatch (mirrors PS_hllc face_from_state): the host
-        // phase defines the cell; corridor/absent phases take its pressure
-        // by DEFINITION (transport-only corridor, design §1).
-        if (host_is_1) {
-            EOS::REY2P_liquid(rho1, e1, Y, P1);
-            if (rg2 == PsRegime::Independent) { EOS::REY2P_vapor(rho2, e2, Y, P2); }
-            else                              { P2 = P1; }
-        } else {
-            EOS::REY2P_vapor(rho2, e2, Y, P2);
-            if (rg1 == PsRegime::Independent) { EOS::REY2P_liquid(rho1, e1, Y, P1); }
-            else                              { P1 = P2; }
-        }
+    // S2 presence dispatch (mirrors PS_hllc face_from_state): the host
+    // phase defines the cell; corridor/absent phases take its pressure
+    // by DEFINITION (transport-only corridor, design §1).
+    if (host_is_1) {
+        EOS::REY2P_liquid(rho1, e1, Y, P1);
+        if (rg2 == PsRegime::Independent) { EOS::REY2P_vapor(rho2, e2, Y, P2); }
+        else                              { P2 = P1; }
     } else {
-        const int slaved = ps_guard::slaved_phase(a1, a2);
-        if (slaved == 1) {                     // phase 1 trace -> slave to vapour
-            EOS::REY2P_vapor(rho2, e2, Y, P2);
-            P1 = P2;
-        } else if (slaved == 2) {              // phase 2 trace -> slave to liquid
-            EOS::REY2P_liquid(rho1, e1, Y, P1);
-            P2 = P1;
-        } else {
-            EOS::REY2P_liquid(rho1, e1, Y, P1);
-            EOS::REY2P_vapor (rho2, e2, Y, P2);
-        }
+        EOS::REY2P_vapor(rho2, e2, Y, P2);
+        if (rg1 == PsRegime::Independent) { EOS::REY2P_liquid(rho1, e1, Y, P1); }
+        else                              { P1 = P2; }
     }
 
     // Pressure floor — real-fluid PR can return negative P for
@@ -221,13 +202,8 @@ ps_augment_primitives(int i, int j, int k,
     P_host = ps_guard::sanitize_stock_pressure(P_host);
     const amrex::Real P_ref = P_host;
     bool P1_bad = false, P2_bad = false;
-    if (pr.enabled) {   // slaved pressures ARE the host's; test independents only
-        if (rg1 == PsRegime::Independent) P1_bad = ps_guard::sanitize_phase_pressure(P1, P_ref);
-        if (rg2 == PsRegime::Independent) P2_bad = ps_guard::sanitize_phase_pressure(P2, P_ref);
-    } else {
-        P1_bad = ps_guard::sanitize_phase_pressure(P1, P_ref);
-        P2_bad = ps_guard::sanitize_phase_pressure(P2, P_ref);
-    }
+    if (rg1 == PsRegime::Independent) P1_bad = ps_guard::sanitize_phase_pressure(P1, P_ref);
+    if (rg2 == PsRegime::Independent) P2_bad = ps_guard::sanitize_phase_pressure(P2, P_ref);
     if (P1_bad || P2_bad) ps_guard::count_ctop_sub();
 
     // Write the extended primitive slots.
@@ -283,13 +259,8 @@ ps_mixture_pressure_from_cons(const amrex::Real U[NVAR], amrex::Real P_stock,
     constexpr Real P_floor     = Real(1.0);
 
     Real a1 = U[UALPHA1];
-    if (pr.enabled) {   // S2 presence: exact alpha
-        if (a1 < Real(0.0)) a1 = Real(0.0);
-        if (a1 > Real(1.0)) a1 = Real(1.0);
-    } else {
-        if (a1 < alpha_floor)             a1 = alpha_floor;
-        if (a1 > Real(1.0) - alpha_floor) a1 = Real(1.0) - alpha_floor;
-    }
+    if (a1 < Real(0.0)) a1 = Real(0.0);
+    if (a1 > Real(1.0)) a1 = Real(1.0);
     const Real a2 = Real(1.0) - a1;
 
     const Real rho   = (std::isfinite(U[URHO]) && U[URHO] > rho_floor) ? U[URHO] : rho_floor;
@@ -327,16 +298,14 @@ ps_mixture_pressure_from_cons(const amrex::Real U[NVAR], amrex::Real P_stock,
     Y[0] = Real(1.0);
     for (int n = 1; n < NUM_SPECIES; ++n) Y[n] = Real(0.0);
     Real P1, P2;
-    if (pr.enabled) {
-        const Real P_ss = ps_guard::sanitize_stock_pressure(P_stock);
-        if (q1.exists && rg1 == PsRegime::Independent) { EOS::REY2P_liquid(rho1, e1, Y, P1);
-                                            ps_guard::sanitize_phase_pressure(P1, P_ss); }
-        else                              { P1 = P_ss; }
-        if (rg2 == PsRegime::Independent) { EOS::REY2P_vapor(rho2, e2, Y, P2);
-                                            ps_guard::sanitize_phase_pressure(P2, P_ss); }
-        else                              { P2 = P_ss; }
-        return a1 * P1 + a2 * P2;   // exact alpha: ABSENT contributes 0
-    }
+    const Real P_ss = ps_guard::sanitize_stock_pressure(P_stock);
+    if (q1.exists && rg1 == PsRegime::Independent) { EOS::REY2P_liquid(rho1, e1, Y, P1);
+                                        ps_guard::sanitize_phase_pressure(P1, P_ss); }
+    else                              { P1 = P_ss; }
+    if (rg2 == PsRegime::Independent) { EOS::REY2P_vapor(rho2, e2, Y, P2);
+                                        ps_guard::sanitize_phase_pressure(P2, P_ss); }
+    else                              { P2 = P_ss; }
+    return a1 * P1 + a2 * P2;   // exact alpha: ABSENT contributes 0
     EOS::REY2P_liquid(rho1, e1, Y, P1);
     EOS::REY2P_vapor (rho2, e2, Y, P2);
 

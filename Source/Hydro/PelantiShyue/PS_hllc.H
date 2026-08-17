@@ -124,16 +124,11 @@ Face face_from_state(int idir, const amrex::Real U[NVAR],
     // is 1e-6 and after we confirmed 1e-6 gives bit-exact match.
     constexpr Real alpha_floor = Real(1.0e-6);
     Real a1 = _finite_or(U[UALPHA1], Real(1.0));
-    if (pr.enabled) {
-        // S1 presence path: NO floor.  alpha stays exact (0 and 1 are legal
-        // and meaningful: ABSENT).  Clamp only the [0,1] bounds; violations
-        // are ps_validate_state's to report, not this constructor's to hide.
-        if (a1 < Real(0.0)) a1 = Real(0.0);
-        if (a1 > Real(1.0)) a1 = Real(1.0);
-    } else {
-        if (a1 < alpha_floor)             a1 = alpha_floor;
-        if (a1 > Real(1.0) - alpha_floor) a1 = Real(1.0) - alpha_floor;
-    }
+    // S1 presence path: NO floor.  alpha stays exact (0 and 1 are legal
+    // and meaningful: ABSENT).  Clamp only the [0,1] bounds; violations
+    // are ps_validate_state's to report, not this constructor's to hide.
+    if (a1 < Real(0.0)) a1 = Real(0.0);
+    if (a1 > Real(1.0)) a1 = Real(1.0);
     f.alpha_1 = a1;
     f.alpha_2 = Real(1.0) - a1;
 
@@ -159,27 +154,18 @@ Face face_from_state(int idir, const amrex::Real U[NVAR],
                                     : PsRegime::Independent;
     const PsRegime rg2 = pr.enabled ? ps_regime(f.alpha_2, f.m_2, pr)
                                     : PsRegime::Independent;
-    if (pr.enabled) {
-        // INDEPENDENT: m/alpha is well-conditioned by construction (alpha >=
-        // alpha_cond); G1 stays as containment until S4 turns it into an
-        // assertion.  CORRIDOR: the ratio is noise; form it G1-clamped only
-        // because it enters the star-state q_k denominator, where its
-        // contribution is bounded by m_k (tiny).  ABSENT: never divide;
-        // placeholder = host's density, set after the host is known below.
-        f.rho_1 = (rg1 == PsRegime::Absent) ? Real(0.0)
-                : ps_guard::clamp_phase_density(f.m_1 / amrex::max(f.alpha_1, Real(1.0e-300)),
-                                                EOS::rho_min(), EOS::rho_max());
-        f.rho_2 = (rg2 == PsRegime::Absent) ? Real(0.0)
-                : ps_guard::clamp_phase_density(f.m_2 / amrex::max(f.alpha_2, Real(1.0e-300)),
-                                                EOS::rho_min(), EOS::rho_max());
-    } else {
-        f.rho_1 = ps_guard::clamp_phase_density(
-                      (f.m_1 > Real(0.0)) ? (f.m_1 / f.alpha_1) : rho_floor,
-                      EOS::rho_min(), EOS::rho_max());
-        f.rho_2 = ps_guard::clamp_phase_density(
-                      (f.m_2 > Real(0.0)) ? (f.m_2 / f.alpha_2) : rho_floor,
-                      EOS::rho_min(), EOS::rho_max());
-    }
+    // INDEPENDENT: m/alpha is well-conditioned by construction (alpha >=
+    // alpha_cond); G1 stays as containment until S4 turns it into an
+    // assertion.  CORRIDOR: the ratio is noise; form it G1-clamped only
+    // because it enters the star-state q_k denominator, where its
+    // contribution is bounded by m_k (tiny).  ABSENT: never divide;
+    // placeholder = host's density, set after the host is known below.
+    f.rho_1 = (rg1 == PsRegime::Absent) ? Real(0.0)
+            : ps_guard::clamp_phase_density(f.m_1 / amrex::max(f.alpha_1, Real(1.0e-300)),
+                                            EOS::rho_min(), EOS::rho_max());
+    f.rho_2 = (rg2 == PsRegime::Absent) ? Real(0.0)
+            : ps_guard::clamp_phase_density(f.m_2 / amrex::max(f.alpha_2, Real(1.0e-300)),
+                                            EOS::rho_min(), EOS::rho_max());
 
     // Velocity components.
     const Real inv_r = Real(1.0) / f.rho_mix;
@@ -224,45 +210,31 @@ Face face_from_state(int idir, const amrex::Real U[NVAR],
     // continuous, instead of 1 m/s, which manufactured a discontinuity in
     // c_frozen and hence in S_L/S_R at exactly the alpha-transition cells.
     Real c1, c2;
-    if (pr.enabled) {
-        // S1 presence dispatch.  The HOST phase (larger alpha) is always
-        // INDEPENDENT when the cell is physical (alpha_host >= 1/2 >>
-        // alpha_cond); its branch-locked query defines the cell.  A
-        // CORRIDOR/ABSENT phase takes the host's intensives — the corridor
-        // closure is the DEFINITION of that phase's thermodynamics (design
-        // §1), replacing G5-slaving-as-repair, the A3 c=1 fallback, and the
-        // A6 e_mix substitution in this constructor.  For an ABSENT phase
-        // every contribution downstream is multiplied by m_k = 0; the host
-        // placeholders exist so no expression is undefined.
-        const bool host_is_1 = (f.alpha_1 >= f.alpha_2);
-        if (host_is_1) {
-            EOS::REY2PCs_liquid(f.rho_1, f.e_1, Y, f.P_1, c1);
-            if (rg2 == PsRegime::Independent) {
-                EOS::REY2PCs_vapor(f.rho_2, f.e_2, Y, f.P_2, c2);
-            } else {
-                f.P_2 = f.P_1; c2 = c1;
-                if (rg2 == PsRegime::Absent) { f.rho_2 = f.rho_1; f.e_2 = f.e_1; f.E_2 = f.E_1; }
-            }
-        } else {
+    // S1 presence dispatch.  The HOST phase (larger alpha) is always
+    // INDEPENDENT when the cell is physical (alpha_host >= 1/2 >>
+    // alpha_cond); its branch-locked query defines the cell.  A
+    // CORRIDOR/ABSENT phase takes the host's intensives — the corridor
+    // closure is the DEFINITION of that phase's thermodynamics (design
+    // §1), replacing G5-slaving-as-repair, the A3 c=1 fallback, and the
+    // A6 e_mix substitution in this constructor.  For an ABSENT phase
+    // every contribution downstream is multiplied by m_k = 0; the host
+    // placeholders exist so no expression is undefined.
+    const bool host_is_1 = (f.alpha_1 >= f.alpha_2);
+    if (host_is_1) {
+        EOS::REY2PCs_liquid(f.rho_1, f.e_1, Y, f.P_1, c1);
+        if (rg2 == PsRegime::Independent) {
             EOS::REY2PCs_vapor(f.rho_2, f.e_2, Y, f.P_2, c2);
-            if (rg1 == PsRegime::Independent) {
-                EOS::REY2PCs_liquid(f.rho_1, f.e_1, Y, f.P_1, c1);
-            } else {
-                f.P_1 = f.P_2; c1 = c2;
-                if (rg1 == PsRegime::Absent) { f.rho_1 = f.rho_2; f.e_1 = f.e_2; f.E_1 = f.E_2; }
-            }
+        } else {
+            f.P_2 = f.P_1; c2 = c1;
+            if (rg2 == PsRegime::Absent) { f.rho_2 = f.rho_1; f.e_2 = f.e_1; f.E_2 = f.E_1; }
         }
     } else {
-        const int slaved = ps_guard::slaved_phase(f.alpha_1, f.alpha_2);
-        if (slaved == 1) {
-            EOS::REY2PCs_vapor(f.rho_2, f.e_2, Y, f.P_2, c2);
-            f.P_1 = f.P_2; c1 = c2;
-        } else if (slaved == 2) {
+        EOS::REY2PCs_vapor(f.rho_2, f.e_2, Y, f.P_2, c2);
+        if (rg1 == PsRegime::Independent) {
             EOS::REY2PCs_liquid(f.rho_1, f.e_1, Y, f.P_1, c1);
-            f.P_2 = f.P_1; c2 = c1;
         } else {
-            EOS::REY2PCs_liquid(f.rho_1, f.e_1, Y, f.P_1, c1);
-            EOS::REY2PCs_vapor (f.rho_2, f.e_2, Y, f.P_2, c2);
+            f.P_1 = f.P_2; c1 = c2;
+            if (rg1 == PsRegime::Absent) { f.rho_1 = f.rho_2; f.e_1 = f.e_2; f.E_1 = f.E_2; }
         }
     }
     // G3: two-sided per-phase pressure sanity against the mixture scale
@@ -277,16 +249,11 @@ Face face_from_state(int idir, const amrex::Real U[NVAR],
     {
         const Real P_ref = (f.alpha_1 >= f.alpha_2) ? f.P_1 : f.P_2;
         const Real P_stock = ps_guard::sanitize_stock_pressure(P_ref);
-        if (pr.enabled) {
-            // Slaved (corridor/absent) pressures ARE the host's — sanitizing
-            // them against the host is a no-op; only an independent minority
-            // phase carries its own P worth testing.
-            if (rg1 == PsRegime::Independent) ps_guard::sanitize_phase_pressure(f.P_1, P_stock);
-            if (rg2 == PsRegime::Independent) ps_guard::sanitize_phase_pressure(f.P_2, P_stock);
-        } else {
-            ps_guard::sanitize_phase_pressure(f.P_1, P_stock);
-            ps_guard::sanitize_phase_pressure(f.P_2, P_stock);
-        }
+        // Slaved (corridor/absent) pressures ARE the host's — sanitizing
+        // them against the host is a no-op; only an independent minority
+        // phase carries its own P worth testing.
+        if (rg1 == PsRegime::Independent) ps_guard::sanitize_phase_pressure(f.P_1, P_stock);
+        if (rg2 == PsRegime::Independent) ps_guard::sanitize_phase_pressure(f.P_2, P_stock);
     }
     f.P_mix = f.alpha_1 * f.P_1 + f.alpha_2 * f.P_2;
     if (!std::isfinite(c1) || c1 <= Real(0.0)) c1 = Real(1.0);

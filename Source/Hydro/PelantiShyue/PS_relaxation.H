@@ -51,7 +51,6 @@
 #include <unordered_map>
 #include <vector>      // Stage-1 C3 [PS-PSAT] median
 #include <algorithm>   // Stage-1 C3 std::sort
-#include "PS_relax_device.H"   // GPU-port B1/B2: ps_dev::* device kernels + EosDev
 
 
 // ---------------------------------------------------------------------
@@ -263,39 +262,6 @@ ps_make_camr_eos_api()
 }
 
 
-// -----------------------------------------------------------------
-//  #88 metastable guard.  The alpha-ADJUSTING mechanical relaxation (modes
-//  0/3) overheats the dilute phase when it acts on a METASTABLE state: a
-//  stretched liquid (P1 < Psat(T1)) or supersaturated vapor (P2 > Psat(T2)),
-//  or a spinodal branch (c <= 0).  Root cause (single-cell A/B vs standalone):
-//  CAMR's PR EOS returns a valid EXTRAPOLATED value there, so the
-//  Newton deposits spurious PdV work into the trace phase; the standalone's PR
-//  backend returns INVALID for the same state, so its (identical) kernel simply
-//  refuses -> no overheat.  This guard reproduces that refusal on the CAMR side
-//  WITHOUT touching the shared kernel, the MT path, or the hydro-flux EOS: the
-//  alpha-adjusting drivers skip a cell whose per-phase state is metastable,
-//  leaving it in P-disequilibrium (correct -- a stretched liquid should flash
-//  via MT, not be mechanically pressure-relaxed).  Isochoric modes 1/2 do not
-//  move alpha and are unaffected.  Gated CAMR.ps_relax_metastable_guard (default
-//  on); band CAMR.ps_relax_metastable_band (default 0.05) keeps genuine near-
-//  saturation coexistence cells (P ~= Psat) untouched.
-// -----------------------------------------------------------------
-inline int ps_relax_metastable_guard()
-{
-    static const int v = []() -> int {
-        int val = 1; amrex::ParmParse pp("CAMR");
-        pp.query("ps_relax_metastable_guard", val); return val;
-    }();
-    return v;
-}
-inline double ps_relax_metastable_band()
-{
-    static const double v = []() -> double {
-        amrex::Real val = amrex::Real(0.05); amrex::ParmParse pp("CAMR");
-        pp.query("ps_relax_metastable_band", val); return double(val);
-    }();
-    return v;
-}
 //  (The host ps_cell_metastable went with mode 3, its last caller, on
 //   2026-08-17 (T1-c).  The device copy ps_dev::ps_cell_metastable
 //   survives for the device mode-0 guard, which presence forces off.)
@@ -384,8 +350,7 @@ ps_mechanical_relax_cell(int i, int j, int k,
     }
     // S4 presence gate (design §5); replaces #88 below when enabled.
     const PsPres& prS4 = ps_presence_params();
-    if (prS4.enabled != 0 &&
-        !ps_presence_relax_gate(alpha1_in, m1, m2, prS4)) { return; }
+    if (!ps_presence_relax_gate(alpha1_in, m1, m2, prS4)) { return; }
 
     // Mixture momentum magnitude → V6[3] = ρ_mix · |u| so that
     // ½ (V6[3]/ρ_mix)² = ½|u|² is what the standalone uses for
@@ -498,8 +463,7 @@ ps_pt_equilibrium_relax_cell(int i, int j, int k,
     if (m1 <= Real(0.0) || m2 <= Real(0.0)) return;
     {   // S4 presence gate (design §5)
         const PsPres& prS4g = ps_presence_params();
-        if (prS4g.enabled != 0 &&
-            !ps_presence_relax_gate(alpha1_in, m1, m2, prS4g)) { return; }
+        if (!ps_presence_relax_gate(alpha1_in, m1, m2, prS4g)) { return; }
     }
 
     const Real px = U(i,j,k, UMX);
@@ -562,8 +526,7 @@ ps_ptg_relax_cell(int i, int j, int k,
     if (m1 <= Real(0.0) || m2 <= Real(0.0)) return;
     {   // S4 presence gate (design §5)
         const PsPres& prS4g = ps_presence_params();
-        if (prS4g.enabled != 0 &&
-            !ps_presence_relax_gate(alpha1_in, m1, m2, prS4g)) { return; }
+        if (!ps_presence_relax_gate(alpha1_in, m1, m2, prS4g)) { return; }
     }
 
     const Real px = U(i,j,k, UMX);
@@ -643,8 +606,7 @@ ps_canonical_relax_cell(int i, int j, int k,
     if (m1 <= Real(0.0) || m2 <= Real(0.0)) return;
     {   // S4 presence gate (design §5)
         const PsPres& prS4g = ps_presence_params();
-        if (prS4g.enabled != 0 &&
-            !ps_presence_relax_gate(alpha1_in, m1, m2, prS4g)) { return; }
+        if (!ps_presence_relax_gate(alpha1_in, m1, m2, prS4g)) { return; }
     }
 
     const Real px = U(i,j,k, UMX);
@@ -926,8 +888,7 @@ ps_x3_grid_relax_cell(int i, int j, int k,
     if (m1 <= Real(0.0) || m2 <= Real(0.0)) return;
     {   // S4 presence gate, exactly as the canonical cell applies it
         const PsPres& prS4g = ps_presence_params();
-        if (prS4g.enabled != 0 &&
-            !ps_presence_relax_gate(alpha1_in, m1, m2, prS4g)) { return; }
+        if (!ps_presence_relax_gate(alpha1_in, m1, m2, prS4g)) { return; }
     }
     const Real px = U(i,j,k, UMX);
 #if (AMREX_SPACEDIM >= 2)
@@ -1159,21 +1120,6 @@ inline int ps_theta_model()
     return m;
 }
 
-// GPU-port B2 (default 0 = host MFIter+LoopOnCpu path).  When 1, modes 0/2/3
-// dispatch through the device-native ps_dev::* kernels via a FUSED
-// amrex::ParallelFor over the whole MultiFab (loops boxes internally by
-// box_no -> one launch across all boxes; hedges many-small-box overhead and
-// enables kernel concurrency).  Validated on host to be bit-identical to the
-// MFIter path (CAMR.ps_dev_relax_test gate).  Host-only relax diagnostics are
-// skipped on this path.
-inline int ps_relax_device()
-{
-    static const int v = []() -> int {
-        int val = 0; amrex::ParmParse pp("CAMR");
-        pp.query("ps_relax_device", val); return val;
-    }();
-    return v;
-}
 
 // Cached CAMR.ps_theta_tau (thermal relaxation time [s], default 0 =
 // instantaneous).  Used by ps_relax_mode=2 and 3.
@@ -2517,26 +2463,24 @@ ps_apply_vanish_fold(amrex::MultiFab& S_new, int nghost = 0)
             // a phase PINNED at the declared validity floor has no
             // interior state either).  Both-vacuum cells are left for the
             // validator — there is no host to fold into.
-            if (prF.enabled != 0) {
-                const double a1v = Uv[0];
-                const bool vac1 = (a1v > 0.0) && (Uv[1] <= rminF * a1v);
-                const bool vac2 = (a1v < 1.0) && (Uv[2] <= rminF * (1.0 - a1v));
-                if (vac1 != vac2) {   // exactly one vacuum phase
+            const double a1v = Uv[0];
+            const bool vac1 = (a1v > 0.0) && (Uv[1] <= rminF * a1v);
+            const bool vac2 = (a1v < 1.0) && (Uv[2] <= rminF * (1.0 - a1v));
+            if (vac1 != vac2) {   // exactly one vacuum phase
 #if !defined(AMREX_USE_GPU)
-                    ++ps_fold_audit().n_vacuum;
-                    ps_fold_audit().m_vacuum += vac1 ? Uv[1] : Uv[2];
+                ++ps_fold_audit().n_vacuum;
+                ps_fold_audit().m_vacuum += vac1 ? Uv[1] : Uv[2];
 #endif
-                    if (vac1) {       // fold phase 1 into phase 2
-                        Uv[2] += Uv[1];  Uv[5] += Uv[4];
-                        Uv[1] = 0.0;     Uv[4] = 0.0;
-                        Uv[0] = 0.0;
-                    } else {          // fold phase 2 into phase 1
-                        Uv[1] += Uv[2];  Uv[4] += Uv[5];
-                        Uv[2] = 0.0;     Uv[5] = 0.0;
-                        Uv[0] = 1.0;
-                    }
-                    wrote = true;
+                if (vac1) {       // fold phase 1 into phase 2
+                    Uv[2] += Uv[1];  Uv[5] += Uv[4];
+                    Uv[1] = 0.0;     Uv[4] = 0.0;
+                    Uv[0] = 0.0;
+                } else {          // fold phase 2 into phase 1
+                    Uv[1] += Uv[2];  Uv[4] += Uv[5];
+                    Uv[2] = 0.0;     Uv[5] = 0.0;
+                    Uv[0] = 1.0;
                 }
+                wrote = true;
             }
             if (wrote) {
                 U(i, j, k, UALPHA1) = amrex::Real(Uv[0]);
@@ -2553,64 +2497,6 @@ ps_apply_vanish_fold(amrex::MultiFab& S_new, int nghost = 0)
     }
 }
 
-// -----------------------------------------------------------------
-//  ps_relax_cell_device (GPU-port B2) — device per-cell dispatcher.  The
-//  device analogue of the ps_mechanical_/ps_ptg_/ps_pmech_finite_relax_cell
-//  wrappers: packs the V6, dispatches by mode to the ps_dev::* kernels
-//  (no std::function, no getenv, no static cache), writes back exactly the
-//  components the host wrappers write.  NO PsRelaxDiag counters (host-only).
-//  AMREX_GPU_HOST_DEVICE so it runs inside a device ParallelFor.
-// -----------------------------------------------------------------
-template <class EOS_T>
-AMREX_GPU_HOST_DEVICE
-inline void
-ps_relax_cell_device(amrex::Array4<amrex::Real> const& U, int i, int j, int k,
-                     const EOS_T& eos, int relax_mode,
-                     amrex::Real dt, amrex::Real theta,
-                     int metastable_guard, amrex::Real band,
-                     const PsPres& pr)
-{
-    using amrex::Real;
-    constexpr Real afl = Real(1.0e-6);
-    const Real a1 = U(i,j,k, UALPHA1);
-    if (!std::isfinite(a1) || a1 < afl || a1 > Real(1.0) - afl) return;
-    const Real m1 = U(i,j,k, UM1RHO1), m2 = U(i,j,k, UM2RHO2);
-    if (m1 <= Real(0.0) || m2 <= Real(0.0)) return;
-    // S4 presence gate (by-value params; §12.2 rule 1 — no host reads here).
-    if (pr.enabled != 0 && !ps_presence_relax_gate(a1, m1, m2, pr)) return;
-    const Real px = U(i,j,k, UMX);
-#if (AMREX_SPACEDIM >= 2)
-    const Real py = U(i,j,k, UMY);
-#else
-    const Real py = Real(0.0);
-#endif
-#if (AMREX_SPACEDIM == 3)
-    const Real pz = U(i,j,k, UMZ);
-#else
-    const Real pz = Real(0.0);
-#endif
-    const Real pmag = std::sqrt(px*px + py*py + pz*pz);
-    hem::V6 Uv;
-    Uv[0]=double(a1); Uv[1]=double(m1); Uv[2]=double(m2);
-    Uv[3]=double(pmag); Uv[4]=double(U(i,j,k,UE1)); Uv[5]=double(U(i,j,k,UE2));
-
-    if (relax_mode == 2) {
-        ps_dev::ps_ptg_relax_cell(Uv, eos, double(dt), double(theta), 3);
-        U(i,j,k,UE1)=Real(Uv[4]); U(i,j,k,UE2)=Real(Uv[5]);
-    } else {   // mode 0 mechanical (alpha-adjusting) + #88 guard in the wrapper
-        if (metastable_guard != 0) {
-            const Real ke = Real(0.5)*(pmag/(m1+m2))*(pmag/(m1+m2));
-            const double rho1=double(m1/a1), rho2=double(m2/(Real(1.0)-a1));
-            const double e1=double(U(i,j,k,UE1)/m1)-double(ke);
-            const double e2=double(U(i,j,k,UE2)/m2)-double(ke);
-            if (ps_dev::ps_cell_metastable(eos, rho1,e1,rho2,e2, double(band))) return;
-        }
-        int reason = 0;
-        const bool ok = ps_dev::ps_pressure_relax_cell(Uv, eos, ps_dev::RelaxParams{}, &reason);
-        if (!ok) return;
-        U(i,j,k,UALPHA1)=Real(Uv[0]); U(i,j,k,UE1)=Real(Uv[4]); U(i,j,k,UE2)=Real(Uv[5]);
-    }
-}
 
 // -----------------------------------------------------------------
 //  ps_apply_relaxation  —  MFIter driver.  Constructs the EOS
@@ -2625,45 +2511,12 @@ ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
     // EOS-heavy: per cell runs the branch-locked PR Newton (2-3 iters × 2
     // phases).  This is the dominant physics cost of CAMR_advance.
     BL_PROFILE("PS::ps_apply_relaxation()");
-    // ---- GPU-port B2: fused device-kernel path (modes 0/2), gated. ----
-    if (ps_relax_device() != 0) {
-        const int relax_mode = ps_relax_mode();
-        if (relax_mode == 0 || relax_mode == 2) {
-            const ps_dev::EosDev eos_d;
-            const amrex::Real theta = ps_theta_tau();
-            const PsPres pres_d = ps_presence_params();   // host read, captured
-            // #88 is LEGACY-ONLY under presence (S4): the regime gate owns it.
-            const int   mguard = (pres_d.enabled != 0)
-                               ? 0 : ps_relax_metastable_guard();
-            const amrex::Real band = amrex::Real(ps_relax_metastable_band());
-            auto const& ma = S_new.arrays();
-            // ONE fused launch over ALL boxes (box_no loop is internal).
-            amrex::ParallelFor(S_new, amrex::IntVect(nghost),
-                [=] AMREX_GPU_DEVICE (int bno, int i, int j, int k) noexcept
-                {
-                    ps_relax_cell_device(ma[bno], i, j, k, eos_d, relax_mode,
-                                         dt, theta, mguard, band,
-                                         pres_d);
-                });
-            return;   // device path: host-only relax diagnostics are skipped
-        }
-        // Mode 4 (canonical chain) has NO device twin yet.  Fail LOUD rather
-        // than silently running the host MFIter loop against device-resident
-        // data (the PS_sources scaffold policy: an un-wired dial must never be
-        // mistaken for a working feature).  The twin is a composition of
-        // existing ps_dev kernels (ps_pressure_relax_cell + coexistence gate
-        // via EosDev.t_triple/t_crit + ps_iso_thermal_relax_cell_finite) --
-        // see DESIGN_ps_presence_discrete.md §12.  Priority is low (relax is
-        // 0.9%% of step cost, GPU_portability_design.md §2d) but availability
-        // must be explicit.
-        if (relax_mode == 4 || relax_mode == 5) {
-            amrex::Abort("CAMR.ps_relax_device=1 with ps_relax_mode=4/5: "
-                         "neither the canonical chain nor X3 has a device "
-                         "kernel yet; run with ps_relax_device=0 or port the "
-                         "ps_dev twin first.");
-        }
-        // mode 1 (and any other) falls through to the host MFIter path below.
-    }
+    //  (The fused device-kernel dispatch and PS_relax_device.H, 485 lines of
+    //   hand-mirrored "byte-faithful copies", were deleted 2026-08-17 (S1):
+    //   after mode 3 went the mirror covered only modes 0 and 2, neither of
+    //   them production, while X3 has no twin and the acceptance path is
+    //   CPU-only.  A GPU port starts from X3, not from a copy of the modes
+    //   it replaced.)
 
     const hem::PsPhaseAPI eos = ps_make_camr_eos_api();
 

@@ -72,13 +72,8 @@ ps_max_wave_speed_from_state(int idir, const Real U[NVAR],
 
     Real alpha_1 = ps_finite_or(U[UALPHA1], Real(1.0));
     constexpr Real alpha_floor = Real(1.0e-6);
-    if (pr.enabled) {   // S1: exact alpha; 0/1 legal (ABSENT)
-        if (alpha_1 < Real(0.0)) alpha_1 = Real(0.0);
-        if (alpha_1 > Real(1.0)) alpha_1 = Real(1.0);
-    } else {
-        if (alpha_1 < alpha_floor)              alpha_1 = alpha_floor;
-        if (alpha_1 > Real(1.0) - alpha_floor)  alpha_1 = Real(1.0) - alpha_floor;
-    }
+    if (alpha_1 < Real(0.0)) alpha_1 = Real(0.0);
+    if (alpha_1 > Real(1.0)) alpha_1 = Real(1.0);
     const Real alpha_2 = Real(1.0) - alpha_1;
 
     const Real m1 = amrex::max(ps_finite_or(U[UM1RHO1], Real(0.0)), Real(0.0));
@@ -86,24 +81,15 @@ ps_max_wave_speed_from_state(int idir, const Real U[NVAR],
     constexpr Real rho_floor = Real(1.0e-6);
     // G1: clamp into the EOS validity domain (see PS_guards.H).  Was
     // floor-only, leaving rho_k free to reach the PR hard-sphere pole.
-    const PsRegime rg1 = pr.enabled ? ps_regime(alpha_1, m1, pr) : PsRegime::Independent;
-    const PsRegime rg2 = pr.enabled ? ps_regime(alpha_2, m2, pr) : PsRegime::Independent;
+    const PsRegime rg1 = ps_regime(alpha_1, m1, pr);
+    const PsRegime rg2 = ps_regime(alpha_2, m2, pr);
     Real rho_1, rho_2;
-    if (pr.enabled) {   // S1: never divide for an ABSENT phase
-        rho_1 = (rg1 == PsRegime::Absent) ? rho
-              : ps_guard::clamp_phase_density(m1 / amrex::max(alpha_1, Real(1.0e-300)),
-                                              EOS::rho_min(), EOS::rho_max());
-        rho_2 = (rg2 == PsRegime::Absent) ? rho
-              : ps_guard::clamp_phase_density(m2 / amrex::max(alpha_2, Real(1.0e-300)),
-                                              EOS::rho_min(), EOS::rho_max());
-    } else {
-        rho_1 = ps_guard::clamp_phase_density(
-                     (m1 > Real(0.0)) ? m1 / alpha_1 : rho_floor,
-                     EOS::rho_min(), EOS::rho_max());
-        rho_2 = ps_guard::clamp_phase_density(
-                     (m2 > Real(0.0)) ? m2 / alpha_2 : rho_floor,
-                     EOS::rho_min(), EOS::rho_max());
-    }
+    rho_1 = (rg1 == PsRegime::Absent) ? rho
+          : ps_guard::clamp_phase_density(m1 / amrex::max(alpha_1, Real(1.0e-300)),
+                                          EOS::rho_min(), EOS::rho_max());
+    rho_2 = (rg2 == PsRegime::Absent) ? rho
+          : ps_guard::clamp_phase_density(m2 / amrex::max(alpha_2, Real(1.0e-300)),
+                                          EOS::rho_min(), EOS::rho_max());
 
     const Real ke_spec = Real(0.5) * (ux*ux + uy*uy + uz*uz);
     const Real E1_tot = ps_finite_or(U[UE1], Real(0.0));
@@ -120,23 +106,18 @@ ps_max_wave_speed_from_state(int idir, const Real U[NVAR],
     // P-then-c pair, which the host EOS cache deduped but the device did not.
     // Byte-identical result; device-clean 2->1 solves.
     Real P1, P2, c1, c2;
-    if (pr.enabled) {
-        // S1: host (larger alpha) always queried on its own branch; a
-        // corridor/absent phase takes the host's c (continuous — the A3
-        // c = 1 m/s discontinuity cannot occur on this path).
-        const bool host_is_1 = (alpha_1 >= alpha_2);
-        if (host_is_1) {
-            EOS::REY2PCs_liquid(rho_1, e1, Y, P1, c1);
-            if (rg2 == PsRegime::Independent) { EOS::REY2PCs_vapor(rho_2, e2, Y, P2, c2); }
-            else                              { P2 = P1; c2 = c1; }
-        } else {
-            EOS::REY2PCs_vapor(rho_2, e2, Y, P2, c2);
-            if (rg1 == PsRegime::Independent) { EOS::REY2PCs_liquid(rho_1, e1, Y, P1, c1); }
-            else                              { P1 = P2; c1 = c2; }
-        }
-    } else {
+    // S1: host (larger alpha) always queried on its own branch; a
+    // corridor/absent phase takes the host's c (continuous — the A3
+    // c = 1 m/s discontinuity cannot occur on this path).
+    const bool host_is_1 = (alpha_1 >= alpha_2);
+    if (host_is_1) {
         EOS::REY2PCs_liquid(rho_1, e1, Y, P1, c1);
-        EOS::REY2PCs_vapor (rho_2, e2, Y, P2, c2);
+        if (rg2 == PsRegime::Independent) { EOS::REY2PCs_vapor(rho_2, e2, Y, P2, c2); }
+        else                              { P2 = P1; c2 = c1; }
+    } else {
+        EOS::REY2PCs_vapor(rho_2, e2, Y, P2, c2);
+        if (rg1 == PsRegime::Independent) { EOS::REY2PCs_liquid(rho_1, e1, Y, P1, c1); }
+        else                              { P1 = P2; c1 = c2; }
     }
     // SINGLE-SOURCE floor (see PS_guards.H) -- was a fourth copy.
     //
@@ -158,20 +139,14 @@ ps_max_wave_speed_from_state(int idir, const Real U[NVAR],
     if (!std::isfinite(c2) || c2 <= Real(0.0)) c2 = Real(1.0);
 
     Real c2_frozen;
-    if (pr.enabled) {
-        // S1: the CORRECT Wallis form (task #199 — this copy was one of the
-        // three still carrying the erroneous extra alpha factor, feeding dt).
-        // Mass fractions from the conserved masses directly: exact for
-        // ABSENT (m = 0), well-conditioned everywhere else.
-        const Real Y1 = m1 / rho;
-        const Real Y2 = Real(1.0) - Y1;
-        c2_frozen = ps_cmix2(pr.cmix_model, Y1, Y2, c1, c2,
-                             alpha_1, alpha_2, rho_1, rho_2, rho);
-    } else {
-        const Real Y1 = alpha_1 * rho_1 / rho;
-        const Real Y2 = alpha_2 * rho_2 / rho;
-        c2_frozen = alpha_1 * Y1 * c1 * c1 + alpha_2 * Y2 * c2 * c2;
-    }
+    // S1: the CORRECT Wallis form (task #199 — this copy was one of the
+    // three still carrying the erroneous extra alpha factor, feeding dt).
+    // Mass fractions from the conserved masses directly: exact for
+    // ABSENT (m = 0), well-conditioned everywhere else.
+    const Real Y1 = m1 / rho;
+    const Real Y2 = Real(1.0) - Y1;
+    c2_frozen = ps_cmix2(pr.cmix_model, Y1, Y2, c1, c2,
+                         alpha_1, alpha_2, rho_1, rho_2, rho);
     const Real c_mix = (c2_frozen > Real(0.0)) ? std::sqrt(c2_frozen)
                                                 : amrex::max(c1, c2);
     return std::abs(un) + c_mix;

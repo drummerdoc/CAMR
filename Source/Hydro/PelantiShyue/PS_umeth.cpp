@@ -162,13 +162,8 @@ ps_physical_flux(int i, int j, int k,
     Real alpha_1 = ps_finite_or(q(i,j,k, QALPHA1), Real(1.0));
     // Clamp α₁ into [α_floor, 1−α_floor] so α₂ = 1−α₁ is also positive.
     constexpr Real alpha_floor = Real(1.0e-6);
-    if (pr.enabled) {   // S2 presence: exact alpha (QALPHA1 already exact)
-        if (alpha_1 < Real(0.0)) alpha_1 = Real(0.0);
-        if (alpha_1 > Real(1.0)) alpha_1 = Real(1.0);
-    } else {
-        if (alpha_1 < alpha_floor)              alpha_1 = alpha_floor;
-        if (alpha_1 > Real(1.0) - alpha_floor)  alpha_1 = Real(1.0) - alpha_floor;
-    }
+    if (alpha_1 < Real(0.0)) alpha_1 = Real(0.0);
+    if (alpha_1 > Real(1.0)) alpha_1 = Real(1.0);
     const Real alpha_2 = Real(1.0) - alpha_1;
     const Real P1      = amrex::max(ps_finite_or(q(i,j,k, QP1), P_mix), Real(1.0));
     const Real P2      = amrex::max(ps_finite_or(q(i,j,k, QP2), P_mix), Real(1.0));
@@ -245,13 +240,8 @@ ps_max_wave_speed(int i, int j, int k,
     const Real rho_mix = amrex::max(ps_finite_or(U(i,j,k, URHO), Real(1.0)), Real(1.0e-6));
     Real alpha_1 = ps_finite_or(q(i,j,k, QALPHA1), Real(1.0));
     constexpr Real alpha_floor = Real(1.0e-6);
-    if (pr.enabled) {   // S2 presence: exact alpha
-        if (alpha_1 < Real(0.0)) alpha_1 = Real(0.0);
-        if (alpha_1 > Real(1.0)) alpha_1 = Real(1.0);
-    } else {
-        if (alpha_1 < alpha_floor)              alpha_1 = alpha_floor;
-        if (alpha_1 > Real(1.0) - alpha_floor)  alpha_1 = Real(1.0) - alpha_floor;
-    }
+    if (alpha_1 < Real(0.0)) alpha_1 = Real(0.0);
+    if (alpha_1 > Real(1.0)) alpha_1 = Real(1.0);
     const Real alpha_2 = Real(1.0) - alpha_1;
     const Real rho_1   = amrex::max(ps_finite_or(q(i,j,k, QRHO1), Real(1.0)), Real(1.0e-6));
     const Real rho_2   = amrex::max(ps_finite_or(q(i,j,k, QRHO2), Real(1.0)), Real(1.0e-6));
@@ -304,20 +294,13 @@ ps_max_wave_speed(int i, int j, int k,
     Real c_mix;
     if (rho_mix > Real(1.0e-30)) {
         Real c2_frozen;
-        if (pr.enabled) {
-            // S2: correct Wallis form (task #199; this was the second of the
-            // three remaining wrong copies -- extra alpha factor removed in
-            // the presence branch only, so ungated dt is untouched).
-            const Real Y1 = alpha_1 * rho_1_safe / rho_mix;
-            const Real Y2 = Real(1.0) - Y1;
-            c2_frozen = ps_cmix2(pr.cmix_model, Y1, Y2, c1, c2,
-                                 alpha_1, alpha_2, rho_1, rho_2, rho_mix);
-        } else {
-            const Real Y1 = alpha_1 * rho_1_safe / rho_mix;
-            const Real Y2 = alpha_2 * rho_2_safe / rho_mix;
-            c2_frozen = alpha_1 * Y1 * c1 * c1
-                      + alpha_2 * Y2 * c2 * c2;
-        }
+        // S2: correct Wallis form (task #199; this was the second of the
+        // three remaining wrong copies -- extra alpha factor removed in
+        // the presence branch only, so ungated dt is untouched).
+        const Real Y1 = alpha_1 * rho_1_safe / rho_mix;
+        const Real Y2 = Real(1.0) - Y1;
+        c2_frozen = ps_cmix2(pr.cmix_model, Y1, Y2, c1, c2,
+                             alpha_1, alpha_2, rho_1, rho_2, rho_mix);
         c_mix = (c2_frozen > Real(0.0)) ? std::sqrt(c2_frozen)
                                         : amrex::max(c1, c2);
     } else {
@@ -376,13 +359,8 @@ ps_physical_flux_from_state(int idir, const Real U[NVAR], Real F[NVAR],
     // Derive per-phase primitives.
     Real alpha_1 = ps_finite_or(U[UALPHA1], Real(1.0));
     constexpr Real alpha_floor = Real(1.0e-6);
-    if (pr.enabled) {   // S1: exact alpha; 0/1 legal (ABSENT)
-        if (alpha_1 < Real(0.0)) alpha_1 = Real(0.0);
-        if (alpha_1 > Real(1.0)) alpha_1 = Real(1.0);
-    } else {
-        if (alpha_1 < alpha_floor)              alpha_1 = alpha_floor;
-        if (alpha_1 > Real(1.0) - alpha_floor)  alpha_1 = Real(1.0) - alpha_floor;
-    }
+    if (alpha_1 < Real(0.0)) alpha_1 = Real(0.0);
+    if (alpha_1 > Real(1.0)) alpha_1 = Real(1.0);
     const Real alpha_2 = Real(1.0) - alpha_1;
 
     const Real m1 = amrex::max(ps_finite_or(U[UM1RHO1], Real(0.0)), Real(0.0));
@@ -1701,32 +1679,30 @@ PS_umeth(const Box& bx,
                 //  instead of being asserted once here.  Kept as the assignment
                 //  (not deleted) so the unlimited and legacy paths, which do NOT
                 //  get scalar limiting, still behave exactly as before.
-                if (l_pres.enabled != 0) {
 #if !defined(AMREX_USE_GPU)
-                    {
-                        const Real dR = Ft[URHO]  - (Ft[UM1RHO1] + Ft[UM2RHO2]);
-                        const Real dE = Ft[UEDEN] - (Ft[UE1] + Ft[UE2]);
-                        const Real sR = std::abs(Ft[URHO])  + std::abs(Ft[UM1RHO1])
-                                      + std::abs(Ft[UM2RHO2]);
-                        const Real sE = std::abs(Ft[UEDEN]) + std::abs(Ft[UE1])
-                                      + std::abs(Ft[UE2]);
-                        if (sR > Real(0.0)) {
-                            const double q = std::abs(double(dR)) / double(sR);
-                            if (q > PS_HLLC::face_diag::max_w21_mass()) {
-                                PS_HLLC::face_diag::max_w21_mass() = q;
-                            }
-                        }
-                        if (sE > Real(0.0)) {
-                            const double q = std::abs(double(dE)) / double(sE);
-                            if (q > PS_HLLC::face_diag::max_w21_energy()) {
-                                PS_HLLC::face_diag::max_w21_energy() = q;
-                            }
+                {
+                    const Real dR = Ft[URHO]  - (Ft[UM1RHO1] + Ft[UM2RHO2]);
+                    const Real dE = Ft[UEDEN] - (Ft[UE1] + Ft[UE2]);
+                    const Real sR = std::abs(Ft[URHO])  + std::abs(Ft[UM1RHO1])
+                                  + std::abs(Ft[UM2RHO2]);
+                    const Real sE = std::abs(Ft[UEDEN]) + std::abs(Ft[UE1])
+                                  + std::abs(Ft[UE2]);
+                    if (sR > Real(0.0)) {
+                        const double q = std::abs(double(dR)) / double(sR);
+                        if (q > PS_HLLC::face_diag::max_w21_mass()) {
+                            PS_HLLC::face_diag::max_w21_mass() = q;
                         }
                     }
-#endif
-                    Ft[URHO]  = Ft[UM1RHO1] + Ft[UM2RHO2];
-                    Ft[UEDEN] = Ft[UE1] + Ft[UE2];
+                    if (sE > Real(0.0)) {
+                        const double q = std::abs(double(dE)) / double(sE);
+                        if (q > PS_HLLC::face_diag::max_w21_energy()) {
+                            PS_HLLC::face_diag::max_w21_energy() = q;
+                        }
+                    }
                 }
+#endif
+                Ft[URHO]  = Ft[UM1RHO1] + Ft[UM2RHO2];
+                Ft[UEDEN] = Ft[UE1] + Ft[UE2];
                 // Conserved slots: add F̃ to the recovered flux.
                 for (int n = 0; n < NVAR; ++n) {
                     if (n==UTEMP || n==UALPHA1 || n==UE1 || n==UE2) continue;

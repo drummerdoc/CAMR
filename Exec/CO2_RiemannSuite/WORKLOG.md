@@ -5827,3 +5827,89 @@ DOCUMENTATION, by the three-way rule stated in the predictions:
 
 Both parked files are in Exec/CO2_RiemannSuite/_to_delete_session/ because
 the device bridge cannot unlink.
+
+## 2026-08-17 — SIMPLIFICATION S1-S5 (Marc's list).  PREDICTIONS FIRST.
+
+S1 DELETE THE DEVICE MIRROR.  PS_relax_device.H is 485 lines of
+hand-maintained "byte-faithful copies" of relaxation kernels (STATUS 6.6:
+"drift-prone by construction").  After Tier 2 it mirrors modes 0 and 2 —
+neither is production; X3 has no twin and aborts loudly under
+ps_relax_device=1; the acceptance path is CPU-only.  Goes with it: the
+include, ps_relax_device(), ps_relax_cell_device, the fused-launch dispatch
+block, the ps_dev_relax_bitmatch_test and its dial, and the metastable
+guard dials whose last consumer was the device mode-0 guard.
+
+S2 ONE DIAL, ONE READ (targeted, not a rewrite).  36 ParmParse sites in
+PS_relaxation.H and 17 in PS_sources.H are mostly fine — each is a
+read-once function-local static.  The BUG CLASS is a dial read in TWO
+places with TWO defaults, which is exactly what applied the split MT
+source on top of X3 this morning.  So: find every dial read in more than
+one translation site and route them through the single accessor.
+
+S3 RETIRE MEASURED-DEAD DIALS.  ps_theta_model (HRM on theta: measured
+wrong mapping, B9 aborts, "DO NOT RE-TRY") with ps_hrm_theta; the HRM arm
+of ps_mt_tau_model (same correlation, measured redundant by construction —
+eight orders of tau, answers unchanged; the ASY1 arm STAYS, it is derived
+physics); ps_cmix_model (measured 3 % on B11 and its Wood option ABORTS
+B9 — keep the frozen form, drop the selector); plus any read left orphan
+by today's deletions.  ps_theta_tau STAYS (it is the thermal rate);
+ps_mt_tau STAYS (mode 4's, and mode 4 lives until Sigma);
+ps_pk_energy_flux STAYS — it is a real #85 feature and NOT measured dead.
+
+S4 HARNESS CONSOLIDATION.  13 scripts, 2,459 lines, ~5 re-implementing the
+same run loop (two of them written by this session).  Extract the
+plotfile reader into a module so the RETIRED run_ac_suite.py can actually
+leave, and fold _probe_suite.py and _alldef_suite.py back into
+exact_suite.py as env-selected modes.
+
+S5 PsPres::enabled IS HARD-CODED 1 with ~24 always-true tests branching on
+it across six files.  Remove the field and the branches.
+
+PREDICTIONS, one per batch and the same shape: the 20-case battery is
+BIT-IDENTICAL, all 22 rows, after EACH of S1, S3, S5 and S2, and after S4
+the acceptance table is bit-identical when produced by the consolidated
+harness.  FALSIFIER in every case: any digit moves — the thing removed was
+not inert, and it comes back with an entry naming what reached it.
+Corollary prediction: the compiler names the closure, as it did three
+times today (T1-b's chain root, T1-c's rf types, Tier 2's counter).
+
+**S1 + S5 RESULTS (2026-08-17): both land.  21 of 22 rows bit-identical,
+and the 22nd is a MEASURED code-generation artifact, not a regression.**
+
+S1 DEVICE MIRROR GONE: PS_relax_device.H (485 lines) deleted and parked,
+plus ps_relax_cell_device (58), the fused-launch dispatch (39),
+ps_relax_device(), the ps_relax_metastable_guard/_band accessors (33) whose
+last consumer it was, ps_dev_relax_bitmatch_test (92) and its dial, and the
+include in PS_zerod_test.H — which the compiler named, as usual.  A GPU
+port now starts from X3 rather than from a hand copy of the modes X3
+replaced.
+
+S5 PRESENCE FLAG GONE: 24 always-true `.enabled` tests folded, 20 blocks
+inlined and **18 dead LEGACY else-branches deleted** across PS_ctoprim.H,
+PS_hllc.H, PS_wavespeed.H, PS_nscbc.H, PS_umeth.cpp and PS_relaxation.H.
+Those else-branches were the pre-presence floor/clamp paths that
+PS_presence.H's own header already declared deleted; they had been
+unreachable since S4 landed.  Method note: two intermediate attempts
+produced `if (true) {` (a smell, not a simplification) and then orphaned
+`else` clauses when the brace walk stopped at `} else {`; both were caught
+by the compiler and reverted via `git show HEAD:<path> > <path>`, and the
+third attempt handles the if/else form explicitly.
+
+**THE ONE MOVED ROW, and what it actually means.**  B3-Sat-LV-contact's
+u-error read 3.16e-11 before and 3.139e-11 after.  B3 is a STATIONARY
+contact: its exact velocity field is identically zero (checked in the
+reference CSV), so that column is an ABSOLUTE rms norm on pure cancellation
+noise, which the harness itself flags with an `a`.  MEASURED, not argued:
+rebuilding the SAME source with only `XTRA_CXXFLAGS=-ffp-contract=off`
+moves the same number to 2.969e-11 — a LARGER move than the source edit
+caused — while A1, C1, B1 and B4 stay identical to every printed digit.
+That digit is therefore a function of FMA formation, i.e. of code
+generation, and it cannot serve as a regression detector.
+
+CONSEQUENCE for the acceptance basis, worth carrying forward: a
+bit-identity check over the printed table is the right instrument for every
+row EXCEPT B3's u column, which needs a tolerance (or should print as "0,
+absolute, round-off").  Every other case has a nonzero exact velocity, and
+none of them moved — which is exactly the pattern a semantics-preserving
+change should produce, and the reason this is recorded as a PASS with a
+named exception rather than a silent one.

@@ -190,8 +190,7 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                 // nucleator only; a both-independent cell is MT/relaxation
                 // territory (mid-range: no flash).  Legacy: kernel's own
                 // 0.9/0.1 dominance gate applies unchanged.
-                if (l_pr.enabled != 0 &&
-                    ps_regime(a1, m1, l_pr) == PsRegime::Independent &&
+                if (ps_regime(a1, m1, l_pr) == PsRegime::Independent &&
                     ps_regime(amrex::Real(1.0) - a1, m2, l_pr) == PsRegime::Independent) {
                     return;
                 }
@@ -407,8 +406,7 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                 // cells have nothing to transfer.  The kernel's own legacy
                 // cuts (alpha_mt_thr 5e-3 etc.) are then automatically
                 // satisfied (alpha_cond = 1e-2 > 5e-3) and inert.
-                if (l_pr.enabled != 0 &&
-                    !(ps_regime(a1, m1, l_pr) == PsRegime::Independent &&
+                if (!(ps_regime(a1, m1, l_pr) == PsRegime::Independent &&
                       ps_regime(amrex::Real(1.0) - a1, m2, l_pr) == PsRegime::Independent)) {
                     return;
                 }
