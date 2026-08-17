@@ -5091,3 +5091,52 @@ suite/exact_riemann.py is NO phase change -- the expansion rides the
 metastable single-phase branch, with c floored at sqrt(2500) m/s past the
 spinodal (mirrors CAMR Fix1).  Marc's reading is exactly right: a cell
 that starts as vapour stays vapour however deep into the dome it drifts.
+
+## 2026-08-17 — G-DEF follow-up 3: theta = 0 means THREE different things
+## in this code, and the mechanical channel has a stale instrument.
+
+THE DOCUMENTED CONVENTION (PS_relaxation.H, unchanged since task #77):
+"Cached CAMR.ps_theta_tau (thermal relaxation time [s], default 0 =
+instantaneous)".  Modes 2/3 implement exactly that -- frac_E =
+-expm1(-dt/theta) for theta > 0, else 1.0, i.e. theta <= 0 jumps straight
+to T1 = T2 -- and mode 4's thermal leg carries the same comment
+("theta<=0 -> instantaneous").  theta = 0 is the STIFF limit, not "off".
+theta -> inf is "off" (mode 4's own doc: "theta->inf reproduces mode 0").
+
+WHAT MARC ASSUMED: theta = 0 is a switch computationally equivalent to
+theta = 1e30, i.e. thermal off.  That is the OPPOSITE end of the same
+dial, and it is not what any mode implements.
+
+WHAT MODE 5 DOES: neither.  MEASURED, B5-Both-2P, N=64:
+    mode 4, theta = 0     ->  .0414/.1568/.0179   (fully active)
+    mode 4, theta = 1e-7  ->  .0414/.1568/.0179   (identical: 1e-7 is
+                              already instantaneous at this dt)
+    mode 5, theta = 1e-7  ->  .0446/.1762/.0199
+    mode 5, theta = 0     ->  .0803/.4028/.0529   (frozen: no-op)
+So the same dial value drives the STRONGEST possible thermal coupling at
+mode 4 and NOTHING AT ALL at mode 5 -- and at mode 5 it also silently
+takes the mass-transfer channel down with it (previous entry: zero
+transferring cells versus 86 sweeps at theta = 1e30).  X3 regressed a
+behaviour the chain had.
+
+MECHANISM, restated exactly: X3's rate function computes
+rT = (T1-T2)/(theta*inv).  At theta = 0 that is non-finite, rates()
+returns false, be_once() returns rc = 2 ("structurally dead entry"), the
+sub-step loop breaks on its FIRST attempt, ok = false, and the kernel
+writes back the projected entry state.  The wrapper
+(ps_x3_grid_relax_cell) then DISCARDS the kernel's bool return entirely
+-- so a whole-battery no-op is invisible: no abort, no counter, no
+report.  That is the D10 discipline's blind spot, not just a dial's.
+
+SECOND FINDING, mechanical instrumentation: the [ps_prdiag] report
+(hem::ps_pr_stats) instruments ps_iso_pressure_relax_cell -- the
+ISOCHORIC pressure variant, used only by modes 1/2.  The projection X3
+and mode 4 actually use is ps_pressure_relax_cell (the ALPHA-ADJUSTING
+one), which increments only a bare ps_pressure_relax_count() and has NO
+cause taxonomy wired to any report, even though it already computes an
+out_reason (PSR_BAD_EOS / PSR_SLOPE / PSR_MAXITER) that X3 passes as
+nullptr.  MEASURED: at mode 5 with ps_prdiag=1, B2 prints 103 sweeps of
+all-zero [ps_prdiag] lines -- a live instrument pointed at a dead path.
+We therefore do NOT currently know how often the constraint fails on the
+production path.  That measurement is a prerequisite for any decision to
+enforce P1 = P2 structurally.
