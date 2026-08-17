@@ -152,7 +152,8 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                 const amrex::Real m2 = U(i,j,k, UM2RHO2);
                 if (!std::isfinite(a1)) { return; }
                 //  FLASH-FROM-ABSENT (F0; CAMR.ps_flash_from_absent,
-                //  default 0 = previous behaviour).  The old m<=0 early-out
+                //  DEFAULT 1 since 2026-08-17, WORKLOG G-DEF; set 0 for the
+                //  previous behaviour).  The old m<=0 early-out
                 //  excluded every genuinely single-phase cell -- exactly the
                 //  population the nucleator exists for -- so the flash fired
                 //  ZERO times in the whole acceptance battery (WORKLOG
@@ -161,7 +162,7 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                 //  (which constructs the newborn via the saturation
                 //  projection); both-absent stays excluded.
                 static const int fl_abs = []() -> int {
-                    int v = 0; amrex::ParmParse pp("CAMR");
+                    int v = 1; amrex::ParmParse pp("CAMR");
                     pp.query("ps_flash_from_absent", v); return v; }();
                 const bool one_absent = (fl_abs != 0) &&
                     ((m1 > amrex::Real(0.0)) != (m2 > amrex::Real(0.0)));
@@ -306,10 +307,14 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
     //  transfer inside the relaxation stage; running this split MT source
     //  too would apply the operator twice per step.  The flash block above
     //  stays — nucleation is the upstream birth channel in both modes.
-    static const int mt_relax_mode = []() -> int {
-        int v = 0; amrex::ParmParse pp("CAMR");
-        pp.query("ps_relax_mode", v); return v; }();
-    if (dials.mt_tau > amrex::Real(0.0) && mt_relax_mode != 5) {
+    //  ONE read of the dial: ps_relax_mode() (PS_relaxation.H), not a local
+    //  copy.  MEASURED 2026-08-17 (WORKLOG G-DEF): with the code default
+    //  flipped to 5 in the accessor only, the local copy here still
+    //  defaulted to 0, so this split MT source ran ON TOP of X3 -- the
+    //  operator applied twice per step, and B2/B7/B9 aborted with
+    //  [PS-EOS] NO ROOT while B5/B11 drifted.  The four-way-copy lesson,
+    //  paid for a second time.
+    if (dials.mt_tau > amrex::Real(0.0) && ps_relax_mode() != 5) {
         // EOS-heavy: per-phase Gibbs g = h - T*s (EOS) drives finite-rate MT.
         BL_PROFILE_VAR("PS::ps_source_masstransfer()", ps_src_mt);
         const amrex::Real tau  = dials.mt_tau;

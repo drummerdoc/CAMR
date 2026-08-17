@@ -1220,8 +1220,8 @@ ps_pmech_finite_relax_cell(int i, int j, int k,
 }
 
 
-// Cached CAMR.ps_relax_mode: 0 = mechanical pressure relaxation (default,
-// historical); 1 = P+T equilibrium (ps_pt_equilibrium_relax_cell above);
+// Cached CAMR.ps_relax_mode: 0 = mechanical pressure relaxation
+// (historical; the default until 2026-08-17); 1 = P+T equilibrium (ps_pt_equilibrium_relax_cell above);
 // 2 = P + finite-rate thermal relaxation (task #77): mechanical/isochoric
 // pressure equilibrium each step + thermal relaxation toward T1=T2 at the
 // physical rate 1/ps_theta_tau.  theta->0 reproduces mode 1; theta->inf
@@ -1249,8 +1249,12 @@ inline int ps_mech_kernel()
 
 inline int ps_relax_mode()
 {
+    //  DEFAULT 5 since 2026-08-17 (WORKLOG G-DEF, Marc's call): X3 is the
+    //  acceptance configuration, so it is the default rather than a setting
+    //  the harness re-states.  Mode 0 (mechanical only, the historical
+    //  default) must now be asked for explicitly.
     static const int m = []() -> int {
-        int v = 0;
+        int v = 5;
         amrex::ParmParse pp("CAMR");
         pp.query("ps_relax_mode", v);
         return v;

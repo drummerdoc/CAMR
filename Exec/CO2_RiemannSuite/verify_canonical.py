@@ -162,9 +162,14 @@ check('B4 flat across tau', abs(u_errs[1e-4] - u_errs[1e-7]) < 0.01,
 
 # ---------------------------------------------------------------- check 3
 print('== 3. B9 canonical value / stale-binary detector ==')
+#  ps_flash_from_absent pinned 0: stale-binary detector, minted pre-nucleator
+#  (WORKLOG G-DEF) -- pin the birth channel wherever the mode is pinned.
+#  MEASURED: the 1.000 reading pre-dates the default flip (same value on the
+#  pre-flip binary); mode-4 B9 aborts.  STATUS 7.8 re-baseline item, open.
 m = run_case('B9-Deep-Expansion',
              {'CAMR.ps_relax_mode': 4, 'CAMR.ps_theta_tau': 1e-7,
-              'CAMR.ps_mt_tau': 1e-7, 'CAMR.ps_flash_tau': 1e-7},
+              'CAMR.ps_mt_tau': 1e-7, 'CAMR.ps_flash_tau': 1e-7,
+              'CAMR.ps_flash_from_absent': 0},
              'vc4_B9_')
 u9 = l2(m, load_hem_analytic('B9'))['u'] if m else float('nan')
 if 0.80 < u9 < 0.90:
@@ -231,9 +236,16 @@ else:
     e = l2(m, load_frozen_analytic('B4-Cross-critical'))
     check('S3 frozen B4 zero-trace u-err ~0.131',
           abs(e['u'] - 0.131) < 0.02, f"got {e['u']:.3f}")
+#  ps_flash_from_absent pinned 0 (WORKLOG G-DEF, 2026-08-17): a check that
+#  pins its mode must pin its birth channel too, or the nucleator default
+#  silently enters a reference minted in the pre-nucleator world.  This pin
+#  is hygiene, NOT a fix -- MEASURED: this check reads 1.000 on the pre-flip
+#  binary as well, i.e. it fails because mode-4 B9 aborts (the abort mode 5
+#  retired), not because of the nucleator.  STATUS 7.8's stale-check item.
 m = run_case('B9-Deep-Expansion',
              {'CAMR.ps_relax_mode': 4, 'CAMR.ps_theta_tau': 1e-7,
               'CAMR.ps_mt_tau': 1e-7, 'CAMR.ps_flash_tau': 1e-7,
+              'CAMR.ps_flash_from_absent': 0,
               'CAMR.ps_presence': 1, 'prob.alpha_trace': 0.0},
              'vz_B9c_')
 if m is None:

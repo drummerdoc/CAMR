@@ -26,11 +26,12 @@ def run(case, extra=None, pref=None, max_step=None):
         'CAMR.cfl':0.25,'CAMR.do_mol':0,'stop_time':tf,
         'CAMR.ps_flux':'wp','CAMR.ps_wp_order':2,'CAMR.ps_recon':1}
     if case in TWOPHASE:
-        #  mode 5 (X3) canonical since 2026-08-17 — mirrors exact_suite.py.
-        ov.update({'CAMR.ps_do_relax':1,'CAMR.ps_relax_mode':5,
+        #  mode 5 (X3) + flash-from-absent are CODE DEFAULTS since
+        #  2026-08-17 (WORKLOG G-DEF) — not re-stated here, so an A/B that
+        #  wants mode 4 must pass it explicitly on the command line.
+        ov.update({'CAMR.ps_do_relax':1,
                    'CAMR.ps_theta_tau':1e-7,'CAMR.ps_mt_tau':1e-7,
-                   'CAMR.ps_flash_tau':1e-7,
-                   'CAMR.ps_flash_from_absent':1})
+                   'CAMR.ps_flash_tau':1e-7})
     else:
         ov.update({'CAMR.ps_do_relax':0})
     ov.update(F.camr_side(c[1],'L')); ov.update(F.camr_side(c[2],'R'))

@@ -4861,3 +4861,125 @@ cases; Y4 is history.  Expected table = the F5 FA-on numbers verbatim
 (8 cases bit-identical, B2/B9/B7 the measured improvements); spot-check
 B2/B9/B7 with FROZEN rows after commit.  HANDOFF_2026-08-17.md written
 as the successor to REVIEW_HANDOFF.md.
+
+## 2026-08-17 — G-DEF: the code defaults become the acceptance
+## configuration.  PREDICTIONS FIRST.
+
+CONTEXT.  The F4 close-out and the FA flip were recorded as "defaults",
+but they were carried by the acceptance harnesses ONLY: exact_suite.py
+and _stage2.py both pass CAMR.ps_relax_mode=5 and
+CAMR.ps_flash_from_absent=1 on the command line, while the ParmParse
+defaults stayed at ps_relax_mode=0 (mechanical) and
+ps_flash_from_absent=0.  Every recorded number was therefore taken at
+mode 5 + FA regardless of the code defaults, and a fresh run of the
+committed tree reproduces the HANDOFF §3 table to the digit (A1-A6 /
+C1-C3 identical to _x3_baseline.log; B2 .0929/.7816/.1511, B9
+.1125/.7565/.1437, B7 .1654/.7099/.3211; both FROZEN rows printing; no
+aborts).  What did NOT hold is reproducibility by reading: a bare
+`inputs` run gets mechanical-only relaxation and no nucleator, and 27
+non-battery PS inputs never name the mode.
+
+DECISION (Marc, 2026-08-17): if the manual overrides produce the
+superior 1-D results, the DEFAULTS are those settings, and the scripts
+rely on the defaults instead of re-stating them.  Golden recordings
+inconsistent with the new defaults are regenerated, and the scripts
+that mint them follow the defaults.
+
+CHANGE.  ps_relax_mode default 0 -> 5 (PS_relaxation.H);
+ps_flash_from_absent default 0 -> 1 (PS_sources.H and
+hem_pelanti_shyue.H — two independent statics, both flipped; the
+duplicated read stays on the record as a smell).  exact_suite.py and
+_stage2.py drop the two now-redundant overrides.  ps_do_relax stays
+explicit (0 for A/C) because it is a case property, not a default.
+
+PREDICTIONS:
+  G1 The 20-case battery is IDENTICAL to today's verified table, both
+     after the code flip (harness overrides still present) and after
+     the overrides are stripped — each step is a no-op on the battery
+     by construction.  FALSIFIER: any digit moves; then the harness was
+     carrying more than these two dials and the strip is wrong.
+  G2 A1-A6 / C1-C3 unchanged, relax off through ps_do_relax=0; D22
+     headline invariant.  FALSIFIER: any motion — that is a hydro
+     regression and it aborts the flip.
+  G3 The bare `inputs` run (256 cells, defaults only) CHANGES: X3 with
+     thermal + MT and a live nucleator instead of mechanical-only, and
+     it must still COMPLETE (rc=0) with vapour in physical range.
+     Direction registered, magnitude not.  FALSIFIER: abort, or a
+     nonphysical T2 — then the flip is not free at defaults and the
+     affected inputs get pinned at ps_relax_mode=0.
+  G4 The 27 non-battery PS inputs that never name the mode (all of
+     CO2_XC2D, CO2_ADV2D, CO2_B4, CO2_TBlowdown, most of
+     CO2_PipeBreak, and CO2_RiemannSuite/inputs) inherit the new
+     physics.  Only the 1-D ones are measured here; the 2-D cases stay
+     deferred per policy and are FLAGGED, not verified, by this entry.
+  G5 ps_x3_test=1 still passes: route- and basin-independent fixed
+     point, equal to the HEM flash.
+
+BUILD NOTE: the existing tmp_build_dir's dependency files name a
+previous session's mount prefix, so this is a from-scratch 126-object
+build in a fresh TMP_BUILD_DIR.  The pre-flip binary is preserved as
+_preflip_CAMR1d.PS.PR.ex and the pre-flip bare-inputs final plotfile as
+_preflip_inputs_plt00410, for the G3 A/B.
+
+**G-DEF RESULTS (2026-08-17): flip landed, but the falsifier fired first
+and caught a real defect; G3 refuted; G1/G2/G5 pass.**
+
+G1a PASS (the code flip alone, harness overrides still present): the
+20-case table is BIT-IDENTICAL, checked by diff against the same battery
+run with the preserved pre-flip binary (_preflip_CAMR1d.PS.PR.ex), all
+22 rows including both FROZEN rows.
+
+G1b FIRST RUN: **FALSIFIER FIRED.**  With the two overrides stripped from
+exact_suite.py / _stage2.py, B2 / B7 / B9 aborted with `[PS-EOS] NO ROOT
+-- this (rho,e) is not a state`, B5 moved .0446/.1762/.0199 ->
+.0413/.1548/.0177 and B11 .0805/.0278/.0927 -> .0771/.0419/.1731.
+
+CAUSE, located and fixed: PS_sources.H carried its OWN static read of
+CAMR.ps_relax_mode with its own default 0 (the gate that disables the
+split MT source at mode 5), independent of the ps_relax_mode() accessor
+in PS_relaxation.H.  Flipping the accessor's default alone therefore left
+the relaxation stage running X3 while the source stage still believed
+mode != 5 and applied the SPLIT mass-transfer source on top -- the MT
+operator applied TWICE per step.  With the overrides present the two
+reads agreed (both saw 5 from the command line), which is exactly why
+this was invisible until the harness stopped re-stating the dial.  The
+duplicated read was flagged as a smell in the pre-commit survey; it is
+now a measured defect, the four-way-copy lesson paid for a second time.
+FIX: PS_sources.H calls ps_relax_mode() -- one dial, one read.
+
+G1b AFTER THE FIX: **PASS.**  Defaults-only harness reproduces all 22
+rows bit-identically (run in four chunks; the device shell caps at 45 s).
+G2 PASS: A1-A6 / C1-C3 identical to all digits, D22 headline invariant.
+G5 PASS: ps_x3_test = 0 failing states, route- and basin-independent.
+
+G3 **REFUTED** (prediction was that the bare `inputs` run changes): it is
+BIT-IDENTICAL pre- and post-flip in every field (pressure, x_velocity,
+Temp, alpha_1, alpha1_rho1, alpha2_rho2; 4 two-phase cells both sides;
+T2 in 266-354 K), and identical again after the PS_sources fix.  MECHANISM:
+ps_theta_tau, ps_mt_tau and ps_flash_tau all default to 0, so at bare
+defaults X3 has no thermal rate, no MT and no flash -- it degenerates to
+the mechanical pressure equilibrium mode 0 already did.  The acceptance
+configuration is therefore FIVE dials, not two: mode 5 and the nucleator
+are now code defaults, but the three 1e-7 stiffness rates that drive the
+runs toward the HEM limit remain harness-set.  Anyone reading "the
+defaults are the acceptance configuration" should read that as "the
+defaults no longer CONTRADICT it".  Whether theta_tau's default should
+move is deliberately NOT decided here: 1e-7 is the HEM-limit stiffness,
+and theta is the quantity DESIGN_ps_sigma proposes to replace with
+theta(Sigma) -- baking the number in now would bake in the wall.
+
+G4 as registered: the 27 non-battery PS inputs that never name the mode
+inherit the new default.  Measured only for CO2_RiemannSuite/inputs (G3,
+inert).  The 2-D cases (CO2_XC2D, CO2_ADV2D, CO2_PipeBreak) are FLAGGED,
+NOT verified -- 2-D stays deferred per policy, and by the G3 mechanism
+any case that does not set the tau dials is inert under this flip too.
+
+GOLDEN RECORDINGS: verify_canonical.py's two mode-4 B9 checks (3 and 6)
+read u-err 1.000.  MEASURED not inferred: the SAME 1.000 comes out of the
+pre-flip binary, so this pre-dates the flip -- it is mode-4 B9 aborting,
+the abort mode 5 retired, and it is STATUS 7.8's open re-baseline item.
+Both checks now pin ps_flash_from_absent=0 as hygiene (a check that pins
+its mode must pin its birth channel), which changes neither reading.  The
+exact/HEM references themselves need no regeneration: they are computed
+in the standalone repo and are independent of CAMR's dials.  Every other
+verify_canonical check passes, including the A/C battery mean 0.0350.

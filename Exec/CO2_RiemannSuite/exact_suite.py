@@ -93,14 +93,16 @@ def run(case, flux, pref):
         #  the HEM-biased references rewarded, D21).  ps_mt_tau is kept
         #  for mode-4 A/B runs; at mode 5 it has no effect (X3 owns MT,
         #  rate from SRT).
-        #  ps_flash_from_absent=1 default since 2026-08-17 (Marc's call,
-        #  F5): selective by measurement (8 cases bit-identical), strictly
-        #  better on B2/B9/B7, no aborts under X3.  ONE global config for
-        #  all 20 cases — Y4 is history.
-        ov.update({'CAMR.ps_do_relax':1,'CAMR.ps_relax_mode':5,
+        #  ps_flash_from_absent=1 (selective by measurement: 8 cases
+        #  bit-identical, strictly better on B2/B9/B7, no aborts under X3)
+        #  and ps_relax_mode=5 are CODE DEFAULTS since 2026-08-17 (WORKLOG
+        #  G-DEF), so this harness no longer re-states them: a change to
+        #  either default must be visible in this table, which is exactly
+        #  what run_ac_suite's job_info replay could not do.  ONE global
+        #  config for all 20 cases — Y4 is history.
+        ov.update({'CAMR.ps_do_relax':1,
                    'CAMR.ps_theta_tau':1e-7,'CAMR.ps_mt_tau':1e-7,
-                   'CAMR.ps_flash_tau':1e-7,
-                   'CAMR.ps_flash_from_absent':1})
+                   'CAMR.ps_flash_tau':1e-7})
     else:                                     # single phase: no phase change
         ov.update({'CAMR.ps_do_relax':0})
     ov.update(F.camr_side(c[1],'L')); ov.update(F.camr_side(c[2],'R'))

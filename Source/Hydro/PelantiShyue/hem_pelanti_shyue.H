@@ -4455,7 +4455,8 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
     const double m_1 = U[1];
     const double m_2 = U[2];
     //  FLASH-FROM-ABSENT (F0 of PLAN_flash_and_coupling.md;
-    //  CAMR.ps_flash_from_absent, default 0 = previous behaviour).
+    //  CAMR.ps_flash_from_absent, DEFAULT 1 since 2026-08-17, WORKLOG
+    //  G-DEF; set 0 for the previous behaviour).
     //  MEASURED 2026-08-15: with exact-zero presence ICs the m<=0 guard
     //  below excluded every genuinely single-phase cell, so the nucleator
     //  fired ZERO times in the whole acceptance battery -- birth channel 1
@@ -4464,7 +4465,7 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
     //  is CONSTRUCTED by the saturation projection (enforced below);
     //  both-absent stays excluded.
     static const bool from_absent =
-        ps_knob_int("ps_flash_from_absent", 0) != 0;
+        ps_knob_int("ps_flash_from_absent", 1) != 0;
     const bool abs_trace = from_absent &&
         ((liq_dominant && m_2 <= 0.0 && m_1 > 0.0) ||
          (vap_dominant && m_1 <= 0.0 && m_2 > 0.0));
