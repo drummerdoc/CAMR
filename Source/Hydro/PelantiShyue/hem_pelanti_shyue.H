@@ -3546,12 +3546,33 @@ inline bool ps_x3_relax_cell(V6& U, const PsPhaseAPI& eos, double dt,
     const double u_mix = U[3] / rho_mix;
     const double ke    = 0.5 * u_mix * u_mix;
 
-    //  CONSTRAINT at entry: project onto P1 == P2 (alpha-adjusting).
+    //  THE CONSTRAINT.  P1 = P2 always; T1 = T2 as well when theta <= 0,
+    //  which is this code's documented meaning for a zero relaxation TIME
+    //  (instantaneous), the convention modes 2/3/4 already implement.  With
+    //  T1 = T2 held here the thermal RATE below is identically zero, so the
+    //  heat unknown q collapses (residual q - 0, Jacobian entry 1) and the
+    //  2x2 Newton becomes a 1-D solve in dm -- no singularity, no branch.
+    //  The Picard {iso-thermal, pressure} is ps_joint_pt_equilibrium (#86),
+    //  inlined because hem cannot call PS_relaxation.
+    const bool joint_pt = !(xp.theta > 0.0);
+    auto constrain = [&](V6& W, int* why) -> bool {
+        if (!ps_pressure_relax_cell(W, eos, PsPressureRelaxParams{}, why))
+            return false;
+        if (!joint_pt) return true;
+        for (int it = 0; it < 5; ++it) {
+            if (!ps_iso_thermal_relax_cell(W, eos)) return false;
+            if (!ps_pressure_relax_cell(W, eos, PsPressureRelaxParams{}, why))
+                return false;
+        }
+        return true;
+    };
+
+    //  CONSTRAINT at entry.
     V6 W0 = U;
     {   //  The projector already computes WHY it refused (task #41
         //  taxonomy); X3 used to pass nullptr and throw it away.
         int pr_why = PSR_OK;
-        if (!ps_pressure_relax_cell(W0, eos, PsPressureRelaxParams{}, &pr_why)) {
+        if (!constrain(W0, &pr_why)) {
             ++x3s.n_proj_entry;
             if      (pr_why == PSR_BAD_INPUT) ++x3s.n_pr_input;
             else if (pr_why == PSR_BAD_EOS)   ++x3s.n_pr_eos;
@@ -3624,7 +3645,10 @@ inline bool ps_x3_relax_cell(V6& U, const PsPhaseAPI& eos, double dt,
         const double cv2 = cv_of(2, m2 / a2, W[5] / m2 - ke);
         if (!(cv1 > 0.0) || !(cv2 > 0.0)) return false;
         const double inv = 1.0 / (m1 * cv1) + 1.0 / (m2 * cv2);
-        //  theta <= 0: REFUTED as "thermal off" (WORKLOG T1-a, 2026-08-17).
+        //  theta <= 0 is INSTANTANEOUS, not "off": T1 = T2 is enforced by
+        //  `constrain` above, so the rate here is zero and the heat unknown
+        //  collapses.  "Thermal off" (rate 0 with NO thermal constraint) was
+        //  measured and REFUTED (WORKLOG T1-a, 2026-08-17).
         //  Setting rT = 0 and letting Gamma_SRT run alone ABORTS B7 with
         //  [PS-EOS] NO ROOT: evaporation draws latent heat from a phase that
         //  cannot exchange heat with the other, so the donor energy walks
@@ -3637,7 +3661,7 @@ inline bool ps_x3_relax_cell(V6& U, const PsPhaseAPI& eos, double dt,
         //  then theta = 0 still dead-ends this operator -- but [PS-X3] now
         //  prints "EVERY cell structurally dead ... NO-OP" every sweep, so
         //  it is loud instead of silent.
-        rT = (s.p1.T - s.p2.T) / (xp.theta * inv);
+        rT = joint_pt ? 0.0 : (s.p1.T - s.p2.T) / (xp.theta * inv);
         const double a_geom = (s.p1.g > s.p2.g)
                             ? (a2 + xp.srt_delta) * a1
                             : (a1 + xp.srt_delta) * a2;
@@ -3706,7 +3730,7 @@ inline bool ps_x3_relax_cell(V6& U, const PsPhaseAPI& eos, double dt,
             W[4] = Wb[4] - dm * H_c - q;
             W[5] = Wb[5] + dm * H_c + q;
             if (!std::isfinite(W[4]) || !std::isfinite(W[5])) return false;
-            if (!ps_pressure_relax_cell(W, eos)) {                 // CONSTRAINT
+            if (!constrain(W, nullptr)) {                          // CONSTRAINT
                 ++x3s.n_proj_path; return false; }
             s = recon(W);
             return s.ok;

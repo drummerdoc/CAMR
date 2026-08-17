@@ -5570,3 +5570,82 @@ contributes a few percent at most across its whole dynamic range.  So the
 one-pressure axis is not where the accuracy is: Sigma (interfacial area)
 is, exactly as DESIGN_ps_sigma's G1 argues.  N = 256 was not attempted:
 the device shell caps a call at 45 s.
+
+## 2026-08-17 — THETA FORK, route (a): theta <= 0 at mode 5 becomes
+## INSTANTANEOUS thermal — T1 = T2 joins the constraint set.
+## PREDICTIONS FIRST.
+
+WHY (a) AND NOT (b).  T1-a measured that "theta <= 0 = thermal off" ABORTS
+B7: mass transfer draws latent heat from a phase that cannot exchange it.
+Route (a) has the opposite property by construction — thermal equilibrium
+means the latent heat is shared instantly, which is the safest possible
+thermal closure — and it restores the convention modes 2/3/4 already
+document ("theta <= 0 -> instantaneous").
+
+FORM.  The X3 constraint set becomes P1 = P2 AND (when theta <= 0)
+T1 = T2, enforced by the same projector call at entry and inside EVERY
+path evaluation: pressure projection, then a short Picard of
+{iso-thermal, pressure} — the ps_joint_pt_equilibrium construction (#86),
+implemented inside the kernel because hem cannot call PS_relaxation.
+With T1 = T2 held by the projector the thermal RATE is identically zero,
+so the heat unknown q collapses: its residual is q - 0, its Jacobian
+entry stays 1, and the 2x2 Newton reduces to a 1-D solve in dm with no
+singularity and no special-casing.  Mass transfer keeps its full SRT rate
+on the joint manifold.
+
+PREDICTIONS:
+  TF-1 The acceptance config (theta = 1e-7 > 0) is BIT-IDENTICAL, all 22
+       rows.  FALSIFIER: any digit moves — the edit leaked into the
+       theta > 0 path, which it must not touch.
+  TF-2 B7 COMPLETES at bare defaults (rc = 0) with vapour in physical
+       range.  This is the discriminator against T1-a: same MT, same
+       nucleator, the only difference being that the thermal channel is
+       infinitely fast instead of absent.  FALSIFIER: abort — then MT is
+       unsafe at bare defaults under BOTH thermal limits, the problem is
+       not the thermal closure at all, and route (b) (nonzero default +
+       abort on theta <= 0) is the answer.
+  TF-3 Bare defaults MOVE toward HEM on the flash-active cases, because
+       P+T equilibrium plus finite-rate MT is much closer to the
+       equilibrium limit than the projection alone was.  Direction only.
+  TF-4 [PS-X3] at bare defaults shows dead(rc2) = 0 and ok ~ calls, and
+       the NO-OP warning never fires again.
+  TF-5 No case aborts anywhere at bare defaults.
+
+**THETA FORK RESULTS (2026-08-17): route (a) LANDS.  Every prediction
+confirmed, and it collapses the defaults question as a side effect.**
+
+TF-1 PASS: the acceptance config is BIT-IDENTICAL, all 22 rows diffed.
+     theta = 1e-7 > 0 never enters the new branch.
+TF-2 CONFIRMED — the discriminator against T1-a: B7-Rupture-Sonic
+     COMPLETES at bare defaults, .2203/.7964/.5887 (rc = 0), where "thermal
+     off" with the same MT and the same nucleator ABORTED it.  Infinitely
+     fast thermal is safe exactly where absent thermal was not: the latent
+     heat has somewhere to come from.
+TF-3 CONFIRMED, bare defaults move toward HEM on every relaxation-active
+     case:  B2 u .8857 -> .8735 · B9 .8598 -> .8314 · B7 .8845 -> .7964 ·
+     B5 .4028 -> .1762 · B11 .0000 -> .0278.
+TF-4 CONFIRMED: [PS-X3] on B9 at bare defaults reads calls = 198,
+     ok = 198, dead = 0, gate_stood = 0, entry_fail = 0, path_fail = 0,
+     and ZERO NO-OP warnings.  The silent no-op is gone by construction:
+     there is no non-finite rate to produce it.
+TF-5 CONFIRMED: no aborts anywhere at bare defaults.
+
+**SIDE EFFECT, and it is the useful one.**  At bare defaults B2 and B9 now
+read .0724/.8735/.3175 and .1064/.8314/.3164 — the PRE-FA X3 baseline
+(_x3_baseline.log: .0724/.8735/.3175 and .1064/.8314/.3165) to the last
+digit but one.  B5 and B11 land exactly on their acceptance values.  The
+reason: theta = 1e-7 was already instantaneous at battery dt, so
+theta = 0 (exactly instantaneous) is the same physics.  Consequence: of the
+five dials the acceptance configuration used to need, ps_relax_mode and
+ps_flash_from_absent are code defaults, ps_theta_tau is now REDUNDANT
+(same answers to ~4 digits), ps_mt_tau was always inert at mode 5, and
+ONE remains: ps_flash_tau, the nucleator gate.  A bare build now runs the
+acceptance physics minus nucleation.
+
+NOTE for the record: B11 going .0000 -> .0278 is the theta wall, not a
+regression.  With no thermal relaxation at all B11 was exact; with
+instantaneous thermal it carries its acceptance-config error.  That is the
+same measurement as commit 6fc2408 ("hydro exact, relaxation is 100 % of
+the damage"), and it is Sigma's problem: theta(Sigma) is supposed to
+recognise that a resolved contact has no interfacial area to equilibrate
+across.
