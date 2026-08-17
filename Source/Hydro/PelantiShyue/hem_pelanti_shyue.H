@@ -3941,6 +3941,32 @@ struct PsDmCensus {
 };
 inline PsDmCensus& ps_dm_census() { static PsDmCensus c; return c; }
 
+//  [PS-X3] (cleanup step 0, 2026-08-17): the coupled operator's OWN
+//  outcome, cause-split.  The wrapper used to discard ps_x3_relax_cell's
+//  bool, so a battery-wide no-op (theta <= 0: non-finite thermal rate ->
+//  rc=2 on the first sub-step) was invisible.  Also counts the P1 = P2
+//  CONSTRAINT's failures, split into ENTRY (structural: the cell cannot
+//  be put on the manifold at all, with the PSR_* cause the projector
+//  already computes) and PATH (expected: the Newton line search probing
+//  inadmissible trials).  Counting only; every field is a diagnostic.
+struct PsX3Stats {
+    long n_calls = 0;        // cells entering the kernel
+    long n_entry_refused = 0;// failed an entry gate or the entry recon
+    long n_gate_stood = 0;   // eligibility question said "not mine"
+    long n_ok = 0;           // full dt integrated
+    long n_newton = 0;       // sub-steps that failed to converge (rc=1)
+    long n_dead = 0;         // structurally-dead rate evaluation (rc=2)
+    long n_subcap = 0;       // hit the 64-sub-step cap
+    long n_proj_entry = 0;   // entry projection failures
+    long n_proj_path = 0;    // path projection failures (line search)
+    long n_pr_input = 0, n_pr_eos = 0, n_pr_slope = 0, n_pr_maxiter = 0;
+    void reset() { n_calls = n_entry_refused = n_gate_stood = n_ok = 0;
+                   n_newton = n_dead = n_subcap = 0;
+                   n_proj_entry = n_proj_path = 0;
+                   n_pr_input = n_pr_eos = n_pr_slope = n_pr_maxiter = 0; }
+};
+inline PsX3Stats& ps_x3_stats() { static PsX3Stats s; return s; }
+
 struct PsX3Params {
     double theta      = 1.0e-3;   // thermal relaxation time [s]
     double h_w        = 0.5;      // MT carrier weight (ps_mt_h_weight rule)
@@ -3970,19 +3996,33 @@ struct PsX3Params {
 inline bool ps_x3_relax_cell(V6& U, const PsPhaseAPI& eos, double dt,
                              const PsX3Params& xp)
 {
-    if (!eos.valid() || !(dt > 0.0)) return false;
+    PsX3Stats& x3s = ps_x3_stats();
+    ++x3s.n_calls;
+    if (!eos.valid() || !(dt > 0.0)) { ++x3s.n_entry_refused; return false; }
     constexpr double alpha_floor = 1.0e-6;
-    if (!std::isfinite(U[0])) return false;
-    if (U[0] <= alpha_floor || U[0] >= 1.0 - alpha_floor) return false;
-    if (U[1] <= 0.0 || U[2] <= 0.0) return false;
+    if (!std::isfinite(U[0])) { ++x3s.n_entry_refused; return false; }
+    if (U[0] <= alpha_floor || U[0] >= 1.0 - alpha_floor) {
+        ++x3s.n_entry_refused; return false; }
+    if (U[1] <= 0.0 || U[2] <= 0.0) { ++x3s.n_entry_refused; return false; }
     const double rho_mix = U[1] + U[2];
-    if (!(rho_mix > 0.0)) return false;
+    if (!(rho_mix > 0.0)) { ++x3s.n_entry_refused; return false; }
     const double u_mix = U[3] / rho_mix;
     const double ke    = 0.5 * u_mix * u_mix;
 
     //  CONSTRAINT at entry: project onto P1 == P2 (alpha-adjusting).
     V6 W0 = U;
-    if (!ps_pressure_relax_cell(W0, eos)) return false;
+    {   //  The projector already computes WHY it refused (task #41
+        //  taxonomy); X3 used to pass nullptr and throw it away.
+        int pr_why = PSR_OK;
+        if (!ps_pressure_relax_cell(W0, eos, PsPressureRelaxParams{}, &pr_why)) {
+            ++x3s.n_proj_entry;
+            if      (pr_why == PSR_BAD_INPUT) ++x3s.n_pr_input;
+            else if (pr_why == PSR_BAD_EOS)   ++x3s.n_pr_eos;
+            else if (pr_why == PSR_SLOPE)     ++x3s.n_pr_slope;
+            else if (pr_why == PSR_MAXITER)   ++x3s.n_pr_maxiter;
+            return false;
+        }
+    }
 
     struct X3SS { PsPhase p1, p2; bool ok; };
     auto recon = [&](const V6& W) -> X3SS {
@@ -4002,7 +4042,7 @@ inline bool ps_x3_relax_cell(V6& U, const PsPhaseAPI& eos, double dt,
         s.ok = true; return s;
     };
     const X3SS s0 = recon(W0);
-    if (!s0.ok) return false;
+    if (!s0.ok) { ++x3s.n_entry_refused; return false; }
 
     //  THE one eligibility question (post-projection), with the mode-4
     //  band-exit policy.  A stand is not a failure: the cell is simply
@@ -4020,6 +4060,7 @@ inline bool ps_x3_relax_cell(V6& U, const PsPhaseAPI& eos, double dt,
             if (xp.exit_code)
                 *xp.exit_code = (lo ? 1 : 0) | (hi ? 2 : 0) | (cont ? 4 : 0);
             if (!cont) {
+                ++x3s.n_gate_stood;
                 for (int n = 0; n < 6; ++n) U[n] = W0[n];
                 return true;
             }
@@ -4115,7 +4156,8 @@ inline bool ps_x3_relax_cell(V6& U, const PsPhaseAPI& eos, double dt,
             W[4] = Wb[4] - dm * H_c - q;
             W[5] = Wb[5] + dm * H_c + q;
             if (!std::isfinite(W[4]) || !std::isfinite(W[5])) return false;
-            if (!ps_pressure_relax_cell(W, eos)) return false;  // CONSTRAINT
+            if (!ps_pressure_relax_cell(W, eos)) {                 // CONSTRAINT
+                ++x3s.n_proj_path; return false; }
             s = recon(W);
             return s.ok;
         };
@@ -4182,8 +4224,10 @@ inline bool ps_x3_relax_cell(V6& U, const PsPhaseAPI& eos, double dt,
     int  nsub = 0;
     bool ok   = true;
     while (t_done < dt * (1.0 - 1.0e-12)) {
-        if (++nsub > 64) { ok = false; break; }
+        if (++nsub > 64) { ok = false; ++x3s.n_subcap; break; }
         const int rc = be_once(dt_try);
+        if (rc == 1) ++x3s.n_newton;
+        else if (rc == 2) ++x3s.n_dead;
         if (rc == 0) {
             t_done += dt_try;
             const double rem = dt - t_done;
@@ -4200,6 +4244,7 @@ inline bool ps_x3_relax_cell(V6& U, const PsPhaseAPI& eos, double dt,
     //  on-manifold even on a bail-out).
     for (int n = 0; n < 6; ++n) U[n] = Wc[n];
     if (xp.dT_post) *xp.dT_post = std::abs(scur.p1.T - scur.p2.T);  // [PS-DT]
+    if (ok) ++x3s.n_ok;
     return ok;
 }
 

@@ -5140,3 +5140,85 @@ all-zero [ps_prdiag] lines -- a live instrument pointed at a dead path.
 We therefore do NOT currently know how often the constraint fails on the
 production path.  That measurement is a prerequisite for any decision to
 enforce P1 = P2 structurally.
+
+## 2026-08-17 — CLEANUP STEP 0: instrument the X3 outcome and the
+## CONSTRAINT.  PREDICTIONS FIRST.
+
+WHY FIRST.  Two blind spots block every mode-removal decision.  (1) The
+X3 wrapper discards the kernel's bool, so a whole-battery no-op is
+invisible (the theta=0 finding).  (2) [ps_prdiag] instruments
+ps_iso_pressure_relax_cell (modes 1/2 only), so the alpha-adjusting
+projection that mode 4 and X3 actually use is uncounted: we cannot say
+how often the P1=P2 constraint FAILS on the production path, which is
+exactly the number needed before enforcing it structurally.
+
+CHANGE (diagnostics only, no physics): hem::PsX3Stats + ps_x3_stats(),
+cause-split — entry refusals, gate stands, converged, Newton
+non-convergence, structurally-dead (rc=2), sub-step cap, plus constraint
+failures split into ENTRY (structural, with the PSR_* cause the projector
+already computes and X3 was discarding) and PATH (expected during the
+Newton line search).  Reported as [PS-X3] under the existing
+CAMR.ps_pres_diag gate, reset per sweep like the other Stage-1 counters.
+
+PREDICTIONS:
+  S0-1 INERTNESS: the 20-case battery is bit-identical (counters only).
+       FALSIFIER: any digit moves — then the instrument changed physics
+       and it comes straight back out.
+  S0-2 At the acceptance config the ENTRY constraint failure count is
+       SMALL relative to calls — order 1e-3 or below — on B2/B9.  Basis:
+       the projector's refusals were measured as metastable/out-of-domain
+       states (task #41 taxonomy), and the battery completes.  FALSIFIER:
+       a large entry-failure fraction — then "enforce P1=P2 structurally"
+       is not a cleanup, it is a physics decision about what to do when
+       the constraint cannot be met, and the cleanup plan changes.
+  S0-3 At theta=0 (the current code default) [PS-X3] shows
+       structurally-dead == calls and converged == 0 on any two-phase
+       case.  That is the no-op made visible; it is also the regression
+       test for whichever theta semantics gets chosen.
+  S0-4 PATH failures are nonzero at the acceptance config (the line
+       search is supposed to explore inadmissible trials) — a zero PATH
+       count would mean the backtracking never engages, i.e. the
+       instrument is mis-wired.
+
+**STEP-0 RESULTS (2026-08-17): all four predictions confirmed, and S0-2
+came in far stronger than registered.**
+
+S0-1 PASS: the 20-case battery is bit-identical, all 22 rows diffed
+against the verified table.  Counters only, as designed.
+
+S0-2 CONFIRMED, and then some.  [PS-X3] at the acceptance config
+(theta_tau = flash_tau = 1e-7), summed over the run:
+
+  case                calls    ok  gate_stood  dead  newton  path_fail  ENTRY_FAIL
+  B2-Evap-wave          525   511      14        0     19       649        0
+  B7-Rupture-Sonic    2,129 2,044      85        0    187       182        0
+  B9-Deep-Expansion     731   728       3        0     93       668        0
+  B4-Cross-critical     106     0     106        0      0         0        0
+
+THE P1 = P2 CONSTRAINT NEVER FAILS STRUCTURALLY: 3,491 kernel calls
+across the four hardest cases, ZERO entry-projection failures, zero by
+every PSR_* cause (input / eos / slope / maxiter).  The registered
+expectation was "order 1e-3 or below"; the measurement is exactly zero.
+The constraint is not a risk on the production path — it is met every
+time it is asked for.  That removes the objection registered against
+enforcing P1 = P2 structurally rather than optionally.
+
+Also newly visible, and worth its own line: B4-Cross-critical is 106
+calls and 106 GATE STANDS — every single cell declines the operator at
+the eligibility question, which is precisely what the coexistence test
+exists to do at a cross-critical material contact (liquid against
+SUPERCRITICAL vapour: two different single-phase fluids, not a coexisting
+pair).  B4's relaxation channel does literally nothing, by design, and
+now says so.
+
+S0-3 CONFIRMED: at theta_tau = 0, B9 reads calls = 191, ok = 0,
+dead(rc2) = 191 -- every cell structurally dead -- and all 102 sweeps
+carry the new "*** EVERY cell structurally dead: the operator is a NO-OP
+this sweep" line.  The invisible no-op is now loud.
+
+S0-4 CONFIRMED: path_fail is 182-668 per case, i.e. the Newton line
+search does explore inadmissible trials and backtrack, as intended.  Note
+the contrast worth keeping: path failures are HEALTHY (exploration),
+entry failures would be STRUCTURAL (a cell that cannot be put on the
+manifold at all).  Splitting them was the point; conflating them would
+have read as "hundreds of constraint failures per case".

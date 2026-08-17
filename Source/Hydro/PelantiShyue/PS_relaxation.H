@@ -3033,6 +3033,37 @@ ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
         }
         dc.reset();
     }
+    //  [PS-X3] (cleanup step 0): the coupled operator's own outcome and
+    //  the P1 = P2 constraint's failures, cause-split.  Mode 5 only; the
+    //  kernel's bool used to be discarded, so a battery-wide no-op was
+    //  invisible (theta <= 0 -> non-finite thermal rate -> rc=2 on the
+    //  first sub-step -> thermal AND mass transfer both dead).
+    if (ps_relax_mode() == 5) {
+        hem::PsX3Stats& xs = hem::ps_x3_stats();
+        if (ps_pres_diag() != 0 && xs.n_calls > 0) {
+            amrex::AllPrint()
+                << "[PS-X3] calls=" << xs.n_calls
+                << " ok=" << xs.n_ok
+                << " gate_stood=" << xs.n_gate_stood
+                << " entry_refused=" << xs.n_entry_refused
+                << " | dead(rc2)=" << xs.n_dead
+                << " newton_nonconv=" << xs.n_newton
+                << " subcap=" << xs.n_subcap
+                << " | constraint: entry_fail=" << xs.n_proj_entry
+                << " (input=" << xs.n_pr_input
+                << " eos=" << xs.n_pr_eos
+                << " slope=" << xs.n_pr_slope
+                << " maxiter=" << xs.n_pr_maxiter << ")"
+                << " path_fail=" << xs.n_proj_path;
+            if (xs.n_dead > 0 && xs.n_ok == 0) {
+                amrex::AllPrint()
+                    << "   *** EVERY cell structurally dead: the operator "
+                       "is a NO-OP this sweep (check CAMR.ps_theta_tau > 0)";
+            }
+            amrex::AllPrint() << "\n";
+        }
+        xs.reset();
+    }
     // ---- Stage-1 C2: [PS-COEXIT-TH] thermal-leg band exits (X2) ----------
     // (CAMR.ps_coexit_diag = 1; the counting itself is always on.)
     if (ps_coexit_diag() != 0) {
