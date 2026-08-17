@@ -5222,3 +5222,130 @@ the contrast worth keeping: path failures are HEALTHY (exploration),
 entry failures would be STRUCTURAL (a cell that cannot be put on the
 manifold at all).  Splitting them was the point; conflating them would
 have read as "hundreds of constraint failures per case".
+
+## 2026-08-17 — TIER 1 / T1-a: theta <= 0 at mode 5 becomes THERMAL OFF,
+## not a dead operator.  PREDICTIONS FIRST.
+
+THE CHOICE, stated.  theta = 0 currently means three things (follow-up 3).
+Modes 2/3/4 implement "instantaneous" and that is left untouched -- they
+are legacy/A-B paths and their theta<=0 branch is implemented.  At mode 5
+"instantaneous" is NOT implemented (it needs T1=T2 added to the constraint
+set, i.e. the joint P-T projection), and what the code does instead is a
+silent no-op that also kills mass transfer.  Since ANY fix changes today's
+behaviour, this takes the reading that (a) Marc assumed, (b) preserves
+MT's independence from theta, and (c) needs no new dial:
+
+    at mode 5, theta <= 0  ==>  thermal rate = 0 (thermal OFF), and the
+    mass-transfer channel runs normally.
+
+The negative/zero-selects-a-mode idiom already exists here
+(ps_mt_h_weight < 0 selects the upwind carrier).  The residual
+inconsistency -- theta=0 is "instantaneous" at modes 2/3/4 and "off" at
+mode 5 -- is REGISTERED, not hidden, and it dissolves for free if Tier 2
+deletes modes 2/3/4.  Implementing instantaneous-thermal at mode 5 is the
+alternative, and it is a separate measured stage (it is the joint P-T
+constraint, which already exists as ps_joint_pt_equilibrium).
+
+PREDICTIONS:
+  T1a-1 The acceptance config (theta = 1e-7 > 0) is BIT-IDENTICAL, all 22
+        rows.  FALSIFIER: any digit moves — the edit touched the theta>0
+        path, which it must not.
+  T1a-2 The bare-defaults battery CHANGES on the relaxation-active B
+        cases, and in a specific direction: mass transfer now runs with
+        thermal off, so the cases move OFF the frozen limit (previous
+        entry: at theta=0 they sat on it — B2 u .1284 vs FROZEN, .8857 vs
+        HEM).  Direction registered, magnitude not.
+  T1a-3 [PS-X3] at bare defaults shows dead(rc2) = 0 and ok ~ calls,
+        replacing the 191/191 no-op, and the NO-OP warning stops firing.
+  T1a-4 No aborts anywhere at bare defaults.  FALSIFIER: any abort — then
+        MT without a thermal leg is not a safe default configuration and
+        this needs the instantaneous-thermal route instead.
+
+**T1-a RESULTS (2026-08-17): T1a-1 PASS, T1a-4 FALSIFIER FIRED, change
+REVERTED.  "MT with thermal off" is not a configuration.**
+
+T1a-1 PASS: with theta = 1e-7 the 20-case battery is bit-identical, all
+22 rows diffed.  The edit did not touch the theta > 0 path.
+T1a-2 partially confirmed: at bare defaults the cases did move OFF the
+frozen limit (B2 u .8857 -> .8831 vs HEM, B9 .8598 -> .8517, B5 .4028 ->
+.4039, B11 .0000 -> .0000) -- small motions, MT running alone.
+T1a-4 **FALSIFIER**: B7-Rupture-Sonic ABORTS, [PS-EOS] NO ROOT -- this
+(rho,e) is not a state.  Mechanism: evaporation draws latent heat from a
+phase that cannot exchange heat with the other, so the donor phase's
+energy walks out of the reachable set.  It is the mode-0 dilute-phase
+energy runaway (LEARNINGS #64/#72/#88) wearing mass transfer.  MASS
+TRANSFER WITHOUT A THERMAL LEG IS NOT A CONFIGURATION, and "theta <= 0 =
+thermal off" is therefore refuted as a DEFAULT.
+
+REVERTED to the measured-safe form; the refutation is recorded in-source
+at the rate site.  theta = 0 still dead-ends the operator, but [PS-X3]
+now prints the NO-OP warning on every sweep, so the failure is loud.
+Re-verified after the revert: B7 .2624/.8845/.6759 ok, B11 .0830/.0000/
+.0006 ok at bare defaults -- back to the measured state.
+
+THE DECISION THIS LEAVES (Marc's): (a) implement INSTANTANEOUS thermal at
+mode 5 -- T1 = T2 joins P1 = P2 in the constraint set (the projector
+already exists as ps_joint_pt_equilibrium), the Newton reduces to 1-D in
+dm, and the modes-2/3/4 convention becomes uniform; or (b) give
+ps_theta_tau a nonzero physical default and abort on theta <= 0 at mode
+5.  (a) is the better physics and dissolves the cross-mode collision;
+(b) is smaller.  Tier 2 deleting modes 2/3/4 would also dissolve the
+collision for free.
+
+## 2026-08-17 — LITERATURE: Munkejord, Comput Fluids 36 (2007) 1061-1080,
+## read (Marc supplied the PDF).  What it does and does NOT say about us.
+
+WHAT THE PAPER COMPARES.  Roe4 = the FOUR-equation, one-pressure,
+isentropic, TWO-VELOCITY two-fluid model solved directly.  Roe5 = the
+same plus an advected volume-fraction equation, giving a five-equation
+TWO-PRESSURE model that then needs a pressure-relaxation procedure.  EOS
+is linear-acoustic, p_k = c_k^2 (rho_k - rho_k^0) with CONSTANT c_k, air
+and water, isentropic, no energy equation and no phase change.  Cases:
+water faucet and two shock tubes.
+
+ITS CONCLUSIONS, verbatim in substance: Roe5 with instantaneous pressure
+relaxation "can be regarded as a numerical method to solve the
+four-equation system"; it is "significantly more diffusive than the Roe4
+scheme, PARTICULARLY FOR SLOW WAVES", true with or without
+high-resolution limiters; the diffusion is a strong function of time-step
+length, grid size, limiter, and the liquid speed of sound; for fine grids
+and short time steps Roe5 mostly converges to Roe4; and two pressures
+plus instantaneous relaxation "does not provide an easy way to overcome
+the problem of complex eigenvalues".  Note also: the MC-limited Roe5 beat
+Roe4 on the coarse 26-point faucet grid.
+
+CORRECTION TO SOMETHING I TOLD MARC: the paper applies "the
+high-resolution approach of LeVeque [15]" itself, so this is not
+Roe-versus-wave-propagation.  The real differences from our scheme are
+(i) Roe-average linearisation versus our HLLC-type wave decomposition,
+(ii) his alpha equation is advected in the discretisation while under our
+WP path alpha never enters the flux divergence at all (STATUS 1.3), and
+(iii) two velocities versus one.
+
+WHERE IT LANDS ON US.  The mechanism is real and its own diagnosis is
+testable here, because it names four sensitivities -- and all four have
+already been measured in this project, all weak:
+  * TIME STEP: 10x smaller dt moved B9 by 0.15 % (2026-08-13, the
+    "DO NOT RESURRECT" note).  No splitting-diffusion signature.
+  * LIQUID SOUND SPEED: ps_cmix_model frozen/max/Wood moved B11 by 3 %
+    (and Wood ABORTED B9), against 85 % from theta on the same case.
+  * SLOW WAVES, the paper's worst case: B11 is our slow-wave case, a
+    subcritical smeared contact.  DECISIVE in-house discriminator: with
+    the pressure projection ON and the RATES OFF (bare defaults) B11 is
+    .0830/.0000/.0006 -- u and P errors at round-off.  The pressure
+    projection alone costs B11 NOTHING measurable; the damage is the
+    thermal/MT rates (commit 6fc2408: "hydro exact, relaxation is 100 %
+    of the damage").
+  * GRID: our B numbers are all N = 64, which IS his coarse regime.  This
+    is the one axis not yet measured for the projection in isolation.
+CAUTION IN THE OPPOSITE DIRECTION: his Roe4 (one-pressure) needs the
+equilibrium mixture sound speed, and the measured fact here is that the
+Wood speed ABORTS B9 with a real-fluid EOS.  What is cheap with constant
+c_k is our fragile object.
+
+PROPOSED PROBE (cheap, decisive on the diffusivity claim): grid
+refinement N = 64/128/256 on B11 and B2, twice -- (a) projection only,
+rates off, scored against the FROZEN exact solution, and (b) the full
+acceptance config.  If our projection carried Roe5-style diffusion, (a)
+would show a degraded convergence order against its own exact solution.
+Register predictions before running.

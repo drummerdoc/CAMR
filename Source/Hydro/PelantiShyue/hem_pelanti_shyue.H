@@ -4087,6 +4087,19 @@ inline bool ps_x3_relax_cell(V6& U, const PsPhaseAPI& eos, double dt,
         const double cv2 = cv_of(2, m2 / a2, W[5] / m2 - ke);
         if (!(cv1 > 0.0) || !(cv2 > 0.0)) return false;
         const double inv = 1.0 / (m1 * cv1) + 1.0 / (m2 * cv2);
+        //  theta <= 0: REFUTED as "thermal off" (WORKLOG T1-a, 2026-08-17).
+        //  Setting rT = 0 and letting Gamma_SRT run alone ABORTS B7 with
+        //  [PS-EOS] NO ROOT: evaporation draws latent heat from a phase that
+        //  cannot exchange heat with the other, so the donor energy walks
+        //  out of the reachable set -- the mode-0 dilute-phase runaway
+        //  wearing mass transfer.  MT without a thermal leg is not a
+        //  configuration.  Left as it was pending the decision between
+        //  (a) instantaneous thermal here (T1 = T2 added to the constraint
+        //  set, the documented modes-2/3/4 convention, 1-D Newton in dm
+        //  alone) and (b) a nonzero physical default for theta.  Until
+        //  then theta = 0 still dead-ends this operator -- but [PS-X3] now
+        //  prints "EVERY cell structurally dead ... NO-OP" every sweep, so
+        //  it is loud instead of silent.
         rT = (s.p1.T - s.p2.T) / (xp.theta * inv);
         const double a_geom = (s.p1.g > s.p2.g)
                             ? (a2 + xp.srt_delta) * a1
