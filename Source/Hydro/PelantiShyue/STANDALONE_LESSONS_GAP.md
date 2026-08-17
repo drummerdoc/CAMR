@@ -9,7 +9,7 @@ is a strict superset of the standalone's (3787 vs 3525 lines, every standalone
 **standalone driver `ppm_1d_ps_wp.cpp` → CAMR `PS_umeth.cpp` / `PS_hllc.H` /
 `CAMR_advance.cpp`**. Functions that live only in `hem_pelanti_shyue.H` are dead
 code in production, because `PS_umeth.cpp` never calls `ps_flux()`,
-`ps_state_from_cons()` or `ps_two_fluid_flux()`.
+`ps_state_from_cons()` or `ps_two_fluid_flux()` (the latter deleted 2026-08-17, T1-c).
 
 Status key: **MISSING** / **DEAD** (present, never called) / **OFF** (reachable,
 defaulted off) / **PARTIAL** (applied to some copies only).

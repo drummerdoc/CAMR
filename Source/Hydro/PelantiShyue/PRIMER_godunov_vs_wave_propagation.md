@@ -229,7 +229,7 @@ and hoping the two cancel. The 12 % non-closing error floor on B4 is what
 | flux vs fluctuation dispatch | `PS_umeth.cpp`, `ps_flux` = `wp` / `hllc` / `exact` |
 | the physical flux (for reference/comparison) | `ps_physical_flux`, `PS_umeth.cpp` |
 | fluctuation assembly at a face | `PS_HLLC::fluctuations`, `PS_hllc.H` |
-| non-conservative alpha update | separate cell kernel, `PS_alpha_transport.H` |
+| non-conservative alpha update | separate cell kernel (`PS_alpha_transport.H`, deleted 2026-08-17 — under WP α never enters the flux divergence, so the correction had nothing to cancel) |
 | transverse coupling | `ps_wp_tvterm`, `PS_umeth.cpp` |
 | one-sided C-F register | `PS_FluctuationRegister.H` |
 | solver-family comparison, measured | `co2_surrogate_eos_writeup.md` §3 |

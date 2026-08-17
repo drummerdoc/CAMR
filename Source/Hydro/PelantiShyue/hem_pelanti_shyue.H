@@ -59,8 +59,6 @@
 #include <AMReX_ParmParse.H> // CAMR.* runtime knobs (formerly PS_* env vars)
 
 // Session 89af: per-phase real-fluid exact Riemann solver for the
-// PS_FLUX=exact face-flux path.
-#include "hem_exact_riemann_rf.H"
 
 namespace hem {
 
@@ -347,13 +345,11 @@ struct PsPhaseAPI {
     // (null) -> callers fall back to co2_P_sat_wagner (CO2 default).
     std::function<double(double T)> Psat_of_T;
 
-    // Session 89af: per-phase real-fluid (rho, e) -> {P, c} callbacks
-    // for the exact-Riemann face flux (PS_FLUX=exact).  Optional --
-    // ps_face_flux only reads these when PS_FLUX=exact is set.  For
-    // PR-CO2 wire them as thin lambdas around the Stage-3 backends
-    // (see ppm_1d_ps.cpp make_pr_co2_phase_api).
-    RfEosAPI rf1;   // phase 1 (liquid branch)
-    RfEosAPI rf2;   // phase 2 (vapor/supercritical branch)
+    // (Session 89af's per-phase real-fluid {P, c} callbacks rf1/rf2 lived
+    //  here.  They existed ONLY to feed the exact-Riemann face flux, which
+    //  went with the face-flux chain on 2026-08-17 (T1-c) along with
+    //  hem_exact_riemann_rf.H; the compiler found them by refusing to
+    //  compile the struct once the header was un-included.)
 
     // Fluid critical & triple-point temperatures [K].  Set by the API
     // constructor from the EOS (single source of truth) so the two-phase
@@ -384,10 +380,6 @@ struct PsPhaseAPI {
 
     bool valid() const {
         return static_cast<bool>(state_from_rho_e_phase);
-    }
-    bool has_rf() const {
-        return static_cast<bool>(rf1.P) && static_cast<bool>(rf1.c)
-            && static_cast<bool>(rf2.P) && static_cast<bool>(rf2.c);
     }
 };
 
@@ -1189,285 +1181,10 @@ inline bool single_fluid_hllc(
 }
 
 
-// ---------------------------------------------------------------------
-//  Session 89t: two-independent-phase HLLC flux.
-//
-//  At each face, solve TWO independent single-fluid HLLC Riemann
-//  problems -- one per phase.  For each phase, when alpha_k is below
-//  a threshold on one side (phase "absent" there), use a mixture-P
-//  MATCHED ghost state on that side: keep the same u, use ghost rho
-//  along the linear isentrope of the present-side phase-k state
-//  such that P_k = P_mix on the ghost side.  This drives a proper
-//  phase-k Riemann problem with a real pressure gradient, allowing
-//  phase 1 (liquid) to rarefy and phase 2 (vapor) to shock, each
-//  reaching the common P_star -- the pattern observed in the offline
-//  code's plot.
-//
-//  Mixture flux is the alpha-weighted sum of the two phase fluxes,
-//  with alpha upwinded at the mixture S_M.
-// ---------------------------------------------------------------------
-inline bool ps_two_fluid_flux(const PsState& sL, const PsState& sR, V6& F_out)
-{
-    if (!sL.valid || !sR.valid) return false;
-
-    // Threshold below which phase k is treated as "absent" on that side
-    // and its state is replaced with a mixture-P ghost.
-    static const double alpha_present_thr =
-        ps_knob_real("ps_two_fluid_alpha_thr", 1.0e-2);
-
-    // Get mixture S_M for alpha transport.
-    const PsWaveSpeeds wm = ps_wave_speeds(sL, sR);
-    if (!wm.valid) return false;
-
-    // Helper: build ghost state for phase k on the "absent" side using
-    // linear isentrope from the "present" side to match a target pressure.
-    // Along an isentrope: drho/dP = 1/c^2.
-    auto ghost_state = [](double rho_present, double e_present, double P_present,
-                           double c_present, double P_target,
-                           double& rho_out, double& e_out) {
-        // Linear extrapolation along isentrope
-        const double c2 = c_present * c_present;
-        if (c2 <= 0.0) { rho_out = rho_present; e_out = e_present; return; }
-        rho_out = rho_present + (P_target - P_present) / c2;
-        if (rho_out <= 0.0) rho_out = 0.1 * rho_present;
-        // e change from isentrope: de/dP = P/(rho^2 c^2)
-        e_out = e_present + P_present * (P_target - P_present) / (rho_present * rho_present * c2);
-    };
-
-    // --- Phase 1 states (with ghost replacement if absent) ---
-    double rho_1_L = sL.p1.rho, u_1 = sL.u, P_1_L = sL.p1.P, e_1_L = sL.p1.e, c_1_L = sL.p1.c;
-    double rho_1_R = sR.p1.rho,             P_1_R = sR.p1.P, e_1_R = sR.p1.e, c_1_R = sR.p1.c;
-    if (sL.p1.alpha < alpha_present_thr) {
-        // Phase 1 absent on L; ghost = present-side (R) phase 1 extrapolated to P_mix_L
-        ghost_state(sR.p1.rho, sR.p1.e, sR.p1.P, sR.p1.c, sL.P_mix, rho_1_L, e_1_L);
-        P_1_L = sL.P_mix;  c_1_L = sR.p1.c;
-    }
-    if (sR.p1.alpha < alpha_present_thr) {
-        // Phase 1 absent on R; ghost extrapolated from L phase 1 to P_mix_R
-        ghost_state(sL.p1.rho, sL.p1.e, sL.p1.P, sL.p1.c, sR.P_mix, rho_1_R, e_1_R);
-        P_1_R = sR.P_mix;  c_1_R = sL.p1.c;
-    }
-
-    // --- Phase 2 states (with ghost replacement if absent) ---
-    double rho_2_L = sL.p2.rho, P_2_L = sL.p2.P, e_2_L = sL.p2.e, c_2_L = sL.p2.c;
-    double rho_2_R = sR.p2.rho, P_2_R = sR.p2.P, e_2_R = sR.p2.e, c_2_R = sR.p2.c;
-    if (sL.p2.alpha < alpha_present_thr) {
-        ghost_state(sR.p2.rho, sR.p2.e, sR.p2.P, sR.p2.c, sL.P_mix, rho_2_L, e_2_L);
-        P_2_L = sL.P_mix;  c_2_L = sR.p2.c;
-    }
-    if (sR.p2.alpha < alpha_present_thr) {
-        ghost_state(sL.p2.rho, sL.p2.e, sL.p2.P, sL.p2.c, sR.P_mix, rho_2_R, e_2_R);
-        P_2_R = sR.P_mix;  c_2_R = sL.p2.c;
-    }
-
-    // --- Solve TWO independent HLLC problems ---
-    double F1_mass, F1_mom, F1_energy, S_M_1;
-    if (!single_fluid_hllc(rho_1_L, u_1, P_1_L, e_1_L, c_1_L,
-                            rho_1_R, sR.u, P_1_R, e_1_R, c_1_R,
-                            F1_mass, F1_mom, F1_energy, S_M_1)) return false;
-
-    double F2_mass, F2_mom, F2_energy, S_M_2;
-    if (!single_fluid_hllc(rho_2_L, u_1, P_2_L, e_2_L, c_2_L,
-                            rho_2_R, sR.u, P_2_R, e_2_R, c_2_R,
-                            F2_mass, F2_mom, F2_energy, S_M_2)) return false;
-
-    // --- Combine via alpha weighting ---
-    // Alpha upwind based on mixture S_M
-    const double alpha_1_upwind = (wm.S_M >= 0.0) ? sL.p1.alpha : sR.p1.alpha;
-    const double alpha_2_upwind = 1.0 - alpha_1_upwind;
-
-    F_out[0] = alpha_1_upwind * wm.S_M;               // alpha transport (S-A)
-    F_out[1] = alpha_1_upwind * F1_mass;              // alpha_1 * rho_1 * u
-    F_out[2] = alpha_2_upwind * F2_mass;              // alpha_2 * rho_2 * u
-    F_out[3] = alpha_1_upwind * F1_mom
-             + alpha_2_upwind * F2_mom;               // mixture momentum
-    F_out[4] = alpha_1_upwind * F1_energy;            // phase 1 energy flux
-    F_out[5] = alpha_2_upwind * F2_energy;            // phase 2 energy flux
-
-    for (int k = 0; k < 6; ++k) {
-        if (!std::isfinite(F_out[k])) return false;
-    }
-    return true;
-}
 
 
-// ---------------------------------------------------------------------
-//  Session 89af: real-fluid exact-Riemann per-phase two-fluid flux.
-//
-//  Same structural approach as ps_two_fluid_flux (two independent
-//  single-fluid Riemann problems per face, ghost-state closure for
-//  the absent phase using linear isentrope), but each single-fluid
-//  Riemann is solved with the IGL-FREE real-fluid exact solver in
-//  hem_exact_riemann_rf.H rather than HLLC.
-//
-//  Motivation: HLLC uses Toro's PVRS acoustic linearization for the
-//  contact wave.  For CO2 near the critical point, the liquid c is
-//  ~550 m/s at 100 bar and drops toward ~200 m/s in the L-star.  A
-//  linearized wave estimate is systematically wrong through this
-//  fan, leading to a mismatched star pressure/velocity that leaks
-//  into the mixture through the alpha-weighted flux sum.  The exact
-//  real-fluid solver integrates the isentrope with RK4 against the
-//  actual PR EOS and iterates on the Hugoniot for the shock side, so
-//  the star state is correct up to O(1e-5) instead of O(1) percent.
-//
-//  Requires eos.has_rf() -- i.e. per-phase (rho, e) -> {P, c}
-//  callbacks wired into the PsPhaseAPI.  Falls back to ps_two_fluid_
-//  flux if the exact solve fails at any face.
-// ---------------------------------------------------------------------
-inline bool ps_two_fluid_exact_flux(const PsState& sL, const PsState& sR,
-                                     const PsPhaseAPI& eos, V6& F_out)
-{
-    if (!sL.valid || !sR.valid)  return false;
-    if (!eos.has_rf())           return false;
-
-    static const double alpha_present_thr =
-        ps_knob_real("ps_two_fluid_alpha_thr", 1.0e-2);
-    static const int rf_substeps = ps_knob_int("ps_rf_substeps", 24);
-    static const double rf_tol = ps_knob_real("ps_rf_tol", 1.0e-5);
-
-    const PsWaveSpeeds wm = ps_wave_speeds(sL, sR);
-    if (!wm.valid) return false;
-
-    // Same linear-isentrope ghost closure as ps_two_fluid_flux for
-    // consistency (the ghost only fires when a phase's alpha is at
-    // the floor, so the state is nearly a placeholder anyway).
-    auto ghost_state = [](double rho_present, double e_present, double P_present,
-                           double c_present, double P_target,
-                           double& rho_out, double& e_out) {
-        const double c2 = c_present * c_present;
-        if (c2 <= 0.0) { rho_out = rho_present; e_out = e_present; return; }
-        rho_out = rho_present + (P_target - P_present) / c2;
-        if (rho_out <= 0.0) rho_out = 0.1 * rho_present;
-        e_out = e_present + P_present * (P_target - P_present)
-                          / (rho_present * rho_present * c2);
-    };
-
-    // Per-phase L/R states with ghost fills as in ps_two_fluid_flux.
-    double rho_1_L = sL.p1.rho, P_1_L = sL.p1.P, e_1_L = sL.p1.e, c_1_L = sL.p1.c;
-    double rho_1_R = sR.p1.rho, P_1_R = sR.p1.P, e_1_R = sR.p1.e, c_1_R = sR.p1.c;
-    if (sL.p1.alpha < alpha_present_thr) {
-        ghost_state(sR.p1.rho, sR.p1.e, sR.p1.P, sR.p1.c, sL.P_mix, rho_1_L, e_1_L);
-        P_1_L = sL.P_mix; c_1_L = sR.p1.c;
-    }
-    if (sR.p1.alpha < alpha_present_thr) {
-        ghost_state(sL.p1.rho, sL.p1.e, sL.p1.P, sL.p1.c, sR.P_mix, rho_1_R, e_1_R);
-        P_1_R = sR.P_mix; c_1_R = sL.p1.c;
-    }
-
-    double rho_2_L = sL.p2.rho, P_2_L = sL.p2.P, e_2_L = sL.p2.e, c_2_L = sL.p2.c;
-    double rho_2_R = sR.p2.rho, P_2_R = sR.p2.P, e_2_R = sR.p2.e, c_2_R = sR.p2.c;
-    if (sL.p2.alpha < alpha_present_thr) {
-        ghost_state(sR.p2.rho, sR.p2.e, sR.p2.P, sR.p2.c, sL.P_mix, rho_2_L, e_2_L);
-        P_2_L = sL.P_mix; c_2_L = sR.p2.c;
-    }
-    if (sR.p2.alpha < alpha_present_thr) {
-        ghost_state(sL.p2.rho, sL.p2.e, sL.p2.P, sL.p2.c, sR.P_mix, rho_2_R, e_2_R);
-        P_2_R = sR.P_mix; c_2_R = sL.p2.c;
-    }
-
-    // Solve two exact real-fluid Riemann problems per phase, sample
-    // the face state at x/t = 0, form the phase flux vector.
-    V3 F1;
-    if (!rf_riemann_face_flux(rho_1_L, sL.u, P_1_L, c_1_L, e_1_L,
-                                rho_1_R, sR.u, P_1_R, c_1_R, e_1_R,
-                                eos.rf1, F1, rf_substeps, /*max_outer=*/20, rf_tol)) {
-        return false;
-    }
-    V3 F2;
-    if (!rf_riemann_face_flux(rho_2_L, sL.u, P_2_L, c_2_L, e_2_L,
-                                rho_2_R, sR.u, P_2_R, c_2_R, e_2_R,
-                                eos.rf2, F2, rf_substeps, /*max_outer=*/20, rf_tol)) {
-        return false;
-    }
-
-    // Alpha upwind at mixture S_M (same as ps_two_fluid_flux).
-    const double alpha_1_upwind = (wm.S_M >= 0.0) ? sL.p1.alpha : sR.p1.alpha;
-    const double alpha_2_upwind = 1.0 - alpha_1_upwind;
-
-    F_out[0] = alpha_1_upwind * wm.S_M;
-    F_out[1] = alpha_1_upwind * F1[0];   // alpha_1 * (rho_1 u)
-    F_out[2] = alpha_2_upwind * F2[0];   // alpha_2 * (rho_2 u)
-    F_out[3] = alpha_1_upwind * F1[1]    // alpha_1 * (rho_1 u^2 + P_1)
-             + alpha_2_upwind * F2[1];   //           + alpha_2 * (rho_2 u^2 + P_2)
-    F_out[4] = alpha_1_upwind * F1[2];   // alpha_1 * (u (rho_1 E_1 + P_1))
-    F_out[5] = alpha_2_upwind * F2[2];
-
-    for (int k = 0; k < 6; ++k) {
-        if (!std::isfinite(F_out[k])) return false;
-    }
-    return true;
-}
 
 
-// ---------------------------------------------------------------------
-//  Top-level P-S flux dispatch.  Tries HLLD first; falls back to LLF
-//  on failure.  Analogous to hem_kms_hlld.H's dispatch pattern.
-//
-//  Session 89t: env-gated PS_FLUX={hllc, two_fluid} selects between
-//  the original mixture HLLC (misnamed "hlld") and the new two-fluid
-//  HLLC with ghost-state closure.
-//  Session 89af: PS_FLUX=exact adds real-fluid exact Riemann per phase.
-// ---------------------------------------------------------------------
-// Session 89am: post-process F_out to apply an interface gate.  At
-// faces across a strong alpha_1 jump (|dα| > iface_thr) the contact
-// wave IS the material interface.  Standard HLLC's upwind mass-flux
-// closure lets the dominant phase's mass flow across into the
-// "absent" phase's cell, inflating rho_k = m_k / alpha_k over time
-// because alpha_k stays clamped at ALPHA_FLOOR (NCA locks it as a
-// Lagrangian tag).  This shows up as the R-star u overshoot in
-// B4-Cross-critical with alpha_trace = 1e-6.
-//
-// Fix: at contact faces, zero the mass and energy fluxes for the
-// phase that is TRACE on the downwind side (the side that would
-// receive spurious mass from the majority phase's face flux).  This
-// is a discrete Saurel-Abgrall interface treatment; it does not
-// affect the contact wave speed itself (F[0]) nor the mixture
-// momentum flux (F[3]).  Env-gated: PS_IFACE_GATE=1 turns it on;
-// PS_IFACE_TRACE_THR sets the "trace" threshold (default 0.05).
-inline void ps_apply_interface_gate(const PsState& sL, const PsState& sR,
-                                     V6& F_out)
-{
-    static const bool iface_gate = ps_knob_int("ps_iface_gate", 0) != 0;
-    if (!iface_gate) return;
-
-    static const double iface_thr = ps_knob_real("ps_iface_thr", 0.5);
-    static const double trace_thr = ps_knob_real("ps_iface_trace_thr", 0.05);
-
-    const double aL = sL.p1.alpha;
-    const double aR = sR.p1.alpha;
-    const double dalpha = aR - aL;
-    if (std::fabs(dalpha) < iface_thr) return;
-
-    // Contact face detected.  Determine which side is "trace" for
-    // each phase.
-    const bool p1_trace_L = (aL       < trace_thr);
-    const bool p1_trace_R = (aR       < trace_thr);
-    const bool p2_trace_L = (1.0 - aL < trace_thr);
-    const bool p2_trace_R = (1.0 - aR < trace_thr);
-
-    // The mass flux F[1] = alpha_1 * rho_1 * u at the face.  If phase
-    // 1 is trace on the downwind side (the side receiving mass), we
-    // want no phase-1 mass crossing there.  Use the sign of F[3] to
-    // approximate the face flow direction.
-    // Actually, cleaner: use the contact wave speed sign.  A
-    // positive-going contact means L material moves right; downwind
-    // is R.  For SB-upwind alpha (F[0] = alpha_upwind * S_M), the
-    // sign of F[0] tells us S_M's sign.  Here we just use F[3]'s
-    // relationship to the L and R momenta.
-    // Simplest: if u_bar > 0 (approx by 0.5*(sL.u+sR.u)) then downwind
-    // is R; else L.
-    const double u_bar = 0.5 * (sL.u + sR.u);
-    const bool downwind_is_R = (u_bar >= 0.0);
-
-    if (downwind_is_R) {
-        // Phase 1 mass/energy leaks into R.  If R has p1 trace, gate.
-        if (p1_trace_R) { F_out[1] = 0.0; F_out[4] = 0.0; }
-        if (p2_trace_R) { F_out[2] = 0.0; F_out[5] = 0.0; }
-    } else {
-        if (p1_trace_L) { F_out[1] = 0.0; F_out[4] = 0.0; }
-        if (p2_trace_L) { F_out[2] = 0.0; F_out[5] = 0.0; }
-    }
-}
 
 
 

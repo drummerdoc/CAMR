@@ -296,23 +296,9 @@ inline double ps_relax_metastable_band()
     }();
     return v;
 }
-inline bool ps_cell_metastable(hem::PsPhaseAPI const& eos,
-                               double rho1, double e1, double rho2, double e2)
-{
-    const double band = ps_relax_metastable_band();
-    hem::PsPhase p1{}, p2{};
-    eos.state_from_rho_e_phase(1, rho1, e1, p1);   // liquid branch
-    eos.state_from_rho_e_phase(2, rho2, e2, p2);   // vapor branch
-    if (!p1.valid || !p2.valid) return true;       // invalid == refuse (like standalone)
-    if (p1.c <= 0.0 || p2.c <= 0.0) return true;   // spinodal
-    if (eos.Psat_of_T) {
-        const double Ps1 = eos.Psat_of_T(p1.T);
-        const double Ps2 = eos.Psat_of_T(p2.T);
-        if (std::isfinite(Ps1) && Ps1 > 0.0 && p1.P < (1.0 - band) * Ps1) return true; // stretched liquid
-        if (std::isfinite(Ps2) && Ps2 > 0.0 && p2.P > (1.0 + band) * Ps2) return true; // supersat vapor
-    }
-    return false;
-}
+//  (The host ps_cell_metastable went with mode 3, its last caller, on
+//   2026-08-17 (T1-c).  The device copy ps_dev::ps_cell_metastable
+//   survives for the device mode-0 guard, which presence forces off.)
 
 
 // -----------------------------------------------------------------
@@ -423,7 +409,7 @@ ps_mechanical_relax_cell(int i, int j, int k,
     //  (The #88 metastable guard's LEGACY fork lived here.  Deleted
     //  2026-08-17, T1-b: PsPres::enabled is hard-coded 1 and the
     //  ps_presence dial is read nowhere, so the enabled == 0 branch was
-    //  unreachable.  Its live consumer is mode 3 alone.)
+    //  unreachable, and mode 3 -- its last live consumer -- is gone too.)
 
     // Pack V6 in the layout ps_pressure_relax_cell expects.
     hem::V6 Uv;
@@ -678,7 +664,7 @@ ps_canonical_relax_cell(int i, int j, int k,
     //  (The #88 metastable guard's LEGACY fork lived here.  Deleted
     //  2026-08-17, T1-b: PsPres::enabled is hard-coded 1 and the
     //  ps_presence dial is read nowhere, so the enabled == 0 branch was
-    //  unreachable.  Its live consumer is mode 3 alone.)
+    //  unreachable, and mode 3 -- its last live consumer -- is gone too.)
 
 #ifdef CAMR_PS_DIAG
     //  Diagnostic (CAMR.ps_relax_diag = <i>, default -1 = off).  Dumps this
@@ -1774,33 +1760,6 @@ ps_harvest_states(amrex::MultiFab& S_new, int nghost = 0)
 }
 
 
-// Cached CAMR.ps_relax_taper_lo / _hi (#86): smoothstep edges (in
-// s=min(alpha1,1-alpha1)) for the mode-3 phase-vanishing HANDOFF.  s>=hi ->
-// full alpha-adjusting joint relaxation (two-phase bulk, dispersion intact);
-// s<=lo -> alpha frozen + fixed-alpha thermal relaxation only (well-behaved
-// single-DOF, no trace-phase pressure Newton).  Defaults lo=0.02, hi=0.10:
-// typical two-phase alpha >> hi, so the bulk is untouched; only the alpha->0/1
-// front hands off.  Set lo>=hi to disable the handoff (pure joint everywhere).
-inline amrex::Real ps_relax_taper_lo()
-{
-    static const amrex::Real v = []() -> amrex::Real {
-        amrex::Real val = amrex::Real(0.02);
-        amrex::ParmParse pp("CAMR");
-        pp.query("ps_relax_taper_lo", val);
-        return val;
-    }();
-    return v;
-}
-inline amrex::Real ps_relax_taper_hi()
-{
-    static const amrex::Real v = []() -> amrex::Real {
-        amrex::Real val = amrex::Real(0.10);
-        amrex::ParmParse pp("CAMR");
-        pp.query("ps_relax_taper_hi", val);
-        return val;
-    }();
-    return v;
-}
 
 
 // Cached CAMR.ps_relax_verbose (default 0 = silent).  When 0, ps_apply_relaxation

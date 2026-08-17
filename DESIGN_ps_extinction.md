@@ -678,7 +678,9 @@ cannot be adopted as a one-line change, and it should not be adopted on a lean.
   composite of {mechanical, thermal, MT} converge to saturation
   (`P1=P2, T1=T2, g1=g2`), and is the answer ORDER-DEPENDENT?  Order-dependence
   proves the split is not a projection and settles X3 on evidence.
-  `ps_joint_pt_equilibrium` already exists for the (P,T) pair, and
+  `ps_joint_pt_equilibrium` (DELETED 2026-08-17 with mode 3; the same
+  Picard now lives inline inside the X3 kernel as its joint P-T
+  constraint, WORKLOG theta fork) existed for the (P,T) pair, and
   `ps_mass_transfer_relax_cell` for the g leg, so the harness is a composition
   of existing kernels — no new physics.  Report the fixed point reached by each
   of the orderings, against the flash solution of the same (rho_mix, e_mix).

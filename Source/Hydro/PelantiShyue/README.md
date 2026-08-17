@@ -573,6 +573,5 @@ fluctuation register for just those slots.
 | `PS_hllc.H`                      | HLLC solver + `wp_phase_energy_defect` helper              |
 | `PS_reconstruction.H`            | MUSCL PLM reconstruction (env `CAMR.ps_recon=1`)           |
 | `PS_relaxation.H`                | Pelanti pressure relaxation Newton                         |
-| `PS_alpha_transport.H`           | (retained for reference; superseded by WP-α cell kernel)   |
 | `PS_nscbc.H`                     | NSCBC boundary treatment                                   |
 | `README.md`                      | this file                                                  |

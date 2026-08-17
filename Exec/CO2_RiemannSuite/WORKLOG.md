@@ -5727,3 +5727,103 @@ no 1-D measurement supports either, 2-D is deferred, so they are frozen
 where they are), mode 4 (the A/B reference the record leans on; it retires
 with ps_mech_close when Sigma lands), mode 5.  PS_relax_device.H now
 mirrors modes 0 and 2 only.
+
+## 2026-08-17 — T1-c: the SECOND TIER the root deletion exposed, plus the
+## stale-documentation sweep.  PREDICTIONS FIRST.
+
+THE LESSON REPEATING.  T1-b deleted ps_face_flux, the face-flux chain's
+root.  That orphaned a whole second tier which the STATUS 6.5 audit never
+listed, because while ps_face_flux existed they all had a caller:
+  * ps_two_fluid_flux            (the "two-fluid HLLC with ghost-state
+                                  closure" variant ps_hem_flux selected)
+  * ps_two_fluid_exact_flux      (the PS_FLUX=exact variant)
+  * ps_apply_interface_gate      (defined, never called by anything)
+  * hem_exact_riemann_rf.H       — 776 lines, the real-fluid exact Riemann
+                                  solver, whose ONLY consumer was
+                                  ps_two_fluid_exact_flux
+  * the CAMR.ps_two_fluid_alpha_thr knob
+Verified by grep: the sole remaining mention of ps_two_fluid_flux anywhere
+is a sentence in a markdown file.  Dead code has CLOSURE, and an audit
+that lists members instead of computing the closure will always
+under-report.  Also orphaned today: the host ps_cell_metastable (mode 3
+was its last caller) and the ps_relax_taper_lo/_hi dials (#86, the mode-3
+phase-vanishing handoff), which now have no consumer at all.
+
+DOCUMENTATION, and the distinction that governs it:
+  * The DATED LAB RECORD (WORKLOG, LEARNINGS) is NEVER edited.  Refutations
+    stay refuted on the record; that is the whole discipline.
+  * DESIGN NOTES for refuted or deleted machinery keep their reasoning and
+    get a SUPERSEDED pointer.  The argument is the asset, not the verdict.
+  * REFERENCE DOCS that claim to describe the CURRENT code get corrected,
+    because a reader cannot tell a stale claim from a live one.
+Under the third heading: STATUS 1.3 (PS_alpha_transport described as
+"preserved in-tree" — it is deleted), STATUS 5 (lists ps_mode3_test),
+STATUS 6.5 (lists the flux family as dead — now gone), STATUS 6.6 (claims
+getenv escape hatches; the env retirement landed 2026-08-15 and a grep
+finds none left in the PS tree), STATUS 7.8 (lists cleanup items now
+done), the README and PRIMER file tables (PS_alpha_transport.H row), and
+inputs.decomp — which both DOCUMENTS mode 3 in its header and still SETS
+CAMR.ps_p_tau, a dial that no longer exists.  PS_MODEL_STATUS.md is
+superseded in its entirety and goes.
+
+PREDICTIONS:
+  T1c-1 The 20-case battery is BIT-IDENTICAL, all 22 rows.
+        FALSIFIER: any digit moves — something in the second tier was
+        reachable after all.
+  T1c-2 The build stays clean; the compiler is again the witness for
+        closure.  FALSIFIER: an error naming a caller I did not find.
+  T1c-3 inputs.decomp still RUNS after its stale dial is removed (it is a
+        live case file, not a doc).  FALSIFIER: it does not — then
+        ps_p_tau was load-bearing there and mode 3's deletion cost a case.
+
+**T1-c RESULTS (2026-08-17): all three predictions confirmed.  1,068 more
+lines out; the closure lesson paid twice in one day.**
+
+T1c-1 PASS: 22 rows bit-identical.
+T1c-2 PASS, and the compiler earned it AGAIN, twice in the same edit: first
+      refusing `PsPhaseAPI` once hem_exact_riemann_rf.H was un-included
+      (the struct still carried `RfEosAPI rf1, rf2` members and a
+      `has_rf()` that nothing called), then compiling clean once those went
+      too.  Two tiers, two compiler catches, same root cause: an audit that
+      lists dead FUNCTIONS cannot see dead TYPES and MEMBERS reachable only
+      from them.
+T1c-3 PASS: inputs.decomp runs (rc = 0, 5 steps) with its dead
+      CAMR.ps_p_tau line removed — the dial was documentation, not physics.
+
+CODE REMOVED (all orphaned by T1-b's root deletion or Tier 2's mode-3
+deletion): ps_two_fluid_flux (100), ps_two_fluid_exact_flux (106),
+ps_apply_interface_gate (69, defined and never called by anything),
+PsPhaseAPI::rf1/rf2 + has_rf(), hem_exact_riemann_rf.H (776 — the
+real-fluid exact Riemann solver, delisted from Make.package and parked),
+the host ps_cell_metastable (17, mode 3 was its last caller), and
+ps_relax_taper_lo/_hi (27, the #86 mode-3 phase-vanishing handoff, with no
+consumer left at all).
+
+DOCUMENTATION, by the three-way rule stated in the predictions:
+  * NOT TOUCHED: WORKLOG and LEARNINGS.  The record keeps its refutations.
+  * SUPERSEDED POINTER, reasoning intact: DESIGN_ps_extinction's
+    ps_joint_pt_equilibrium reference now says where that Picard went (it
+    is inlined in the X3 kernel as the joint P-T constraint).
+  * CORRECTED because they claim to describe live code: STATUS 1.3
+    (PS_alpha_transport was "preserved in-tree"; it is deleted, and the
+    paragraph is now the record of the argument it illustrated), STATUS 5
+    (dropped ps_mode3_test), STATUS 6.5 (the flux family is removed, not
+    merely dead — with the closure lesson written into the section),
+    STATUS 6.6 (**it claimed getenv escape hatches; the env retirement
+    landed 2026-08-15 and no getenv remains in the PS tree — but the
+    legacy numerics are still reachable by an INPUT FILE, which is a
+    different exposure than the bullet used to claim**), STATUS 7.8
+    (reconciled: what is done, and the three items still open — the
+    Wallis-form copies, the dead qaux/hydro_srctoprim on the PS path, the
+    stale executable names), the README file table, the PRIMER row,
+    STANDALONE_LESSONS_GAP's ps_two_fluid_flux sentence, and inputs.decomp
+    (a LIVE case file that both documented mode 3 and set a dial that no
+    longer exists).
+  * DELETED OUTRIGHT: PS_MODEL_STATUS.md.  It described a modes-0-3 world,
+    called mode 2 the demo default and modes 1/2 "the production choice",
+    and knew nothing of mode 4, mode 5, X3, the theta wall or B11.  A
+    banner was the interim; superseded in every section, it goes.  Parked
+    in _to_delete_session/ and recoverable from git history.
+
+Both parked files are in Exec/CO2_RiemannSuite/_to_delete_session/ because
+the device bridge cannot unlink.

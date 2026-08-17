@@ -147,11 +147,12 @@ after the fact, using its own centred finite-difference of the velocity, to
 cancel a term the flux divergence should never have introduced.
 
 That is exactly the "two independent discretizations racing to cancel" pattern
-described above, and it is now **unused**: `CAMR_advance.cpp:7` and `:526` both
-record that the correction is no longer called, because under wave propagation
-`UALPHA1` never enters the flux divergence in the first place. The file is
-preserved in-tree as history, not as machinery. That deletion is the concrete
-payoff of the structural argument.
+described above, and it went unused: `CAMR_advance.cpp:7` and `:526` both
+record that the correction was no longer called, because under wave propagation
+`UALPHA1` never enters the flux divergence in the first place. **The file was
+deleted 2026-08-17** (T1-b); the argument it illustrates is the point, and this
+paragraph is its record. That deletion is the concrete payoff of the structural
+argument.
 
 One residual asymmetry, recorded honestly: in the rare *supersonic* HLLC
 branches `hllc_flux` still emits `F[UALPHA1] = alpha * u_n` while the cell
@@ -652,7 +653,7 @@ non-finite volume fraction; `[PS-EOS]` on a no-root inversion, which prints
 `probe_pr` reproduce line.
 
 Zero-D self-tests that run after initialisation and exit without time-stepping:
-`ps_ptg_selftest`, `ps_relax_sweep`, `ps_prelax_test`, `ps_mode3_test`,
+`ps_ptg_selftest`, `ps_relax_sweep`, `ps_prelax_test`,
 `ps_dilute_probe`, `ps_dev_relax_test` (`main.cpp:128-141`).
 
 ### 5.3 Compile-time-gated
@@ -812,14 +813,23 @@ Verified on the read side, not inferred from write sets:
 ### 6.5 Unreachable machinery from the earlier implementation
 
 - `hem::ps_flux` (`hem_pelanti_shyue.H:422`) and the three flux functions that
-  call it — `ps_hlld_flux`, `ps_pelanti_hllc_flux`, `ps_llf_flux` — have **no
+  call it — `ps_hlld_flux`, `ps_pelanti_hllc_flux`, `ps_llf_flux` — had **no
   caller anywhere in `Source/` outside that file**. `PS_umeth.cpp` never calls
   them. **DEAD in production.** The `PS_P_CLIP` guard lives inside that dead
   path, which is why setting it changed nothing (`PS_guards.H:13-16`).
 - `hem::ps_state_from_cons` (`:479`) is reached only from
   `hem::ps_mass_transfer_relax_cell`, which in `Source/` is called only from
   the zero-D test harness (`PS_zerod_test.H:140, 212`). **Test-only.**
-- `PS_alpha_transport.H` in its entirety — preserved, not called (§1.3).
+- `PS_alpha_transport.H` in its entirety — **deleted 2026-08-17** (§1.3).
+- **All of the above is now removed**, in two passes: T1-b took the chain from
+  `ps_face_flux` down, and T1-c took the second tier that deletion exposed —
+  `ps_two_fluid_flux`, `ps_two_fluid_exact_flux`, `ps_apply_interface_gate`,
+  the `PsPhaseAPI::rf1/rf2` members with `has_rf()`, and
+  `hem_exact_riemann_rf.H` (776 lines, the real-fluid exact Riemann solver,
+  whose only consumer was the exact-flux variant).  The lesson for this
+  section: **dead code has closure**, and a list of members always
+  under-reports it.  The compiler found both tiers, twice, by refusing to
+  compile what the audit had called self-contained.
 - Guards G1 (upper clamp) and G3 (upper cap, K≈100) were removed 2026-08-09;
   this is recorded in `GUARD_INVENTORY.md:206-208` and is **document-only** —
   the nine historical guard copies were not individually traced.
@@ -847,10 +857,14 @@ This is the category that has actually produced bugs.
 - Lower-severity hand-synchronised mirrors: `PS_FluctuationRegister.H:94, 144,
   175`, `PS_relaxation.H:1158`, `PS_sources.H:8`, `PS_umeth.H:7`,
   `PS_umeth.cpp:691`, `hem_pelanti_shyue.H:331, 2823, 3122`.
-- Legacy numerics retained inside the ported kernel, reachable only through
-  environment variables: `hem_pelanti_shyue.H:3187` (explicit forward-Euler
-  forms), `:3265` (`k_rate` marked "legacy (mis-scaled)"), `:3048, 3617`
-  (`getenv` escape hatches). Not reached from CAMR defaults.
+- Legacy numerics retained inside the ported kernel: explicit forward-Euler
+  forms, and a `k_rate` marked "legacy (mis-scaled)". **Correction
+  2026-08-17:** these were reachable only through *environment variables* when
+  this was written; the env-knob retirement (WORKLOG 2026-08-15) converted all
+  42 `getenv` sites to `CAMR.*` ParmParse reads, and a grep now finds no
+  `getenv` anywhere in the PS tree. They remain unreached at CAMR defaults —
+  but they are reachable by an input file, which is a different exposure than
+  this bullet used to claim.
 
 ---
 
@@ -963,13 +977,17 @@ non-convergence counter reads zero.
 
 ### 7.8 Mechanical cleanup
 
-Delete the 36 `pr.enabled` forks (including the three copies of the wrong
-Wallis form); fix the stale comments in §6.2; remove the dead `qaux` allocation
-and `hydro_srctoprim` call on the PS path; decide the fate of
-`PS_alpha_transport.H` and the dead `hem::ps_flux` family; re-baseline
-`verify_canonical.py` checks 3 and 4, whose thresholds predate the
-dt-consistency fix; and repair or remove the stale default executable names and
-the dead `ps_presence` flag reference in the harnesses.
+**DONE 2026-08-17** (T1-b, T1-c, Tier 2), each verified battery-bit-identical:
+the unreachable `pr.enabled == 0` forks; the stale §6.2 comments; the fate of
+`PS_alpha_transport.H` and the `hem::ps_flux` family — both deleted, with the
+second tier the root deletion exposed; `verify_canonical.py` checks 3 and 6
+demoted to an explicit `[STALE]` report carrying their number and their reason
+(check 4 likewise pending a mode-2 re-baseline); and the dead `ps_presence`
+flag reference corrected in the harness header.
+
+**STILL OPEN here:** the three copies of the wrong Wallis form, the dead `qaux`
+allocation and `hydro_srctoprim` call on the PS path, and the stale default
+executable names in the harnesses.
 
 ### 7.9 Deferred by policy
 
