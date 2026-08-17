@@ -474,36 +474,10 @@ ps_joint_pt_equilibrium(hem::V6& U, const EOS_T& eos, int iters = 5)
     return ok;
 }
 
-// ---------------------------------------------------------------------
-//  ps_pmech_finite_relax_cell (MODE 3, device; PRODUCTION joint path only,
-//  ps_mode3_joint=1).  #88 guard (band 0.05) + joint target + exp blend.
-//  V6-level equivalent of the CAMR wrapper's joint branch.
-// ---------------------------------------------------------------------
-template <class EOS_T>
-PS_HD void
-ps_pmech_finite_relax_cell(hem::V6& U, const EOS_T& eos,
-                           double dt, double tau_p, double theta,
-                           bool metastable_guard = true, double band = 0.05,
-                           int outer_iters = 3)
-{
-    const double a1 = U[0];
-    if (!std::isfinite(a1) || a1 < 1.0e-6 || a1 > 1.0 - 1.0e-6) return;
-    const double m1 = U[1], m2 = U[2];
-    if (m1 <= 0.0 || m2 <= 0.0) return;
-    const double rho_mix = m1 + m2;
-    const double ke = 0.5 * (U[3]/rho_mix) * (U[3]/rho_mix);
-    const double rho1 = m1/a1, rho2 = m2/(1.0-a1);
-    const double e1 = U[4]/m1 - ke, e2 = U[5]/m2 - ke;
-    if (metastable_guard && ps_cell_metastable(eos, rho1, e1, rho2, e2, band)) return;
+//  (ps_dev::ps_pmech_finite_relax_cell, the mode-3 device twin, was
+//   deleted 2026-08-17 with mode 3 itself -- WORKLOG Tier 2.  This file
+//   now mirrors modes 0 and 2 only.)
 
-    hem::V6 Ueq = U;
-    if (!ps_joint_pt_equilibrium(Ueq, eos, outer_iters)) return;
-    const double frac_p = (tau_p > 0.0) ? -std::expm1(-dt / tau_p) : 1.0;
-    const double frac_E = (theta > 0.0) ? -std::expm1(-dt / theta) : 1.0;
-    U[0] += frac_p * (Ueq[0] - U[0]);
-    U[4] += frac_E * (Ueq[4] - U[4]);
-    U[5] += frac_E * (Ueq[5] - U[5]);
-}
 
 }  // namespace ps_dev
 

@@ -1029,180 +1029,7 @@ ps_x3_grid_relax_cell(int i, int j, int k,
 }
 
 
-// -----------------------------------------------------------------
-//  ps_joint_pt_equilibrium (#86) — the JOINT (P1=P2 AND T1=T2) equilibrium
-//  target for the finite-rate mode-3 relaxation, computed ONCE by a
-//  converged Picard of the alpha-ADJUSTING mechanical relax + the isochoric
-//  thermal relax.  With alpha AND the energy split both free (2 DOF / 2 eqns)
-//  this converges to a genuine joint equilibrium (contrast the isochoric-only
-//  1-DOF ps_pt_equilibrium_relax_cell, which can only reach a P/T compromise).
-//  Returns false (leaving U unchanged) if no valid target exists.  Shared by
-//  the production cell driver AND the CI stiff-limit test so they cannot drift.
-// -----------------------------------------------------------------
-inline int ps_mode3_joint();   // fwd decl (defined with the other cached flags)
 
-inline bool
-ps_joint_pt_equilibrium(hem::V6& U, hem::PsPhaseAPI const& eos, int iters = 5)
-{
-    if (iters < 5) iters = 5;
-    bool ok = true;
-    for (int it = 0; it < iters && ok; ++it) {
-        ok = ok && hem::ps_pressure_relax_cell(U, eos);    // alpha-adjust: P1->P2
-        ok = ok && hem::ps_iso_thermal_relax_cell(U, eos); // split:       T1->T2
-    }
-    return ok;
-}
-
-// -----------------------------------------------------------------
-//  ps_pmech_finite_relax_cell (task #80, ps_relax_mode=3): FINITE-RATE
-//  mechanical (alpha-adjusting) pressure relaxation + finite-rate thermal
-//  relaxation.  Unlike modes 1/2 (instantaneous, isochoric P; alpha fixed)
-//  this lets mechanical disequilibrium (P1 != P2, via a lagging alpha) AND
-//  thermal disequilibrium persist over ~u*tau_p / u*theta -- the
-//  Baer-Nunziato pressure-disequilibrium regime -- thickening the flash /
-//  relaxation front and representing metastable delayed equilibration.
-//  ps_p_tau -> 0 recovers instantaneous mechanical relax (mode-0 pressure
-//  step); theta -> 0 recovers instantaneous thermal.  Writes back alpha
-//  (which the mechanical relax adjusts) in addition to the phase energies.
-// -----------------------------------------------------------------
-inline void
-ps_pmech_finite_relax_cell(int i, int j, int k,
-                           amrex::Array4<amrex::Real> const& U,
-                           hem::PsPhaseAPI const& eos,
-                           amrex::Real dt, amrex::Real tau_p, amrex::Real theta,
-                           int outer_iters = 3)
-{
-    using amrex::Real;
-    constexpr Real alpha_floor = Real(1.0e-6);
-    const Real alpha1_in = U(i,j,k, UALPHA1);
-    if (!std::isfinite(alpha1_in)) return;
-    if (alpha1_in < alpha_floor || alpha1_in > Real(1.0) - alpha_floor) return;
-
-    const Real m1 = U(i,j,k, UM1RHO1);
-    const Real m2 = U(i,j,k, UM2RHO2);
-    if (m1 <= Real(0.0) || m2 <= Real(0.0)) return;
-    {   // S4 presence gate (design §5)
-        const PsPres& prS4g = ps_presence_params();
-        if (prS4g.enabled != 0 &&
-            !ps_presence_relax_gate(alpha1_in, m1, m2, prS4g)) { return; }
-    }
-
-    const Real px = U(i,j,k, UMX);
-#if (AMREX_SPACEDIM >= 2)
-    const Real py = U(i,j,k, UMY);
-#else
-    const Real py = Real(0.0);
-#endif
-#if (AMREX_SPACEDIM == 3)
-    const Real pz = U(i,j,k, UMZ);
-#else
-    const Real pz = Real(0.0);
-#endif
-    // #88 metastable guard (same as mode-0): mode-3 is also alpha-adjusting, so
-    // refuse to relax a metastable cell (stretched liquid / supersat vapor /
-    // spinodal) rather than deposit spurious PdV work into the dilute phase.
-    {
-        const Real rho_mix = m1 + m2;
-        const Real ke = Real(0.5)*(px*px+py*py+pz*pz)/(rho_mix*rho_mix);
-        const double rho1 = double(m1/alpha1_in), rho2 = double(m2/(Real(1.0)-alpha1_in));
-        const double e1 = double(U(i,j,k,UE1)/m1) - double(ke);
-        const double e2 = double(U(i,j,k,UE2)/m2) - double(ke);
-        if (ps_relax_metastable_guard() != 0 && ps_cell_metastable(eos,rho1,e1,rho2,e2)) return;
-    }
-    hem::V6 Uv;
-    Uv[0] = alpha1_in;
-    Uv[1] = m1;
-    Uv[2] = m2;
-    Uv[3] = std::sqrt(px*px + py*py + pz*pz);
-    Uv[4] = U(i,j,k, UE1);
-    Uv[5] = U(i,j,k, UE2);
-
-    // -----------------------------------------------------------------
-    //  JOINT-TARGET finite-rate relaxation (#86 rewrite).
-    //
-    //  The previous mode-3 did a Picard ALTERNATION of two finite-rate
-    //  sub-steps, each blending toward a SEPARATELY-computed single-process
-    //  equilibrium (mechanical-P, then thermal-T).  Because the two targets
-    //  are recomputed from each other's partial output every sweep, the
-    //  finite blends never settle: they leave a cell-dependent off-manifold
-    //  residual in (alpha, energy-split).  Across a smeared material contact
-    //  that residual varies cell-to-cell -> spurious P_mix -> the ~10 m/s
-    //  contact velocity ripple.  This is exactly the splitting-error /
-    //  inconsistent-target failure mode flagged in the relaxation literature
-    //  (Saurel-Abgrall 1999 uniform-pressure condition; Flatten-Lund 2011
-    //  subcharacteristic hierarchy; the cure is Pelanti 2022's coupled
-    //  relaxation toward the JOINT equilibrium fixed point).
-    //
-    //  Fix: compute the JOINT (P1=P2 AND T1=T2) equilibrium ONCE by a
-    //  converged Picard of the alpha-ADJUSTING mechanical relax
-    //  (ps_pressure_relax_cell, moves alpha) + the isochoric thermal relax
-    //  (ps_iso_thermal_relax_cell, moves the energy split).  With alpha AND
-    //  the split both free this is a genuine 2-DOF/2-eqn joint equilibrium
-    //  (unlike the isochoric-only 1-DOF compromise).  Then take a SINGLE
-    //  exact-exponential blend toward that one target:
-    //      alpha        relaxes at the mechanical rate 1/tau_p
-    //      energy-split relaxes at the thermal    rate 1/theta
-    //  A single rate on the split (UE1,UE2 blended by the SAME frac_E) keeps
-    //  UE1+UE2 -- i.e. total energy -- conserved to round-off, because the
-    //  joint target itself conserves it (all sub-relaxations do).  In the
-    //  stiff limit tau_p,theta -> 0 (frac -> 1) the cell lands EXACTLY on the
-    //  joint equilibrium: the asymptotic-preserving / well-balanced property
-    //  (CI-checkable, see PS_zerod_test.H ps_mode3_stifflimit_test).
-    //  tau_p -> inf freezes alpha (frozen sound speed); tau_p -> 0 recovers
-    //  the Wood/equilibrium mechanical limit -- the decompression-wave
-    //  sound-speed dispersion the two-pressure flux is built to capture.
-    //  Legacy path (ps_mode3_joint=0): the original Picard ALTERNATION of two
-    //  separately-targeted finite blends -- kept ONLY for A/B regression so the
-    //  ripple reduction is measurable; NOT recommended (see #86).
-    // -----------------------------------------------------------------
-    if (ps_mode3_joint() == 0) {
-        for (int it = 0; it < outer_iters; ++it) {
-            hem::ps_pressure_relax_cell_finite(Uv, eos, double(dt), double(tau_p));
-            hem::ps_iso_thermal_relax_cell_finite(Uv, eos, double(dt), double(theta));
-        }
-        U(i,j,k, UALPHA1) = Uv[0];
-        U(i,j,k, UE1)     = Uv[4];
-        U(i,j,k, UE2)     = Uv[5];
-        return;
-    }
-
-    hem::V6 Ueq = Uv;
-    // Converged joint (P1=P2 & T1=T2) equilibrium (target computed once; a few
-    // extra Picard sweeps here are cheap since it runs a single time per cell
-    // per step).  Shared helper -> identical to the CI stiff-limit test target.
-    if (!ps_joint_pt_equilibrium(Ueq, eos, outer_iters)) {
-        return;   // no valid joint target -> leave cell unchanged (safe)
-    }
-
-    const amrex::Real frac_p = (tau_p > amrex::Real(0.0))
-                             ? -std::expm1(-dt / tau_p)     // 1-exp(-dt/tau_p)
-                             : amrex::Real(1.0);            // tau_p<=0: instant mechanical
-    const amrex::Real frac_E = (theta > amrex::Real(0.0))
-                             ? -std::expm1(-dt / theta)     // 1-exp(-dt/theta)
-                             : amrex::Real(1.0);            // theta<=0: instant thermal
-    Uv[0] += double(frac_p) * (Ueq[0] - Uv[0]);            // alpha  @ 1/tau_p
-    Uv[4] += double(frac_E) * (Ueq[4] - Uv[4]);            // energy split @ 1/theta
-    Uv[5] += double(frac_E) * (Ueq[5] - Uv[5]);            //   (single rate -> energy conserved)
-
-    // #86 STATUS: the joint-target rewrite makes the rarefaction FAN and two-
-    // phase BULK ripple-free (matching mode-1: fan rip_std ~0.1 m/s) and is
-    // asymptotic-preserving (CI: stiff limit == joint eq to round-off).  A
-    // residual localized velocity oscillation (~+-10 m/s over a few cells)
-    // remains ONLY at the phase-vanishing front (alpha1 -> 0/1), where every
-    // pressure/thermal equilibrium closure (alpha-adjusting Newton, isochoric-P
-    // Newton, and even fixed-alpha iso-THERMAL) evaluates trace/spinodal states
-    // (#41) and either rings or drives dt collapse.  Four front-specializations
-    // were tried (rate taper, target blend to iso-P, sequenced handoff to iso-T,
-    // fold) -- all either destabilized or made it worse -- so mode-3 keeps the
-    // PLAIN joint target (the only stable, ripple-in-bulk-free variant).  A true
-    // fix needs the handoff to target a GENUINE single-phase state (full vanish-
-    // fold, no two-phase EOS eval), which is mass-conservative only at truly-
-    // trace alpha; extending it up to the oscillation body is open.  mode-3 is
-    // for decompression studies; use modes 1/2 for production demos.
-    U(i,j,k, UALPHA1) = Uv[0];
-    U(i,j,k, UE1)     = Uv[4];
-    U(i,j,k, UE2)     = Uv[5];
-}
 
 
 // Cached CAMR.ps_relax_mode: 0 = mechanical pressure relaxation
@@ -1946,20 +1773,6 @@ ps_harvest_states(amrex::MultiFab& S_new, int nghost = 0)
     if (R.flush_stride > 0 && (++R.ncalls % R.flush_stride) == 0) R.flush();
 }
 
-// Cached CAMR.ps_mode3_joint (#86): 1 (default) = joint-target integrator
-// (single blend toward the converged joint P/T equilibrium; ripple-free,
-// asymptotic-preserving); 0 = legacy Picard-alternation of two separately
-// targeted finite blends (kept for A/B regression only -- rings at contacts).
-inline int ps_mode3_joint()
-{
-    static const int v = []() -> int {
-        int val = 1;
-        amrex::ParmParse pp("CAMR");
-        pp.query("ps_mode3_joint", val);
-        return val;
-    }();
-    return v;
-}
 
 // Cached CAMR.ps_relax_taper_lo / _hi (#86): smoothstep edges (in
 // s=min(alpha1,1-alpha1)) for the mode-3 phase-vanishing HANDOFF.  s>=hi ->
@@ -1989,18 +1802,6 @@ inline amrex::Real ps_relax_taper_hi()
     return v;
 }
 
-// Cached CAMR.ps_p_tau (mechanical/pressure relaxation time [s], default 0
-// = instantaneous).  Only used by ps_relax_mode=3 (task #80).
-inline amrex::Real ps_p_tau()
-{
-    static const amrex::Real v = []() -> amrex::Real {
-        amrex::Real val = amrex::Real(0.0);
-        amrex::ParmParse pp("CAMR");
-        pp.query("ps_p_tau", val);
-        return val;
-    }();
-    return v;
-}
 
 // Cached CAMR.ps_relax_verbose (default 0 = silent).  When 0, ps_apply_relaxation
 // emits NO per-step stdout and skips the global α min/max MPI reduction — cheap.
@@ -2806,7 +2607,7 @@ AMREX_GPU_HOST_DEVICE
 inline void
 ps_relax_cell_device(amrex::Array4<amrex::Real> const& U, int i, int j, int k,
                      const EOS_T& eos, int relax_mode,
-                     amrex::Real dt, amrex::Real theta, amrex::Real tau_p,
+                     amrex::Real dt, amrex::Real theta,
                      int metastable_guard, amrex::Real band,
                      const PsPres& pr)
 {
@@ -2834,12 +2635,7 @@ ps_relax_cell_device(amrex::Array4<amrex::Real> const& U, int i, int j, int k,
     Uv[0]=double(a1); Uv[1]=double(m1); Uv[2]=double(m2);
     Uv[3]=double(pmag); Uv[4]=double(U(i,j,k,UE1)); Uv[5]=double(U(i,j,k,UE2));
 
-    if (relax_mode == 3) {
-        ps_dev::ps_pmech_finite_relax_cell(Uv, eos, double(dt), double(tau_p),
-                                           double(theta), metastable_guard != 0,
-                                           double(band), 3);
-        U(i,j,k,UALPHA1)=Real(Uv[0]); U(i,j,k,UE1)=Real(Uv[4]); U(i,j,k,UE2)=Real(Uv[5]);
-    } else if (relax_mode == 2) {
+    if (relax_mode == 2) {
         ps_dev::ps_ptg_relax_cell(Uv, eos, double(dt), double(theta), 3);
         U(i,j,k,UE1)=Real(Uv[4]); U(i,j,k,UE2)=Real(Uv[5]);
     } else {   // mode 0 mechanical (alpha-adjusting) + #88 guard in the wrapper
@@ -2870,13 +2666,12 @@ ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
     // EOS-heavy: per cell runs the branch-locked PR Newton (2-3 iters × 2
     // phases).  This is the dominant physics cost of CAMR_advance.
     BL_PROFILE("PS::ps_apply_relaxation()");
-    // ---- GPU-port B2: fused device-kernel path (modes 0/2/3), gated. ----
+    // ---- GPU-port B2: fused device-kernel path (modes 0/2), gated. ----
     if (ps_relax_device() != 0) {
         const int relax_mode = ps_relax_mode();
-        if (relax_mode == 0 || relax_mode == 2 || relax_mode == 3) {
+        if (relax_mode == 0 || relax_mode == 2) {
             const ps_dev::EosDev eos_d;
             const amrex::Real theta = ps_theta_tau();
-            const amrex::Real tau_p = ps_p_tau();
             const PsPres pres_d = ps_presence_params();   // host read, captured
             // #88 is LEGACY-ONLY under presence (S4): the regime gate owns it.
             const int   mguard = (pres_d.enabled != 0)
@@ -2888,7 +2683,7 @@ ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
                 [=] AMREX_GPU_DEVICE (int bno, int i, int j, int k) noexcept
                 {
                     ps_relax_cell_device(ma[bno], i, j, k, eos_d, relax_mode,
-                                         dt, theta, tau_p, mguard, band,
+                                         dt, theta, mguard, band,
                                          pres_d);
                 });
             return;   // device path: host-only relax diagnostics are skipped
@@ -2922,7 +2717,17 @@ ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
     // finite-rate thermal relaxation (theta = ps_theta_tau).  tasks #27/#77.
     const int relax_mode = ps_relax_mode();
     const amrex::Real theta = ps_theta_tau();
-    const amrex::Real tau_p = ps_p_tau();
+    //  Mode 3 (finite-rate mechanical, task #80) was DELETED 2026-08-17
+    //  (WORKLOG Tier 2) after P-A measured its dial inert: 2.1 % spread in
+    //  B11's u across five decades of ps_p_tau, 0.01 % on B2, against
+    //  theta's 85 %.  Tell a stale input file so, rather than silently
+    //  demoting it to mode 0.
+    if (relax_mode == 3) {
+        amrex::Abort("CAMR.ps_relax_mode=3 was deleted 2026-08-17: the "
+                     "finite-rate mechanical leg was measured inert "
+                     "(WORKLOG probe P-A).  Use 0 for instantaneous "
+                     "mechanical relaxation, or 5 for the coupled source.");
+    }
 
     for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
         const amrex::Box bx = mfi.growntilebox(nghost);
@@ -2936,8 +2741,6 @@ ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
                 ps_x3_grid_relax_cell(i, j, k, U, eos, dt, theta);
             } else if (relax_mode == 4) {
                 ps_canonical_relax_cell(i, j, k, U, eos, dt, theta);
-            } else if (relax_mode == 3) {
-                ps_pmech_finite_relax_cell(i, j, k, U, eos, dt, tau_p, theta);
             } else if (relax_mode == 2) {
                 ps_ptg_relax_cell(i, j, k, U, eos, dt, theta);
             } else if (relax_mode == 1) {

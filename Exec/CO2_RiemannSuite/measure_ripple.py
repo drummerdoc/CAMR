@@ -47,9 +47,13 @@ def run(tag, args):
 
 CONFIGS = {
  'mode1_equilib' : ['CAMR.ps_relax_mode=1'],
- 'mode3_pk0_fin' : ['CAMR.ps_relax_mode=3','CAMR.ps_p_tau=1e-4','CAMR.ps_theta_tau=1e-4','CAMR.ps_pk_energy_flux=0'],
- 'mode3_pk1_fin' : ['CAMR.ps_relax_mode=3','CAMR.ps_p_tau=1e-4','CAMR.ps_theta_tau=1e-4','CAMR.ps_pk_energy_flux=1'],
- 'mode3_pk1_froz': ['CAMR.ps_relax_mode=3','CAMR.ps_p_tau=1.0','CAMR.ps_theta_tau=1.0','CAMR.ps_pk_energy_flux=1'],
+#  DELETED 2026-08-17 with mode 3 (WORKLOG Tier 2): ps_relax_mode=3 now
+#  aborts, and ps_p_tau / ps_pk_energy_flux went with it.  This harness is a
+#  ripple diagnostic, not a gate, so the entries are commented rather than
+#  rewritten -- if the ripple question comes back it comes back at mode 5.
+# 'mode3_pk0_fin' : ['CAMR.ps_relax_mode=3','CAMR.ps_p_tau=1e-4','CAMR.ps_theta_tau=1e-4','CAMR.ps_pk_energy_flux=0'],
+# 'mode3_pk1_fin' : ['CAMR.ps_relax_mode=3','CAMR.ps_p_tau=1e-4','CAMR.ps_theta_tau=1e-4','CAMR.ps_pk_energy_flux=1'],
+# 'mode3_pk1_froz': ['CAMR.ps_relax_mode=3','CAMR.ps_p_tau=1.0','CAMR.ps_theta_tau=1.0','CAMR.ps_pk_energy_flux=1'],
 }
 if __name__ == '__main__':
     sel = sys.argv[1:] if len(sys.argv) > 1 else list(CONFIGS)

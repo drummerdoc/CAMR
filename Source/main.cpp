@@ -130,8 +130,6 @@ main(int argc, char* argv[])
     pp_ps.query("ps_relax_sweep", ps_relax_sweep);
     int ps_prelax_test = 0;
     pp_ps.query("ps_prelax_test", ps_prelax_test);
-    int ps_mode3_test = 0;
-    pp_ps.query("ps_mode3_test", ps_mode3_test);
     int ps_dilute_probe = 0;
     pp_ps.query("ps_dilute_probe", ps_dilute_probe);
     int ps_dev_relax_test = 0;
@@ -142,7 +140,7 @@ main(int argc, char* argv[])
     pp_ps.query("ps_asy1_probe", ps_asy1_probe_f);
     int ps_x3_test = 0;                    // X3 fixed-point acceptance (F4)
     pp_ps.query("ps_x3_test", ps_x3_test);
-    if (ps_ptg_selftest || ps_relax_sweep || ps_prelax_test || ps_mode3_test || ps_dilute_probe || ps_dev_relax_test || ps_m2_test || ps_asy1_probe_f || ps_x3_test) {
+    if (ps_ptg_selftest || ps_relax_sweep || ps_prelax_test  || ps_dilute_probe || ps_dev_relax_test || ps_m2_test || ps_asy1_probe_f || ps_x3_test) {
       // CI gate (#82/#80): nonzero exit on any failure so ctest/CI can fail
       // the build.  Only IOProcessor runs the (serial, deterministic) checks.
       int fail = 0;
@@ -150,7 +148,6 @@ main(int argc, char* argv[])
         if (ps_ptg_selftest) fail += ps_ptg_zerod_selftest();
         if (ps_relax_sweep)  fail += ps_relax_corner_sweep();
         if (ps_prelax_test)  fail += ps_prelax_finite_test();
-        if (ps_mode3_test)   fail += ps_mode3_stifflimit_test();
         if (ps_dilute_probe) fail += ps_dilute_relax_probe();
         if (ps_dev_relax_test) fail += ps_dev_relax_bitmatch_test();
         if (ps_m2_test)      fail += ps_m2_ordering_test();

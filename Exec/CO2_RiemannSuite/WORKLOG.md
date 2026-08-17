@@ -5649,3 +5649,81 @@ same measurement as commit 6fc2408 ("hydro exact, relaxation is 100 % of
 the damage"), and it is Sigma's problem: theta(Sigma) is supposed to
 recognise that a resolved contact has no interfacial area to equilibrate
 across.
+
+## 2026-08-17 — TIER 2: mode 3 and its dial family are DELETED.
+## PREDICTIONS FIRST.
+
+WHAT GOES, and why each piece: ps_pmech_finite_relax_cell (the mode-3
+grid kernel), the mode-3 dispatch arm, ps_p_tau, ps_mode3_joint, the
+ps_mode3_test CI gate and ps_mode3_stifflimit_test, hem's
+ps_pressure_relax_cell_finite and ps_iso_pressure_relax_cell_finite (the
+finite-rate pressure kernels mode 3 alone called), and
+ps_joint_pt_equilibrium if it is left with no caller.  The case, from the
+record: refuted three times (front thickening ~1.3 cells with FEWER
+flashing cells than mode 2; its own driver rewritten under #86; B11 30x
+worse in P at theta = 1e-2), and its last remaining purpose -- being the
+only finite-rate mechanical leg, hence the only cheap way to measure
+ps_p_tau -- was DISCHARGED TODAY by P-A: 2.1 % spread in B11's u across
+five decades, 0.01 % in B2's, against theta's 85 %.
+
+WHAT STAYS, deliberately: mode 0 (the projector alone; it is X3's
+constraint and the designated fallback), modes 1/2 (the 2-D demo configs
+in inputs.satjet* / ADV2D; no 1-D measurement supports either, and 2-D is
+deferred, so they are frozen where they are, not deleted), mode 4 (the A/B
+reference the record leans on, retiring with ps_mech_close when Sigma
+lands), and mode 5.  PS_relax_device.H keeps its mode-3 twin for now: the
+whole hand-mirrored device path is one decision, not five.
+
+PREDICTIONS:
+  T2-1 The 20-case battery is BIT-IDENTICAL, all 22 rows.  Mode 3 is not
+       in any acceptance configuration.  FALSIFIER: any digit moves.
+  T2-2 The build stays clean, and the compiler is the witness for
+       "nothing else called these" — as it was in T1-b, where it caught an
+       incomplete dead-code list.  FALSIFIER: a link/compile error naming
+       a caller I did not expect; then that caller decides whether the
+       piece really is mode-3-only.
+  T2-3 measure_ripple.py loses four of its named configurations
+       (mode3_pk0_fin, mode3_pk1_fin, mode3_pk1_froz, and the mode-1
+       comparison stays).  That harness is a ripple diagnostic, not a
+       gate; it gets a note rather than a rewrite.  FALSIFIER: it turns
+       out to be wired into a gate — then it is repaired, not annotated.
+
+**TIER 2 RESULTS (2026-08-17): mode 3 is gone.  All three predictions
+confirmed; 377 lines out, battery bit-identical.**
+
+T2-1 PASS: all 22 rows bit-identical.  Mode 3 was in no acceptance
+     configuration, as expected.
+T2-2 PASS, and the compiler earned its keep again: the only error was
+     PS_zerod_test.H's summary line still summing a deleted counter
+     (nfail3).  Nothing else referenced the mode-3 surface.
+T2-3 PASS: measure_ripple.py loses three named configurations, commented
+     with the reason rather than rewritten (it is a ripple diagnostic, not
+     a gate; if the ripple question returns it returns at mode 5).
+
+REMOVED: ps_pmech_finite_relax_cell (150 lines with its header),
+ps_joint_pt_equilibrium (23; its last callers were mode 3 and the
+mode-3 0-D comparison — note the X3 joint constraint landed earlier today
+inlines the same Picard inside hem, because hem cannot call
+PS_relaxation), the ps_p_tau and ps_mode3_joint accessors, the mode-3 host
+dispatch arm, the mode-3 DEVICE dispatch arm and the ps_dev twin kernel
+(30), the ps_mode3_stifflimit_test CI gate (95), the device-vs-host MODE-3
+bit-match block (31), and main.cpp's ps_mode3_test dial.  The device
+wrapper's now-unused tau_p parameter went with them.
+
+A STALE INPUT IS TOLD, NOT DEMOTED: ps_relax_mode=3 now aborts with
+  "CAMR.ps_relax_mode=3 was deleted 2026-08-17: the finite-rate mechanical
+   leg was measured inert (WORKLOG probe P-A).  Use 0 for instantaneous
+   mechanical relaxation, or 5 for the coupled source."
+verified by running it.  Silently falling through to mode 0 was the
+alternative and it is exactly the kind of quiet substitution this project
+keeps finding the hard way.
+
+The 0-D device gate still passes on what remains: MODE 0 8/8 and MODE 2
+8/8 bit-identical, worst |dU| = 0.
+
+STILL STANDING, and why: mode 0 (the projector alone — it IS X3's
+constraint, and the designated fallback), modes 1/2 (the 2-D demo configs;
+no 1-D measurement supports either, 2-D is deferred, so they are frozen
+where they are), mode 4 (the A/B reference the record leans on; it retires
+with ps_mech_close when Sigma lands), mode 5.  PS_relax_device.H now
+mirrors modes 0 and 2 only.

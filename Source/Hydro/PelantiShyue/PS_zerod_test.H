@@ -769,101 +769,6 @@ inline int ps_prelax_finite_test()
 }
 
 
-// ---------------------------------------------------------------------
-//  ps_mode3_stifflimit_test  (#86) — verify the JOINT-TARGET mode-3
-//  relaxation (ps_joint_pt_equilibrium + the single exact-exponential
-//  blend used by ps_pmech_finite_relax_cell):
-//    (1) the joint target is a GENUINE joint equilibrium: P1=P2 AND T1=T2
-//        (distinguishes it from the isochoric 1-DOF P/T compromise);
-//    (2) the target conserves mixture mass & energy exactly;
-//    (3) ASYMPTOTIC-PRESERVING / well-balanced: the finite integrator with
-//        tau_p, theta -> 0 reproduces the joint equilibrium to round-off;
-//    (4) every finite-tau step conserves mixture energy EXACTLY (single rate
-//        on the energy split) and keeps alpha in (0,1);
-//    (5) monotone: larger tau -> smaller move.
-//  This is the CI relation that the old Picard-alternation mode-3 violated
-//  (its two competing single-process targets left a cell-varying residual ->
-//  the contact velocity ripple).  Returns the number of failed checks.
-// ---------------------------------------------------------------------
-inline int ps_mode3_stifflimit_test()
-{
-    const hem::PsPhaseAPI eos = ps_make_camr_eos_api();
-    if (!eos.valid()) { amrex::Print() << "[ps-mode3] EOS API invalid\n"; return 1; }
-    amrex::Print() << "\n===== PS mode-3 joint-target stiff-limit test (#86) =====\n";
-
-    // Off-equilibrium two-phase cell: liquid & vapor branches at DIFFERENT
-    // temperatures so both P1!=P2 and T1!=T2 (genuine joint disequilibrium).
-    const double a1 = 0.5, r1 = 950.0, r2 = 63.0;
-    const double e1 = ps_zt_e_of_rhoT(eos, 1, r1, 268.0);   // liquid at 268 K
-    const double e2 = ps_zt_e_of_rhoT(eos, 2, r2, 285.0);   // vapor  at 285 K
-    const double m1 = a1 * r1, m2 = (1.0 - a1) * r2;
-    hem::V6 U0; U0[0]=a1; U0[1]=m1; U0[2]=m2; U0[3]=0.0; U0[4]=m1*e1; U0[5]=m2*e2;
-    const double M0 = U0[1]+U0[2], E0 = U0[4]+U0[5];
-
-    int fail = 0;
-
-    // (1)+(2) Joint target quality.
-    hem::V6 Ueq = U0;
-    const bool teq_ok = ps_joint_pt_equilibrium(Ueq, eos, 8);
-    hem::PsState seq = hem::ps_state_from_cons(Ueq, eos);
-    double dP_eq=1, dT_eq=1;
-    if (teq_ok && seq.valid) {
-        dP_eq = std::abs(seq.p1.P-seq.p2.P)/std::max(1.0,std::abs(seq.p1.P));
-        dT_eq = std::abs(seq.p1.T-seq.p2.T)/std::max(1.0,seq.p1.T);
-    }
-    const double dM_eq = std::abs((Ueq[1]+Ueq[2])-M0)/M0;
-    const double dE_eq = std::abs((Ueq[4]+Ueq[5])-E0)/std::max(1.0,std::abs(E0));
-    const bool eq_pass = teq_ok && seq.valid && dP_eq<1e-3 && dT_eq<1e-3
-                       && dM_eq<1e-12 && dE_eq<1e-10;
-    if (!eq_pass) ++fail;
-    {
-        char b[256];
-        std::snprintf(b,sizeof b,
-            "  joint target: ok=%d valid=%d dP=%.1e dT=%.1e dM=%.0e dE=%.1e  %s\n",
-            (int)teq_ok,(int)seq.valid,dP_eq,dT_eq,dM_eq,dE_eq,eq_pass?"PASS":"**FAIL**");
-        amrex::Print() << b;
-    }
-
-    // (3)-(5) Finite integrator sweep — mirrors ps_pmech_finite_relax_cell's
-    // single-blend math exactly (alpha @ 1/tau_p, energy split @ 1/theta).
-    const double dt = 7.0e-6;
-    // theta = tau_p in this sweep (isotropic stiffness); tiny -> stiff limit.
-    const double taus[] = {1.0e-12, 1.0e-6, 1.0e-4, 1.0e-2};
-    double move_prev = 1e300;
-    char b[256];
-    for (double tp : taus) {
-        const double th = tp;
-        hem::V6 U = U0;
-        const double frac_p = (tp>0.0)? -std::expm1(-dt/tp) : 1.0;
-        const double frac_E = (th>0.0)? -std::expm1(-dt/th) : 1.0;
-        U[0] += frac_p * (Ueq[0]-U[0]);
-        U[4] += frac_E * (Ueq[4]-U[4]);
-        U[5] += frac_E * (Ueq[5]-U[5]);
-        const double dM = std::abs((U[1]+U[2])-M0)/M0;
-        const double dE = std::abs((U[4]+U[5])-E0)/std::max(1.0,std::abs(E0));
-        const bool inrange = (U[0] > 0.0 && U[0] < 1.0);
-        const double move = std::abs(U[0]-a1);
-        const bool monotone = (move <= move_prev + 1e-14);
-        move_prev = move;
-        // Stiff limit (tp=1e-12): must reproduce the joint target to round-off.
-        const bool stiff = (tp > 1e-9) ? true
-            : (std::abs(U[0]-Ueq[0]) < 1e-9 &&
-               std::abs(U[4]-Ueq[4]) < 1e-6*std::max(1.0,std::abs(Ueq[4])) &&
-               std::abs(U[5]-Ueq[5]) < 1e-6*std::max(1.0,std::abs(Ueq[5])));
-        // Energy split blended at a SINGLE rate -> total energy conserved to
-        // round-off regardless of tau (the property the old mode-3 lacked).
-        const bool pass = dM<1e-14 && dE<1e-12 && inrange && monotone && stiff;
-        if (!pass) ++fail;
-        std::snprintf(b,sizeof b,
-            "  tau=theta=%.0e frac=%.4f alpha=%.6f move=%.3e dM=%.0e dE=%.1e %s%s\n",
-            tp, frac_p, U[0], move, dM, dE,
-            (tp<=1e-9?"[stifflim] ":""), pass?"PASS":"**FAIL**");
-        amrex::Print() << b;
-    }
-    amrex::Print() << "===== mode-3 stiff-limit test: " << (fail==0?"PASS":"FAIL")
-                   << " (" << fail << " failed) =====\n\n";
-    return fail;
-}
 
 
 // ---------------------------------------------------------------------
@@ -1047,39 +952,8 @@ inline int ps_dev_relax_bitmatch_test()
                   N-nfail2, N, worst2, nfail2? "FAIL":"PASS");
     amrex::Print()<<b;
 
-    // ---- MODE 3 (finite mechanical + thermal, joint target): host vs ps_dev ----
-    int nfail3 = 0; double worst3 = 0.0;
-    for (int t = 0; t < N; ++t) {
-        const C& c = cases[t];
-        const double e1 = ps_zt_e_of_rhoT(eos_h, 1, c.r1, c.T1);
-        const double e2 = ps_zt_e_of_rhoT(eos_h, 2, c.r2, c.T2);
-        const double m1 = c.a1*c.r1, m2 = (1.0-c.a1)*c.r2;
-        hem::V6 U0; U0[0]=c.a1; U0[1]=m1; U0[2]=m2; U0[3]=0.0; U0[4]=m1*e1; U0[5]=m2*e2;
-        // host reference == ps_pmech_finite_relax_cell joint branch
-        hem::V6 Uh = U0;
-        { const double rm = U0[1]+U0[2]; const double ke = 0.5*(U0[3]/rm)*(U0[3]/rm);
-          const double r1=U0[1]/U0[0], r2=U0[2]/(1.0-U0[0]);
-          const double eh1=U0[4]/U0[1]-ke, eh2=U0[5]/U0[2]-ke;
-          if (!ps_cell_metastable(eos_h, r1, eh1, r2, eh2)) {
-              hem::V6 Ueq = U0;
-              if (ps_joint_pt_equilibrium(Ueq, eos_h, 3)) {
-                  const double fp = (tau_p>0.0)?-std::expm1(-dt/tau_p):1.0;
-                  const double fE = (theta>0.0)?-std::expm1(-dt/theta):1.0;
-                  Uh[0]=U0[0]+fp*(Ueq[0]-U0[0]);
-                  Uh[4]=U0[4]+fE*(Ueq[4]-U0[4]);
-                  Uh[5]=U0[5]+fE*(Ueq[5]-U0[5]);
-              }
-          } }
-        hem::V6 Ud = U0; ps_dev::ps_pmech_finite_relax_cell(Ud, eos_d, dt, tau_p, theta, true, 0.05, 3);
-        double dmax = 0.0; for (int n=0;n<6;++n) dmax = std::max(dmax, std::abs(Uh[n]-Ud[n]));
-        worst3 = std::max(worst3, dmax); if (dmax != 0.0) ++nfail3;
-    }
-    std::snprintf(b,sizeof b,"  MODE 3: %d/%d bit-identical, worst |dU|=%.3e  %s\n",
-                  N-nfail3, N, worst3, nfail3? "FAIL":"PASS");
-    amrex::Print()<<b;
-
-    const int total = nfail + nfail2 + nfail3;
-    amrex::Print() << (total? "  RESULT: FAIL\n" : "  RESULT: PASS (modes 0/2/3 bit-identical)\n");
+    const int total = nfail + nfail2;   // (mode-3 term went with mode 3, T2)
+    amrex::Print() << (total? "  RESULT: FAIL\n" : "  RESULT: PASS (modes 0/2 bit-identical)\n");
     amrex::Print() << "===== end B1 bit-match =====\n\n";
     return total;
 }
