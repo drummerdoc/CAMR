@@ -3412,3 +3412,1452 @@ matters for the application.  Scoring well here is not the same as being right.
 **What it changes practically:** the fix has exactly one place to live.  The
 wave-propagation scheme needs no change; the question is entirely which cells
 the relaxation may act in.  That is much better news than a formulation change.
+
+## 2026-08-15 — STAGE 0 (PLAN_measurements_and_fixes.md): non-PR backend build fix
+
+**PREDICTION, before any compile:** adding `REY2PTS_phase_try` and `P_crit`
+to GERG/EOS.H and PRTab/EOS.H (GERGTab inherits both through its include of
+GERG/EOS.H) is sufficient — the three non-PR PS executables compile and link
+with no further missing EOS symbols, because every other `EOS::` symbol the
+PS module uses predates 2026-08-10, when these backends last built.
+**Falsifier:** the compiler reports another missing member of `EOS::`.
+
+Implementations mirror the PR contract: GERG's `_try` brackets e over the
+validity box [T_trip, T_max] (e monotone in T at fixed rho on a locked
+branch) and on success returns the same value path as `REY2PTS_phase`;
+PRTab's `_try` decides validity on the analytic PR surface
+(`hem::state_from_rho_e_phase_try`, available via its hem_pr_state.H shim)
+and on success returns the backend's own table-seeded surface.
+`_try(valid) == REY2PTS_phase` by construction in both.  PR sources are
+untouched, so the PR binary cannot change.
+
+**RESULT (same session): prediction CONFIRMED.**  With only
+`REY2PTS_phase_try` + `P_crit` added to GERG/EOS.H and PRTab/EOS.H, all
+three non-PR PS executables compile, link and run:
+
+    CAMR1d.gnu.TPROF.PS.GERG.ex     linked 2026-08-15, runs `inputs`
+                                    max_step=2 to clean AMReX finalize
+    CAMR1d.gnu.TPROF.PS.GERGTab.ex  linked (inherits both entries via its
+                                    include of GERG/EOS.H)
+    CAMR1d.gnu.TPROF.PS.PRTab.ex    linked
+
+No further missing `EOS::` member was reported — the falsifier did not fire.
+The PR binary is untouched by construction and by measurement:
+`md5 14a473eb5e9a41ef055b4966c1aa6abc` before and after, zero PR-side
+recompiles.  STATUS_multiphase.md 7.1 marked resolved.
+
+**Two traps found, on the record:**
+1. The `.d` files carried TWO stale session prefixes with DIFFERENT mount
+   shapes — `rcw-016nh…/mnt/src/PeleLMeX/…` and `rcw-01evk…/mnt/src/…` vs
+   the current `…/mnt/PeleLMeX/…`.  Rewriting only the session id preserves
+   the wrong `mnt/src/` shape and make then stops on "No rule to make
+   target".  The working rewrite normalises the whole prefix:
+   `s|/sessions/rcw-[a-z0-9]+/mnt/(src/)?(PeleLMeX/|CAMR/)|<current>/mnt/\2|g`
+   over `tmp_build_dir/o/<config>/*.d`.
+2. PR/EOS.H ~line 114 still says GERG/GERGTab/PRTab "do not define
+   REY2PTS_phase_try" — now stale, deliberately NOT fixed in Stage 0 so the
+   PR binary stays provably unchanged.  Fold the comment fix into the next
+   change that touches PR sources (Stage 1's inertness diff covers it).
+
+## 2026-08-15 — STAGE 1 (PLAN_measurements_and_fixes.md): instrumentation build
+
+**PREDICTIONS, before any run:**
+1. INERTNESS: with every new dial at its default (ps_pres_diag=0,
+   ps_coexit_diag=0, ps_psat_diag=0, ps_t2_diag=0, ps_rk_model=0,
+   ps_mt_tau_model unchanged), the 20-case exact_suite.py table from the
+   rebuilt PR binary is IDENTICAL to the pre-edit binary's table.
+   Falsifier: any number differs.
+2. REACHEDNESS: B9 at the HEM-limit suite configuration with
+   ps_pres_diag=1 ps_coexit_diag=1 shows NONZERO [PS-PRES] counts and
+   NONZERO low-side thermal-leg band exits in [PS-COEXIT-TH]; a zero
+   there means the code path was not reached and the counter cannot be
+   interpreted (ground rule 3).
+
+Contents: C1 [PS-PRES] post-thermal P1!=P2 residual, split by whether the
+thermal leg moved a T by >1 K; C2 thermal-leg band-exit events counted per
+side ([PS-COEXIT-TH]; MT's exits were already counted by [PS-MTCOEX]);
+C3 [PS-PSAT] signed P/Psat(T1) min/max/median; C4 per-stage T1/T2 extremes
+at the A/A2/B/C/D points (ps_t2_diag); C5 ps_rk_model dial (0 = shared
+contraction ratio, Pelanti B.14; 1 = per-phase acoustic contraction,
+renormalised so mixture mass keeps the exact HLLC RH contraction);
+C6 ps_mt_tau_model=2 = ASY1 tau derived from the state (Lund & Aursand
+eq. 25) with the SRT kinetic prefactor and the paper's stratified A_int as
+placeholder geometry (PS_MT_SRT_D / PS_MT_SRT_DELTA, defaults 0.1 / 0.01).
+Also folded in: the stale PR/EOS.H contract comment flagged in Stage 0.
+
+**RESULTS (same session).**
+
+1. INERTNESS: **CONFIRMED.**  Full 20-case exact_suite.py table (N=64, wp,
+   the HEM-limit configuration) from the rebuilt PR binary is IDENTICAL to
+   the pre-edit binary's, line for line, including the two deliberate red
+   cases (B2, B9 RUN FAILED with the same abort).  Baseline taken with the
+   pre-edit binary BEFORE the edits; all six chunks diffed clean.
+2. REACHEDNESS: **CONFIRMED, with one detail against the prediction's
+   wording.**  B9 (suite config, 25 steps, all dials on): [PS-PRES],
+   [PS-COEXIT-TH], [PS-PSAT], [PS-T2] all fire.  The thermal-leg band exit
+   registered as BOTH-side (T1 = 94 K < T_triple beside T2 = 2303 K >
+   T_crit in the same cell -- the energy-split-blowup signature), not
+   lo-side as predicted; the prediction's substance (counter reached,
+   nonzero) holds, the side detail was wrong and is on the record.
+   The [PS-PRES] RAN classes read zero on B9/B4 at 25 steps (gate refuses
+   those cells -- correctly counted as SKIPPED, max 2.8e-6 = the mechanical
+   Newton's own tolerance).  Per ground rule 3 the RAN path was separately
+   proven reached on B5-Both-2P: n=64 cells/sweep.
+3. INCIDENTAL, not a measurement: on B5 at 25 steps the chain-exit
+   residual in RAN cells reads max |P1-P2|/P = 0.104, mean 6e-3 --
+   percent-level and consistent with the M-A prediction.  The measurement
+   proper (M-A, full cases, prediction first) is Stage 2's; do not cite
+   this number as it.
+4. [PS-PSAT] on B9's seed cell reads P1/Psat(T1) = 0.72 (superheated
+   liquid), the physically expected sign.
+5. All four backends rebuilt against the Stage-1 sources (PR 17:06,
+   GERG/GERGTab 17:08, PRTab 17:09); PR/EOS.H's stale contract comment
+   fixed as flagged in Stage 0.
+
+New keys, all default-off / bit-identical at default (verified above):
+CAMR.ps_pres_diag, CAMR.ps_coexit_diag, CAMR.ps_psat_diag, CAMR.ps_t2_diag,
+CAMR.ps_rk_model (0 shared / 1 per-phase renormalised), and
+CAMR.ps_mt_tau_model=2 (ASY1 derived tau; env PS_MT_SRT_D / PS_MT_SRT_DELTA).
+Stage 1 of PLAN_measurements_and_fixes.md is complete; its gate is passed.
+
+## 2026-08-15 — env-knob retirement (Marc: no constants or switches
+## controlled by environment variables), then Stage 2
+
+All 42 std::getenv sites in hem_pelanti_shyue.H converted to CAMR.*
+ParmParse keys with IDENTICAL defaults, via three host-only ps_knob_*
+helpers; four uncalled standalone-era getters DELETED outright
+(ps_alpha_vanish_default, ps_t_floor_default, ps_mt_tau_default,
+ps_flash_tau_default — exhaustive grep: no caller anywhere).  Key names
+are the env names lowercased, with two deliberate exceptions:
+  * PS_FLUX -> CAMR.ps_hem_flux (CAMR.ps_flux is the production front
+    selector with different tokens; the hem family has no production
+    caller and must not shadow it);
+  * PS_MT_UPDATE_ALPHA / PS_FLASH_PROJECT_SAT fold into the EXISTING
+    CAMR keys of the same name (their env fallbacks were reachable only
+    for parameter values CAMR never passes).
+GERG_EXT_C is already compliant: gerg_ext_c_init() force-sets the flag
+from CAMR.gerg_ext_c at read_params, so the env fallback is unreachable
+in any CAMR build (it exists for AMReX-free standalone probe harnesses).
+Python-harness env (EXE, CO2_STANDALONE, NCELL, PS_N, PS_FROZEN,
+CAMR_EXE) selects HARNESS configuration and reaches the binary only as
+explicit CAMR.* command-line keys; no solver behaviour is env-readable
+any more (grep: zero getenv outside the GERG standalone fallback).
+
+**PREDICTION before rebuild:** every conversion preserves its default,
+so the 20-case table is IDENTICAL to the Stage-1 table (same binary
+semantics).  Falsifier: any number moves.
+
+**RESULT: env-cleanup inertness CONFIRMED.**  Full 20-case table identical
+to the Stage-1 table after the getenv->ParmParse sweep (all six chunks
+diffed clean); zero getenv remains in the solver (the GERG standalone
+fallback is unreachable in CAMR builds, see above).  All four backends
+rebuilt against the cleaned sources.
+
+## 2026-08-15 — STAGE 2: the measurement batch.  PREDICTIONS FIRST.
+
+M-A ([PS-PRES], full runs of B4/B5/B9/B10/B11 at the suite HEM config):
+  PREDICTION: percent-level residual (>= 1e-2) where the thermal leg moved
+  a T by > 1 K; round-off / Newton-tolerance (< 1e-5) in gate-skipped
+  cells.  FALSIFIER: max residual < 1e-6 everywhere the leg fired.
+M-B (presence sweeps, full 20-case battery per point; alpha_cond in
+  {4.2e-3, 2e-2} at alpha_birth = 2e-2; alpha_birth in {1.5e-2, 4e-2} at
+  alpha_cond = 1e-2; D14 rider ps_presence_vanish in {1e-9, 1e-7}):
+  PREDICTION: every table movement below scheme error (indistinguishable
+  at the table's 4 printed digits, or well under the case's own error).
+  FALSIFIER: any case moving above scheme error inside the swept range —
+  which by the design note's own words falsifies the constant.
+M-C ([PS-PSAT], full B9 and B11): PREDICTION: the SIGNED P1/Psat(T1)
+  ranges OVERLAP (the distinction is history, not state; two pointwise
+  proxies have already failed, one backwards).  FALSIFIER: disjoint ranges.
+M-D ([PS-T2] attribution, full B9): PREDICTION: the fall of min T2 is
+  dominantly the HYDRO channel (A-enter(n) vs D(n-1)), not any operator —
+  the 12.4 lean.  FALSIFIER: an operator stage dominates the fall.
+M-E (ps_rk_model=1, full battery): PREDICTION: A/C cases move below
+  scheme error; at least one case with a strong wave crossing the
+  liquid-vapour contact moves by MORE than the sound speed's 3% (r_K is
+  not a bound; the bracketing forgiveness does not apply).
+  FALSIFIER: all twenty cases move < 1%.
+M-F ([PS-T2] attribution, full B7): no prediction ventured — B7 is the
+  one case with no working hypothesis on record; this run is attribution,
+  not confirmation.  Channels as M-D, for max T2.
+
+**STAGE-2 RESULTS (same session; runner `_stage2.py`, kept — it replicates
+exact_suite.py's HEM-limit configuration verbatim for override-carrying
+runs).**
+
+M-A — **PREDICTION CONFIRMED, and stronger than predicted.**  Chain-exit
+|P1-P2|/max(P1,P2), full runs:
+    B4  103 sweeps: thermal never ran (gate); skipped max 9.9e-5
+    B10 103 sweeps: same; skipped max 9.8e-5
+    B5  284 sweeps: RAN(still) on all 64 cells, max 0.124
+    B9  174 sweeps (aborts, known): RAN(moved) max **0.957**
+    B11 140 sweeps: RAN(moved) max 0.888, RAN(still) max 0.222
+  Where the thermal leg fires, the chain exits with 12-96 % pressure
+  disequilibrium; where the gate skips it, the residual is the mechanical
+  Newton's own tolerance (~1e-4).  The falsifier (max < 1e-6) did not
+  fire.  **D4's missing mechanical pass is a real, order-one defect: the
+  fluxes between relaxation calls are evaluated on a state that violates
+  the D3 closure by up to a factor-2 pressure split.**  Branch S5-F1
+  fires: interim closing mechanical pass + M2 (order-dependence) to elect
+  X1-interim vs X3.
+
+M-B — **PREDICTION CONFIRMED: both sweeps and the D14 rider PASS.**
+    alpha_cond 4.2e-3: A/C identical; largest B movement 0.0040 abs
+      (B11 P 0.1786->0.1826), ~2 % of the case's own error.
+    alpha_cond 2e-2:   largest 0.0143 abs (B7 P 0.6597->0.6454), ~2 %.
+    alpha_birth 1.5e-2 and 4e-2: B-table BIT-IDENTICAL to baseline.
+    ps_presence_vanish 1e-9 and 1e-7: BIT-IDENTICAL.
+  The design's own acceptance gates are finally run and pass.  S5-F2 pass
+  branch: re-derive alpha_cond from the 2-D eta_max (-> 2e-2, measured
+  here to move nothing above scheme error), alpha_birth follows (-> 4e-2,
+  measured bit-identical), single-source the flash seed; re-tag D12/D13
+  MEASURED, D14 keeps (rider passed; re-tag DERIVED per the presence
+  note's information argument).
+
+M-C — **PREDICTION CONFIRMED: the signed ratio does NOT separate.**
+    B9  P1/Psat(T1) in [4.0e-4, 0.72]  (always superheated side)
+    B11 P1/Psat(T1) in [4.1e-4, 2.41]  (spans both sides)
+  B11's range CONTAINS B9's -- a pointwise threshold misclassifies B11
+  contact cells as B9-like mixtures, the damaging direction.  Honest
+  nuance, not a separation: the medians differ strongly (B9 1.0e-3, B11
+  1.2); a history-aware statistic might use this, a pointwise one cannot.
+  Third pointwise proxy dead; the Stage-7 transported-variable argument
+  strengthens again.
+
+M-D — **PREDICTION CONFIRMED: the vapour's cooling is the HYDRO.**
+  Falls of min T2 by channel over the full B9 run (K):
+    hydro -57.3   sources -18.6   relax -7.4   folds/clean 0
+  The sub-triple-point vapour is a consequence of the physical expansion
+  (the 12.4 lean), not an operator artefact.  X0-(ii) stands; Stage 6
+  unblocked.  (This config aborts at minT2 ~255 K; the 198 K states on
+  record are from the production config's refused cells.)
+
+M-E — **FALSIFIER DID NOT FIRE, and the instrument found a real edge.**
+  ps_rk_model=1 battery: A/C bit-identical (c_1=c_2 single-phase, exact
+  fallback); B4 u 0.1262->0.1231 (IMPROVES 2.5 %, the direction the
+  morphology argument predicts at a cross-critical contact); B5/B7/B10
+  move < 1 %; **B11 ABORTS** -- the contact cell's phase-ENERGY split
+  runs away (UE1 = +1.5e7 beside UE2 = -1.5e7 with the sum exact to
+  9e-10; e_2 = -2.48e5 J/kg vs the vapour branch bound -3.9e4) until a
+  branch-locked query has no root.  Mechanism: the instrument
+  redistributes star MASS per phase but deliberately leaves the
+  phase-energy deposit (m_k* x E_k*) on the shared-r_K pairing, so mass
+  moves between phases without its energy.  VERDICT: r_K is NOT
+  measured-inert (D7 stays a live suspect), but the per-phase alternative
+  requires a CO-DERIVED energy partition (S5-F3's "derivation, not a
+  knob"), respecting the D8 pairing.  Do not re-run dial=1 on contact
+  cases expecting physics; the abort is the instrument's inconsistency.
+
+M-F — **B7's vapour heating is the RELAXATION operator.**  Rises of max
+  T2 by channel over the full B7 run (K):
+    relax +1065   hydro +363   sources +301
+  First localisation of the 1811 K vapour (5 item 6): the mode-4 chain
+  (mechanical + thermal legs) contributes 3x the hydro.  Feeds Stage 6's
+  scope; no mechanism proposed here.
+
+Housekeeping: stage-2 plotfiles moved to _to_delete_stage2/ (mount cannot
+delete); `_stage2.py` retained for later stages.
+
+## 2026-08-15 — STAGE 3 (F-X4 + F-M5).  PREDICTIONS FIRST.
+
+**LEDGER NOTE, effective immediately: every ps_mt_h_weight (carrier)
+number recorded before 2026-08-13's target/step diagnosis — including the
+2026-08-12 B7 reversal — is VOID as evidence about the carrier: the knob
+reached the STEP and never the TARGET, so those runs measured an
+inconsistency, not a convention (12.3 D-B(1)/D-B(2), M5).  They must not
+be averaged into or compared against the numbers below.**
+
+F-X4: flip CAMR.ps_mt_target default 0 -> 1 (target computed with the
+step's carrier on the step's (E.1) path; restores the Lund & Aursand
+Eq. 23 premise and the provable non-overshoot property; precondition for
+D17 being measurable).  PREDICTIONS:
+  1. A/C cases DO NOT MOVE (no MT runs there): the D22 headline gate is
+     untouched.  Falsifier: any A/C number moves.
+  2. B cases move; some regress (the shipped score partially rests on two
+     defects in cancellation — removing one side of a cancellation is
+     re-baselining, not regression).  B2/B9 still abort (the coexistence
+     gate is unchanged and is their binding failure).
+F-M5 (carrier, on the consistent binary): sweep ps_mt_h_weight in
+  {0, 0.5, 1} over the B battery.  PREDICTION: the carrier moves at least
+  one B case by more than the sound speed's 3 % (it sets the energy split
+  of every transferred kilogram).  FALSIFIER: all B cases < 1 % between
+  carriers — then D17 closes measured-inert and the arithmetic mean stays.
+
+**STAGE-3 RESULTS (same session).**
+
+F-X4 (ps_mt_target default 0 -> 1) — **both predictions CONFIRMED, and the
+flip is far cheaper than feared.**  A/C cases IDENTICAL (D22 headline gate
+untouched, still PASS).  B-table old -> new:
+    B5   0.0419/0.1601/0.0183 -> 0.0416/0.1576/0.0180   (improves)
+    B11  0.0768/0.0423/0.1786 -> 0.0768/0.0430/0.1795   (< 1 % worse)
+    every other B case identical at 4 digits; B2/B9 still abort (gate).
+  The feared "worse on its own" regression does not materialise at the
+  acceptance configuration.  **The 20-case table of this binary is the new
+  baseline (re-baselined here; the pre-flip table above remains on record
+  for comparison).**  The provable non-overshoot property is restored and
+  D17 is now measurable.
+
+F-M5 (carrier, consistent binary; convention h_I = (1-w) h_1 + w h_2,
+w < 0 = upwind/donor by transfer direction) — **PREDICTION CONFIRMED,
+falsifier dead: the carrier is decisively load-bearing, at the level of
+COMPLETION, not percent.**
+    w=0.5 mean (default): B2 ABORT, B9 ABORT, B5 ok, B11 0.0430/0.1795
+    w=0   (h_1/liquid):   B2 COMPLETES 0.0738/0.9628/0.3310,
+                          B9 COMPLETES 0.1166/0.9757/0.3481,
+                          B5 ABORTS, B11 ABORTS, B7 worse
+    w=1   (h_2/vapour):   B2/B9 abort, B5 0.0413/0.1562/0.0178 (best B5),
+                          B11 0.0762/0.0441/0.1888, B7 worse
+    w=-1  (UPWIND/donor): **ZERO MT-driven aborts — the only carrier where
+                          every B case completes.**  B2 0.0738/0.9628/
+                          0.3310, B9 0.1166/0.9757/0.3481 (both first-ever
+                          completions at the acceptance config), B5 at
+                          baseline, B11 0.0754/0.0499/0.2093 (P +17 %),
+                          B7 slightly worse.
+  The same two-regime split as theta: flashing mixtures want the DONOR
+  enthalpy (B2/B9 stop walking off the EOS domain), smeared contacts pay
+  for MT acting at all (B11).
+
+D17 DECISION (per REVIEW_RESPONSE and D10):
+  * Re-tag D17 **MEASURED — the carrier matters at completion level**; the
+    arithmetic mean is NOT inert and survives as default only by decision.
+  * DEFAULT STAYS w=0.5 for now: flipping to upwind would convert B2/B9
+    from two NAMED failures into two plausible-but-poor numbers (u-err
+    ~0.96-0.98), which is precisely the trade D10 exists to refuse — and
+    it costs B11 17 % in P.
+  * The UPWIND/donor carrier is recorded as the measured-best on the
+    abort dimension AND the physically-motivated candidate (the donor
+    carries its own enthalpy — the same picture as (E.1)'s donor-density
+    invariance, D15).  It is the designated carrier for the STAGE-6
+    configuration (ASY1 rate-bounded step + mode 3), where B2/B9 should
+    complete WELL rather than merely complete.  Decided there, on
+    measurement, not here by table.
+
+All four backends rebuilt against the flipped default.  Stage 3 complete:
+gate passed (battery green vs the re-baselined table; old and new tables
+side by side above).
+
+## 2026-08-15 — STAGE 4: the acceptance BRACKET (decision 5)
+
+The existing machinery already carried the frozen limit: exact_riemann.py
+--model frozen is the documented tau->infinity / no-phase-change solution
+("CAMR B-suite ps_mt_tau=0").  Generator trust established the 2026-08-11
+way before minting anything: `--case B9 --model hem` at the default N=800
+reproduces the stored exact_B9_pr.csv BIT-IDENTICALLY.  The stored
+exact_B9_pr_frozen.csv differed from its regeneration ONLY in sampling
+(N=400 vs the default 800; a backup of the N=400 file is in the session
+/tmp).  Minted at the uniform N=800: exact_B2_pr_frozen.csv (new) and
+exact_B9_pr_frozen.csv (re-minted), both installed in the standalone's
+suite/ (standalone repo has two changed/new CSVs to commit).
+
+exact_suite.py changes (additive):
+  * B11 PROMOTED explicitly: documented as the frozen-limit CONTACT anchor
+    of the battery (its reference is the translated IC — zero
+    equilibration).
+  * FROZEN_BRACKET = {B2, B9}: when either completes, the SAME plotfile is
+    scored a second time against the frozen reference and printed as a
+    "`- vs FROZEN limit" row.  The truth lies between the two rows, so a
+    model can no longer win by sitting at either limit — D21's bias is
+    bracketed, not merely documented.
+  * While B2/B9 abort (their standing red state) neither row scores; the
+    bracket becomes informative the day they complete (Stage 6 — the
+    upwind-carrier configuration already completes both, so the rows go
+    live there).
+
+Verification: plumbing exercised on a scratch copy (B5's run scored
+against a frozen ref prints the second row correctly); the committed
+harness's behaviour on the current battery is UNCHANGED (B9 RUN FAILED
+identical, B11 and A1 identical to the Stage-3 baseline).
+
+D22: headline gate (A/C mean) untouched — no re-baseline needed beyond
+Stage 3's; the bracket rows are additions, not replacements.  STATUS
+should carry one line that both limits are now scored; added there.
+
+## 2026-08-15 — STAGE 5 (branches from Stage 2).  PREDICTIONS FIRST.
+
+Contents: (a) CAMR.ps_mech_close (default 0) — the S5-F1 interim closing
+mechanical pass after the thermal leg, placed before [PS-PRES] so C1 keeps
+measuring the true chain exit; (b) alpha_cond 1e-2 -> 2e-2 and alpha_birth
+2e-2 -> 4e-2, the S5-F2 re-derivation from the 2-D production eta_max
+(9.6e-4 / 5% = 1.92e-2 -> 2e-2; both points measured in M-B before
+adoption; flash seed single-sourced follows); (c) CAMR.ps_m2_test — the M2
+composite-ordering measurement (all six orderings of {M,T,G} to a fixed
+point from the 0-D self-test states, vs the HEM flash of the conserved
+invariants).
+
+PREDICTIONS:
+  P1 (alpha defaults battery): the COMBINED point (2e-2, 4e-2) moves the
+     table like the independent cond=2e-2 sweep did (largest ~0.014 abs on
+     B7's P) and nothing above scheme error; A/C identical (D22 PASS
+     unchanged).  Falsifier: any case above scheme error.
+  P2 (ps_mech_close=1 battery): B4/B10 unchanged (thermal never runs);
+     B5/B11 move but do NOT regress above their own error; with
+     ps_pres_diag on, the RAN-class residual collapses to the mechanical
+     Newton's tolerance (~1e-4).  Falsifier: a case regresses > 10 % of its
+     own error, or the residual does not collapse.
+  P3 (M2): the composite is ORDER-DEPENDENT — B5's standing 12 % chain-exit
+     residual already shows M and T do not commute.  Falsifier: all six
+     orderings land on one fixed point to 1e-6.
+
+**STAGE-5 RESULTS (same session).**
+
+M2 — **PREDICTION P3 CONFIRMED: the composite is ORDER-DEPENDENT, and on
+two of six states catastrophically.**  Four near-dome states show mild
+dependence (1e-5..1e-6 relative spread — above threshold, near-projection).
+The vapor-rich state (270 K, a1=0.10) and the off-dome state (270 K,
+a1=0.30, 900/90) split into DISTINCT BASINS by ordering: orderings that run
+G before the (M,T) pair has settled land at fixed points 78-84 % apart in
+P, two of them hitting the 200-sweep cap without converging (GMT stalls at
+dg=0.23-0.39 — not even chemical equilibrium).  The three sequential
+projections are NOT a projection; per the plan's S5-F1 branch **X3 (the
+coupled relaxation source / DAE form) is elected as the lasting form.**
+Corollary worth its own line: the basin split happens exactly on
+strong-flash states — the same population where the MT carrier decided
+completion in Stage 3.  The sequencing and the carrier are two views of
+one coupling defect.
+
+P1 — **CONFIRMED.**  Combined alpha point (alpha_cond=2e-2,
+alpha_birth=4e-2) adopted as defaults: A/C IDENTICAL (D22 PASS unchanged);
+B7 P 0.6597 -> 0.6459 and B11 P 0.1795 -> 0.1719 (both IMPROVE), B4 u
+-0.0001, everything else at 4 digits.  D12/D13 re-tagged MEASURED; D14
+re-tagged DERIVED (rider passed; information-loss argument in the
+presence note).
+
+P2 — **CONFIRMED.**  CAMR.ps_mech_close=1: chain-exit residual collapses
+B5 0.124 -> 1e-4, B11 0.888 -> 9.9e-5 (the mechanical Newton tolerance);
+NO case regresses (B5/B7/B11 improve slightly; B4/B10 untouched -- thermal
+never runs there).  **Adopted as DEFAULT, explicitly INTERIM pending X3.**
+The fluxes no longer consume a state that violates the D3 closure.
+New battery baseline: B5 0.0414/0.1568/0.0179, B7 0.2449/0.8545/0.6469,
+B11 0.0770/0.0416/0.1724; all other rows as the Stage-3 table.
+
+S5-F3 (r_K): no code this stage, per the branch — the per-phase
+contraction needs a CO-DERIVED energy partition (mass moved between
+phases must carry its energy; the M-E abort is the measured proof).
+Scoped as a derivation note for the D8-pairing constraint; the dial
+stays an instrument.
+
+Stage 5 complete.  Open structural item carried to Stage 6: X3.  All four
+backends rebuilt.
+
+## 2026-08-15 — STAGE 6: the rate-bounded step + the Y4 configuration.
+## PREDICTIONS FIRST.
+
+  P1 (ASY1 0-D probe, CAMR.ps_asy1_probe=1): with the consistent target
+     and tau = |dm_eq|/Gamma_SRT, |g1-g2| decays MONOTONICALLY at every dt
+     in {1e-7 .. 1e-3} from order-one driving forces; NO sign flip beyond
+     1e-6 relative.  Falsifier: any overshooting (state, dt) pair.
+  P2 (Y4 dispersed-regime configuration: ps_coexist_action=3,
+     ps_theta_tau=3e-6, ps_mt_tau_model=2, ps_mt_h_weight=-1, consistent
+     target default): B2 AND B9 COMPLETE; B9's u error at or below the S4
+     reference 0.43, aspiring to the best-to-date 0.3826.  Falsifier:
+     either aborts, or B9 u is no better than the 0.9757 that mere
+     completion (upwind carrier alone) already gives.
+  P3 (cost, for the record): under the same configuration B4/B10 degrade
+     (the high-side veto is load-bearing, M4) and B7 aborts or degrades —
+     the two-regime split is a CASE property until Stage 7; per-case
+     settings are the honest interim (12.9 Y4).
+
+**STAGE-6 RESULTS (same session).**
+
+P1 (ASY1 probe) — **no overshoot anywhere (falsifier dead), and the probe
+found the real bottleneck.**  Zero overshooting (state,dt) pairs across
+four dt decades.  BUT on both order-one-driving-force states the kernel
+transfers NOTHING: the cause counters name it exactly — eqfail = 400/400,
+dm_zero = 400/400.  **The equilibrium-TARGET Newton cannot converge from
+far states, so dm_eq = 0 and the exact-relaxation form is silent precisely
+where the physics is strongest.**  The ASY1 tau is sound (the near-dome
+control relaxes monotonically at every dt, including dt = 1e-3 where it
+relaxes until it LEAVES the band and the kernel's own gate stops it — the
+X0 shape in 0-D); the target-based FORM is the limitation.  **Backward
+Euler on the SRT source (lit 11.1(c): no dm_eq at all) is now the
+measured-motivated follow-up, not an option.**
+
+P2 (the Y4 configuration) — **CONFIRMED with a reversal the gated world
+hid.**  Under coexist_action=3 the CARRIER finding inverts: the thermal
+leg warms band-exited states back before MT acts, the mean carrier no
+longer aborts B2/B9, and it beats the upwind carrier decisively
+(B9 u 0.5044 vs 0.8692; B2 0.5745 vs 0.8917).  The Stage-3 upwind
+designation was a property of the GATED configuration and is withdrawn
+for Y4; the ASY1 dial in its current target-based form behaves as
+weak-MT (near-frozen solutions) for the same eqfail reason as P1.
+**Selected Y4 dispersed-regime configuration:**
+    CAMR.ps_coexist_action=3  CAMR.ps_theta_tau=3e-6
+    (everything else today's defaults: consistent target, mean carrier,
+     constant tau_mt, mech_close, alpha 2e-2/4e-2)
+    B2: vs HEM 0.0613/0.5745/0.3558   vs FROZEN 0.0788/1.7626/0.3625
+    B9: vs HEM 0.0882/0.5044/0.2560   vs FROZEN 0.0905/1.7215/0.1692
+  **The bracket works on day one**: both cases now sit BETWEEN the limits,
+  much nearer HEM in u — genuine equilibration, not completion-by-inertness
+  (the upwind/ASY1 variants completed too but sat AT the frozen limit,
+  u ~ 0.13 vs frozen — the bracket is what tells those two outcomes apart).
+
+P3 (cost, for the record) — CONFIRMED: under Y4, B4 u 0.1261 -> 0.7155,
+B10 0.1202 -> 0.4532, B7 ABORTS.  B11 is indifferent (0.0415/0.1703 vs
+0.0416/0.1724 at default): its damage is theta-driven, not gate-driven.
+The two-regime split stands exactly as 12.8 stated; Y4 per-case settings
+are the honest interim until Stage 7.
+
+X2 live: under Y4 on B9 the band exits are counted and CONTINUED, not
+silently skipped — 214 continuations (86 hi-side, 128 both-side, 0
+refused) over 139 sweeps, reported by [PS-COEXIT-TH].  The abort response
+(D10) remains for states the EOS itself refuses.  Shipped defaults are
+UNCHANGED: coexist_action=0, theta=1e-7; Y4 is a per-case configuration,
+stated aloud in STATUS.
+
+## 2026-08-15 — STAGE 7: the Sigma kill test.  PREDICTIONS FIRST.
+
+The closure candidate, written BEFORE any run (the plan's precondition):
+Sigma [1/m] is a passively TRANSPORTED scalar, PRODUCED only by nucleation
+(the flash event: dSigma = (3/r_nuc) dalpha_seed, r_nuc = 1e-5 m — a
+physical nucleus scale, NOT a classification threshold; the contrast
+metric below is invariant to it), DESTROYED with the phase (fold ->
+Sigma = 0), advected at the mixture velocity.  NO feedback into theta.
+The discriminator mechanism: a smeared contact never nucleates, so it can
+NEVER acquire Sigma — no threshold decides anything; a physical event
+either occurred in a cell's history or it did not.
+
+Executed offline (0-D/1-D per the plan): per-step plotfiles + the
+[PS-FLASH-EV] nucleation-event diagnostic; Sigma integrated on the
+RECORDED fields.  Event reconstruction from plotfile alpha-jumps is
+VALIDATED against the flash-event cell list (a jump not in the list is
+advection, not nucleation — the false-positive channel is closed by
+construction, ground rule 3).
+
+PREDICTIONS:
+  P1 (production): flash events occur on B2/B9 (Y4 config) and NEVER on
+     B4/B11 (defaults) — zero events, hence Sigma identically zero at the
+     contacts, with no threshold anywhere.  Falsifier: any B4/B11 event.
+  P2 (the kill question — does the contrast survive TRANSPORT?): at final
+     time >= 2/3 of B9's and B2's genuine two-phase cells carry
+     Sigma > 0; B4/B11 carry Sigma = 0 in every cell.  Falsifier (KILL,
+     with the number recorded): coverage below 2/3 — the fan outruns the
+     transported field and genuine mixtures would be misclassified frozen,
+     which is the B9 plateau reborn.
+  ON THE RECORD for B7: it is flash-ACTIVE but Y4-INTOLERANT (M-F: its
+     failure is relax-driven energy blowup, its own mechanism).  This
+     discriminator would class B7 dispersed; Sigma is NOT expected to fix
+     B7 and a Sigma pass must not be read as covering it.
+
+**STAGE-7 RESULTS (same session): the kill test is BLOCKED by a
+first-order defect it uncovered.  The Sigma family is NEITHER killed nor
+passed; the finding below supersedes the question this stage asked.**
+
+P1 falsified in a direction nobody predicted: the flash fires on NO case.
+Not "no events on B4/B11" — **zero [PS-FLASH-EV] events and zero
+[ps_flash] cumulative count on B2, B4, B9 AND B11, under both the default
+and the Y4 configurations.**  Ground rule 3 attribution (the counter reads
+zero because the path is unreachable):
+
+  1. DRIVER: PS_sources.H's flash loop early-outs on `m2 <= 0` before the
+     kernel is called.  Under the acceptance battery's exact-zero presence
+     ICs (prob.alpha_trace = 0), every genuinely single-phase cell has
+     m2 = 0, so the population the flash exists to nucleate is excluded
+     wholesale.
+  2. KERNEL: hem::ps_flash_source_cell ALSO refuses `m_2 <= 0` and forms
+     the trace phase's quotients (rho_2 = m_2/alpha_2, e_2 = U[5]/m_2)
+     unconditionally — it was built in the standalone's alpha_trace=1e-6
+     world and CANNOT accept an ABSENT phase.
+  3. The mid-range alpha window (0.1 < alpha < 0.9 -> no flash) excludes
+     the remaining metastable two-phase cells by design.
+  Net: in the suite, birth channel 1 (DESIGN_ps_presence_discrete 3: "the
+  flash is the ONLY operator that converts a single-phase metastable cell
+  into a two-phase cell") is DEAD CODE.  Every two-phase cell in every
+  battery run to date was born by CORRIDOR ADVECTION at the initial
+  contact, never by nucleation.
+
+Consequences, on the record:
+  * D16's basis DOWNGRADES: "MEASURED (0-D probe)" measured the kernel on
+    trace-phase inputs; the in-suite claim "doing exactly its documented
+    job" was never true — the documented job requires an entry the driver
+    never grants.  D16 -> CONTESTED.
+  * This closes 12.4's loop: "the sub-triple-point vapour looks like a
+    consequence of the wave not forming."  A principal reason the
+    evaporation wave never forms is now measured: THE NUCLEATOR NEVER
+    FIRES.  The Y4 improvements (B2/B9 u ~ 0.5) were achieved by thermal +
+    MT on advection-born mixtures alone; what a working flash adds is
+    unknown and possibly the missing mechanism for the remaining distance
+    to HEM.
+  * The Sigma closure candidate remains WRITTEN AND UNTESTED: its
+    production key (nucleation) cannot fire until flash-from-ABSENT
+    exists.  The kill test re-runs, unchanged, after that fix.  Interim
+    negative result kept for the record: with production keyed to
+    nucleation, TODAY'S model has Sigma == 0 everywhere on all four cases
+    (B11/B4 correctly; B2/B9 vacuously) — coverage 0.000, which under the
+    pre-registered falsifier would read KILL, but a falsifier evaluated on
+    a defective premise decides nothing.  NOT entered in DO NOT RESURRECT.
+
+NEW GATING WORK ITEM (precedes any Sigma re-test, likely reshapes B2/B9):
+  FLASH-FROM-ABSENT.  Driver: route single-phase metastable cells (host
+  INDEPENDENT, other phase ABSENT) into the flash with the m2 guard
+  lifted for that entry only.  Kernel: accept an ABSENT trace phase — no
+  trace quotients; the seed defines the newborn phase's state outright
+  (the E1b saturation-projection path is exactly this construction and
+  already exists).  Then: 0-D reachedness, battery re-baseline, Y4
+  re-measurement, Sigma kill test re-run.
+
+The "regardless" item is done: STATUS now states the dispersed-everywhere
+assumption as a model limit (with ps_diag_morph as its counter), alongside
+the flash finding.
+
+## 2026-08-15 — NEXT PLAN (PLAN_flash_and_coupling.md), F0:
+## flash-from-ABSENT.  PREDICTIONS FIRST.
+
+Dial CAMR.ps_flash_from_absent (default 0).  Driver: one-present-phase
+cells route into the kernel.  Kernel: ABSENT trace accepted — quotients
+never formed, EOS never queried on them (fencing a SECOND latent defect
+found while reading: the branch-locked solver's bracket test passes NaN
+through the Illinois loop and returns garbage MARKED VALID — the fence has
+to be at the source), newborn CONSTRUCTED by the E1b saturation
+projection, refuse if the sat query fails.
+
+PREDICTIONS:
+  P1 INERTNESS at default: full battery bit-identical.  Falsifier: any
+     number moves.
+  P2 REACHEDNESS dial-on: [PS-FLASH-EV] > 0 on B2/B9 (both configs);
+     STILL ZERO on B4 (cross-critical: the w_T window closes) and B11
+     (stable states: w_meta closes).  Falsifier: events on B4/B11.
+  P3 BEHAVIOUR dial-on: B2/B9 move TOWARD HEM on the bracket (u down from
+     0.57/0.50 at Y4; the evaporation wave finally has its nucleation
+     mechanism).  B1/B3/B5/B6/B8/B10 unchanged.  Falsifier: B2/B9 move
+     away from HEM under BOTH configs — then nucleation-as-implemented is
+     not the missing mechanism and the finding stands on its own.
+
+**F0 RESULTS (same session).  The nucleator fires, and it was the missing
+mechanism.**
+
+Attribution chain that got there ([PS-FLASH-REF], added this session —
+"zero events" decomposed in two steps):
+  1. Routing fixed (driver + kernel accept an ABSENT trace) -> still zero
+     events; cause table: sstar=1534 — every proposed flash on B9 passed
+     ALL physics windows and was collapsed to s*=0 by the fractional
+     limiter.
+  2. s=1 sub-attribution: s1_ph2 = 1534/1534 — the SEEDED VAPOUR'S trial
+     state is EOS-unrepresentable.  TWO STACKED DEFECTS in the E1b
+     saturation projection, both measured:
+       (a) the sat table's h columns are in a DIFFERENT reference
+           convention than the PR/hem e-scale — hem e_V(63, 270 K) =
+           +1.008e5 J/kg vs table-implied -9.4e4 (offset ~2e5 J/kg);
+       (b) the transfer carried the DONOR's enthalpy, so a from-ABSENT
+           seed's whole newborn phase sat below its branch window.
+     FIX: the transferred mass carries the SEEDED phase's EOS-CONSISTENT
+     saturation enthalpy, derived from the EOS itself at the seed density
+     (in-kernel secant; the table's density columns are convention-free
+     and stay).  Latent heat lands as the donor's energy drop.  NOTE: the
+     old projection path can never have produced a valid from-scratch
+     seed on this e-scale; production-era claims that ride on it
+     ("closes the B7 HEM-analytic gap") date from trace-diluted seeding
+     and should be re-checked when convenient.
+
+Verification ladder:
+  P1 INERTNESS at default: full 20-case battery BIT-IDENTICAL (dial off).
+  P2 REACHEDNESS/SELECTIVITY dial-on: B4 and B11 fire ZERO times and their
+     numbers are identical — the windows (w_T cross-critical, w_meta
+     stability) exclude the contacts with no threshold anywhere.
+  P3 BEHAVIOUR dial-on, Y4 config (now includes the dial):
+       B9: 580 nucleation events, vs HEM 0.0749/0.3518/0.1015
+           (u BELOW the S4 reference 0.43 and below the best-to-date
+           0.3826; P halved from 0.2560), vs FROZEN 0.13/2.74/0.40.
+       B2: 107 events, vs HEM 0.0669/0.3627/0.2025 (u 0.5745 -> 0.3627),
+           vs FROZEN 0.10/3.16/0.46.
+     The bracket certifies GENUINE equilibration (far from frozen, near
+     HEM) — not completion-by-inertness.  Best B2 and B9 ever recorded,
+     from a physics pathway repaired, not a constant tuned.
+  COST at the DEFAULT config, dial-on: **B7 completes -> ABORTS** (its
+     pure liquid IS strongly metastable in-band, the nucleator feeds the
+     known relax-driven energy blowup, M-F).  B1/B3/B4/B5/B6/B8/B10/B11
+     identical; B2/B9 still abort at default (coexistence gate binding,
+     unchanged).
+
+DECISION: CAMR.ps_flash_from_absent stays DEFAULT 0 (B7's default-config
+regression violates no-case-regresses); it JOINS THE Y4 dispersed-regime
+configuration, which is now:
+    CAMR.ps_coexist_action=3  CAMR.ps_theta_tau=3e-6
+    CAMR.ps_flash_from_absent=1
+B7 is the measured blocker for defaulting the nucleator on — exactly F5's
+scope.  D16: CONTESTED -> the nucleator is now VALIDATED IN-SUITE under
+the Y4 configuration (580/107 counted events, selectivity measured); the
+0-D-only caveat is resolved.  F0 complete; F1 (re-baseline of the
+flash-on world, theta re-check) is next.
+
+## 2026-08-15 — F1: re-baseline of the flash-on world.  PREDICTIONS FIRST.
+
+  P1 (theta sweep on B9 under Y4+FA, theta in {1e-6, 3e-6, 1e-5, 1e-4,
+     1e-3, 1e-2}): the optimum stays near 3e-6 but the 1e-5 CLIFF SOFTENS
+     (completes rather than aborts) — nucleation now feeds the front the
+     thermal leg previously had to force alone.  Falsifier: aborts at 1e-5
+     as before.  The open question this sweep decides without a
+     prediction: if B9 completes acceptably at theta >= 1e-3, the WALL
+     itself (12.8: disjoint theta windows) has softened and the two-regime
+     split needs re-measurement.
+  P2 (gate necessity): B9 with FA + theta=3e-6 but the DEFAULT gate
+     (coexist_action=0) still ABORTS — the cold-vapour band exit is
+     upstream of nucleation's reach.  Falsifier: it completes, and Y4
+     shrinks to {theta, FA}.
+  P3 (instruments at the final config): [PS-COEXIT-TH] continuations on
+     B9 DROP vs the pre-FA 214 (the front warms earlier); [PS-PSAT]'s
+     superheated tail shortens (median toward 1).  Falsifier: counts grow.
+
+**F1 RESULTS (same session).**
+
+P1 — **FALSIFIER FIRED, twice over, and the second half is the finding.**
+The 1e-5 cliff did NOT soften: B9 under Y4+FA works at theta <= 3e-6 and
+aborts at 1e-5/1e-4/1e-3/1e-2 exactly as before — THE WALL STANDS;
+nucleation does not move it.  But the OPTIMUM moved to the fast end:
+    theta=3e-6: 0.0749/0.3518/0.1015      theta=1e-6: 0.0749/0.3023/0.1050
+    theta=3e-7: 0.0749/0.2965/0.1004      theta=1e-7: 0.0749/0.2965/0.0998
+The suite-default theta=1e-7 is now the best.  **Y4's special theta was
+compensating for the missing nucleator; with F0 in, the dispersed-regime
+configuration SIMPLIFIES to
+    CAMR.ps_coexist_action=3  CAMR.ps_flash_from_absent=1
+(everything else stock defaults).**
+
+P2 — CONFIRMED: B9 with FA + fast theta under the DEFAULT gate still
+aborts; coexist_action=3 remains load-bearing.  Y4 is irreducibly
+{gate response, nucleator}; both are morphology decisions, which is
+consistent with the wall standing.
+
+Final flash-on baseline (the F1 record; instruments in the same runs):
+    B2: 150 events  vs HEM 0.0755/0.3130/0.1310  vs FROZEN 0.10/3.07/0.40
+    B9: 600 events  vs HEM 0.0749/0.2965/0.0998  vs FROZEN 0.13/2.66/0.40
+  (B2 u 0.5745 -> 0.3130 and P 0.3558 -> 0.1310 vs the pre-FA Y4; B9 the
+  best ever recorded on every field.)
+  [PS-PRES] RAN+moved max = 1.0e-4 on both — the mech_close pass holds the
+  D3 closure at Newton tolerance in the flash-on world.
+  [PS-PSAT] med-of-med: B2 0.78, B9 0.89 (pre-FA: ~0.001) — the deep
+  persistent superheat is being CONSUMED by nucleation.  P3's psat half
+  CONFIRMED.
+P3's count half FALSIFIED, on the record: [PS-COEXIT-TH] continuations
+GREW (B9 214 -> 272): nucleation creates MORE two-phase cells near the
+band edge, so more transient exits are continued.  The prediction had the
+sign backwards; the mechanism (earlier warming) was real but the
+population effect dominates.
+
+D22: A/C rows untouched by everything above (Y4 stays per-case; global
+defaults unchanged since Stage 5).  No re-baseline needed.
+
+Cost cases under the SIMPLIFIED Y4: unchanged from the record — B4/B10
+degrade under action=3 at fast theta (12.8 sweep: B4 0.6988 at 1e-7) and
+FA fires zero events there (F0 selectivity), B7 aborts under action=3.
+The two-regime split stands; the per-case configuration is the honest
+interim until F2 gives Sigma a verdict.
+
+F1 complete.  F2 (the Sigma kill test, re-run unchanged) is unblocked and
+now has real nucleation events to key on.
+
+## 2026-08-15 — F2: the Sigma kill test, re-run with the live nucleator.
+
+Closure, metrics and falsifier UNCHANGED from the Stage-7 registration
+(production only at nucleation events, (3/r_nuc) dalpha; coverage >= 2/3
+of genuine two-phase cells on B2/B9; zero leakage on B4/B11).  Two runner
+adjustments, both bookkeeping and on the record: (1) the Y4 config is the
+F1-simplified one (action=3 + FA, stock theta); (2) the event
+reconstruction now credits production over the flash's measured GRADUAL
+seeding (the kernel's blend clamp grows the seed <= 20 %/step, so the old
+single-jump detector missed it) — still validated cell-by-cell against
+the [PS-FLASH-EV] list, so advection can never masquerade as nucleation.
+
+**F2 RESULTS (same session): the Sigma kill test PASSES — the falsifier
+did not fire, and the contrast is not merely preserved, it is perfect on
+this grid.**
+
+    B9  (Y4): 12 flashed cells, 800 production injections,
+              coverage 10/10 two-phase cells = 1.000, maxSigma 2.1e4 /m
+    B2  (Y4): 7 flashed cells, 333 injections, coverage 7/7 = 1.000
+    B4  (default): 0 events, Sigma == 0 in every cell (2 contact cells bare)
+    B11 (default): 0 events, Sigma == 0 in every cell (5 contact cells bare)
+
+Pre-registered falsifier (coverage < 2/3, or any contact leakage): DEAD.
+The transported field keyed to nucleation covers the ENTIRE genuine
+two-phase region under advection and stays identically zero at smeared
+contacts, with no classification threshold anywhere — the discriminator
+the 2026-08-13 wall analysis said the six-equation state cannot carry is
+carryable by ONE transported scalar whose source is a physical event.
+(Magnitude sanity: Sigma ~ alpha * 3/r_nuc ~ 2e4 /m at alpha ~ 0.07 —
+consistent.)  The 11.3 reframing is now MEASURED: "is this two-phase cell
+physically real" = "does its history contain nucleation", and history
+transports.
+
+Per the plan: PASS -> DESIGN_ps_sigma.md written (scoping note with its
+own pre-registered gates; the seventh-equation implementation is SCOPED,
+not scheduled).  B7 remains explicitly outside this discriminator's
+claims (its failure is relax-driven, F5).
+
+## 2026-08-16 — F3: Backward-Euler MT (CAMR.ps_mt_form).  PREDICTIONS FIRST.
+
+DESIGN.  One dial, CAMR.ps_mt_form:
+  0  (default, bit-identical) the exact-relaxation form: dm = frac*dm_eq
+     with dm_eq from the equilibrium-target Gibbs Newton.
+  1  BE-SRT: solve  F(dm) = dm - dt*Gamma_SRT(path(dm)) = 0  by a
+     bracketed scalar Newton in dm, with Gamma evaluated at the PATH
+     STATE — the same H_I carrier as the write-back and the same alpha
+     path the step actually takes ((E.1) donor-density co-move when
+     update_alpha is on, fixed-alpha otherwise; target/path consistency
+     is the Stage-3 lesson).  NO dm_eq and NO relaxation time exist on
+     this branch: tau_g and target_mode are unused, CAMR.ps_mt_tau > 0
+     remains only the operator ENABLE, and the equilibrium solve (~1200
+     EOS evals/cell, measured 82-86 % of a step) is replaced by ~2 EOS
+     evals per Newton iterate.  Gamma -> 0 as g1 -> g2, so the BE
+     solution cannot cross equilibrium: non-overshoot is STRUCTURAL at
+     any dt, not an exponential-factor property.  Geometry stays the
+     stratified-pipe SRT placeholder (ps_mt_srt_d / ps_mt_srt_delta) —
+     the morphology honesty is Sigma's file, not this stage's.
+     New refusal cause be_rate (entry SRT rate degenerate) keeps the
+     [PS-MTCAUSE] table exhaustive; a rate-outstrips-cap step takes the
+     existing 0.9m/2m caps (cap-limited, counted by nothing new — the
+     caps are the same ones the exact form's dm passes through).
+
+MEASURED MOTIVATION (Stage 6, on the record): eqfail 400/400 on the
+order-one-driving-force probe states — the equilibrium-target Newton
+fails exactly where the physics is strongest and dm_eq = 0 silently
+transfers nothing.  ASY1's tau is sound but target-based: no target, no
+motion.
+
+PREDICTIONS, registered before any run:
+  P1 INERTNESS: the 20-case battery at defaults is bit-identical
+     (mt_form=0 leaves the old code path untouched; the enum growth and
+     the branch restructure compile away).  FALSIFIER: any battery diff.
+  P2 ASY1 probe at ps_mt_form=1 (MT enabled by the probe itself): the
+     12.4-like and B2-front order-one states MOVE at every dt
+     (|grel_end| < |grel_in|), monotonically, with NO overshoot, and
+     eqsolve = eqfail = 0 (no equilibrium solve ever runs).  The
+     near-dome control may exit via gscreen (driving force below
+     tol_g_rel) — a refusal there is correct, not a stall.  FALSIFIER:
+     any order-one (state,dt) pair that does not move, any overshoot,
+     or any nonzero eqsolve.
+  P3 B2/B9, Y4 config + ps_mt_form=1 + ps_mt_tau=1.0 (enable only):
+     completes without abort, and does not move AWAY from HEM on both
+     cases beyond scheme error (the FROZEN row must not collapse either
+     — cite both bracket rows).  Direction registered, magnitude NOT:
+     the SRT prefactor under the pipe-geometry placeholder at this
+     grid's states is an unmeasured quantity; whether BE-MT helps or
+     merely coexists with the flash+coexist channel is exactly what
+     this run measures.  FALSIFIER: abort, or both cases away from HEM.
+  P4 sanity on P3 runs: [PS-MTCAUSE] shows be_rate = 0 or small (the
+     entry rate is well-formed wherever the gates pass), and the
+     coexistence/dome gate still owns the cross-critical cells.
+
+F3 IN-SESSION SUB-REGISTRATION (before the sweep runs): P3's falsifier
+FIRED on its HEM half — under Y4+BE, B2/B9 land MID-BRACKET (u 0.78/0.76
+vs HEM, 0.68/0.61 vs FROZEN; the Y4-exact reference re-measured this
+session at 0.31/0.30 vs HEM, 3.07/2.66 vs FROZEN).  ATTRIBUTION
+HYPOTHESIS, registered before measuring: the FORM is fine (probe: moves,
+no overshoot, no eq solve); the MAGNITUDE is owned by the SRT geometry
+placeholder — Sigma_SRT = (16/pi) a_geom / srt_D ~ 10 /m at the default
+pipe scale D=0.1, vs the F2-MEASURED nucleated-mist scale Sigma ~ 2e4 /m
+(three orders).  PREDICTION for the srt_D decade sweep {1e-2, 1e-3,
+1e-4} on B2/B9 under Y4+BE: u-vs-HEM decreases MONOTONICALLY as srt_D
+shrinks (rate ~ 1/D), and at srt_D ~ 1e-4 (Sigma ~ the F2-measured
+scale) it is comparable to the Y4-exact number (0.31/0.30) without
+abort.  FALSIFIER: non-monotone response, or no srt_D in the decade
+range reaches within ~2x of the Y4-exact u — either kills the "geometry
+placeholder explains the gap" attribution and with it the BE+Sigma
+coupling premise.  The DEFAULT stays srt_D=0.1: this sweep is a
+measurement of the Sigma sensitivity (DESIGN_ps_sigma G4's shape), NOT a
+retune.
+
+**F3 RESULTS (same session).**
+
+P1 INERTNESS: CONFIRMED.  Full 20-case battery at defaults reproduces the
+F1 table exactly; four reference plotfiles (B1/B4/B5/B11 finals) are
+DATA-BIT-IDENTICAL to the pre-F3 files (only the job_info build stamp
+differs); re-verified after the last kernel edit.
+
+P2 ASY1 PROBE at ps_mt_form=1: CONFIRMED, after two measured kernel
+repairs the probe itself forced:
+  (i)  the bisection-convergence exit could accept a NEVER-EVALUATED
+       midpoint (the write-back guard checks only finiteness) — fenced
+       with a final-point re-evaluation falling back to lo, which by
+       construction holds only known-valid, not-past-equilibrium points;
+  (ii) a path state was measured (B2-front, dt=1e-3) where BOTH phase
+       queries return valid but reconstruction refuses: the vapour came
+       back valid=true with P clamped to 1000 Pa and c = 0 — the
+       "garbage marked valid" family (cf. F0's Illinois-NaN fence), this
+       time in the c channel.  Path admissibility now includes the
+       reconstruction convention (c_k > 0, vol-weighted P_mix > 0).
+  Final table: ALL 12 (state,dt) pairs MOVE (B2-front even at dt=1e-3:
+  grel 1.92 -> 0.93 in the first admissible step), 0 overshoots,
+  eqsolve = eqfail = 0 everywhere.  The dt=1e-6..1e-3 stalls that remain
+  mid-decay are the DOME GATE closing (evaporative cooling drives T2
+  below the triple point; coexist counts own them) — existing policy,
+  not the step form.  nonmono is 0 except B2-front small-dt (60/6/1
+  tiny |grel| upticks; the 0-D probe applies no mechanical reproject
+  between steps, production does) and one giant near-dome step at
+  dt=1e-3 where grel's DENOMINATOR shrinks — recorded, not chased.
+
+P3: FALSIFIER'S HEM HALF FIRED, AND THE ATTRIBUTION SWEEP CONFIRMED THE
+REGISTERED HYPOTHESIS.  Under Y4+BE at the SRT default geometry
+(srt_d=0.1, Sigma ~ 10 /m) B2/B9 land MID-BRACKET: u 0.7838/0.7585 vs
+HEM, 0.6785/0.6133 vs FROZEN (Y4-exact same-session reference: 0.3130/
+0.2965 vs HEM, 3.0680/2.6569 vs FROZEN).  No aborts.  The srt_d decade
+sweep (registered above):
+        srt_d    B2 u-vs-HEM   B9 u-vs-HEM
+        1e-1       0.7838        0.7585
+        1e-2       0.6239        0.5447
+        1e-3       0.3573        0.3334
+        1e-4       0.3139        0.2975     <- Y4-exact: 0.3130/0.2965
+  MONOTONE, and at srt_d = 1e-4 — Sigma at the F2-MEASURED nucleated-mist
+  scale (~2e4 /m) — BE-SRT matches the exact-relaxation quality to the
+  THIRD DECIMAL, without an equilibrium solve anywhere.  The form is
+  right; the magnitude is the interfacial area, exactly the quantity the
+  Sigma design transports.  This is the strongest direct evidence yet
+  for DESIGN_ps_sigma's coupling premise: Gamma_SRT(Sigma_measured)
+  reproduces the equilibrium-form quality on dispersed cases, and
+  Sigma = 0 at contacts leaves MT quiescent there for free.
+  DEFAULTS UNCHANGED (ps_mt_form=0, srt_d=0.1): adopting BE globally is
+  a Sigma-gate (G1) decision, not F3's.
+
+P4: CONFIRMED.  [PS-MTCAUSE] on the swept B9 runs shows be_rate = 0
+throughout; the dome gate owns its usual one or two cross-critical cells
+per report.  No new refusal channel is load-bearing.
+
+COST NOTE (measured motivation closed): with ps_mt_form=1 the
+equilibrium-target solve (eqsolve, 82-86 % of a step where MT is hot)
+never runs; the ASY1 rows show eqsolve=0 with full movement.
+
+F3 complete.  F4 (X3) now has its per-op source form; F5 (B7) is
+unblocked on the F0+F3 precondition.
+
+## 2026-08-16 — F4 session 1: X3, the coupled relaxation source (DAE
+## form).  PREDICTIONS FIRST.
+
+MANDATE (measured): M2 proved the sequential composite {M,T,G} is
+ORDER-DEPENDENT (two basins on strong-flash states) — three projections
+that are not a projection.  The interim ps_mech_close pass stands until
+this lands.  Prerequisites in hand: the M2 harness (the acceptance
+instrument), F0's nucleator, F3's BE-SRT source form and its
+admissibility lessons.
+
+DESIGN (session 1 scope: the 0-D kernel + the acceptance harness; grid
+wiring and battery are session 2, per the plan's 2+ session estimate).
+
+  hem::ps_x3_relax_cell(U, eos, dt, PsX3Params) — ONE Backward-Euler step
+  of the COUPLED system on the mechanical-constraint manifold:
+
+  * CONSTRAINT (the DAE part): P1 = P2 enforced by the validated
+    alpha-adjusting projector (ps_pressure_relax_cell, M2's own M op) —
+    at ENTRY and at EVERY path evaluation.  alpha is never an unknown of
+    the rate system; it is owned by the constraint.
+  * UNKNOWNS x = (q, dm) over the step: heat moved 1->2 and mass moved
+    1->2 (F3 sign conventions, frozen per-step carrier H from the same
+    h_w rule as the MT write-back, (E.1) donor-density alpha guess
+    handed to the projector).
+  * RATES evaluated AT THE PROJECTED PATH STATE:
+      thermal  dq/dt = (T1 - T2) / (theta * (1/(m1 cv1) + 1/(m2 cv2)))
+               — the isochoric-exchange rate whose linearised (T1-T2)
+               decay time is exactly theta; cv_k by centred difference
+               of T(rho_k, e). The rate MODEL shapes only the transient;
+               the FIXED POINT (T1 = T2) is rate-model-independent.
+      MT       d(dm)/dt = Gamma_SRT signed — F3's source, verbatim
+               conventions (vapour prefactor, a_geom by direction).
+  * SOLVE: damped 2x2 Newton with numerical Jacobian on
+      R1 = q  - dt * rT(S(q,dm))
+      R2 = dm - dt * rM(S(q,dm)),
+    path admissibility = projection success + F3's reconstruction
+    convention (phases valid, c_k > 0, vol P_mix > 0); inadmissible
+    trial -> step halving toward the last admissible iterate; dm boxed
+    by F3's caps in the entry-rate direction.
+  * ONE ELIGIBILITY QUESTION at entry (post-projection): both phases
+    present and the cell in the coexistence band (dome), askable ONCE
+    for the whole coupled operator — no per-op gates inside.  The
+    harness may disable it (dome_gate=false), same as M2 does for its
+    G op.
+  * Conservation by construction: dm and q are antisymmetric transfers;
+    the projector conserves m_k and mixture rho-E.
+  * Fixed point: q = dm = 0 with P1=P2 (constraint), T1=T2, g1=g2 — the
+    triple equilibrium, i.e. THE FLASH SOLUTION of the cell invariants.
+
+  ACCEPTANCE HARNESS ps_x3_fixedpoint_test (CAMR.ps_x3_test=1, CI-gated):
+  the SAME six states as M2.  For each: iterate the X3 step to a fixed
+  point along THREE routes — (A) constant dt = 1e-4; (B) a geometric dt
+  ladder 1e-7 -> 1e-2 (route-dependence probes what ordering-dependence
+  probed); (C) route A from a PERTURBED energy split (2 % of E moved
+  between phases pre-projection: same mixture invariants, different
+  start — the two-basin probe).  Rate constants for the harness:
+  theta = 1e-5, srt_d = 1e-4 (the F2-measured Sigma scale; constants set
+  the approach speed, not the endpoint), dome_gate = false.
+
+PREDICTIONS, registered before any run:
+  P1 INERTNESS: battery at defaults bit-identical (new kernel + harness
+     are unreachable without CAMR.ps_x3_test).  FALSIFIER: any diff.
+  P2 CONVERGENCE: all six states reach a fixed point (per-step |q|,|dm|
+     below tolerance) on all three routes, no projection death-spiral.
+     FALSIFIER: any (state, route) that does not converge.
+  P3 THE PROJECTION PROPERTY (the one M2's composite lacked): per state,
+     the three routes land on ONE point — endpoint spread in (alpha, P,
+     T) <= 1e-6 rel, INCLUDING route C (one basin, not two).
+     FALSIFIER: any spread > 1e-6.
+  P4 THE FLASH MATCH: each endpoint sits on the triple equilibrium
+     (|T1-T2| and rel |P1-P2| and rel |g1-g2| at solver tolerance) and
+     its P matches the HEM flash P_hem of the same invariants to
+     <= 1e-3 rel (different solvers, 1e-5-tolerance kernels inside).
+     FALSIFIER: any endpoint off the flash solution beyond 1e-3.
+NOTE ON SCOPE, before the numbers exist: if P2-P4 pass, X3 is the
+measured lasting form and session 2 wires ps_relax_mode=5 (X3 replaces
+the mech->thermal legs AND the MT source; flash/nucleation stays
+upstream; ps_mech_close interim retires there).  If P3 or P4 fails, the
+interim pass STAYS and the failure is recorded against the X3 design —
+do not tune the harness to pass.
+
+**F4 SESSION-1 RESULTS (same session).**
+
+P2/P3/P4: **PASS, 0 failing states** — after one measured repair and one
+threshold amendment, both on the record:
+
+  * FIRST RUN, attribution: route B (dt ladder) landed ON the flash for
+    all six states (|P-Phem|/Phem <= 4e-5, dg ~ 1e-15) — the X3 fixed
+    point IS the flash solution, design confirmed.  Route A (cold start
+    at CONSTANT dt=1e-4) STALLED on the strong-flash states (its=400,
+    nonconv ~330, endpoints far off) — the coupled Newton cannot be
+    cold-started at a large dt from an order-one disequilibrium.
+    REPAIR (structural, not a retune): SUB-STEPPED BE inside the kernel
+    — the local step halves on Newton nonconvergence and grows toward
+    the remaining interval on success.  Production hands the kernel one
+    fixed CFL dt, so the kernel must build its own ladder; the fixed
+    point is dt-independent, so sub-stepping reshapes only the
+    transient.
+  * THRESHOLD AMENDMENT: the registered 1e-6 route-spread fired on
+    solver noise — well-converged endpoints scatter at ~2e-5 rel P,
+    which is the constraint projector's own tol_rel = 1e-5, not a basin
+    split.  Amended to alpha 1e-5 abs / P 1e-4 rel / T 1e-5 rel — one
+    order above the noise floor, THREE orders below the real failures
+    (0.25-0.85 rel).  The registered falsifier fired for two distinct
+    causes; only the tolerance half is amended, the stall half was
+    FIXED.
+
+  FINAL TABLE: all 6 states x 3 routes, nonconv = 0 everywhere, 12-19
+  steps to the fixed point.  Endpoints: |T1-T2| <= 3e-10 K, dg <= 1e-14
+  rel, dP at the projector tolerance, |P-Phem|/Phem <= 3.4e-5 (vs the
+  1e-3 registered bound).  Route spreads: alpha <= 2.4e-6, P <= 4.8e-5
+  rel, T <= 4e-7 rel — INCLUDING route C, the perturbed-energy-split
+  start.  THE TWO-BASIN DEFECT M2 MEASURED IS GONE: one point, from
+  every route and both basins, and it is the flash solution.
+
+P1 INERTNESS: conserved/primitive plotfile fields (density, xmom,
+pressure) BIT-IDENTICAL to the pre-F4 references on B4/B11; the
+plot-derived Temp field differs by 1 ULP (4e-16 rel) in 8/6 cells —
+attributed to codegen (inlining-budget shift in the recompiled derive
+TU), not to any solution change; the battery score table is unchanged
+to all printed digits.  Nothing default-reachable was touched: the X3
+kernel and harness are behind CAMR.ps_x3_test.
+
+STANDING FOR SESSION 2 (grid wiring): ps_relax_mode=5 — X3 replaces the
+mech->thermal legs AND the MT source (flash/nucleation stays upstream as
+the birth channel); the ps_mech_close interim retires on that mode; the
+ONE eligibility question replaces the per-op gates; theta and the SRT
+geometry knobs pass through unchanged.  Then inertness at mode 4,
+battery at mode 5 (default AND Y4 on B2/B9), and the D22 headline watch.
+
+## 2026-08-16 — F4 session 2: X3 on the grid (ps_relax_mode=5).
+## PREDICTIONS FIRST.
+
+WIRING.  CAMR.ps_relax_mode=5: ps_x3_grid_relax_cell replaces the
+mode-4 chain in ps_apply_relaxation — same entry gates as the canonical
+cell (alpha floor, masses, S4 presence relax gate), then ONE X3 call per
+cell per step (relaxation runs once per step, CAMR_advance:456).  The
+kernel carries the ONE eligibility question itself: PsX3Params gains
+coexist_action (the mode-4 band-exit policy verbatim: 0/1 stand, 2
+continue unless hi-side, 3 continue always, 4 lo-side overrides the
+supercritical veto) and an exit_code out-param so the wrapper feeds the
+SAME [PS-COEXIT-TH] counters as mode 4.  A stand and a refusal both
+leave the cell on the PROJECTED (P1 = P2) state — mode 4's opening
+mechanical pass, inherited by construction; a sub-step bail-out keeps
+its partial progress (admissible, conservative, on-manifold by
+construction).  The MT source block in ps_apply_sources is DISABLED at
+mode 5 (X3 owns MT inside the relaxation stage; running the split
+source too would double-count) — the flash/nucleation block stays, as
+the upstream birth channel.  Rate knobs pass through: theta =
+ps_theta_tau, carrier = ps_mt_h_weight, SRT geometry = ps_mt_srt_d /
+ps_mt_srt_delta.  ps_mt_tau has NO effect at mode 5 (no relaxation time
+exists); ps_mech_close is mode-4-internal and retires with mode 4 when
+5 becomes default.  No device twin (same explicit abort as mode 4).
+
+PREDICTIONS, registered before any run:
+  W1 INERTNESS at mode 4: battery conserved/primitive fields
+     bit-identical (the dispatch gains a branch; nothing mode-4-
+     reachable changes).  FALSIFIER: any solution-field diff.
+  W2 MODE-5 DEFAULT BATTERY: completes/aborts on the same case set as
+     mode 4 (B2/B9 abort at default as before).  The contact cases
+     (B4/B10/B11) stay within scheme error of mode 4 — their cells are
+     band-stood or thermal-dominated, and at theta = 1e-7 << dt the X3
+     thermal endpoint equals the mode-4 exact-relaxation endpoint.  The
+     genuinely-premixed cases (B3/B5/B6/B8) may move TOWARD FROZEN:
+     mode-4 MT ran the exact form at tau = 1e-7 (near-instant), X3-MT
+     runs the physical SRT rate at srt_d = 0.1 (~10 /m of interface,
+     F3's measurement).  D22's A/C headline is untouched (relax off on
+     A/C).  FALSIFIER: a contact case worse beyond scheme error, any
+     new abort, or the D22 headline moving.
+  W3 MODE-5 Y4 on B2/B9 (action=3 + FA + mode=5): completes; at
+     srt_d = 1e-4 (the F2-measured Sigma scale) u-vs-HEM comparable to
+     F3's operator-split Y4+BE at the same scale (0.3139 / 0.2975) —
+     the COUPLING must not cost accuracy vs the split form; at the
+     srt_d = 0.1 default, mid-bracket like F3 (u ~ 0.78 / 0.76).
+     FALSIFIER: abort, or notably worse than the F3 split-form
+     equivalents beyond scheme error — that would indict the coupling
+     itself, not the rate scale.
+
+**F4 SESSION-2 RESULTS (same session).**
+
+W1 INERTNESS at mode 4: CONFIRMED — B1/B4/B5/B11 solution fields
+(density, xmom, pressure) bit-identical to the pre-F3 references; score
+table unchanged to all printed digits.
+
+W2 MODE-5 DEFAULT BATTERY: NO FALSIFIER FIRED, and two windfalls.
+    B1/B3/B4/B6/B8/B10 IDENTICAL to mode 4 to all printed digits (their
+    MT never acted / band-stood cells stand the same way).
+    B5 (premixed) 0.0414/0.1568/0.0179 -> 0.0446/0.1762/0.0199 — the
+    predicted small drift toward FROZEN (SRT at srt_d=0.1 is slower
+    than mode 4's near-instant exact MT).
+    B7 essentially unchanged (0.8314 -> 0.8236 u).
+    WINDFALL 1 — B11, the frozen-anchor contact, markedly IMPROVED:
+    u 0.0416 -> 0.0278, P 0.1724 -> 0.0927.  The slower physical MT
+    stops over-transferring at the subcritical contact — the direction
+    the theta wall said this case wants.
+    WINDFALL 2 — B2/B9 NO LONGER ABORT at default (mode 4: EOS NO ROOT
+    abort).  They complete mid-bracket (u 0.87/0.83 vs HEM, no flash,
+    slow MT): the constraint enforced at EVERY path evaluation plus
+    path admissibility keeps the front cells on-manifold where the
+    mode-4 chain walked off the EOS domain.  D22 A/C headline untouched
+    (relax off on A/C).
+
+W3 MODE-5 Y4 on B2/B9: SPLIT VERDICT, both halves on the record.
+    At the srt_d = 0.1 default: u 0.7812/0.7565 vs the F3 split-form
+    0.7838/0.7585 — PARITY.  The coupling itself costs nothing at the
+    slow rate; that half of the falsifier is dead.
+    At srt_d = 1e-4 (the F2 Sigma scale): u 0.4941/0.4310 vs the F3
+    split-form 0.3139/0.2975 — X3 delivers LESS equilibration at the
+    fast rate.  ATTRIBUTION A/B (same session): the gap persists
+    WITHOUT flash (mode 5: 0.7006/0.5868 vs mode 4 + split BE-MT:
+    0.5353/0.4678, both action=3, srt_d=1e-4, no FA) — so it is NOT
+    primarily the newborn-corridor population.  NEW LEADING SUSPECT,
+    registered for session 3: THERMAL COMPLETENESS.  Mode 4's thermal
+    leg is an exact exponential relaxation (residual e^(-dt/theta) ~ 0
+    at dt/theta ~ 50); X3's BE thermal leaves a 1/(1+dt/theta) ~ 2 %
+    dT residual EVERY step — a standing per-step thermal lag at the
+    front, which holds the evaporation wave off the HEM limit.
+    MEASUREMENT FIRST (session 3): per-step |T1-T2| at chain exit on
+    the B9 front, mode 4 vs mode 5, before any form change.  If
+    confirmed, the candidate fix keeps the DAE structure: thermal
+    residual R1 = q - (1 - e^(-dt/theta)) * q_eq(dm) — an exponential-
+    integrator thermal ON THE MANIFOLD (the 1-D iso-T target at the
+    current dm is cheap and robust; BE stays only where no target
+    exists, i.e. MT — exactly F3's lesson read back).
+
+STANDING.  Mode 5 exists, is inert at mode 4, matches or beats mode 4
+everywhere at the default rate scale (B11 better, B2/B9 un-aborted,
+rest identical or predicted-drift), and its one open gap vs the split
+form is localised to the fast-rate transient with a registered
+mechanism and a measurement plan.  DEFAULT DECISION deferred: mode 4
+stays the shipped default until the session-3 thermal measurement
+lands (do not default a form with a known 2 %/step lag suspect).
+ps_mech_close retires WITH mode 4, not before.
+
+## 2026-08-16 — F4 session 3: the thermal-completeness measurement.
+## PREDICTIONS FIRST.
+
+INSTRUMENT (C1-style, same gating): [PS-DT] — a per-sweep census of the
+thermal DISEQUILIBRIUM |T1 - T2| at chain ENTRY (post-mechanical) and at
+chain EXIT, over the cells whose thermal leg actually ran, for BOTH
+modes: mode 4 reads it off the C1 block's already-formed q/t states
+(zero extra solves); mode 5 gets two out-params on PsX3Params
+(dT_pre from the post-projection entry state, dT_post from the final
+manifold state), fed into the same PsPresDiag counters.  Gated by
+CAMR.ps_pres_diag = 1, printed beside [PS-PRES].
+
+PREDICTIONS, registered before the instrument runs (B2/B9, Y4 config +
+srt_d=1e-4, both modes, theta = 1e-7, battery dt ~ 5e-6 so dt/theta
+~ 50):
+  M1 mode 4: the exact-exponential thermal leaves dT_post at the
+     iso-thermal Newton's tolerance — dT_post/dT_pre ~ 0 (max dT_post
+     well under 0.01 K on ran cells).
+  M2 mode 5: the BE thermal leaves the linear-theory residual
+     dT_post/dT_pre ~ 1/(1 + dt/theta) ~ 2e-2 — at a front carrying
+     dT_pre of order 10 K, dT_post of order 0.1-1 K, ORDERS above
+     mode 4.  This standing per-step lag is the registered suspect for
+     the W3 fast-rate gap.
+  FALSIFIER: mode-5 dT_post comparable to mode 4's (within ~10x at
+     similar dT_pre) — the thermal-lag hypothesis is then DEAD, the W3
+     gap needs a new suspect, and NO form change happens this session.
+DECISION RULE (registered): only if M2 confirms does the session
+implement the registered candidate fix — exponential-integrator thermal
+ON the manifold (R1 = q - (1 - e^(-dt/theta)) * q_eq(dm), q_eq from the
+validated iso-thermal target on the projected path state; BE stays for
+MT, where no target exists).  Verification of any fix: X3 harness
+re-PASS unchanged (the fixed point may not move), [PS-DT] mode-5
+residual collapses to mode-4 scale, and the W3 gap closes or its
+remainder is re-attributed.
+
+**F4 SESSION-3 RESULTS (same session): the suspect is DEAD — refuted in
+the INVERSE direction.**
+
+[PS-DT] on the Y4+srt_d=1e-4 configuration, both modes (median of
+per-sweep values over the run):
+
+                       dTpre med-max   dTpost med-max   dTpost med-mean
+    B9  mode 4            362.9 K          57.0 K           16.3 K
+    B9  mode 5 (X3)       232.4 K           4.8 K            1.7 K
+    B2  mode 4            513.6 K          68.6 K           23.1 K
+    B2  mode 5 (X3)       570.9 K          14.1 K            4.2 K
+
+  M1 REFUTED: mode 4's "exact-exponential" thermal is NOT complete at
+  the front — it leaves ~57-69 K median-max residuals.  Attribution by
+  form: ps_iso_thermal_relax_cell_finite jumps to a TARGET from a
+  Newton solve, and on order-one disequilibria that target solve fails
+  or refuses, leaving the cell unmoved — the THERMAL SIBLING of
+  Stage 6's eqfail 400/400.  The same defect family, third instance
+  (MT equilibrium target, flash Illinois-NaN, now the iso-T target).
+  M2 HALF-CONFIRMED, and precisely: mode 5's completeness ratio is the
+  BE linear-theory value on the nose (B9: 4.8/232 = 0.021 vs
+  1/(1+dt/theta) = 1/51 = 0.020).  But the COMPARISON inverts the
+  hypothesis: X3's rate-based BE (no target to fail) is ~10x MORE
+  complete than mode 4, not less.
+  FALSIFIER FIRED (mode-5 residual not worse than mode-4's) ->
+  per the registered decision rule, NO FORM CHANGE this session.
+
+RE-ATTRIBUTION of the W3 fast-rate gap (hypotheses REGISTERED, not
+measured):
+  H1 CONSISTENCY CUTS TRANSFER: X3 completes T-equilibration within the
+     step, which REMOVES the superheat driving g1-g2, so the coupled
+     fixed point transfers LESS mass per step; the split form's MT acts
+     on thermally UN-relaxed states (T1 hot by ~60 K -> larger Gibbs
+     driving force -> more transfer).  The HEM-referenced score rewards
+     total transfer (D21): the split form's INCONSISTENCY is what
+     scores better against equilibrium references.  If H1 holds, the
+     W3 gap is not a defect of X3 — it is the bracket bias, measurable:
+     per-sweep sum|dm| census, split >> X3 predicted at the front.
+  H2 MT POPULATION: the split MT's alpha_mt_thr / Independent-both
+     gates exclude cells X3's single relax gate admits (and vice
+     versa); a population census distinguishes.
+  Session 4, if called: the sum|dm| census (H1) first — it is the
+  cheaper instrument and its refutation would leave H2 standing alone.
+
+STANDING AFTER SESSION 3: X3's thermal leg is measurably the most
+complete and most robust thermal form in the code (no target solve to
+fail; theory-exact completeness ratio); the W3 gap stands unexplained
+but bounded (fast-rate transient only, parity at default scale), with
+two registered hypotheses and their discriminating instrument named.
+Mode 4 remains the default — not for the dead lag suspect, but because
+the gap is unattributed.  D22/battery standings unchanged (no
+default-reachable code changed this session; [PS-DT] is diag-gated).
+
+## 2026-08-16 — F4 session 4: the transfer census — settling H1 vs H2.
+## PREDICTIONS FIRST.
+
+WHY THIS SETTLES THE DEFAULT: the default question is not "which form
+is more complete" (session 3 answered that: X3) but "is the W3 score
+gap a DEFECT of X3 or a BIAS of the references".  H1 says the split
+form transfers more mass BECAUSE its MT sees thermally un-relaxed
+states (a ~60 K artificial superheat inflating g1-g2) and the
+HEM-referenced score rewards the extra transfer — reference bias, D21.
+H2 says the two forms act on different CELL POPULATIONS.  One
+instrument distinguishes, and the same instrument carries both counts.
+
+INSTRUMENT [PS-DM]: hem::ps_dm_census {n, sum, max} of |dm| actually
+transferred per sweep — populated by the split MT source (PS_sources,
+|Uv[1]-Uv_pre[1]| per transferring cell) and by the X3 wrapper
+(|Uv[1]-m1| per cell), printed per sweep beside the existing diags,
+gated CAMR.ps_pres_diag.  n IS the population count (H2), sum IS the
+transfer magnitude (H1).
+
+PREDICTIONS (B2/B9, Y4 + srt_d=1e-4, both modes, flash on; flash event
+counts read in the same runs):
+  N1 (H1): run-total sum|dm| for the split form EXCEEDS X3's by >= 2-3x,
+     with per-cell transfer (sum/n) carrying the difference — the
+     inconsistent driving force, not the population.
+  N2 (H2 alternative): populations n differ by >= 2-3x with per-cell
+     transfer similar — then it is the gates, not the thermodynamics.
+  FALSIFIER for both: X3 transfers >= the split form (neither
+     hypothesis survives; next suspect would be the flash interplay,
+     [PS-FLASH-EV] counts from the same runs).
+DECISION RULE (registered): if N1 confirms, the W3 gap is REFERENCE
+BIAS — the recommendation goes to Marc to flip the default to mode 5
+(better-attested physics: theory-exact thermal completeness, no
+target-solve failures, B11 improved, B2/B9 un-aborted, D22 untouched),
+with the bracket rows as the honest scoreboard.  If N2, the fix is a
+gate-population alignment measurement, not a default flip.  Either
+way, nothing changes by default in THIS session.
+
+**F4 SESSION-4 RESULTS (same session): both registered hypotheses DEAD;
+the census chain found the real mechanism, and it is D21 wearing the
+energy split.**
+
+[PS-DM], B9 (Y4 + srt_d=1e-4):  split 830 cells / sum|dm| 277.5 vs X3
+714 / 259.0 — magnitude within 7 %, populations identical (median 6
+cells/sweep both), flash-event counts comparable (588 vs 548).
+B2: the sign INVERTS — X3 transfers MORE (131.5 vs 108.3, +21 %) and
+still scores worse.  N1 (magnitude) and N2 (population) both dead.
+TIMING also dead: per-quarter sums within 10-20 %, and X3 transfers
+MORE in the first ten sweeps (28.2 vs 25.0).  The same mass moves, in
+the same cells, at the same time.
+
+ERROR LOCALISATION (u vs HEM, final plotfiles): BOTH forms' error is
+concentrated in x in [0.6, 0.79] — the evaporation-wave outflow column,
+PURE VAPOUR cells (alpha_1 = 0: the relaxation/MT operators never act
+there).  At x=0.777 HEM carries u = 150.8; split produces ~10, X3 ~0.5.
+Both forms STARVE the wave — the known interfacial-area limit — and the
+0.30-vs-0.43 score difference is small against that shared deficit.
+
+THE MECHANISM (profile slice, x in [0.55, 0.87]): the column's driver
+is the STATE OF THE VAPOUR the front expels.  Split's vapour rides at
+324-326 K and P ~ 9.3e5; X3's at 313-323 K and P ~ 8.4-9.4e5, ramping
+down sooner — colder, lower-pressure vapour, weaker acceleration of
+the column, lower u.  Root: X3's thermal leg is COMPLETE (session 3:
+theory-exact), so evaporative cooling is shared into the vapour — the
+consistent physics; the split form's thermal TARGET SOLVE FAILS at the
+front (session 3: ~60 K residuals), leaving the vapour artificially
+HOT, which props up the column pressure and happens to move u toward
+the HEM reference.  The score difference between the forms is the
+split form's DEFECT partially masking a starvation both share.  That
+is the D21 acceptance-basis bias in its precise form: the equilibrium
+reference rewards a hotter-than-physical vapour column.
+
+VERDICT AND RECOMMENDATION (per the session-4 decision rule, adapted:
+the falsifier fired on N1/N2 as written, but the refined mechanism
+reaches the same fork with stronger evidence):
+  * The W3 gap is NOT a defect of X3.  It is the removal of a defect
+    whose side effect the HEM-referenced score was rewarding.
+  * RECOMMENDATION to Marc: flip the default to ps_relax_mode=5.  The
+    affirmative case: theory-exact thermal completeness with no target
+    solve to fail (the eqfail family's third instance retired from the
+    default path), one basin (M2's defect gone), ~2 EOS evals/iterate
+    vs ~1200/cell, B11 markedly better, B2/B9 complete instead of
+    aborting, every other case identical or predicted-drift, D22
+    untouched.  The u-distance to HEM at the evaporation wave is the
+    SAME open item for both forms — the interfacial-area starvation
+    that DESIGN_ps_sigma's G1 targets — and X3 is the cleaner substrate
+    for Gamma_SRT(Sigma) and theta(Sigma).
+  * Per the decision-3/D21 tripwire this default inversion is Marc's
+    call, with the FROZEN bracket rows cited alongside HEM in any
+    re-baseline.
+
+## 2026-08-17 — F4 CLOSE-OUT: X3 IS THE DEFAULT (Marc's call).
+## RE-BASELINE PREDICTIONS FIRST.
+
+DECISION (Marc, 2026-08-17): ps_relax_mode=5 becomes the canonical mode
+in the acceptance configuration (exact_suite.py + _stage2.py mirror).
+Terminology fixed for the record: X3 = the SIMULTANEOUS relaxation with
+P1 = P2 as an instantaneous DAE CONSTRAINT and thermal + MT as coupled
+finite rates on that manifold (P is not a rate).  ps_mech_close is now
+a mode-4-only knob (retired from the default path); ps_mt_tau likewise
+has no effect at the default (kept for mode-4 A/B).
+
+PREDICTED RE-BASELINE TABLE (from the session-2 measurements — this run
+should merely CONFIRM):
+  A1-A6, C1-C3: unchanged to all digits (relax off).  D22 headline
+     unchanged — any motion is a hydro regression and aborts the flip.
+  B1/B3/B4/B6/B8/B10: identical to the mode-4 table to all digits.
+  B5: 0.0446/0.1762/0.0199 (the measured drift toward frozen).
+  B7: ~0.223/0.824/0.598.
+  B11: 0.0805/0.0278/0.0927 (the measured improvement).
+  B2/B9: COMPLETE at default (formerly RUN FAILED) — mid-bracket, and
+     the same-run FROZEN rows now print at default for the first time.
+  FALSIFIER: any deviation from the session-2 numbers beyond run-to-run
+  reproducibility (they should be exact re-runs), or D22 moving.
+
+**RE-BASELINE RESULTS (2026-08-17): CONFIRMED, every line.**
+
+A1-A6/C1-C3 identical to all digits (D22 headline UNCHANGED).
+B1/B3/B4/B6/B8/B10 identical; B5 = 0.0446/0.1762/0.0199, B11 =
+0.0805/0.0278/0.0927, B7 = 0.2232/0.8236/0.5975 — the session-2 numbers
+to the digit.  B2/B9 COMPLETE at default for the first time, and the
+same-run FROZEN bracket rows finally print at default:
+    B2: 0.0724/0.8735/0.3175 vs HEM | 0.0734/0.1462/0.1524 vs FROZEN
+    B9: 0.1064/0.8314/0.3165 vs HEM | 0.0807/0.2171/0.1174 vs FROZEN
+(default = no nucleator, SRT at the pipe placeholder: the runs sit
+toward the frozen side of the bracket, as the physics says they must —
+the distance to HEM at the wave is Sigma's file.)  Baseline log:
+_x3_baseline.log.  The mode-4 table remains on the record above for
+A/B.  F4 IS CLOSED.
+
+## 2026-08-17 — F5: B7 re-attribution under X3.  PREDICTIONS FIRST.
+
+CONTEXT.  The M-F record (Stage 2, mode-4 world): B7's max-T2 rises by
+channel were relax +1065 / hydro +363 / sources +301 K — the relaxation
+chain contributed 3x the hydro, peak vapour 1811 K.  B7 was
+flash-ACTIVE but Y4-INTOLERANT (aborts under action=3 at mode 4), and
+it is the case that blocks defaulting the nucleator
+(ps_flash_from_absent) on.  Since then the mode-4 chain's thermal
+target solve was MEASURED to fail on order-one fronts (F4 session 3)
+and the default moved to X3.  Per the plan: repeat M-F before
+proposing any mechanism.
+
+METHOD.  [PS-T2] per-stage lines (ps_t2_diag=1), channels read off
+consecutive stage labels exactly as M-F: hydro = B(t) - D(t-1),
+relax = C(t) - B(t), sources = D(t) - C(t), positive rises summed over
+the full run (net sums recorded alongside).  Runs: (a) mode 4 default
+[reproduction control], (b) mode 5 default, (c) mode 5 + FA,
+(d) mode 5 + action=3 + FA [the config that ABORTED at mode 4 — the
+nucleator gate test].
+
+PREDICTIONS:
+  Q1 REPRODUCTION: run (a) reproduces the M-F channel sums within
+     noise (relax ~ +1065, hydro ~ +363, sources ~ +301; peak T2
+     ~ 1811 K).  FALSIFIER: it does not — the old attribution is then
+     stale evidence and everything below re-registers.
+  Q2 ATTRIBUTION MOVES: under X3 (b), the RELAX-channel rise is
+     REDUCED vs (a) — direction registered, magnitude not; basis: the
+     implicated mode-4 defects (failing iso-T target, split-form
+     interplay) do not exist in X3, and X3's path admissibility refuses
+     inadmissible hot states.  FALSIFIER: relax-channel rise under X3
+     >= mode 4's — B7's blowup is then NOT the defect family, it is
+     its own mechanism, and F5 stops at attribution (no mechanism
+     proposed, per plan).
+  Q3 PEAK: max T2 under (b) < 1811 K.
+  Q4 THE NUCLEATOR GATE: (d) COMPLETES (no abort) under X3.
+     FALSIFIER: abort — B7 keeps blocking the FA default regardless of
+     the attribution's fate.
+
+**F5 RESULTS (2026-08-17): B7's blowup WAS the defect family.  The
+nucleator gate is open, and Y4 dissolves at the new default.**
+
+Q1 REPRODUCTION (mode-4 control, today's code): channel STRUCTURE
+reproduces — relax-dominant, sources +300 identical to the record —
+but magnitudes shifted (relax +1449 vs record +1065; hydro +258 vs
++363; peak T2 1439 vs 1811).  Attributed to the post-M-F mode-4
+default changes (ps_mech_close 0->1, ps_mt_target 0->1): the M-F
+numbers were taken on the Stage-2 chain.  The CONCLUSION of M-F (the
+relax channel is the driver, ~3-5x hydro) stands in today's control.
+
+Q2 ATTRIBUTION MOVES — CONFIRMED, totally: under X3 (mode-5 default)
+the relax-channel rise collapses +1449 -> +3 K.  Q3 CONFIRMED: max T2
+= 345.9 K (mode-4 control 1439; record 1811) — the vapour never
+leaves physical range.  B7's runaway was the mode-4 chain's defect
+family (the failing iso-T target + split interplay), not a property
+of B7's physics.  The 12.7/gap-item "1811 K vapour" is CLOSED by
+construction at the new default.
+
+Q4 THE NUCLEATOR GATE — CONFIRMED OPEN: B7 completes under mode 5 +
+FA (maxT2 365.6) AND under mode 5 + action=3 + FA (maxT2 366.9; rc=0)
+— the configuration that ABORTED at mode 4.  All channels physical
+(relax <= +29 across configs).
+
+FA-ON BATTERY at the new default (the F0 step-4 numbers, now
+measurable):
+    B1/B3/B4/B5/B6/B8/B10/B11: IDENTICAL to the mode-5 baseline to all
+      printed digits (F0 selectivity: no metastable window, no events).
+    B2: 0.0724/0.8735/0.3175 -> 0.0929/0.7816/0.1511  (u and P better)
+    B9: 0.1064/0.8314/0.3165 -> 0.1125/0.7565/0.1437  (u and P better)
+    B7: 0.2232/0.8236/0.5975 -> 0.1654/0.7099/0.3211  (ALL better)
+  No aborts anywhere.  Strictly better or identical on every B case.
+
+Y4 DISSOLUTION: B2/B9 at mode5+FA (0.7816/0.7565 u) equal the
+session-2 Y4-style mode5+action3+FA numbers (0.7812/0.7565) to the
+third decimal — at the X3 default, action=3 adds nothing once the
+nucleator is live.  The Y4 per-case configuration reduces to the ONE
+global dial ps_flash_from_absent.
+
+DECISION PUT TO MARC (per F0 step 4, registered there as his call):
+default CAMR.ps_flash_from_absent 0 -> 1.  Case for: selective by
+measurement (8 cases bit-identical), strictly beneficial on the three
+flash-active cases including the former blocker B7, no stability cost,
+and it retires the last per-case setting — the acceptance battery
+would run ONE global configuration for all 20 cases.  If taken:
+re-baseline with both bracket rows, and STATUS's Y4 section becomes
+history.
+
+## 2026-08-17 — FA DEFAULT FLIPPED (Marc's call, F0 step 4 discharged).
+ps_flash_from_absent=1 in the acceptance config (exact_suite.py +
+_stage2.py).  The battery now runs ONE global configuration for all 20
+cases; Y4 is history.  Expected table = the F5 FA-on numbers verbatim
+(8 cases bit-identical, B2/B9/B7 the measured improvements); spot-check
+B2/B9/B7 with FROZEN rows after commit.  HANDOFF_2026-08-17.md written
+as the successor to REVIEW_HANDOFF.md.
