@@ -701,6 +701,28 @@ documents a `CAMR.ps_presence=1` flag that is no longer read anywhere.
 
 ## 6. Dead, dormant and duplicated code
 
+> **T1-b sweep, 2026-08-17 — what this section no longer needs to list.**
+> Removed and verified battery-bit-identical (22 rows diffed): the hem
+> face-flux family (`ps_face_flux`, `ps_hlld_flux`, `ps_pelanti_hllc_flux`,
+> `ps_llf_flux`, `ps_flux`) -- 475 lines, and note the audit's own claim
+> needed correcting, since the chain's ROOT `ps_face_flux` was not on the
+> dead list and the compiler refused the deletion until it went too; the
+> two unreachable `#88` metastable-guard forks (`PsPres::enabled` is
+> hard-coded 1 and `CAMR.ps_presence` is read nowhere, so every
+> `enabled == 0` branch was unreachable); the unreachable `pr.enabled == 0`
+> early-outs in `ps_presence_relax_gate` and `wp_face_class`; and
+> `PS_alpha_transport.H`, delisted from Make.package and parked in
+> `Exec/CO2_RiemannSuite/_to_delete_session/` (the device bridge cannot
+> unlink, so Marc deletes).  `[ps_prdiag]` was RELABELLED, not re-pointed:
+> it measures `ps_iso_pressure_relax_cell` (modes 1/2 only) and prints
+> zeros at modes 4/5 -- the production path's constraint outcomes are in
+> the new `[PS-X3]` report.  STILL LIVE, deliberately: `ps_cell_metastable`
+> and its two dials, whose only consumer is mode 3, which is being kept
+> until the `ps_p_tau` sweep runs (the Munkejord reading gave it a
+> purpose).  `PS_relax_device.H` is untouched -- a whole hand-mirrored
+> device path is its own decision.
+
+
 An inventory, verified in the source rather than repeated from notes except
 where marked. This section exists because the duplication has repeatedly caused
 real defects: a fix gets applied to one copy and not the live one.

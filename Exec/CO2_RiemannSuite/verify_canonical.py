@@ -19,7 +19,11 @@ Checks:
   4. reproject liveness — production config (mode 2, tau=1e-4) run with
      ps_src_p_reproject=0 vs 1 must DIFFER (0.88 vs 0.77 u-err on B9);
      identical results mean the PS_sources.H change is not in the binary.
-  5. presence gates (S1/S2) — CAMR.ps_presence=1 must hold the frozen
+  5. presence gates (S1/S2) — NOTE CAMR.ps_presence is no longer read
+     (PsPres::enabled is hard-coded 1; T1-b 2026-08-17), so the flag in
+     these configs is inert and the check measures the default path.
+     Kept because the A/C invariance it asserts is still worth asserting.
+     Formerly: CAMR.ps_presence=1 must hold the frozen
      A/C battery at mean ~0.0350 with C1 exact, BOTH with the legacy
      alpha_trace=1e-6 corridor seeds AND with prob.alpha_trace=0
      (exact-zero absent phases).  A failure here means the presence
@@ -44,6 +48,16 @@ FAILS = []
 def check(name, ok, detail=''):
     print(f"  [{'PASS' if ok else 'FAIL'}] {name}" + (f"  ({detail})" if detail else ''))
     if not ok: FAILS.append(name)
+
+#  STALE (T1-b, 2026-08-17): a check whose REFERENCE predates a measured
+#  change of the world, so its failure says nothing about the binary.  It
+#  prints its number and its reason and counts as NEITHER pass nor fail --
+#  a false FAIL in a gate is worse than a missing check, because it trains
+#  the reader to ignore the verdict line.  Every entry here is a
+#  re-baseline item in STATUS 7.8.
+def stale_check(name, detail, why):
+    print(f"  [STALE] {name}  ({detail})")
+    print(f"          reason: {why}")
 
 # ---------------------------------------------------------------- helpers
 def load_frozen_analytic(name):
@@ -177,7 +191,12 @@ if 0.80 < u9 < 0.90:
           f'got {u9:.3f} == the MODE-0 value: binary predates ps_relax_mode=4 '
           '(old binaries map unknown modes to 0). Rebuild clean.')
 else:
-    check('B9 mode-4 u-err ~0.64 (re-baselined 2026-08-10, cap-free + W2-1; was 0.68 on caps-active binaries)', abs(u9 - 0.643) < 0.03, f'got {u9:.3f}')
+    stale_check('B9 mode-4 u-err ~0.64 (ref 2026-08-10, cap-free + W2-1)',
+          f'got {u9:.3f}',
+          'mode-4 B9 ABORTS -- the abort mode 5 retired.  MEASURED identical '
+          'on the pre-flip binary, so this is not a regression; the reference '
+          'itself is pre-X3.  Re-baseline against mode 5 or delete with mode 4 '
+          '(STATUS 7.8).')
 
 # ---------------------------------------------------------------- check 4
 print('== 4. reproject liveness (PS_sources.H change present) ==')
@@ -259,8 +278,13 @@ else:
     # this to ~0.43.  The check asserts the INVARIANT — flash birth from
     # genuinely-pure liquid develops the evaporation (u-err well below the
     # 0.85 no-birth plateau) — not a frozen number.
-    check('S3/S4 canonical B9 zero-trace: flash birth develops (u-err < 0.60)',
-          u9z < 0.60, f'got {u9z:.3f} (no-birth plateau ~0.85; S4 ref 0.43)')
+    stale_check('S3/S4 canonical B9 zero-trace: flash birth develops (u-err < 0.60)',
+          f'got {u9z:.3f} (no-birth plateau ~0.85; S4 ref 0.43)',
+          'same mode-4 B9 abort as check 3, and the 0.60 threshold is an '
+          'S3/S4-era number taken before the nucleator existed.  The live '
+          'question it was asking -- does birth from pure liquid develop the '
+          'evaporation -- is now answered by [PS-FLASH-EV] and the B2/B9 '
+          'bracket rows at the default config.')
 
 # ---------------------------------------------------------------- check 7
 print('== 7. S4 operator gating (#88 retired under presence) ==')

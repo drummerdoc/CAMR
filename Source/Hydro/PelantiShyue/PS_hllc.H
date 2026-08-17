@@ -771,7 +771,6 @@ AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
 int wp_face_class(const amrex::Real UL[NVAR], const amrex::Real UR[NVAR],
                   const PsPres& pr) noexcept
 {
-    if (pr.enabled == 0) return 0;
     int cls = 0;
     for (int side = 0; side < 2; ++side) {
         const amrex::Real* U = (side == 0) ? UL : UR;

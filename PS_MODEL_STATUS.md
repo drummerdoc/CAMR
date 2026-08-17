@@ -1,3 +1,16 @@
+> **STALE — DO NOT USE FOR CURRENT STATE (banner added 2026-08-17, T1-b).**
+> This file describes the world of modes 0-3 and calls mode 2 the demo
+> default and modes 1/2 "the production choice".  Since it was written:
+> mode 4 (the canonical chain) came and was superseded; mode 5 (X3, the
+> coupled DAE form) became the default 2026-08-17; the mode-4 thermal
+> target solve was measured to fail on order-one fronts; B7's 1811 K
+> vapour was attributed to that defect and is gone; B11's damage was
+> attributed 100 % to relaxation; and the theta wall (one relaxation time
+> cannot serve two morphologies) was measured.  Its §7 statement that
+> mode 3 is not production is still true.  Its "modes 1/2 are the
+> production choice" is not.  Current state: HANDOFF_2026-08-17.md,
+> STATUS_multiphase.md, and WORKLOG.md's dated entries.
+
 # CAMR Pelanti–Shyue two-phase solver — capability stock-take
 
 Concise but precise snapshot of the model, algorithms, accuracy/robustness

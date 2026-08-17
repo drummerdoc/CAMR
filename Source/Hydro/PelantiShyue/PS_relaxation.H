@@ -332,7 +332,6 @@ AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
 bool ps_presence_relax_gate(amrex::Real a1, amrex::Real m1, amrex::Real m2,
                             const PsPres& pr) noexcept
 {
-    if (pr.enabled == 0) return true;   // legacy paths decide for themselves
     const amrex::Real a2 = amrex::Real(1.0) - a1;
     return ps_regime(a1, m1, pr) == PsRegime::Independent
         && ps_regime(a2, m2, pr) == PsRegime::Independent;
@@ -421,18 +420,10 @@ ps_mechanical_relax_cell(int i, int j, int k,
 #endif
     const Real p_mag = std::sqrt(px*px + py*py + pz*pz);
 
-    // #88 metastable guard: refuse to alpha-adjusting-relax a metastable cell
-    // (stretched liquid / supersat vapor / spinodal) -- see ps_cell_metastable.
-    if (prS4.enabled == 0 && ps_relax_metastable_guard() != 0) {
-        // #88 — LEGACY ONLY.  Under presence the gate above already
-        // guarantees a genuinely two-phase (nucleated) cell, which must
-        // equilibrate; refusing it was the measured B9 throttle.
-        const Real ke = Real(0.5) * (p_mag/rho_mix) * (p_mag/rho_mix);
-        const double rho1 = double(m1/alpha1_in), rho2 = double(m2/(Real(1.0)-alpha1_in));
-        const double e1 = double(U(i,j,k,UE1)/m1) - double(ke);
-        const double e2 = double(U(i,j,k,UE2)/m2) - double(ke);
-        if (ps_cell_metastable(eos, rho1, e1, rho2, e2)) { ++diag.n_skip_mk; return; }
-    }
+    //  (The #88 metastable guard's LEGACY fork lived here.  Deleted
+    //  2026-08-17, T1-b: PsPres::enabled is hard-coded 1 and the
+    //  ps_presence dial is read nowhere, so the enabled == 0 branch was
+    //  unreachable.  Its live consumer is mode 3 alone.)
 
     // Pack V6 in the layout ps_pressure_relax_cell expects.
     hem::V6 Uv;
@@ -684,16 +675,10 @@ ps_canonical_relax_cell(int i, int j, int k,
     const Real p_mag = std::sqrt(px*px + py*py + pz*pz);
     const Real rho_mix = m1 + m2;
 
-    // #88 metastable guard, exactly as the mode-0 wrapper applies it —
-    // LEGACY ONLY (S4): under presence the regime gate above owns this.
-    if (ps_presence_params().enabled == 0 && ps_relax_metastable_guard() != 0) {
-        const Real ke = Real(0.5) * (p_mag/rho_mix) * (p_mag/rho_mix);
-        const double rho1 = double(m1/alpha1_in);
-        const double rho2 = double(m2/(Real(1.0)-alpha1_in));
-        const double e1 = double(U(i,j,k,UE1)/m1) - double(ke);
-        const double e2 = double(U(i,j,k,UE2)/m2) - double(ke);
-        if (ps_cell_metastable(eos, rho1, e1, rho2, e2)) return;
-    }
+    //  (The #88 metastable guard's LEGACY fork lived here.  Deleted
+    //  2026-08-17, T1-b: PsPres::enabled is hard-coded 1 and the
+    //  ps_presence dial is read nowhere, so the enabled == 0 branch was
+    //  unreachable.  Its live consumer is mode 3 alone.)
 
 #ifdef CAMR_PS_DIAG
     //  Diagnostic (CAMR.ps_relax_diag = <i>, default -1 = off).  Dumps this
@@ -2974,7 +2959,15 @@ ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
         if (rx_diag != 0) {
             hem::PsPrStats& st = hem::ps_pr_stats();
             const long solved = st.seen - st.trivial;
-            amrex::Print() << "[ps_prdiag] seen=" << st.seen
+            //  NAMES ITS PATH (T1-b, 2026-08-17): these counters live in
+            //  ps_iso_pressure_relax_cell, the ISOCHORIC pressure variant,
+            //  which only modes 1 and 2 call.  At modes 4 and 5 the
+            //  projection is ps_pressure_relax_cell (alpha-adjusting) and
+            //  this report is all zeros -- measured, 103 sweeps of zeros on
+            //  B2 at mode 5.  The production path's constraint outcomes are
+            //  in [PS-X3] instead.  Relabelled rather than re-pointed
+            //  because modes 1/2 are themselves Tier-2 candidates.
+            amrex::Print() << "[ps_prdiag iso, modes 1/2 only] seen=" << st.seen
                            << " trivial=" << st.trivial
                            << " solved=" << solved
                            << " nt_iters=" << st.nt_iters

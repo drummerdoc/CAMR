@@ -18,7 +18,6 @@ CEXE_headers += hem_pelanti_shyue.H
 CEXE_headers += hem_exact_riemann_rf.H
 CEXE_headers += PS_guards.H
 CEXE_headers += PS_ctoprim.H
-CEXE_headers += PS_alpha_transport.H
 CEXE_headers += PS_nscbc.H
 CEXE_headers += PS_reconstruction.H
 CEXE_headers += PS_relaxation.H

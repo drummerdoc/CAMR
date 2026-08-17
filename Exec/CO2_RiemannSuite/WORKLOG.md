@@ -5349,3 +5349,81 @@ rates off, scored against the FROZEN exact solution, and (b) the full
 acceptance config.  If our projection carried Roe5-style diffusion, (a)
 would show a degraded convergence order against its own exact solution.
 Register predictions before running.
+
+## 2026-08-17 — TIER 1 / T1-b: the dead-code sweep.  PREDICTIONS FIRST.
+
+SCOPE (STATUS 6.1/6.2/6.5, all previously audited as dead on the
+production path): the retired #88 metastable-guard blocks and their dials
+(ps_relax_metastable_guard / _band, ps_cell_metastable); the pr.enabled
+short-circuit forks; the orphan hem::ps_flux family (ps_hlld_flux,
+ps_pelanti_hllc_flux, ps_llf_flux, no caller); PS_alpha_transport.H in
+its entirety; the stale "task #45 superseded" comment; and the
+[ps_prdiag] mislabelling (it instruments ps_iso_pressure_relax_cell,
+modes 1/2 only -- not the alpha-adjusting projection mode 4 and X3 use).
+Plus the stale harness checks: verify_canonical 3/4/6 and its check-5
+reference to CAMR.ps_presence, a flag nothing reads.
+
+PREDICTION, one line and the same for every item: the 20-case battery is
+BIT-IDENTICAL after each batch, all 22 rows.  FALSIFIER: any digit moves
+-- then the code was NOT dead, the audit that called it dead was wrong,
+and the batch comes straight back out with a WORKLOG entry naming what
+actually reached it.  This is the only prediction that matters here: a
+deletion that changes an answer is a deletion of live code.
+
+SECOND PREDICTION: the build must also stay clean for the non-PR
+backends, since the guard dials are read in files those backends compile.
+FALSIFIER: any backend fails to build -- the dial had a live consumer.
+
+NOT IN SCOPE (needs a decision, deliberately left): the theta fork; every
+relaxation MODE (Tier 2); PS_relax_device.H, which is a whole hand-mirrored
+device path and its own decision; and mode 3, which the Munkejord reading
+just gave a REASON TO KEEP for now (it is the only finite-rate mechanical
+leg, so the only cheap way to measure ps_p_tau sensitivity -- and that
+sweep has never been run).
+
+**T1-b RESULTS (2026-08-17): PASS on every item, with one audit
+correction the compiler forced.**
+
+BATTERY BIT-IDENTICAL after the sweep: all 22 rows diffed against the
+verified table.  The registered falsifier did not fire, which is the
+evidence that the deleted code was in fact dead.
+
+REMOVED: the hem face-flux family -- ps_face_flux, ps_hlld_flux,
+ps_pelanti_hllc_flux, ps_llf_flux, ps_flux -- 475 lines.  AUDIT
+CORRECTION: STATUS 6.5 listed the leaves but not the ROOT.  Deleting the
+leaves alone failed to compile (ps_llf_flux / ps_hlld_flux /
+ps_pelanti_hllc_flux "not declared in this scope", called from
+ps_face_flux); ps_face_flux itself has no caller anywhere, so the chain
+went as a unit.  Worth recording because the first read of the failure
+looked like "the family is live" -- it was "the audit's list was
+incomplete".  Also removed: the two unreachable #88 metastable-guard
+forks (PsPres::enabled is hard-coded 1, CAMR.ps_presence is read nowhere,
+so every enabled == 0 branch was dead); the unreachable pr.enabled == 0
+early-outs in ps_presence_relax_gate and wp_face_class; and
+PS_alpha_transport.H, delisted from Make.package and parked in
+_to_delete_session/ (the bridge cannot unlink).
+
+KEPT, deliberately, against the plan: ps_cell_metastable and its dials.
+They are dead only on the presence path; mode 3 calls the guard
+unconditionally and mode 3 is being kept until the ps_p_tau sweep runs.
+Deleting them would have been the plan followed past its own evidence.
+
+INSTRUMENT HONESTY: [ps_prdiag] relabelled "[ps_prdiag iso, modes 1/2
+only]" rather than re-pointed -- it measures the isochoric variant, prints
+zeros at modes 4/5 (103 sweeps of zeros, measured), and modes 1/2 are
+themselves Tier-2 candidates, so re-pointing it would be work aimed at
+code that may not survive.
+
+HARNESS: verify_canonical.py's two mode-4 B9 checks are now reported
+[STALE] with their number AND the reason, counting as neither pass nor
+fail; the verdict line reads ALL CHECKS PASS again.  A false FAIL in a
+gate is worse than a missing check -- it teaches the reader to ignore the
+verdict.  Check 5's header note corrected (CAMR.ps_presence is inert).
+PS_MODEL_STATUS.md carries a staleness banner naming what changed under
+it; it was describing a modes-0-3 world.
+
+RESTORE NOTE for successors: `git checkout -- <file>` FAILS silently
+through the device bridge (it needs an unlink the bridge refuses; the
+error is easy to filter away by accident).  `git show HEAD:<path> >
+<path>` restores by writing and works.  Two stale git lock files had to be
+moved aside for the same reason.
