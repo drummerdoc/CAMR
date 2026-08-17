@@ -5032,3 +5032,62 @@ the quantity DESIGN_ps_sigma proposes to replace with theta(Sigma).
 Flipping theta_tau's default to 1e-7 would make bare runs reproduce the
 table and would simultaneously bake the wall-hiding number into the code.
 That fork is registered here, undecided, for Marc.
+
+## 2026-08-17 — G-DEF follow-up 2: WHICH CHANNEL DOES WHAT, and a defect
+## in theta <= 0.  MEASURED (Marc's question).
+
+HARNESS.  _probe_suite.py = the dial-free harness plus a PROBE_OV
+environment list, so a channel can be switched on one at a time.
+
+P0  all defaults (recorded in the previous entry): two-phase cases run
+    frozen; B2 .0736/.8857/.3238 vs HEM, .0728/.1284/.1513 vs FROZEN.
+PA  defaults + ps_theta_tau=1e-7, flash still off: B2 .0724/.8735/.3175,
+    B9 .1064/.8314/.3165, B5 .0446/.1762/.0199, B11 .0805/.0278/.0927 --
+    EXACTLY the pre-FA _x3_baseline table.  So flash_tau=1e-7 with the
+    nucleator OFF was equivalent to the flash being off entirely; Stage
+    7's "the flash never fired in the battery" re-confirmed from the
+    other direction.  Note B5 and B11 reach their acceptance numbers
+    here: they need thermal + MT, not nucleation.
+PB  defaults + ps_theta_tau=1e-7 + ps_flash_tau=1e-7: reproduces the
+    ACCEPTANCE table exactly (B2 .0929/.7816/.1511, B9
+    .1125/.7565/.1437, B7 .1654/.7099/.3211, B5, B11 unchanged).
+    THEREFORE the acceptance configuration is the code defaults plus
+    exactly TWO dials.  ps_do_relax=1 is already the default, and
+    ps_mt_tau has no effect at mode 5 -- none of these runs set it.
+PC  ps_theta_tau=1e30 (thermal rate ~0 but FINITE), flash off: B2
+    .0735/.8831/.3233, a hair off P0, and the [PS-DM x3] census shows 86
+    sweeps with sum|dm| = 3.02 against ZERO census lines at theta = 0.
+
+**DEFECT: theta <= 0 is an accidental kill switch, not a designed off.**
+At theta = 0 the rate evaluation computes rT = (T1-T2)/(theta*inv), which
+is non-finite; rates() returns false, be_once returns rc = 2, and the
+sub-step loop breaks on the first try.  The operator writes back the
+PROJECTED entry state and NOTHING else runs -- thermal and mass transfer
+both die, even though Gamma_SRT contains no theta at all (measured: zero
+transferring cells at theta = 0 versus 86 sweeps at 1e30).  The bail is
+conservative and on-manifold, so nothing aborts and no counter names it.
+PROPOSED FIX (not taken here): either abort at ParmParse time on
+theta <= 0 with a message, or set rT = 0 explicitly so the MT channel
+still runs.  Registered as a cleanup item.
+
+CHANNEL SUMMARY at ps_relax_mode = 5, for the record:
+  mechanical   P1 = P2 by instantaneous projection.  No tau.  Applied at
+               entry and inside EVERY path evaluation.  The only channel
+               alive at bare defaults.
+  thermal      finite rate with linearised T1-T2 decay time theta =
+               ps_theta_tau (default 0 -> the bail above).
+  mass xfer    finite rate Gamma_SRT on the constrained manifold; no
+               relaxation time exists for it (ps_mt_tau is meaningless
+               at this mode).
+  flash        a SEPARATE source upstream in ps_apply_sources, gated by
+               ps_flash_tau > 0 (default 0 = off).  ps_flash_from_absent
+               only matters once that gate is open.
+  Scope: X3 acts only where BOTH phases are present (alpha in
+  (1e-6, 1-1e-6), m1 > 0, m2 > 0), so for a single-phase cell the flash
+  is the ONLY birth channel.
+
+FROZEN, checked in the standalone: model='frozen' in
+suite/exact_riemann.py is NO phase change -- the expansion rides the
+metastable single-phase branch, with c floored at sqrt(2500) m/s past the
+spinodal (mirrors CAMR Fix1).  Marc's reading is exactly right: a cell
+that starts as vapour stays vapour however deep into the dome it drifts.
