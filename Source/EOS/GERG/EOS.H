@@ -120,6 +120,12 @@ namespace EOS {
   bool        has_density_pole() { return false; }
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   amrex::Real P_triple() { return amrex::Real(gerg::P_trip); }
+  //  Critical pressure -- EOS-contract entry required by the PS module's
+  //  HRM relaxation-time correlation (LITERATURE_relaxation_rates.md 4);
+  //  same provenance as T_crit above: the GERG parameter set, not a
+  //  second hard-coded constant.
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  amrex::Real P_crit()   { return amrex::Real(gerg::P_c); }
 
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   amrex::Real Psat(amrex::Real T)
@@ -597,6 +603,34 @@ namespace EOS {
                      amrex::Real& P, amrex::Real& T, amrex::Real& S)
   { hem::State s = co2_state_from_rho_e_phase_cached(R, E, phase, gdiag::S_PTS_PHASE);
     P = s.P; T = s.T; S = s.s; }
+
+  //  Non-aborting variant (STATUS_multiphase.md 7.1; contract set by
+  //  PR/EOS.H).  Returns false when this (rho,e) has no root on the
+  //  requested branch, so callers holding a validity channel (PsPhaseAPI's
+  //  ph.valid) can report it instead of receiving a silently clamped state.
+  //
+  //  e is monotone in T at fixed rho on a locked branch (cv > 0), so a
+  //  sign change over GERG's validity box [T_trip, T_max] is necessary and
+  //  sufficient for a root -- the same construction as PR's
+  //  state_from_rho_e_phase_try, with GERG's own domain as the bracket.
+  //  Without this check g_T_bisect_phase converges to a box endpoint and
+  //  returns it looking valid -- the silent-clamp shape PR removed
+  //  (FINDINGS 10j.3).  On success the value is taken from the SAME path
+  //  REY2PTS_phase uses, so _try(valid) == REY2PTS_phase by construction.
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  bool REY2PTS_phase_try(amrex::Real R, amrex::Real E, amrex::Real*,
+                         hem::Phase3 phase,
+                         amrex::Real& P, amrex::Real& T, amrex::Real& S)
+  {
+      const gerg::Phase gp = g_phase(phase);
+      const double e_lo = gerg::state_TR_phase(gerg::T_trip, double(R), gp).e;
+      const double e_hi = gerg::state_TR_phase(gerg::T_max,  double(R), gp).e;
+      if (!(double(E) > e_lo && double(E) < e_hi)) return false;
+      const hem::State s =
+          co2_state_from_rho_e_phase_cached(R, E, phase, gdiag::S_PTS_PHASE);
+      P = s.P; T = s.T; S = s.s;
+      return true;
+  }
 
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void REY2Cs_phase(amrex::Real R, amrex::Real E, amrex::Real*,

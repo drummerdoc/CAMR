@@ -342,6 +342,12 @@ namespace EOS {
   bool        has_density_pole() { return true; }
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   amrex::Real P_triple() { return amrex::Real(5.1795e5); }
+  //  Critical pressure -- EOS-contract entry required by the PS module's
+  //  HRM relaxation-time correlation (LITERATURE_relaxation_rates.md 4);
+  //  same provenance as T_crit above: the PR parameter set, not a second
+  //  hard-coded constant.
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  amrex::Real P_crit()   { return co2_fluid().pr.Pc; }
 
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   amrex::Real Psat(amrex::Real T)
@@ -712,6 +718,29 @@ namespace EOS {
                      amrex::Real& P, amrex::Real& T, amrex::Real& S)
   { hem::State s = co2_state_from_rho_e_phase_cached(R, E, phase, prtab_diag::S_PTS_PHASE);
     P = s.P; T = s.T; S = s.s; }
+
+  //  Non-aborting variant (STATUS_multiphase.md 7.1; contract set by
+  //  PR/EOS.H).  VALIDITY is decided on the ANALYTIC PR surface -- the
+  //  table's generator -- because root-on-branch is a property of the EOS,
+  //  not of table coverage (hem::state_from_rho_e_phase_try is available
+  //  here through hem_pr_state.H's include of EOS/PR/hem_pr_state.H).  On
+  //  success the VALUE is taken from this backend's own surface via the
+  //  same path REY2PTS_phase uses, so _try(valid) == REY2PTS_phase by
+  //  construction; the OOD->PR fallback inside cannot abort here because
+  //  the probe just proved the root exists.
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  bool REY2PTS_phase_try(amrex::Real R, amrex::Real E, amrex::Real* /*Y*/,
+                         hem::Phase3 phase,
+                         amrex::Real& P, amrex::Real& T, amrex::Real& S)
+  {
+      hem::State probe{};
+      if (!hem::state_from_rho_e_phase_try(co2_fluid(), R, E, phase, probe))
+          return false;
+      const hem::State s =
+          co2_state_from_rho_e_phase_cached(R, E, phase, prtab_diag::S_PTS_PHASE);
+      P = s.P; T = s.T; S = s.s;
+      return true;
+  }
 
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void REY2Cs_phase(amrex::Real R, amrex::Real E, amrex::Real* /*Y*/,

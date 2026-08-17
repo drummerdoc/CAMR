@@ -109,9 +109,11 @@ namespace EOS {
   //  Critical pressure, needed by the HRM relaxation-time correlation
   //  (LITERATURE_relaxation_rates.md 4).  Same source as T_crit: the PR
   //  parameter set, not a second hard-coded constant.
-  //  NOTE this adds one more entry to the documentary-only EOS contract
-  //  (STATUS_multiphase.md 4/7.1); GERG, GERGTab and PRTab do not define
-  //  it, exactly as they do not define REY2PTS_phase_try.
+  //  NOTE this is an entry of the documentary-only EOS contract
+  //  (STATUS_multiphase.md 4).  As of 2026-08-15 (7.1 resolved) GERG and
+  //  PRTab define both P_crit and REY2PTS_phase_try, with GERGTab
+  //  inheriting through its include of GERG/EOS.H; the contract itself is
+  //  still enforced only by comment (the shared-header question stays open).
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   amrex::Real P_crit()   { return co2_fluid().pr.Pc; }        // critical P [Pa]
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
