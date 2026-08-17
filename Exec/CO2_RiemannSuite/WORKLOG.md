@@ -4983,3 +4983,52 @@ its mode must pin its birth channel), which changes neither reading.  The
 exact/HEM references themselves need no regeneration: they are computed
 in the standalone repo and are independent of CAMR's dials.  Every other
 verify_canonical check passes, including the A/C battery mean 0.0350.
+
+## 2026-08-17 — G-DEF follow-up: WHAT ALL-DEFAULTS ACTUALLY RUNS
+## (Marc's question, measured not reasoned).
+
+QUESTION.  Does a from-scratch build run with NO dials at all give the
+coupled relaxation with P1 = P2, and does that configuration carry the
+whole battery without aborts at the table's quality?
+
+METHOD.  _alldef_suite.py: exact_suite.py with EVERY relaxation dial
+removed from the command line — not just ps_relax_mode and
+ps_flash_from_absent (already defaults) but ps_do_relax, ps_theta_tau,
+ps_mt_tau and ps_flash_tau as well.  ICs, grid, stop_time and the flux
+settings stay, since those are case and scheme properties.  All 20 cases
+(A1-A6, C1-C3, B1-B11), N = 64, same binary as the G-DEF verification.
+
+RESULT 1 — no aborts.  All 20 cases complete, status ok, including B2,
+B7 and B9.
+
+RESULT 2 — the coupled kernel runs, but only its CONSTRAINT does work.
+ps_theta_tau, ps_mt_tau and ps_flash_tau all default to 0, so X3 has no
+thermal rate, no mass-transfer rate and no flash: the DAE constraint
+P1 = P2 is enforced at every path evaluation and nothing else transfers.
+The two-phase cases therefore run FROZEN, which the bracket rows say
+outright:
+    B2  .0736/.8857/.3238 vs HEM | .0728/.1284/.1513 vs FROZEN
+    B9  .1130/.8598/.3372 vs HEM | .0754/.1146/.1097 vs FROZEN
+u sits at 0.128 / 0.115 from the FROZEN reference — on the frozen limit,
+0.886 / 0.860 away from HEM.
+
+RESULT 3 — case by case, against the acceptance table:
+  IDENTICAL to all printed digits (14 cases): A1-A6, C1-C3, B1, B3, B4,
+    B6, B8, B10.  These have no relaxation work to do at either setting.
+  WORSE vs HEM (4): B2 (u .7816 -> .8857), B9 (.7565 -> .8598),
+    B7 (.7099 -> .8845, rho .1654 -> .2624, P .3211 -> .6759),
+    B5 (.1762 -> .4028).
+  BETTER (1): B11 .0805/.0278/.0927 -> .0830/.0000/.0006 — u and P errors
+    collapse to round-off.  Consistent with the B11 attribution (commit
+    6fc2408: hydro exact, relaxation 100% of the damage): with the rates
+    off there is no relaxation to damage it.
+
+READING.  "The defaults are the acceptance configuration" is still only
+two-fifths true, and this is the measurement that says so.  The
+acceptance table needs ps_do_relax=1 plus the three 1e-7 stiffness rates,
+and those remain harness-supplied by choice: 1e-7 is the HEM-LIMIT
+stiffness, chosen to score against HEM references, and theta is exactly
+the quantity DESIGN_ps_sigma proposes to replace with theta(Sigma).
+Flipping theta_tau's default to 1e-7 would make bare runs reproduce the
+table and would simultaneously bake the wall-hiding number into the code.
+That fork is registered here, undecided, for Marc.
