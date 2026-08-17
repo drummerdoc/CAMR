@@ -668,3 +668,128 @@ should be measured before it is believed.
   4. The THETA wall is untouched by all of the above and stays where 12.8 left
      it.  Note, though, that 1-3 are worth doing on their own merits and none of
      them requires the theta question to be settled first.
+
+## 12. Slip: when a two-fluid model earns its extra momentum equation —
+## and, plainly, what our two-pressure form buys
+
+Written 2026-08-17 at Marc's request, after reading Munkejord, *Comparison
+of Roe-type methods for solving the two-fluid model with and without
+pressure relaxation*, Comput Fluids 36 (2007) 1061-1080, and measuring its
+four named sensitivities against this code (WORKLOG 2026-08-17, probes P-A
+and P-B).  This section is ANALYSIS, not measurement: it is written so the
+criteria exist before someone needs them, and every number in it is an
+order-of-magnitude estimate with its assumptions stated.
+
+### 12.1 What actually drives slip
+
+Phase-relative motion is produced by **density contrast times
+acceleration** — gravity, or a shared pressure gradient acting on
+materials of different density — and resisted by **interfacial drag**, whose
+Stokes time is tau_u ~ rho_d d^2 / (18 mu_c), i.e. quadratic in the
+structure size.  Two consequences frame everything below: slip scales with
+the density RATIO, and it is a strong function of how finely the phases are
+dispersed.
+
+### 12.2 Why CO2 is not air/water
+
+The benchmark that motivates two-fluid models is air over water.  Our
+application is nothing like it:
+
+    state                                   rho_l/rho_v
+    CO2 ~8 MPa, 300 K (dense phase)              3.5
+    CO2 ~4 MPa, 278 K                            7.8
+    CO2 near the triple point, ~0.5 MPa         84
+    air/water (the water-faucet benchmark)     833
+
+The slip DRIVER is therefore two orders of magnitude weaker in dense-phase
+CO2 than in the case the literature's two-fluid machinery was built for.
+That is a physical reason our single-velocity choice is defensible where the
+model currently operates.  It is emphatically NOT a reason it stays
+defensible as the pressure falls: by the triple point the ratio is ~84 and
+climbing, and solid CO2 changes the question again.
+
+### 12.3 Where slip must be included
+
+  * **Stratified, slug and annular flow in long horizontal pipelines.**
+    Gravity needs time and here it has it (seconds to minutes).  Liquid
+    holdup, accumulation at terrain low points, and the wall-friction split
+    between a slow film and a fast core cannot be represented by one
+    velocity.  This is the classic two-fluid regime, and Munkejord's
+    water-faucet test is exactly a gravity-separating case.
+  * **Counter-current flow and flooding** — a falling film against rising
+    vapour is definitionally two velocities.
+  * **The release plane / choked flow.**  Critical mass flux depends on how
+    the phases distribute through the nozzle, so slip moves the discharge
+    coefficient — usually the number a safety case turns on.
+  * **Far field: plume dispersion, rainout, dry-ice particle settling.**
+    Whether solid CO2 falls out or is carried IS a slip question.
+  * **Late blowdown and atmospheric release**, where the density ratio has
+    climbed past ~50 and the phases genuinely decouple.
+
+### 12.4 Where one velocity is defensible
+
+Short, wave-dominated transients (the acceptance suite: over its 0.734 ms,
+free-fall gravity could generate at most ~7 mm/s of slip against ~150 m/s
+flow — a factor 5e-5); fine dispersions; near-critical or dense-phase states
+with small density contrast; the near field of a high-momentum jet.
+
+**The honest caveat, and it is not the gravity argument.**  The INERTIAL
+argument for our own suite is weaker than it looks.  A Stokes estimate with
+mu_v ~ 1.5e-5 Pa s gives tau_u ~ 2.6e-4 s for a 10 um droplet in CO2
+vapour — a Stokes number ~0.35 over the case duration, i.e. PARTIALLY
+DECOUPLED, and worse for larger droplets (2.6e-2 s at 100 um).  Stokes drag
+is not valid at those Reynolds numbers, so this is an order of magnitude
+only.  What justifies one velocity in the battery is (i) the small density
+contrast at those states and (ii) that the quantities being scored — wave
+speeds, front position — are set by MIXTURE momentum, not by phase-relative
+motion.  "Slip is obviously negligible" is not the claim.
+
+### 12.5 Two things to know before anyone adds it
+
+  1. **Interfacial drag needs interfacial area.**  Same closure as the
+     evaporation-wave starvation.  So Sigma is a PREREQUISITE for slip, not
+     an alternative to it: doing Sigma first buys the closure both features
+     require.
+  2. **It is not a rewrite.**  Munkejord's later work treats these as a
+     HIERARCHY ("A numerical study of two-fluid models with pressure and
+     velocity relaxation", 2010; "On the effect of temperature and velocity
+     relaxation in two-phase flow models", 2012), in which single-velocity
+     is the stiff limit tau_u -> 0.  Our X3 pattern — constraints, plus
+     finite rates on the constrained manifold — extends to velocity as ONE
+     MORE relaxation channel using the same machinery.  Add it when a
+     measurement demands it, per the standing rule; the architecture will
+     not fight it.
+
+### 12.6 What the two-pressure form buys, in plain language
+
+We let the two phases disagree about pressure for one step, then settle the
+disagreement locally.  Every robustness gain follows from that one choice:
+
+  1. **The hard step only ever sees ordinary single-phase fluids.**  Each
+     phase carries its own pressure and its own sound speed, so the wave
+     solver does something it knows how to do, twice, with a shared
+     velocity.  Every thermodynamic call is a single-phase call on a branch
+     we can bracket.  Nothing evaluates "the mixture".
+  2. **The alternative needs a quantity that breaks.**  A one-pressure model
+     needs the equilibrium (Wood) mixture sound speed, and with a real-fluid
+     CO2 EOS that object is fragile: MEASURED, ps_cmix_model=2 ABORTS B9.
+  3. **The volume fraction stays out of the flux divergence**, so the
+     spurious alpha*div(u) never appears and alpha cannot drift outside
+     [0,1].  We know the failure mode because this code had it — alpha
+     reached 1.13 in a rarefaction wake, with a second discretisation
+     subtracting the error back off (STATUS 1.3; that file is now deleted).
+  4. **The stiff part moves to where stiffness is cheap** — a small
+     algebraic projection per cell, after the wave step.  Local, no global
+     coupling, and it can REFUSE instead of quietly returning nonsense.
+     MEASURED: 3,491 kernel calls across B2/B4/B7/B9, zero structural
+     constraint failures ([PS-X3]).
+  5. **The assumption becomes a number we watch**, not an assumption buried
+     in a flux function: [PS-PRES] prints the residual.
+
+And the counterweight, because the concern was legitimate and we checked
+rather than argued: the projection CONVERGES (order ~0.5 in u against the
+exact solution of the model it solves, P-B), and the mechanical relaxation
+rate swept across five decades moves the answers ~2 % (P-A).  Robustness
+bought at a measured, small price — while the error that dominates the
+acceptance table is model error in the interfacial-area closure, which
+refinement makes MORE visible, not less.
