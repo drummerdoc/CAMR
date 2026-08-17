@@ -125,8 +125,10 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
         const amrex::Real tau = dials.flash_tau;
         const PsPres l_pr = ps_presence_params();   // S4 (one host read)
         // S3: the flash seed level is the presence design's alpha_birth
-        // (default 2e-2 == the kernel's historical alpha_seed_target 0.02,
-        // so legacy behaviour is value-identical; single-sourcing only).
+        // (single-sourced; 4e-2 since the 2026-08-15 Stage-5 re-derivation
+        // — it no longer coincides with the kernel's historical
+        // alpha_seed_target 0.02; the 4e-2 point was measured bit-identical
+        // on the battery before adoption, WORKLOG M-B).
         const amrex::Real l_seed = ps_presence_params().alpha_birth;
         // E1b (DESIGN_ps_extinction.md §6): symmetric birth — the newborn
         // phase grows at its SATURATION density (the (E.1) operator run
@@ -148,8 +150,23 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                 const amrex::Real a1 = U(i,j,k, UALPHA1);
                 const amrex::Real m1 = U(i,j,k, UM1RHO1);
                 const amrex::Real m2 = U(i,j,k, UM2RHO2);
-                if (!std::isfinite(a1) || m1 <= amrex::Real(0.0)
-                                       || m2 <= amrex::Real(0.0)) { return; }
+                if (!std::isfinite(a1)) { return; }
+                //  FLASH-FROM-ABSENT (F0; CAMR.ps_flash_from_absent,
+                //  default 0 = previous behaviour).  The old m<=0 early-out
+                //  excluded every genuinely single-phase cell -- exactly the
+                //  population the nucleator exists for -- so the flash fired
+                //  ZERO times in the whole acceptance battery (WORKLOG
+                //  2026-08-15 Stage 7).  With the dial on, a cell with
+                //  exactly ONE present phase is routed into the kernel
+                //  (which constructs the newborn via the saturation
+                //  projection); both-absent stays excluded.
+                static const int fl_abs = []() -> int {
+                    int v = 0; amrex::ParmParse pp("CAMR");
+                    pp.query("ps_flash_from_absent", v); return v; }();
+                const bool one_absent = (fl_abs != 0) &&
+                    ((m1 > amrex::Real(0.0)) != (m2 > amrex::Real(0.0)));
+                if (!one_absent && (m1 <= amrex::Real(0.0)
+                                    || m2 <= amrex::Real(0.0))) { return; }
                 const amrex::Real px = U(i,j,k, UMX);
 #if (AMREX_SPACEDIM >= 2)
                 const amrex::Real py = U(i,j,k, UMY);
@@ -178,6 +195,22 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                     return;
                 }
                 const hem::V6 Uv_pre = Uv;
+                //  [PS-FLASH-ABS] (F0 reachedness): with ps_flash_ev_diag >= 2
+                //  every ROUTED one-absent cell prints BEFORE the kernel call,
+                //  so "no events" splits into "driver never routed" vs
+                //  "kernel refused" (ground rule 3).  Capped per sweep.
+                static const int fl_evd = []() -> int {
+                    int v = 0; amrex::ParmParse pp("CAMR");
+                    pp.query("ps_flash_ev_diag", v); return v; }();
+                if (fl_evd >= 2 && one_absent) {
+                    static int n_abs_rep = 0;
+                    if (n_abs_rep < 40) {
+                        ++n_abs_rep;
+                        amrex::AllPrint() << "[PS-FLASH-ABS] routed i=" << i
+                                          << " a1=" << a1 << " m1=" << m1
+                                          << " m2=" << m2 << "\n";
+                    }
+                }
                 if (hem::ps_flash_source_cell(Uv, eos, double(dt), double(tau),
                                               double(l_seed), 1.0e-6,
                                               l_fl_proj)) {   // S3 birth + E1b sat-projection
@@ -189,6 +222,25 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                          Uv[4] != Uv_pre[4])) {
                         if (ps_mech_kernel() == 1) { hem::ps_pelanti_relax_cell(Uv, eos); }
                         else                        { hem::ps_pressure_relax_cell(Uv, eos); }
+                    }
+                    //  [PS-FLASH-EV] (Stage 7; CAMR.ps_flash_ev_diag=1,
+                    //  default 0): one line per NUCLEATION EVENT (bitwise
+                    //  state change), carrying the cell and the alpha it
+                    //  seeded.  The Sigma kill test's production term is
+                    //  keyed to exactly these events -- interface is BORN
+                    //  where nucleation happens and nowhere else, which is
+                    //  the threshold-free discriminator candidate (a
+                    //  smeared contact never nucleates, so it can never
+                    //  acquire Sigma).
+                    static const int fl_ev = []() -> int {
+                        int v = 0; amrex::ParmParse pp("CAMR");
+                        pp.query("ps_flash_ev_diag", v); return v; }();
+                    if (fl_ev != 0 &&
+                        (Uv[0] != Uv_pre[0] || Uv[1] != Uv_pre[1] ||
+                         Uv[4] != Uv_pre[4])) {
+                        amrex::AllPrint() << "[PS-FLASH-EV] i=" << i
+                                          << " a1_pre=" << Uv_pre[0]
+                                          << " a1_post=" << Uv[0] << "\n";
                     }
                     U(i,j,k, UALPHA1) = Uv[0];
                     U(i,j,k, UM1RHO1) = Uv[1];
@@ -206,6 +258,35 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
             amrex::Print() << "[ps_flash] cumulative cells flashed = " << nf << "\n";
             s_prev_flash = nf;
         }
+        //  [PS-FLASH-REF] (F0; CAMR.ps_flash_ev_diag >= 2): the kernel's
+        //  refusal-cause table per sweep, [PS-MTCAUSE]-style — "zero events"
+        //  decomposes by cause instead of staying a mystery.
+        {
+            static const int fl_evd2 = []() -> int {
+                int v = 0; amrex::ParmParse pp("CAMR");
+                pp.query("ps_flash_ev_diag", v); return v; }();
+            if (fl_evd2 >= 2) {
+                static const char* fn[hem::PS_FLR_NCAUSE] = {
+                    "FIRED", "tau", "eos", "a_nan", "not_dom", "m_guard",
+                    "rhomix", "pdom", "w_T", "w_meta", "w_alpha", "da2",
+                    "da1", "a_floor", "noproj", "h_nan", "sstar",
+                    "s1_mass", "s1_afloor", "s1_ph1", "s1_ph2" };
+                long tot = 0;
+                for (int c = 1; c < hem::PS_FLR_NCAUSE; ++c)
+                    tot += hem::ps_flash_refuse_count(c);
+                if (tot + hem::ps_flash_refuse_count(0) > 0) {
+                    amrex::Print() << "[PS-FLASH-REF]";
+                    for (int c = 0; c < hem::PS_FLR_NCAUSE; ++c) {
+                        if (hem::ps_flash_refuse_count(c) > 0) {
+                            amrex::Print() << "  " << fn[c] << "="
+                                           << hem::ps_flash_refuse_count(c);
+                        }
+                    }
+                    amrex::Print() << "\n";
+                }
+                hem::ps_flash_refuse_reset();
+            }
+        }
         BL_PROFILE_VAR_STOP(ps_src_flash);
     }
 
@@ -221,7 +302,14 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
     //      NOTE: task #1's coupled attempt drove mass the WRONG way and
     //      was reverted; the ported cell fn has the sign fix + caps.
     // -------------------------------------------------------------
-    if (dials.mt_tau > amrex::Real(0.0)) {
+    //  F4 session 2: at ps_relax_mode=5 the X3 coupled source owns mass
+    //  transfer inside the relaxation stage; running this split MT source
+    //  too would apply the operator twice per step.  The flash block above
+    //  stays — nucleation is the upstream birth channel in both modes.
+    static const int mt_relax_mode = []() -> int {
+        int v = 0; amrex::ParmParse pp("CAMR");
+        pp.query("ps_relax_mode", v); return v; }();
+    if (dials.mt_tau > amrex::Real(0.0) && mt_relax_mode != 5) {
         // EOS-heavy: per-phase Gibbs g = h - T*s (EOS) drives finite-rate MT.
         BL_PROFILE_VAR("PS::ps_source_masstransfer()", ps_src_mt);
         const amrex::Real tau  = dials.mt_tau;
@@ -255,18 +343,30 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
             pp.query("ps_mt_h_weight", v); return v; }();
         const double l_mt_h_w = mt_h_w;
         //  CAMR.ps_mt_tau_model: 0 = the constant CAMR.ps_mt_tau (default,
-        //  bit-identical); 1 = the HRM correlation per cell.  Host-read once,
-        //  threaded by value (GPU rules 12.2).
+        //  bit-identical); 1 = the HRM correlation per cell; 2 = ASY1, tau
+        //  DERIVED from the state (Lund & Aursand eq. 25: |dm_eq|/Gamma_SRT,
+        //  Stage-1 C6 -- no hand-set relaxation time; stratified-pipe
+        //  geometry placeholder via CAMR.ps_mt_srt_d / ps_mt_srt_delta).
+        //  Host-read once, threaded by value (GPU rules 12.2).
         static const int mt_tau_model = []() -> int {
             int v = 0; amrex::ParmParse pp("CAMR");
             pp.query("ps_mt_tau_model", v); return v; }();
         const int l_mt_tau_model = mt_tau_model;
-        //  CAMR.ps_mt_target: 0 = legacy target (default, bit-identical),
-        //  1 = target consistent with the step's carrier and (E.1) path,
-        //  2 = additionally nest the pressure relaxation.  See
-        //  hem::ps_mass_transfer_finite_cell's eq_solver_params.
+        //  CAMR.ps_mt_target: 1 = target consistent with the step's carrier
+        //  and (E.1) path -- THE DEFAULT since 2026-08-15 (Stage 3 F-X4,
+        //  REVIEW_RESPONSE.md decision 4): it restores the Lund & Aursand
+        //  Eq. 23 monotonicity premise and with it the provable
+        //  non-overshoot property, and it is the precondition for any
+        //  carrier (D17) measurement meaning anything.  The pre-flip table
+        //  is re-baselined in WORKLOG 2026-08-15; the old default rested on
+        //  two defects in partial cancellation.
+        //  0 = legacy target (fixed-alpha path, mean carrier -- kept for
+        //  A/B against the old baseline only), 2 = as 1 plus nested pressure
+        //  relaxation (measured 2026-08-11: makes the outer Gibbs Newton
+        //  non-smooth, 26 % failures -- offered separately, not folded in).
+        //  See hem::ps_mass_transfer_finite_cell's eq_solver_params.
         static const int mt_target = []() -> int {
-            int v = 0; amrex::ParmParse pp("CAMR");
+            int v = 1; amrex::ParmParse pp("CAMR");
             pp.query("ps_mt_target", v); return v; }();
         const int l_mt_target = mt_target;
         for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
@@ -313,6 +413,10 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                                                       l_mt_cr, l_mt_h_w,
                                                       l_mt_tau_model,
                                                       l_mt_target)) {
+                    //  [PS-DM] (F4 session 4): transfer census, SPLIT form.
+                    //  Uv[1] is post-MT pre-reproject; the reproject is
+                    //  mechanical and conserves m_k, so this IS the dm.
+                    hem::ps_dm_census().add(std::abs(double(Uv[1] - Uv_pre[1])));
                     // B3 reproject: only when MT actually transferred mass
                     // (the kernel returns true on its internal gates too,
                     // with Uv untouched -- the bitwise test excludes those,
@@ -329,6 +433,21 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                     U(i,j,k, UE2)     = Uv[5];
                 }
             });
+        }
+        //  [PS-DM mt] per-sweep print (F4 session 4); print gated like
+        //  [PS-DT], reset unconditional so the census never straddles
+        //  sweeps.
+        {
+            static const int dm_diag = []() -> int {
+                int v = 0; amrex::ParmParse pp("CAMR");
+                pp.query("ps_pres_diag", v); return v; }();
+            hem::PsDmCensus& dc = hem::ps_dm_census();
+            if (dm_diag != 0 && dc.n > 0) {
+                amrex::AllPrint() << "[PS-DM mt] cells=" << dc.n
+                                  << " sum|dm|=" << dc.sum
+                                  << " max=" << dc.mx << "\n";
+            }
+            dc.reset();
         }
         //  CAMR.ps_coexist_action = 1 (X0-(i)): a band exit is a state this
         //  liquid-vapour model cannot describe, so STOP rather than keep
@@ -402,7 +521,7 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                     static const char* nm[hem::PS_MT_NCAUSE] = {
                         "ok", "a_nonfin", "a_floor", "a_mtthr", "mk", "rhomix",
                         "phase_inval", "gh_nonfin", "coexist", "frac",
-                        "gscreen", "dm_zero", "writeback" };
+                        "gscreen", "dm_zero", "writeback", "be_rate" };
                     amrex::Print() << "[PS-MTCAUSE]";
                     for (int c = 1; c < hem::PS_MT_NCAUSE; ++c) {
                         if (hem::ps_mt_cause(c) > 0) {

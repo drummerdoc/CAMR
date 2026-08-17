@@ -407,6 +407,10 @@ CAMR::CAMR_advance (Real time,
                                  int ng, bool do_print) {
         diag_mass(S, "A enter (post-hydro/C-F)");
         PS_CELL_PROBE(S, "A  enter (post-hydro)   ");
+        //  Stage-1 C4 (M3 harness): per-phase T extremes per stage, so the
+        //  fall of B9's T2 (and B7's rise) attributes hydro-vs-operator in
+        //  one run.  Gated CAMR.ps_t2_diag; EOS-heavy; read-only.
+        ps_report_T2stage(S, "A  enter (post-hydro raw)", geom, ng);
         ps_resync_mixture_mass(S, ng);  // URHO==UM1RHO1+UM2RHO2 after hydro/C-F (see header)
         diag_mass(S, "A2 post mass resync");
         PS_CELL_PROBE(S, "A2 post mixture resync ");
@@ -434,6 +438,7 @@ CAMR::CAMR_advance (Real time,
                                        // follow the vanish fold.
         ps_apply_floor(S, ng);
         PS_CELL_PROBE(S, "A7 post FLOOR          ");          // positivity floor (task #50)
+        ps_report_T2stage(S, "A7 post folds/floor", geom, ng);   // Stage-1 C4
         clean_state(S, false);   // intermediate: skip the UTEMP diagnostic sweep
         diag_mass(S, "B post floor/fold/clean");
         PS_CELL_PROBE(S, "B  post clean_state    ");
@@ -443,6 +448,10 @@ CAMR::CAMR_advance (Real time,
         //  mixture while carrying a grid-sharp interface.  Reported BEFORE the
         //  relaxation, i.e. on the state the relaxation is about to act on.
         ps_report_morphology(S, "pre-relax ", level, parent->levelSteps(level));
+        //  Stage-1 C3 (§5 item 7): the SIGNED P/Psat(T1) census, on the state
+        //  the relaxation is about to act on.  Gated CAMR.ps_psat_diag.
+        ps_report_psat(S, "pre-relax ", ng);
+        ps_report_T2stage(S, "B  post clean (pre-relax)", geom, ng); // Stage-1 C4
         if (ps_do_relax_cached != 0) {
             ps_apply_relaxation(S, dt_r, ng, do_print);   // dt for finite-rate thermal (mode 2)
             clean_state(S, false); // intermediate: skip the UTEMP diagnostic sweep
@@ -451,10 +460,12 @@ CAMR::CAMR_advance (Real time,
         PS_CELL_PROBE(S, "C  post relaxation     ");
         diag_a1(S, "reaction post-relax");  // jump here => MT/relaxation is the driver
         ps_report_temps(S, "post-relax", geom, ng);              // #88 diag
+        ps_report_T2stage(S, "C  post relaxation", geom, ng);    // Stage-1 C4
         ps_report_energy_overshoot(S, "post-relax", ng);         // #64 decision diagnostic (gated)
         ps_harvest_states(S, ng);            // #42 active-learning EOS state harvest (gated)
         ps_apply_sources(S, dt_r, ng);
         diag_mass(S, "D post sources (flash)");
+        ps_report_T2stage(S, "D  post sources", geom, ng);       // Stage-1 C4
 #ifdef CAMR_PS_DIAG
         {   // CAMR.ps_floor_diag (default 0 = off): per-step census of the
             // SILENT EOS repairs.  Deliberately NOT nested in ps_diag_mass.

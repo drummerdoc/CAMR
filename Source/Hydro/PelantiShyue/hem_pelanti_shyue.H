@@ -53,14 +53,33 @@
 #include <functional>
 #include <vector>
 #include <limits>
-#include <cstdlib>   // std::getenv  (Session 89i env-gated variants)
-#include <cstring>   // std::strcmp  (Session 89i env-gated variants)
+#include <cstdlib>
+#include <cstring>
+#include <string>            // ps_knob_str (env knobs retired 2026-08-15)
+#include <AMReX_ParmParse.H> // CAMR.* runtime knobs (formerly PS_* env vars)
 
 // Session 89af: per-phase real-fluid exact Riemann solver for the
 // PS_FLUX=exact face-flux path.
 #include "hem_exact_riemann_rf.H"
 
 namespace hem {
+
+// ---------------------------------------------------------------------
+//  Runtime knobs (2026-08-15).  Environment-variable switches are RETIRED
+//  (Marc: no constants or switches controlled by environment variables) --
+//  every former PS_* env knob below is now a CAMR.* ParmParse key with the
+//  SAME default, read once per process through these host-only helpers, so
+//  the run's configuration lands in job_info instead of vanishing with the
+//  shell (the GERG_EXT_C stale-binary lesson, gerg_co2_guard.H).  This
+//  header's kernels are host-only in CAMR (std::function EOS API), so a
+//  ParmParse read in a function-local static is safe.
+// ---------------------------------------------------------------------
+inline int ps_knob_int(const char* key, int def)
+{ int v = def; amrex::ParmParse pp("CAMR"); pp.query(key, v); return v; }
+inline double ps_knob_real(const char* key, double def)
+{ double v = def; amrex::ParmParse pp("CAMR"); pp.query(key, v); return v; }
+inline std::string ps_knob_str(const char* key, const char* def)
+{ std::string v(def); amrex::ParmParse pp("CAMR"); pp.query(key, v); return v; }
 
 using V6 = std::array<double, 6>;
 
@@ -139,7 +158,8 @@ enum PsMtCause {
     PS_MT_GSCREEN     = 10,  // |g1-g2| < tol_g_rel*g_scale: already at Gibbs eq.
     PS_MT_DM_ZERO     = 11,  // post-solve: dm non-finite or exactly zero
     PS_MT_WRITEBACK   = 12,  // write-back refused (non-finite / non-positive m)
-    PS_MT_NCAUSE      = 13
+    PS_MT_BE_RATE     = 13,  // BE-SRT (ps_mt_form=1): entry rate degenerate
+    PS_MT_NCAUSE      = 14
 };
 
 inline long& ps_mt_cause(int c) { static long n[PS_MT_NCAUSE] = {0}; return n[c]; }
@@ -356,6 +376,11 @@ struct PsPhaseAPI {
     double t_crit()   const { return (T_crit_K   > 0.0) ? T_crit_K   : 304.13; }
     double p_crit()   const { return (P_crit_Pa  > 0.0) ? P_crit_Pa  : 7.3773e6; }
     double t_triple() const { return (T_triple_K > 0.0) ? T_triple_K : 216.6; }
+    //  Molar mass [kg/mol], for the SRT kinetic prefactor (tau_model = 2).
+    //  Set by ps_make_camr_eos_api from EOS::Y2WBAR; CO2 fallback follows
+    //  the same convention as the accessors above.
+    double M_kg_mol   = 0.0;
+    double molar_mass() const { return (M_kg_mol > 0.0) ? M_kg_mol : 0.04401; }
 
     bool valid() const {
         return static_cast<bool>(state_from_rho_e_phase);
@@ -408,19 +433,11 @@ inline double ps_hrm_theta(const PsPhaseAPI& eos, double alpha_v, double P,
 // prevents phantom-density buildup in cells where a phase is only
 // present at roundoff levels (the R-star u hump mechanism).
 //
-// alpha_vanish is passed in; use ps_alpha_vanish_default() for the
-// env-gated global default (defaults to 0 = disabled).
+// alpha_vanish is passed in by the caller (CAMR: the presence/fold layer).
+// The uncalled standalone-era ps_alpha_vanish_default() (env PS_ALPHA_VANISH)
+// was DELETED 2026-08-15 with the env-knob retirement.
 //
 // Returns true if a fold was applied in this cell.
-inline double ps_alpha_vanish_default()
-{
-    static const double v = []{
-        const char* s = std::getenv("PS_ALPHA_VANISH");
-        return (s && *s) ? std::atof(s) : 0.0;
-    }();
-    return v;
-}
-
 inline bool ps_apply_vanish_fold(V6& U, double alpha_vanish)
 {
     if (alpha_vanish <= 0.0) return false;
@@ -549,14 +566,7 @@ inline bool ps_apply_tfloor_fold(V6& U, const PsPhaseAPI& eos,
     return false;
 }
 
-inline double ps_t_floor_default()
-{
-    static const double v = []{
-        const char* s = std::getenv("PS_T_FLOOR");
-        return (s && *s) ? std::atof(s) : 0.0;
-    }();
-    return v;
-}
+//  (ps_t_floor_default(), env PS_T_FLOOR, deleted 2026-08-15: uncalled.)
 
 
 inline V6 ps_cons_from_prim(double alpha1, double rho1, double rho2,
@@ -602,15 +612,9 @@ inline V6 ps_flux(double alpha1, double rho1, double rho2,
     const double rho_mix = alpha1 * rho1 + alpha2 * rho2;
     // Session 89i/89r: env-gated mixture-pressure convention.  Must
     // match the choice used inside ps_state_from_cons.
-    static const int p_mode_flux = []{
-        const char* v = std::getenv("PS_P_MODE");
-        if (v && std::strcmp(v, "mass") == 0) return 1;
-        return 0;
-    }();
-    static const double p_clip_flux = []{
-        const char* v = std::getenv("PS_P_CLIP");
-        return (v && *v) ? std::atof(v) : 0.0;
-    }();
+    static const int p_mode_flux =
+        (ps_knob_str("ps_p_mode", "vol") == "mass") ? 1 : 0;
+    static const double p_clip_flux = ps_knob_real("ps_p_clip", 0.0);
     double P_mix;
     if (p_clip_flux > 0.0 && alpha1 < p_clip_flux) {
         P_mix = P2;
@@ -727,15 +731,9 @@ inline PsState ps_state_from_cons(const V6& U, const PsPhaseAPI& eos,
     //     (rho_k, e_k) drifts into metastable EOS domain when
     //     alpha_k is small, producing garbage P_k that pollutes
     //     P_mix via alpha_k * P_k coupling.  Default 0 = disabled.
-    static const int p_mode = []{
-        const char* v = std::getenv("PS_P_MODE");
-        if (v && std::strcmp(v, "mass") == 0) return 1;
-        return 0;  // default = vol
-    }();
-    static const double p_clip_threshold = []{
-        const char* v = std::getenv("PS_P_CLIP");
-        return (v && *v) ? std::atof(v) : 0.0;
-    }();
+    static const int p_mode =
+        (ps_knob_str("ps_p_mode", "vol") == "mass") ? 1 : 0;  // default = vol
+    static const double p_clip_threshold = ps_knob_real("ps_p_clip", 0.0);
     if (p_clip_threshold > 0.0 && alpha1 < p_clip_threshold) {
         st.P_mix = st.p2.P;
     } else if (p_clip_threshold > 0.0 && alpha2 < p_clip_threshold) {
@@ -769,15 +767,13 @@ inline PsState ps_state_from_cons(const V6& U, const PsPhaseAPI& eos,
     //   PS_C_MODE=min    : c = min(c_1, c_2)   aggressive inner bound.
     if (st.p1.c <= 0.0 || st.p2.c <= 0.0) return st;
     static const int c_mode = []{
-        const char* v = std::getenv("PS_C_MODE");
-        if (!v || *v == 0) return 0;                          // default wood
-        if (std::strcmp(v, "wood")   == 0) return 0;
-        if (std::strcmp(v, "wallis") == 0) return 1;
-        if (std::strcmp(v, "max")    == 0) return 2;
-        if (std::strcmp(v, "vol")    == 0) return 3;
-        if (std::strcmp(v, "maj")    == 0) return 4;
-        if (std::strcmp(v, "min")    == 0) return 5;
-        return 0;                                             // fallback
+        const std::string v = ps_knob_str("ps_c_mode", "wood");
+        if (v == "wallis") return 1;
+        if (v == "max")    return 2;
+        if (v == "vol")    return 3;
+        if (v == "maj")    return 4;
+        if (v == "min")    return 5;
+        return 0;                                  // "wood" default/fallback
     }();
     const double c1 = st.p1.c;
     const double c2 = st.p2.c;
@@ -789,10 +785,7 @@ inline PsState ps_state_from_cons(const V6& U, const PsPhaseAPI& eos,
     // speed estimates, may reduce the R-star u hump caused by
     // asymmetric c across the contact.  Default 0.0 = no floor
     // (unchanged behavior).
-    static const double y_floor = []{
-        const char* v = std::getenv("PS_Y_FLOOR");
-        return (v && *v) ? std::atof(v) : 0.0;
-    }();
+    static const double y_floor = ps_knob_real("ps_y_floor", 0.0);
     if (c_mode == 0) {
         const double inv_rc2 = alpha1 / (rho1 * c1 * c1)
                              + alpha2 / (rho2 * c2 * c2);
@@ -885,10 +878,10 @@ inline PsWaveSpeeds ps_wave_speeds(const PsState& sL, const PsState& sR)
     //                    S_R at (u_R + c_R) even though the shock moves
     //                    faster; the q_R > 1 factor closes that gap.
     static const int ws_mode = []{
-        const char* v = std::getenv("PS_WAVE_SPEED");
-        if (v && std::strcmp(v, "roe")   == 0) return 1;
-        if (v && std::strcmp(v, "chord") == 0) return 2;
-        if (v && std::strcmp(v, "pvrs")  == 0) return 3;
+        const std::string v = ps_knob_str("ps_wave_speed", "davis");
+        if (v == "roe")   return 1;
+        if (v == "chord") return 2;
+        if (v == "pvrs")  return 3;
         return 0;   // davis
     }();
 
@@ -935,9 +928,7 @@ inline PsWaveSpeeds ps_wave_speeds(const PsState& sL, const PsState& sR)
         // widening of the fan without letting it explode.  Env-tunable
         // via PS_PVRS_QMAX (default 2.0).
         static const double q_max = []{
-            const char* v = std::getenv("PS_PVRS_QMAX");
-            if (!v) return 2.0;
-            const double d = std::atof(v);
+            const double d = ps_knob_real("ps_pvrs_qmax", 2.0);
             return (d >= 1.0 && d <= 10.0) ? d : 2.0;
         }();
         auto q_factor = [](double P_star, double P_K, double rho_K,
@@ -983,10 +974,8 @@ inline PsWaveSpeeds ps_wave_speeds(const PsState& sL, const PsState& sR)
                     // (may violate HLLC's outer-wave requirement but
                     // exposes the chord's intrinsic behavior for
                     // diagnostic purposes).
-                    static const bool uncapped = []{
-                        const char* v = std::getenv("PS_CHORD_UNCAPPED");
-                        return v && std::strcmp(v, "1") == 0;
-                    }();
+                    static const bool uncapped =
+                        ps_knob_int("ps_chord_uncapped", 0) != 0;
                     c_bar = std::sqrt(c2);
                     if (!uncapped) {
                         const double c_max = std::max(sL.c_frozen, sR.c_frozen);
@@ -1166,10 +1155,7 @@ inline bool ps_hlld_flux(const PsState& sL, const PsState& sR,
     //
     // Positive eps_ncp adds a pressure-difference-weighted term at
     // the alpha jump; negative reverses sign.  Try eps in [-1, +1].
-    static const double eps_ncp = []{
-        const char* v = std::getenv("PS_NCP");
-        return (v && *v) ? std::atof(v) : 0.0;
-    }();
+    static const double eps_ncp = ps_knob_real("ps_ncp", 0.0);
     if (eps_ncp != 0.0) {
         const double dalpha = sR.p1.alpha - sL.p1.alpha;
         const double dP     = 0.5 * ((sL.p1.P - sL.p2.P) + (sR.p1.P - sR.p2.P));
@@ -1597,10 +1583,8 @@ inline bool ps_two_fluid_flux(const PsState& sL, const PsState& sR, V6& F_out)
 
     // Threshold below which phase k is treated as "absent" on that side
     // and its state is replaced with a mixture-P ghost.
-    static const double alpha_present_thr = []{
-        const char* v = std::getenv("PS_TWO_FLUID_ALPHA_THR");
-        return (v && *v) ? std::atof(v) : 1.0e-2;
-    }();
+    static const double alpha_present_thr =
+        ps_knob_real("ps_two_fluid_alpha_thr", 1.0e-2);
 
     // Get mixture S_M for alpha transport.
     const PsWaveSpeeds wm = ps_wave_speeds(sL, sR);
@@ -1707,18 +1691,10 @@ inline bool ps_two_fluid_exact_flux(const PsState& sL, const PsState& sR,
     if (!sL.valid || !sR.valid)  return false;
     if (!eos.has_rf())           return false;
 
-    static const double alpha_present_thr = []{
-        const char* v = std::getenv("PS_TWO_FLUID_ALPHA_THR");
-        return (v && *v) ? std::atof(v) : 1.0e-2;
-    }();
-    static const int rf_substeps = []{
-        const char* v = std::getenv("PS_RF_SUBSTEPS");
-        return (v && *v) ? std::atoi(v) : 24;
-    }();
-    static const double rf_tol = []{
-        const char* v = std::getenv("PS_RF_TOL");
-        return (v && *v) ? std::atof(v) : 1.0e-5;
-    }();
+    static const double alpha_present_thr =
+        ps_knob_real("ps_two_fluid_alpha_thr", 1.0e-2);
+    static const int rf_substeps = ps_knob_int("ps_rf_substeps", 24);
+    static const double rf_tol = ps_knob_real("ps_rf_tol", 1.0e-5);
 
     const PsWaveSpeeds wm = ps_wave_speeds(sL, sR);
     if (!wm.valid) return false;
@@ -1822,20 +1798,11 @@ inline bool ps_two_fluid_exact_flux(const PsState& sL, const PsState& sR,
 inline void ps_apply_interface_gate(const PsState& sL, const PsState& sR,
                                      V6& F_out)
 {
-    static const bool iface_gate = []{
-        const char* v = std::getenv("PS_IFACE_GATE");
-        return v && std::strcmp(v, "1") == 0;
-    }();
+    static const bool iface_gate = ps_knob_int("ps_iface_gate", 0) != 0;
     if (!iface_gate) return;
 
-    static const double iface_thr = []{
-        const char* v = std::getenv("PS_IFACE_THR");
-        return (v && *v) ? std::atof(v) : 0.5;
-    }();
-    static const double trace_thr = []{
-        const char* v = std::getenv("PS_IFACE_TRACE_THR");
-        return (v && *v) ? std::atof(v) : 0.05;
-    }();
+    static const double iface_thr = ps_knob_real("ps_iface_thr", 0.5);
+    static const double trace_thr = ps_knob_real("ps_iface_trace_thr", 0.05);
 
     const double aL = sL.p1.alpha;
     const double aR = sR.p1.alpha;
@@ -1877,13 +1844,16 @@ inline void ps_apply_interface_gate(const PsState& sL, const PsState& sR,
 inline void ps_face_flux(const PsState& sL, const PsState& sR, V6& F_out,
                           const PsPhaseAPI* eos = nullptr)
 {
+    //  Key is ps_hem_flux, NOT ps_flux: CAMR.ps_flux is the production
+    //  front selector (wp/hllc/godunov, PS_umeth) with different tokens;
+    //  this selects within the hem ps_flux FAMILY (no production caller).
     static const int flux_mode = []{
-        const char* v = std::getenv("PS_FLUX");
-        if (v && std::strcmp(v, "two_fluid") == 0) return 1;
-        if (v && std::strcmp(v, "exact")     == 0) return 2;
-        if (v && std::strcmp(v, "rusanov")   == 0) return 3;  // 89al: LLF everywhere
-        if (v && std::strcmp(v, "force")     == 0) return 4;  // 89al: FORCE (LxF+Richtmyer)/2
-        if (v && std::strcmp(v, "pelanti_hllc") == 0) return 5; // 89am: Pelanti 2022 HLLC
+        const std::string v = ps_knob_str("ps_hem_flux", "hllc");
+        if (v == "two_fluid") return 1;
+        if (v == "exact")     return 2;
+        if (v == "rusanov")   return 3;  // 89al: LLF everywhere
+        if (v == "force")     return 4;  // 89al: FORCE (LxF+Richtmyer)/2
+        if (v == "pelanti_hllc") return 5; // 89am: Pelanti 2022 HLLC
         return 0;  // default = mixture HLLC (ps_hlld_flux)
     }();
     // Session 89al (COTT hypothesis 2): PS_FLUX=rusanov unconditionally
@@ -1926,14 +1896,10 @@ inline void ps_face_flux(const PsState& sL, const PsState& sR, V6& F_out,
         // faces where both L and R have BOTH phases present (α inside
         // (thr, 1-thr) on both sides) -- i.e. at the material
         // interface -- and use HLLC otherwise.
-        static const bool contact_only = []{
-            const char* v = std::getenv("PS_EXACT_CONTACT_ONLY");
-            return v && std::strcmp(v, "1") == 0;
-        }();
-        static const double thr = []{
-            const char* v = std::getenv("PS_EXACT_INTERFACE_THR");
-            return (v && *v) ? std::atof(v) : 0.10;
-        }();
+        static const bool contact_only =
+            ps_knob_int("ps_exact_contact_only", 0) != 0;
+        static const double thr =
+            ps_knob_real("ps_exact_interface_thr", 0.10);
         bool use_exact = true;
         if (contact_only) {
             const double aL = sL.p1.alpha;
@@ -2004,10 +1970,8 @@ inline double ps_single_phase_threshold_default() {
     // Session 89l: env-tunable so we can widen the skip zone when the
     // "absent" phase is prone to metastable-extrapolation garbage that
     // destabilises pressure relaxation.
-    static const double t = []{
-        const char* v = std::getenv("PS_SINGLE_PHASE_THRESHOLD");
-        return (v && *v) ? std::atof(v) : 5.0e-3;
-    }();
+    static const double t =
+        ps_knob_real("ps_single_phase_threshold", 5.0e-3);
     return t;
 }
 
@@ -2429,9 +2393,7 @@ inline bool ps_iso_pressure_relax_cell(V6& U, const PsPhaseAPI& eos,
         // computed above (2 inversions).  One-sided changes the Newton
         // TRAJECTORY (same root, same tolerance) -> A/B + B4/B9 before
         // making it the default.
-        static const bool fd_one_sided = []{
-            const char* v = std::getenv("PS_PR_FD1");
-            return v && v[0] == '1'; }();
+        static const bool fd_one_sided = ps_knob_int("ps_pr_fd1", 0) != 0;
         const double rp = residual(e1 + de);
         double drde;
         if (fd_one_sided) {
@@ -3009,12 +2971,10 @@ inline bool ps_mass_transfer_relax_cell(
     // phase-change driving force and Gibbs-driven transfer is spurious
     // (the B10 over-development).  Mirrors ps_mass_transfer_finite_cell and
     // ps_flash_source_cell.  Controlled by mt_p.dome_gate (default on, CO2
-    // bounds); env PS_MT_NO_DOME_GATE=1 disables globally (non-CO2 / mock EOS).
-    static const bool mt_no_dome_gate_env = []{
-        const char* v = std::getenv("PS_MT_NO_DOME_GATE");
-        return v && std::strcmp(v, "1") == 0;
-    }();
-    if (mt_p.dome_gate && !mt_no_dome_gate_env) {
+    // bounds); CAMR.ps_mt_no_dome_gate=1 disables globally (non-CO2 / mock EOS).
+    static const bool mt_no_dome_gate_k =
+        ps_knob_int("ps_mt_no_dome_gate", 0) != 0;
+    if (mt_p.dome_gate && !mt_no_dome_gate_k) {
         const double T_lo = eos.t_triple(), T_hi = eos.t_crit();  // fluid props from EOS
         if (s0.p1.T <= T_lo || s0.p1.T >= T_hi ||
             s0.p2.T <= T_lo || s0.p2.T >= T_hi)
@@ -3117,18 +3077,14 @@ inline bool ps_mass_transfer_relax_cell(
     // directly.
     //
     // Env-gated PS_MT_STEP_FRAC (default = dm_step_frac from params,
-    // typically 0.1) scales the step cap; PS_MT_BOOTSTRAP=1 unlocks
+    // typically 0.1) scales the step cap; CAMR.ps_mt_bootstrap=1 unlocks
     // full sign-aware caps for both directions (the new default).
-    static const bool sign_aware = []{
-        const char* v = std::getenv("PS_MT_BOOTSTRAP");
-        return !v || std::strcmp(v, "0") != 0;   // default on
-    }();
-    static const double step_frac_env = []{
-        const char* v = std::getenv("PS_MT_STEP_FRAC");
-        return (v && *v) ? std::atof(v) : -1.0;
-    }();
-    const double step_frac = (step_frac_env > 0.0)
-                            ? step_frac_env : mt_p.dm_step_frac;
+    static const bool sign_aware =
+        ps_knob_int("ps_mt_bootstrap", 1) != 0;              // default on
+    static const double step_frac_knob =
+        ps_knob_real("ps_mt_step_frac", -1.0);
+    const double step_frac = (step_frac_knob > 0.0)
+                            ? step_frac_knob : mt_p.dm_step_frac;
 
     // Newton loop on dm.
     V6 U_iter = U;
@@ -3239,22 +3195,15 @@ inline int ps_mass_transfer_relax_grid(
 //  never go non-positive.  Energy transfers with the interface
 //  enthalpy h_I so total mixture internal energy is preserved.
 //
-//  Env: PS_MT_TAU (seconds).  0 or unset => this relaxation is off.
-//  When on, this REPLACES the instantaneous mass-transfer Newton for
-//  the grid loop (they're not run together).  Pressure relaxation
-//  can still fire before/after.
+//  tau is passed in by the caller (CAMR: dials.mt_tau from CAMR.ps_mt_tau).
+//  0 => this relaxation is off.  When on, this REPLACES the instantaneous
+//  mass-transfer Newton for the grid loop (they're not run together).
+//  Pressure relaxation can still fire before/after.
+//  (ps_mt_tau_default(), env PS_MT_TAU, deleted 2026-08-15: uncalled.)
 // ---------------------------------------------------------------------
-inline double ps_mt_tau_default()
-{
-    static const double v = []{
-        const char* s = std::getenv("PS_MT_TAU");
-        return (s && *s) ? std::atof(s) : 0.0;
-    }();
-    return v;
-}
 
 //  update_alpha (E1, DESIGN_ps_extinction.md §2):
-//    -1  legacy/standalone: consult the PS_MT_UPDATE_ALPHA env escape hatch
+//    -1  legacy/standalone: consult the CAMR.ps_mt_update_alpha knob
 //        (historical behavior, default off) with alpha_floor clamps.
 //     0  fixed-alpha transfer (historical default), regardless of env.
 //     1  DERIVED density-preserving transfer with PRESENCE semantics:
@@ -3287,11 +3236,8 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
     // Gibbs-driven mass transfer that keeps α fixed drives rho_k
     // through unphysical territory in a single step.  Restrict MT to
     // genuinely mixed cells (α_1 ∈ (α_mt_thr, 1 − α_mt_thr)).
-    // Env-tunable via PS_MT_ALPHA_THR (default 5e-3).
-    static const double alpha_mt_thr = []{
-        const char* v = std::getenv("PS_MT_ALPHA_THR");
-        return (v && *v) ? std::atof(v) : 5.0e-3;
-    }();
+    // Tunable via CAMR.ps_mt_alpha_thr (default 5e-3).
+    static const double alpha_mt_thr = ps_knob_real("ps_mt_alpha_thr", 5.0e-3);
     if (alpha1 <= alpha_mt_thr || alpha1 >= 1.0 - alpha_mt_thr)
         PS_MT_REFUSE(PS_MT_A_MTTHR, true);
 
@@ -3334,12 +3280,10 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
     // over-development (B10: peak|u| 93/135/30 at N=64/128/256 vs analytic
     // ~13).  Mirrors the flash-source subcritical gate
     // (ps_flash_source_cell) so the two operators are consistent.  A
-    // no-op return leaves the cell to pressure relaxation only.  Env
-    // escape hatch PS_MT_NO_DOME_GATE=1 restores the ungated behaviour.
-    static const bool mt_no_dome_gate = []{
-        const char* v = std::getenv("PS_MT_NO_DOME_GATE");
-        return v && std::strcmp(v, "1") == 0;
-    }();
+    // no-op return leaves the cell to pressure relaxation only.  The
+    // escape hatch CAMR.ps_mt_no_dome_gate=1 restores the ungated behaviour.
+    static const bool mt_no_dome_gate =
+        ps_knob_int("ps_mt_no_dome_gate", 0) != 0;
     if (!mt_no_dome_gate) {
         const double T_trip = eos.t_triple(), T_crit = eos.t_crit();  // fluid props from EOS
         const bool cx_p1_lo = (p1.T <= T_trip), cx_p1_hi = (p1.T >= T_crit);
@@ -3407,19 +3351,17 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
     //  Equilibrium-solver nesting switch.  Hoisted to function scope so the
     //  5.2 contraction re-solve below uses IDENTICAL settings to the dm_eq
     //  solve -- otherwise the ratio would compare two different targets.
-    static const int nest_pr = []{
-        const char* v = std::getenv("PS_MT_NEST_PR");
-        return (v && *v) ? std::atoi(v) : 0; }();
+    static const int nest_pr = ps_knob_int("ps_mt_nest_pr", 0);
     double dm_eq_saved = 0.0;   // equilibrium-endpoint transfer, for 5.2
 
     //  The (E.1) decision is hoisted ABOVE the equilibrium solve so the target
     //  can be made to travel the same path as the step (CAMR.ps_mt_target).
     //  It used to be taken only just before the write-back.
-    static const bool mt_upd_alpha_env_h = []{
-        const char* v = std::getenv("PS_MT_UPDATE_ALPHA");
-        return v && std::strcmp(v, "1") == 0;
-    }();
-    const bool upd_hoisted = (update_alpha < 0) ? mt_upd_alpha_env_h
+    //  update_alpha < 0 never arrives from CAMR (PS_sources resolves the
+    //  -1 auto before calling); the fallback reads the SAME key.
+    static const bool mt_upd_alpha_key_h =
+        ps_knob_int("ps_mt_update_alpha", 0) > 0;
+    const bool upd_hoisted = (update_alpha < 0) ? mt_upd_alpha_key_h
                                                 : (update_alpha != 0);
 
     //  ONE construction of the equilibrium-solver settings, used by BOTH the
@@ -3470,12 +3412,189 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
     // relaxation time: tau_g -> 0 recovers instantaneous MT, tau_g -> inf
     // gives no transfer.  g_ref is unused on this path (magnitude comes
     // from dm_eq).  The legacy explicit forward-Euler forms are retained
-    // behind PS_MT_EXPLICIT=1 for A/B comparison.
-    static const bool mt_explicit = []{
-        const char* v = std::getenv("PS_MT_EXPLICIT");
-        return v && std::strcmp(v, "1") == 0;
-    }();
-    if (!mt_explicit) {
+    // behind CAMR.ps_mt_explicit=1 for A/B comparison.
+    static const bool mt_explicit = ps_knob_int("ps_mt_explicit", 0) != 0;
+    //  CAMR.ps_mt_form (F3, 2026-08-16): the FORM of the finite-rate step.
+    //    0  (default, bit-identical) exact relaxation toward the equilibrium
+    //       TARGET: dm = (1 - exp(-dt/tau)) * dm_eq, dm_eq from the Gibbs
+    //       Newton below.
+    //    1  BACKWARD-EULER against the SRT SOURCE — no dm_eq, no tau:
+    //           F(dm) = dm - dt * Gamma_SRT(path(dm)) = 0
+    //       solved by a bracketed scalar Newton, with Gamma evaluated at the
+    //       PATH STATE (the same H_I carrier as the write-back and the same
+    //       alpha path the step actually takes: (E.1) donor-density co-move
+    //       when update_alpha is on, fixed alpha otherwise — target/path
+    //       consistency, the Stage-3 lesson).
+    //  MEASURED MOTIVATION (WORKLOG 2026-08-15 Stage 6): the equilibrium-
+    //  target Newton FAILS on order-one driving forces (ASY1 probe: eqfail
+    //  400/400 on the 12.4-like and B2-front states), so dm_eq = 0 and the
+    //  exact-relaxation form silently transfers NOTHING exactly where the
+    //  physics is strongest.  BE-SRT never asks for the equilibrium point.
+    //  Gamma -> 0 as g1 -> g2, so the BE solution cannot cross equilibrium:
+    //  non-overshoot is STRUCTURAL at any dt.  tau_g and target_mode are
+    //  unused on this branch (CAMR.ps_mt_tau > 0 remains only the operator
+    //  enable), and the equilibrium solve (~1200 EOS evals/cell, measured
+    //  82-86 % of a step) is replaced by ~2 EOS evals per Newton iterate.
+    static const int mt_form = ps_knob_int("ps_mt_form", 0);
+    if (mt_form == 1) {
+        //  Gibbs screen, same exactness test as the exact form's screen (b):
+        //  Gamma is proportional to |g1 - g2|, so below the solver tolerance
+        //  the transfer is provably negligible.
+        {
+            const PsMassTransferParams mt_ref;          // default tol_g_rel
+            const double g_scale = std::max({std::abs(p1.g), std::abs(p2.g), 1.0});
+            if (std::abs(g_diff) < mt_ref.tol_g_rel * g_scale)
+                PS_MT_REFUSE(PS_MT_GSCREEN, true);
+        }
+        static const double srt_D     = ps_knob_real("ps_mt_srt_d", 0.1);
+        static const double srt_delta = ps_knob_real("ps_mt_srt_delta", 0.01);
+        constexpr double two_pi = 6.283185307179586;
+        constexpr double R_u    = 8.314462618;          // J/(mol K)
+        //  Direction is FIXED by the entry state: the rate vanishes at
+        //  g1 = g2, so the BE path never crosses it and never reverses.
+        const double s_dir = (g_diff > 0.0) ? 1.0 : -1.0;
+        //  Carrier along the path: identical to the write-back's H_I (the
+        //  sign of dm is s_dir throughout, so the upwind selection is fixed).
+        const double h_path = (h_w < 0.0)
+                            ? ((s_dir > 0.0) ? p1.h : p2.h)          // upwind
+                            : (1.0 - h_w) * p1.h + h_w * p2.h;
+        const double H_path = h_path + 0.5 * u_mix * u_mix;
+        //  Signed-projected SRT rate at the path state reached by |dm| = y in
+        //  direction s_dir.  Returns s_dir * Gamma_signed: POSITIVE while the
+        //  path still approaches g1 = g2, negative past it.  okv = false
+        //  marks an unevaluable path point (mass/alpha out of domain, EOS
+        //  refusal) — the solver treats it as past-equilibrium and contracts.
+        //  Prefactor conventions match tau_model == 2 above: rho and T from
+        //  the VAPOUR (phase 2), delta rides on the receiving phase.
+        auto srt_rate = [&](double y, bool& okv) -> double {
+            okv = false;
+            const double dmx = s_dir * y;
+            const double m1p = m1 - dmx, m2p = m2 + dmx;
+            if (!(m1p > 0.0) || !(m2p > 0.0)) return 0.0;
+            double a1p = alpha1;
+            if (upd_hoisted) {
+                a1p = alpha1 - dmx / rho_1;   // (E.1) donor-density co-move
+                if (!(a1p > 0.0) || !(a1p < 1.0)) return 0.0;
+            }
+            const double a2p = 1.0 - a1p;
+            const double e1p = (U[4] - dmx * H_path) / m1p
+                             - 0.5 * u_mix * u_mix;
+            const double e2p = (U[5] + dmx * H_path) / m2p
+                             - 0.5 * u_mix * u_mix;
+            PsPhase q1{}, q2{};
+            q1.alpha = a1p; q2.alpha = a2p;
+            eos.state_from_rho_e_phase(1, m1p / a1p, e1p, q1);
+            eos.state_from_rho_e_phase(2, m2p / a2p, e2p, q2);
+            if (!q1.valid || !q2.valid) return 0.0;
+            if (!std::isfinite(q1.g) || !std::isfinite(q2.g)
+             || !(q2.T > 0.0)) return 0.0;
+            //  Reconstruction admissibility (measured, ASY1 dt=1e-3 B2-front):
+            //  a big transfer can land a path state ps_state_from_cons
+            //  REFUSES — i.e. a wave-blocking cell — while the phase queries
+            //  still say `valid`.  Measured instance: deep-metastable vapour
+            //  (rho 22.6, e -1.27e4) came back valid=true with P clamped to
+            //  1000 and c = 0 — the "garbage marked valid" family again (cf.
+            //  the F0 Illinois-NaN fence).  Fold the reconstruction
+            //  convention (c_k > 0 per phase, vol-weighted P_mix > 0) into
+            //  path admissibility so the solver's lo-fallback keeps the step
+            //  reconstructible.  (vol is the ps_p_mode default the battery
+            //  runs; a mass-mode run gets vol-admissibility here —
+            //  conservative.)
+            if (!(q1.c > 0.0) || !(q2.c > 0.0)) return 0.0;
+            if (!(a1p * q1.P + a2p * q2.P > 0.0)) return 0.0;
+            const double a_geom = (s_dir > 0.0)
+                                ? (a2p + srt_delta) * a1p
+                                : (a1p + srt_delta) * a2p;
+            const double Sig = (32.0 / two_pi) * a_geom / srt_D;
+            const double Gm  = Sig * (m2p / a2p)
+                             * std::sqrt(eos.molar_mass() / (two_pi * R_u * q2.T))
+                             * (q1.g - q2.g);
+            if (!std::isfinite(Gm)) return 0.0;
+            okv = true;
+            return s_dir * Gm;
+        };
+        bool ok0 = false;
+        const double G0 = srt_rate(0.0, ok0);
+        if (!ok0 || !(G0 > 0.0)) PS_MT_REFUSE(PS_MT_BE_RATE, true);
+        //  Bracket [0, y_cap]: the write-back caps (0.9 donor, 2x receiver
+        //  growth), plus the alpha-interior bound when the path co-moves
+        //  alpha.  F(0) = -dt*G0 < 0; F grows with y (dm outstrips the
+        //  shrinking rate), so a root or the cap terminates the search.
+        double y_cap = (s_dir > 0.0) ? std::min(0.9 * m1, 2.0 * m2)
+                                     : std::min(0.9 * m2, 2.0 * m1);
+        if (upd_hoisted) {
+            const double y_alpha = (s_dir > 0.0)
+                                 ? 0.999 * alpha1 * rho_1     // keep a1p > 0
+                                 : 0.999 * alpha2 * rho_1;    // keep a1p < 1
+            y_cap = std::min(y_cap, y_alpha);
+        }
+        const double tol_y = 1.0e-13 * rho_mix;
+        double lo = 0.0;                                // F(lo) < 0 side
+        double hi = y_cap;
+        {
+            bool okh = false;
+            const double Gh = srt_rate(hi, okh);
+            if (okh && (hi - dt * Gh) < 0.0) {
+                //  The rate outstrips the cap even AT the cap: the BE step is
+                //  cap-limited (the same caps the exact form's dm passes
+                //  through below — nothing new is invented here).
+                lo = hi;
+            }
+        }
+        double y = std::min(dt * G0, y_cap);            // FE first guess
+        if (lo < hi) {
+            for (int it = 0; it < 60; ++it) {
+                bool oky = false;
+                const double Gy = srt_rate(y, oky);
+                const double Fy = oky ? (y - dt * Gy) : y;  // invalid: past
+                if (oky && std::abs(Fy) <= tol_y) break;
+                if (Fy > 0.0) hi = y; else lo = y;
+                double ynext;
+                if (oky) {
+                    //  Newton from a one-sided numerical derivative; bisection
+                    //  whenever the step leaves the bracket or the derivative
+                    //  degenerates.
+                    const double hstep = std::max(1.0e-6 * y_cap,
+                                                  1.0e-4 * std::abs(y));
+                    const double yp = std::min(y + hstep, y_cap);
+                    bool okp = false;
+                    const double Gp = (yp > y) ? srt_rate(yp, okp) : 0.0;
+                    const double dF = (okp && yp > y)
+                                    ? 1.0 - dt * (Gp - Gy) / (yp - y)
+                                    : 1.0;
+                    ynext = (std::isfinite(dF) && dF > 0.0)
+                          ? y - Fy / dF
+                          : 0.5 * (lo + hi);
+                } else {
+                    ynext = 0.5 * (lo + hi);
+                }
+                if (!(ynext > lo) || !(ynext < hi))
+                    ynext = 0.5 * (lo + hi);
+                if (std::abs(ynext - y) <= tol_y) { y = ynext; break; }
+                y = ynext;
+            }
+        } else {
+            y = y_cap;                                  // cap-limited step
+        }
+        //  The bisection-convergence exit (and loop exhaustion) can accept a
+        //  midpoint that was never validity-evaluated, and the write-back
+        //  guard below checks only finiteness/positivity, not EOS validity —
+        //  measured on the ASY1 probe (B2-front, dt=1e-3): one such step
+        //  landed a state ps_state_from_cons refuses.  Re-evaluate the final
+        //  point; if unevaluable, fall back to lo, which by construction only
+        //  ever holds KNOWN-valid, not-past-equilibrium points (lo = 0 then
+        //  refuses via DM_ZERO below rather than inventing a transfer).
+        if (y > 0.0) {
+            bool okf = false;
+            srt_rate(y, okf);
+            if (!okf) y = lo;
+        }
+        dm = s_dir * y;
+        //  dm_eq_saved stays 0 on this branch: the 5.2 contraction diagnostic
+        //  below (diag >= 2) then normalises the re-solve residual against
+        //  |dm| itself — readable, but remember it measures a DIFFERENT
+        //  quantity than on the exact-relaxation form.
+    } else if (!mt_explicit) {
         // ---- TWO EXACT PRE-SCREENS before the equilibrium solve ----------
         // The implicit target dm_eq is obtained from ps_mass_transfer_relax_cell,
         // a Gibbs-Newton (~12 iterations measured) each of whose iterations runs
@@ -3490,8 +3609,12 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
         //     dt ~ 5e-6) frac ~ 5e-9 and dm is numerically zero -- yet the
         //     solve still ran, so CAMR.ps_mt_tau did NOT actually switch MT
         //     off.  Compute frac FIRST and bail when it cannot matter.
-        const double frac = -std::expm1(-dt / tau_g);   // 1 - exp(-dt/tau)
-        if (!(frac > 1.0e-12)) PS_MT_REFUSE(PS_MT_FRAC, true);             // MT effectively off
+        //     (tau_model == 2 defers this screen: its tau is DERIVED from
+        //     dm_eq, which does not exist yet -- the equivalent screen runs
+        //     right after the tau is formed below.)
+        double frac = -std::expm1(-dt / tau_g);   // 1 - exp(-dt/tau)
+        if (tau_model != 2 && !(frac > 1.0e-12))
+            PS_MT_REFUSE(PS_MT_FRAC, true);                 // MT effectively off
         //
         // (b) Gibbs-equilibrium screen, using the SOLVER'S OWN convergence
         //     test on the CURRENT state.  If it already passes, the Newton
@@ -3540,6 +3663,52 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
         ++ps_mt_stats().eqsolve;                           // CAMR.ps_mt_diag
         if (!ps_mass_transfer_relax_cell(Ueq, eos, mt_eq, pr_eq)) ++ps_mt_stats().eqfail;
         const double dm_eq = m1 - Ueq[1];               // mass leaving phase 1
+        //  CAMR.ps_mt_tau_model = 2 (Stage-1 C6): ASY1 -- tau DERIVED from the
+        //  state per Lund & Aursand Eq. (25), tau = (q_eq - q*)/s(q*), i.e.
+        //  tau = |dm_eq| / Gamma(q*): distance to equilibrium over the
+        //  INSTANTANEOUS physical rate.  The exponential then only supplies
+        //  unconditional stability; the rate information lives in Gamma, and
+        //  no relaxation time has to be chosen at all (tau_g is unused here).
+        //
+        //  Gamma from statistical rate theory (their Eq. (5)-(7)): kinetic
+        //  prefactor parameter-free,
+        //      Gamma = Sigma * rho_g * sqrt(M / (2 pi R_u T_g)) * |g_1 - g_2|
+        //  [kg/(m^3 s)], with g per unit mass.  The GEOMETRY (Sigma, the
+        //  interfacial area per volume) is NOT parameter-free -- the paper
+        //  assumes a stratified pipe, A_int = 4 D L (alpha_recv + delta)
+        //  alpha_send, i.e. Sigma = (16/pi) (alpha_recv + delta) alpha_send
+        //  / D -- and that morphology placeholder is exactly what Stage 6's
+        //  0-D probe and the Stage-7 morphology work are for.  Knobs:
+        //  CAMR.ps_mt_srt_d [m] (default 0.1, their pipe scale) and
+        //  CAMR.ps_mt_srt_delta (default 0.01, their "let it start from nothing"
+        //  seed -- independently arrived at, compare alpha_cond = 1e-2).
+        //  delta rides on the RECEIVING phase, per their Eq. (6).
+        //  Degenerate Gamma falls back to the constant-tau_g frac formed
+        //  above, so the dial can never invent a rate.
+        if (tau_model == 2) {
+            static const double srt_D =
+                ps_knob_real("ps_mt_srt_d", 0.1);
+            static const double srt_delta =
+                ps_knob_real("ps_mt_srt_delta", 0.01);
+            constexpr double two_pi = 6.283185307179586;
+            constexpr double R_u    = 8.314462618;         // J/(mol K)
+            //  Evaporation (g_1 > g_2): vapour receives; else liquid receives.
+            const double a_geom = (p1.g > p2.g)
+                                ? (alpha2 + srt_delta) * alpha1
+                                : (alpha1 + srt_delta) * alpha2;
+            const double Sigma = (32.0 / two_pi) * a_geom / srt_D;  // = (16/pi)/D
+            const double Tg    = (p2.T > 0.0) ? p2.T : eos.t_triple();
+            const double Gamma = Sigma * rho_2
+                               * std::sqrt(eos.molar_mass() / (two_pi * R_u * Tg))
+                               * std::abs(p1.g - p2.g);
+            if (std::isfinite(Gamma) && Gamma > 0.0 && std::abs(dm_eq) > 0.0) {
+                const double tau_asy = std::abs(dm_eq) / Gamma;
+                frac = -std::expm1(-dt / tau_asy);
+            }
+            //  The deferred screen (a): with the derived tau formed, the same
+            //  exactness test applies -- a frac this small transfers nothing.
+            if (!(frac > 1.0e-12)) PS_MT_REFUSE(PS_MT_FRAC, true);
+        }
         dm = frac * dm_eq;
         dm_eq_saved = dm_eq;                           // for the 5.2 diagnostic
     } else if (g_ref > 0.0) {
@@ -3722,6 +3891,320 @@ inline int ps_mass_transfer_finite_grid(std::vector<V6>& U,
 
 
 // =====================================================================
+//  X3 — THE COUPLED RELAXATION SOURCE (F4, PLAN_flash_and_coupling.md).
+//
+//  MEASURED MANDATE (WORKLOG 2026-08-15 Stage 5, M2): the sequential
+//  composite {mechanical, thermal, mass-transfer} is ORDER-DEPENDENT
+//  (two basins on strong-flash states) — three projections that are not
+//  a projection.  X3 is the lasting form M2 elected: the mechanical
+//  closure P1 = P2 is a CONSTRAINT (DAE), never an operator in a
+//  sequence; the thermal and mass-transfer RATES act on the constrained
+//  manifold; there is ONE eligibility question for the whole operator.
+//
+//  One Backward-Euler step.  Unknowns x = (q, dm): heat and mass moved
+//  from phase 1 to phase 2 over the step (F3 sign conventions).  Every
+//  path evaluation applies (q, dm) from the PROJECTED entry state and
+//  RE-PROJECTS (alpha is owned by the constraint), then evaluates the
+//  physical rates there:
+//      dq/dt  = (T1 - T2) / (theta * (1/(m1 cv1) + 1/(m2 cv2)))
+//               (isochoric-exchange rate whose linearised T1-T2 decay
+//                time is exactly theta; cv by centred difference; the
+//                rate MODEL shapes the transient only — the fixed point
+//                T1 = T2 is rate-model-independent)
+//      d(dm)/dt = Gamma_SRT, signed — F3's BE-SRT source, verbatim
+//               conventions (vapour prefactor, a_geom by direction).
+//  Path admissibility is F3's (projection succeeds, phases valid,
+//  c_k > 0, vol-weighted P_mix > 0); an inadmissible Newton trial
+//  backtracks toward the last admissible iterate.  Conservation is by
+//  construction (antisymmetric transfers + a conservative projector).
+//
+//  Fixed point: q = dm = 0 with P1 = P2 (constraint), T1 = T2, g1 = g2
+//  — the triple equilibrium, i.e. the flash solution of the cell's
+//  invariants.  Gamma -> 0 and (T1-T2) -> 0 there, so the BE solution
+//  cannot cross it: F3's structural non-overshoot, now for the pair.
+//
+//  Acceptance: ps_x3_fixedpoint_test (PS_zerod_test.H) — route- and
+//  basin-independence of the fixed point, and the match to the HEM
+//  flash.  Grid wiring is session 2; nothing here is reachable from the
+//  production path.
+// =====================================================================
+//  [PS-DM] (F4 session 4): census of |dm| actually transferred by the
+//  mass-transfer channel per sweep — populated by BOTH forms (the split
+//  MT source and the X3 wrapper) so the transfer magnitude (H1) and the
+//  acting population (H2) are directly comparable.  Counting only.
+struct PsDmCensus {
+    long   n   = 0;       // cells with nonzero transfer this sweep
+    double sum = 0.0;     // sum of |dm| [kg/m^3]
+    double mx  = 0.0;     // max |dm|
+    void add(double a) { if (a > 0.0) { ++n; sum += a; if (a > mx) mx = a; } }
+    void reset() { n = 0; sum = 0.0; mx = 0.0; }
+};
+inline PsDmCensus& ps_dm_census() { static PsDmCensus c; return c; }
+
+struct PsX3Params {
+    double theta      = 1.0e-3;   // thermal relaxation time [s]
+    double h_w        = 0.5;      // MT carrier weight (ps_mt_h_weight rule)
+    double srt_D      = 0.1;      // SRT geometry scale [m]
+    double srt_delta  = 0.01;     // SRT receiving-phase seed
+    bool   dome_gate  = true;     // the ONE eligibility question
+    int    max_newton = 40;
+    //  Band-exit policy for the eligibility question — the mode-4
+    //  CAMR.ps_coexist_action semantics VERBATIM (0/1 stand, 2 continue
+    //  unless a hi-side exit, 3 continue always, 4 a lo-side exit
+    //  overrides the supercritical veto).  Grid wiring (F4 session 2)
+    //  passes the live knob through so Y4's action=3 means the same
+    //  thing at mode 5 as at mode 4.
+    int    coexist_action = 0;
+    //  Out-param for the wrapper's [PS-COEXIT-TH] counting: bit 1 =
+    //  lo-side exit, bit 2 = hi-side exit, bit 4 = continued.  0 = the
+    //  cell was in-band.  Untouched when null.
+    int*   exit_code = nullptr;
+    //  [PS-DT] out-params (F4 session 3): |T1-T2| at the post-projection
+    //  ENTRY state and at the final manifold EXIT state, set only when
+    //  the operator actually runs (gate-stood cells leave them
+    //  untouched).  Null = not measured.
+    double* dT_pre  = nullptr;
+    double* dT_post = nullptr;
+};
+
+inline bool ps_x3_relax_cell(V6& U, const PsPhaseAPI& eos, double dt,
+                             const PsX3Params& xp)
+{
+    if (!eos.valid() || !(dt > 0.0)) return false;
+    constexpr double alpha_floor = 1.0e-6;
+    if (!std::isfinite(U[0])) return false;
+    if (U[0] <= alpha_floor || U[0] >= 1.0 - alpha_floor) return false;
+    if (U[1] <= 0.0 || U[2] <= 0.0) return false;
+    const double rho_mix = U[1] + U[2];
+    if (!(rho_mix > 0.0)) return false;
+    const double u_mix = U[3] / rho_mix;
+    const double ke    = 0.5 * u_mix * u_mix;
+
+    //  CONSTRAINT at entry: project onto P1 == P2 (alpha-adjusting).
+    V6 W0 = U;
+    if (!ps_pressure_relax_cell(W0, eos)) return false;
+
+    struct X3SS { PsPhase p1, p2; bool ok; };
+    auto recon = [&](const V6& W) -> X3SS {
+        X3SS s{}; s.ok = false;
+        const double a1 = W[0];
+        if (!(a1 > 0.0) || !(a1 < 1.0)) return s;
+        if (!(W[1] > 0.0) || !(W[2] > 0.0)) return s;
+        const double e1 = W[4] / W[1] - ke, e2 = W[5] / W[2] - ke;
+        if (!std::isfinite(e1) || !std::isfinite(e2)) return s;
+        s.p1.alpha = a1; s.p2.alpha = 1.0 - a1;
+        eos.state_from_rho_e_phase(1, W[1] / a1,       e1, s.p1);
+        eos.state_from_rho_e_phase(2, W[2] / (1.0-a1), e2, s.p2);
+        if (!s.p1.valid || !s.p2.valid) return s;
+        if (!std::isfinite(s.p1.g) || !std::isfinite(s.p2.g)) return s;
+        if (!(s.p1.c > 0.0) || !(s.p2.c > 0.0)) return s;             // F3
+        if (!(a1 * s.p1.P + (1.0 - a1) * s.p2.P > 0.0)) return s;     // F3
+        s.ok = true; return s;
+    };
+    const X3SS s0 = recon(W0);
+    if (!s0.ok) return false;
+
+    //  THE one eligibility question (post-projection), with the mode-4
+    //  band-exit policy.  A stand is not a failure: the cell is simply
+    //  not this operator's to relax, and it stands on the PROJECTED
+    //  state (mode 4's opening mechanical pass, inherited).
+    if (xp.dome_gate) {
+        const double Ttr = eos.t_triple(), Tcr = eos.t_crit();
+        const bool lo = (s0.p1.T <= Ttr) || (s0.p2.T <= Ttr);
+        const bool hi = (s0.p1.T >= Tcr) || (s0.p2.T >= Tcr);
+        if (lo || hi) {
+            bool cont = false;
+            if      (xp.coexist_action == 3)        cont = true;
+            else if (xp.coexist_action == 2 && !hi) cont = true;
+            else if (xp.coexist_action == 4 && lo)  cont = true;
+            if (xp.exit_code)
+                *xp.exit_code = (lo ? 1 : 0) | (hi ? 2 : 0) | (cont ? 4 : 0);
+            if (!cont) {
+                for (int n = 0; n < 6; ++n) U[n] = W0[n];
+                return true;
+            }
+        }
+    }
+
+    auto cv_of = [&](int ph, double rho, double e) -> double {
+        const double de = std::max(1.0e-4 * std::abs(e), 10.0);
+        PsPhase a{}, b{};
+        eos.state_from_rho_e_phase(ph, rho, e + de, a);
+        eos.state_from_rho_e_phase(ph, rho, e - de, b);
+        if (!a.valid || !b.valid) return 0.0;
+        const double dT = a.T - b.T;
+        return (dT > 0.0) ? (2.0 * de / dT) : 0.0;
+    };
+
+    constexpr double two_pi = 6.283185307179586;
+    constexpr double R_u    = 8.314462618;          // J/(mol K)
+    auto rates = [&](const V6& W, const X3SS& s,
+                     double& rT, double& rM) -> bool {
+        const double a1 = W[0], a2 = 1.0 - a1;
+        const double m1 = W[1], m2 = W[2];
+        const double cv1 = cv_of(1, m1 / a1, W[4] / m1 - ke);
+        const double cv2 = cv_of(2, m2 / a2, W[5] / m2 - ke);
+        if (!(cv1 > 0.0) || !(cv2 > 0.0)) return false;
+        const double inv = 1.0 / (m1 * cv1) + 1.0 / (m2 * cv2);
+        rT = (s.p1.T - s.p2.T) / (xp.theta * inv);
+        const double a_geom = (s.p1.g > s.p2.g)
+                            ? (a2 + xp.srt_delta) * a1
+                            : (a1 + xp.srt_delta) * a2;
+        const double Sig = (32.0 / two_pi) * a_geom / xp.srt_D;
+        if (!(s.p2.T > 0.0)) return false;
+        rM = Sig * (m2 / a2)
+           * std::sqrt(eos.molar_mass() / (two_pi * R_u * s.p2.T))
+           * (s.p1.g - s.p2.g);
+        return std::isfinite(rT) && std::isfinite(rM);
+    };
+    if (xp.dT_pre) *xp.dT_pre = std::abs(s0.p1.T - s0.p2.T);   // [PS-DT]
+
+    //  SUB-STEPPED Backward Euler.  MEASURED (first X3 harness run,
+    //  2026-08-16): a cold start at a large CONSTANT dt stalls the coupled
+    //  Newton on the strong-flash states (route A: its=400, nonconv~330,
+    //  endpoint far off the flash) while a small-to-large dt ladder
+    //  converges in ~20 steps everywhere (route B).  Production hands the
+    //  kernel one fixed CFL dt, so the kernel builds the ladder itself:
+    //  the LOCAL step halves on Newton nonconvergence and grows toward the
+    //  remaining interval on success.  The fixed point is dt-independent,
+    //  so sub-stepping reshapes the transient path only.
+    V6   Wc = W0;
+    X3SS scur = s0;
+    const double E_scale = std::abs(W0[4]) + std::abs(W0[5]) + 1.0;
+    const double tol_q   = 1.0e-12 * E_scale;
+    const double tol_m   = 1.0e-13 * rho_mix;
+
+    //  ONE implicit solve over dtl from the projected base (Wc, scur);
+    //  advances them on success.  rc 0 = advanced; 1 = Newton did not
+    //  converge (caller halves dtl); 2 = structurally dead entry.
+    auto be_once = [&](double dtl) -> int {
+        const V6   Wb = Wc;
+        const X3SS sb = scur;
+        double rT0 = 0.0, rM0 = 0.0;
+        if (!rates(Wb, sb, rT0, rM0)) return 2;
+        if (std::abs(dtl * rT0) < tol_q && std::abs(dtl * rM0) < tol_m)
+            return 0;                 //  at the triple equilibrium already
+        //  Frozen per-sub-step MT carrier, F3/write-back rule (sign fixed
+        //  by the base driving force: the rate vanishes at g1 = g2).
+        const double sm  = (sb.p1.g - sb.p2.g > 0.0) ? 1.0 : -1.0;
+        const double h_c = (xp.h_w < 0.0) ? ((sm > 0.0) ? sb.p1.h : sb.p2.h)
+                                          : (1.0 - xp.h_w) * sb.p1.h
+                                            + xp.h_w * sb.p2.h;
+        const double H_c = h_c + ke;
+        const double rho1_b = Wb[1] / Wb[0];   // (E.1) alpha-guess density
+        //  dm boxed by F3's caps in the base-rate direction; q boxed
+        //  loosely (admissibility is the real bound).
+        const double dm_hi = (rM0 > 0.0) ? std::min(0.9 * Wb[1], 2.0 * Wb[2])
+                                         : 0.0;
+        const double dm_lo = (rM0 < 0.0) ? -std::min(0.9 * Wb[2], 2.0 * Wb[1])
+                                         : 0.0;
+        const double q_box = 0.5 * E_scale;
+        auto clampx = [&](double& q, double& dm) {
+            if (q  >  q_box) q  =  q_box;
+            if (q  < -q_box) q  = -q_box;
+            if (dm >  dm_hi) dm =  dm_hi;
+            if (dm <  dm_lo) dm =  dm_lo;
+        };
+        auto path = [&](double q, double dm, V6& W, X3SS& s) -> bool {
+            W = Wb;
+            const double m1p = Wb[1] - dm, m2p = Wb[2] + dm;
+            if (!(m1p > 0.0) || !(m2p > 0.0)) return false;
+            const double a1p = Wb[0] - dm / rho1_b;
+            if (!(a1p > 0.0) || !(a1p < 1.0)) return false;
+            W[0] = a1p; W[1] = m1p; W[2] = m2p;
+            W[4] = Wb[4] - dm * H_c - q;
+            W[5] = Wb[5] + dm * H_c + q;
+            if (!std::isfinite(W[4]) || !std::isfinite(W[5])) return false;
+            if (!ps_pressure_relax_cell(W, eos)) return false;  // CONSTRAINT
+            s = recon(W);
+            return s.ok;
+        };
+        //  Damped 2x2 Newton with numerical Jacobian; inadmissible trials
+        //  backtrack toward the last admissible iterate.
+        double q  = dtl * rT0;
+        double dm = dtl * rM0;
+        clampx(q, dm);
+        V6 Wl; X3SS sl;
+        {   //  Make the STARTING iterate admissible (halve toward 0).
+            int h = 0;
+            while (!path(q, dm, Wl, sl) && h++ < 12) { q *= 0.5; dm *= 0.5; }
+            if (h > 12) return 1;
+        }
+        for (int it = 0; it < xp.max_newton; ++it) {
+            double rTc = 0.0, rMc = 0.0;
+            if (!rates(Wl, sl, rTc, rMc)) return 1;
+            const double R1 = q  - dtl * rTc;
+            const double R2 = dm - dtl * rMc;
+            if (std::abs(R1) <= tol_q && std::abs(R2) <= tol_m) {
+                Wc = Wl; scur = sl; return 0;
+            }
+            const double hq = std::max(1.0e-6 * std::abs(q),
+                                       1.0e-9 * E_scale);
+            const double hm = std::max(1.0e-6 * std::abs(dm),
+                                       1.0e-12 * rho_mix);
+            V6 Wp; X3SS sp;
+            double J11 = 1.0, J12 = 0.0, J21 = 0.0, J22 = 1.0;
+            double rTp, rMp;
+            if (path(q + hq, dm, Wp, sp) && rates(Wp, sp, rTp, rMp)) {
+                J11 = 1.0 - dtl * (rTp - rTc) / hq;
+                J21 =     - dtl * (rMp - rMc) / hq;
+            }
+            if (path(q, dm + hm, Wp, sp) && rates(Wp, sp, rTp, rMp)) {
+                J12 =     - dtl * (rTp - rTc) / hm;
+                J22 = 1.0 - dtl * (rMp - rMc) / hm;
+            }
+            const double det = J11 * J22 - J12 * J21;
+            double dq, ddm;
+            if (std::isfinite(det) && std::abs(det) > 1.0e-14) {
+                dq  = -( J22 * R1 - J12 * R2) / det;
+                ddm = -(-J21 * R1 + J11 * R2) / det;
+            } else {          //  identity-preconditioned fallback
+                dq = -R1; ddm = -R2;
+            }
+            double qn = q + dq, dmn = dm + ddm;
+            clampx(qn, dmn);
+            V6 Wn; X3SS sn;
+            int h = 0;
+            while (!path(qn, dmn, Wn, sn) && h++ < 10) {
+                qn  = 0.5 * (qn  + q);
+                dmn = 0.5 * (dmn + dm);
+            }
+            if (h > 10) return 1;
+            const bool tiny = (std::abs(qn - q) <= tol_q &&
+                               std::abs(dmn - dm) <= tol_m);
+            q = qn; dm = dmn; Wl = Wn; sl = sn;
+            if (tiny) { Wc = Wl; scur = sl; return 0; }
+        }
+        return 1;
+    };
+
+    double t_done = 0.0, dt_try = dt;
+    int  nsub = 0;
+    bool ok   = true;
+    while (t_done < dt * (1.0 - 1.0e-12)) {
+        if (++nsub > 64) { ok = false; break; }
+        const int rc = be_once(dt_try);
+        if (rc == 0) {
+            t_done += dt_try;
+            const double rem = dt - t_done;
+            if (!(rem > 0.0)) break;
+            dt_try = std::min(2.0 * dt_try, rem);
+        } else if (rc == 2) {
+            ok = false; break;
+        } else {
+            dt_try *= 0.5;
+            if (dt_try < 1.0e-10 * dt) { ok = false; break; }
+        }
+    }
+    //  Write back the last ADMISSIBLE projected state (conservative and
+    //  on-manifold even on a bail-out).
+    for (int n = 0; n < 6; ++n) U[n] = Wc[n];
+    if (xp.dT_post) *xp.dT_post = std::abs(scur.p1.T - scur.p2.T);  // [PS-DT]
+    return ok;
+}
+
+
+// =====================================================================
 //  Flash source term (spontaneous nucleation in metastable cells).
 // =====================================================================
 //  Motivation: pelanti + Newton MT only equilibrate cells that are
@@ -3862,11 +4345,10 @@ inline int& ps_triple_point_count() { static int n = 0; return n; }
 enum class TriplePtAction { OFF, WARN, CLIP, ERROR };
 inline TriplePtAction ps_triple_point_action() {
     static const TriplePtAction a = []{
-        const char* v = std::getenv("PS_TRIPLE_POINT_ACTION");
-        if (!v || *v == 0)                    return TriplePtAction::OFF;
-        if (std::strcmp(v, "warn")  == 0)     return TriplePtAction::WARN;
-        if (std::strcmp(v, "clip")  == 0)     return TriplePtAction::CLIP;
-        if (std::strcmp(v, "error") == 0)     return TriplePtAction::ERROR;
+        const std::string v = ps_knob_str("ps_triple_point_action", "off");
+        if (v == "warn")  return TriplePtAction::WARN;
+        if (v == "clip")  return TriplePtAction::CLIP;
+        if (v == "error") return TriplePtAction::ERROR;
         return TriplePtAction::OFF;
     }();
     return a;
@@ -3887,13 +4369,8 @@ inline bool ps_below_triple_point(double T, double P_Pa) {
     return (P_Pa < P_sub);
 }
 
-inline double ps_flash_tau_default() {
-    static const double v = []{
-        const char* s = std::getenv("PS_FLASH_TAU");
-        return (s && *s) ? std::atof(s) : 0.0;
-    }();
-    return v;
-}
+//  (ps_flash_tau_default(), env PS_FLASH_TAU, deleted 2026-08-15: uncalled;
+//   CAMR passes the flash tau from CAMR.ps_flash_tau.)
 
 //  project_sat (E1b, DESIGN_ps_extinction.md §6): -1 legacy/standalone
 //  (consult PS_FLASH_PROJECT_SAT env, default off), 0 force off, 1 force
@@ -3903,41 +4380,111 @@ inline double ps_flash_tau_default() {
 //  sign.  OFF grows the newborn at its CURRENT (host-slaved, possibly
 //  wrong-branch) density — measured on B9 zero-trace to create the
 //  out-of-domain trace states the removed G1/G3 caps used to hide.
+//  EOS-consistent specific internal energy at (rho, T_target) on a locked
+//  branch, by secant (mirrors the 0-D harness's ps_zt_e_of_rhoT; needed
+//  in-kernel by the flash's saturation projection, whose hardcoded table
+//  h-columns were measured 2026-08-15 to sit in a DIFFERENT reference
+//  convention than this EOS's e-scale -- offset ~2e5 J/kg).  Returns NaN
+//  on failure; the caller refuses rather than seeding garbage.
+inline double ps_flash_e_of_rhoT(const PsPhaseAPI& eos, int phase,
+                                 double rho, double T_target)
+{
+    auto Tof = [&](double e) {
+        PsPhase ph{}; ph.alpha = 0.5;
+        eos.state_from_rho_e_phase(phase, rho, e, ph);
+        return ph.valid ? ph.T : std::numeric_limits<double>::quiet_NaN();
+    };
+    double e0 = -2.0e5, e1 = 3.0e5;
+    double T0 = Tof(e0), T1 = Tof(e1);
+    for (int it = 0; it < 80; ++it) {
+        if (!std::isfinite(T0)) { e0 += 2.0e4; T0 = Tof(e0); continue; }
+        if (!std::isfinite(T1)) { e1 -= 2.0e4; T1 = Tof(e1); continue; }
+        const double denom = (T1 - T0);
+        double e2 = (std::abs(denom) < 1e-12) ? 0.5*(e0+e1)
+                    : e1 - (T1 - T_target) * (e1 - e0) / denom;
+        const double T2 = Tof(e2);
+        if (std::isfinite(T2) && std::abs(T2 - T_target) < 1e-4) return e2;
+        e0 = e1; T0 = T1; e1 = e2; T1 = T2;
+    }
+    return std::numeric_limits<double>::quiet_NaN();
+}
+
+//  F0 attribution (2026-08-15): the flash's refusals, counted BY CAUSE --
+//  "zero events" must decompose (ground rules 2/3).  Slot 0 counts FIRES.
+//  Read + reset by the PS_sources driver under CAMR.ps_flash_ev_diag >= 2.
+enum PsFlashRefuse {
+    PS_FLR_FIRED = 0,  PS_FLR_TAU = 1,      PS_FLR_EOS = 2,
+    PS_FLR_A_NAN = 3,  PS_FLR_NOT_DOM = 4,  PS_FLR_M_GUARD = 5,
+    PS_FLR_RHOMIX = 6, PS_FLR_PDOM = 7,     PS_FLR_W_T = 8,
+    PS_FLR_W_META = 9, PS_FLR_W_ALPHA = 10, PS_FLR_DA2 = 11,
+    PS_FLR_DA1 = 12,   PS_FLR_A_FLOOR = 13, PS_FLR_NOPROJ = 14,
+    PS_FLR_H_NAN = 15, PS_FLR_SSTAR = 16,
+    //  sub-attribution of the s=1 (full-step) trial when SSTAR fires:
+    PS_FLR_S1_MASS = 17, PS_FLR_S1_AFLOOR = 18,
+    PS_FLR_S1_PH1 = 19,  PS_FLR_S1_PH2 = 20,  PS_FLR_NCAUSE = 21
+};
+inline long& ps_flash_refuse_count(int c)
+{ static long n[PS_FLR_NCAUSE] = {0}; return n[c]; }
+inline void ps_flash_refuse_reset()
+{ for (int c = 0; c < PS_FLR_NCAUSE; ++c) ps_flash_refuse_count(c) = 0; }
+#define PS_FLASH_REFUSE(c) \
+    do { ++ps_flash_refuse_count(c); return false; } while (0)
+
 inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
                                   double dt, double tau_flash,
                                   double alpha_seed_target = 0.02,
                                   double alpha_floor = 1.0e-6,
                                   int project_sat_in = -1)
 {
-    if (tau_flash <= 0.0 || dt <= 0.0) return false;
-    if (!eos.valid()) return false;
+    if (tau_flash <= 0.0 || dt <= 0.0) PS_FLASH_REFUSE(PS_FLR_TAU);
+    if (!eos.valid()) PS_FLASH_REFUSE(PS_FLR_EOS);
 
     double alpha_1 = U[0];
-    if (!std::isfinite(alpha_1)) return false;
+    if (!std::isfinite(alpha_1)) PS_FLASH_REFUSE(PS_FLR_A_NAN);
 
     // Fire in nominally-single-phase cells.  Trigger for α > 0.9 (deep
     // liquid) or α < 0.1 (deep vapor).  Env-tunable via
     // PS_FLASH_ALPHA_THR.  A cell already in the mid range is handled
     // by pelanti + MT and shouldn't be perturbed here.
-    static const double flash_alpha_thr = []{
-        const char* v = std::getenv("PS_FLASH_ALPHA_THR");
-        return (v && *v) ? std::atof(v) : 0.10;
-    }();
+    static const double flash_alpha_thr =
+        ps_knob_real("ps_flash_alpha_thr", 0.10);
     const bool liq_dominant = (alpha_1 > 1.0 - flash_alpha_thr);
     const bool vap_dominant = (alpha_1 <       flash_alpha_thr);
-    if (!liq_dominant && !vap_dominant) return false;
+    if (!liq_dominant && !vap_dominant) PS_FLASH_REFUSE(PS_FLR_NOT_DOM);
 
     const double m_1 = U[1];
     const double m_2 = U[2];
-    if (m_1 <= 0.0 || m_2 <= 0.0) return false;
+    //  FLASH-FROM-ABSENT (F0 of PLAN_flash_and_coupling.md;
+    //  CAMR.ps_flash_from_absent, default 0 = previous behaviour).
+    //  MEASURED 2026-08-15: with exact-zero presence ICs the m<=0 guard
+    //  below excluded every genuinely single-phase cell, so the nucleator
+    //  fired ZERO times in the whole acceptance battery -- birth channel 1
+    //  (DESIGN_ps_presence_discrete 3) was dead code.  With the dial on, a
+    //  cell whose TRACE phase is ABSENT is accepted and the newborn phase
+    //  is CONSTRUCTED by the saturation projection (enforced below);
+    //  both-absent stays excluded.
+    static const bool from_absent =
+        ps_knob_int("ps_flash_from_absent", 0) != 0;
+    const bool abs_trace = from_absent &&
+        ((liq_dominant && m_2 <= 0.0 && m_1 > 0.0) ||
+         (vap_dominant && m_1 <= 0.0 && m_2 > 0.0));
+    if (!abs_trace && (m_1 <= 0.0 || m_2 <= 0.0)) PS_FLASH_REFUSE(PS_FLR_M_GUARD);
     const double rho_mix = m_1 + m_2;
-    if (rho_mix <= 0.0) return false;
+    if (rho_mix <= 0.0) PS_FLASH_REFUSE(PS_FLR_RHOMIX);
     const double u_mix = U[3] / rho_mix;
     const double alpha_2 = 1.0 - alpha_1;
-    const double rho_1 = m_1 / alpha_1;
-    const double rho_2 = m_2 / alpha_2;
-    const double e_1 = U[4] / m_1 - 0.5 * u_mix * u_mix;
-    const double e_2 = U[5] / m_2 - 0.5 * u_mix * u_mix;
+    //  An ABSENT phase has NO state: never form its quotients (0/0 with
+    //  alpha exactly 0/1), and NEVER feed them to the EOS -- the
+    //  branch-locked solver's bracket test passes NaN straight through the
+    //  Illinois loop and returns garbage MARKED VALID, so the fence has to
+    //  be here, at the source.  The sentinels below are written but every
+    //  use is fenced by abs_trace.
+    const double rho_1 = (abs_trace && vap_dominant) ? 0.0 : m_1 / alpha_1;
+    const double rho_2 = (abs_trace && liq_dominant) ? 0.0 : m_2 / alpha_2;
+    const double e_1 = (abs_trace && vap_dominant)
+                       ? 0.0 : U[4] / m_1 - 0.5 * u_mix * u_mix;
+    const double e_2 = (abs_trace && liq_dominant)
+                       ? 0.0 : U[5] / m_2 - 0.5 * u_mix * u_mix;
 
     // Query dominant phase state to see if it's metastable.
     PsPhase p_dom{};
@@ -3951,7 +4498,7 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
     // cells straddle -> y-asymmetry (task #55).  Reject only genuinely
     // non-finite states (not reached at the lip, where P,T stay finite).
     if (!std::isfinite(p_dom.T) || !std::isfinite(p_dom.P) || p_dom.T <= 0.0)
-        return false;
+        PS_FLASH_REFUSE(PS_FLR_PDOM);
     // Smooth activation windows (task #55): ramp the flash RATE to zero
     // approaching each hard threshold instead of an on/off switch, so two
     // mirror cells that straddle a threshold get flash rates differing only
@@ -3970,7 +4517,7 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
     const double bw_T = 0.05 * (T_crit_g - T_trip_g);
     const double w_T = ss01((p_dom.T - T_trip_g) / bw_T)
                      * ss01((T_crit_g - p_dom.T) / bw_T);
-    if (w_T <= 0.0) return false;   // strictly outside the saturation dome
+    if (w_T <= 0.0) PS_FLASH_REFUSE(PS_FLR_W_T);   // strictly outside the saturation dome
 
     const double P_sat_here = eos.Psat_of_T ? eos.Psat_of_T(p_dom.T)   // task #53
                                             : co2_P_sat_wagner(p_dom.T);
@@ -3981,10 +4528,8 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
     // that B3-like static-contact problems (both sides AT saturation)
     // don't false-trigger from marginal WP numerical dissipation.
     // Env-tunable via PS_FLASH_METASTABLE_MARGIN.
-    static const double meta_margin = []{
-        const char* v = std::getenv("PS_FLASH_METASTABLE_MARGIN");
-        return (v && *v) ? std::atof(v) : 0.10;
-    }();
+    static const double meta_margin =
+        ps_knob_real("ps_flash_metastable_margin", 0.10);
     // Direction is set by which phase is dominant; the metastability strength
     // is a smooth window centred on the (1±margin)·P_sat threshold (task #55)
     // rather than a hard predicate.
@@ -3999,14 +4544,14 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
         // subcooled vapor condenses as P rises above (1+margin)·P_sat
         w_meta = ss01(0.5 + (p_dom.P - (1.0 + meta_margin) * P_sat_here) / bw_P);
     }
-    if (w_meta <= 0.0) return false;
+    if (w_meta <= 0.0) PS_FLASH_REFUSE(PS_FLR_W_META);
     // (c) Dominance window: ramp to zero approaching the α threshold so a cell
     //     drifting toward the mid-range (handled by MT) does not switch flash
     //     on/off discontinuously.
     const double w_alpha = flash_liq
         ? ss01((alpha_1 - (1.0 - flash_alpha_thr)) / (0.5 * flash_alpha_thr))
         : ss01((flash_alpha_thr - alpha_1)         / (0.5 * flash_alpha_thr));
-    if (w_alpha <= 0.0) return false;
+    if (w_alpha <= 0.0) PS_FLASH_REFUSE(PS_FLR_W_ALPHA);
 
     // Blend factor: finite-rate kernel 1 − exp(−dt/τ), scaled by the smooth
     // activation windows so the flash rate is a continuous function of state.
@@ -4025,7 +4570,7 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
     //     downstream pelanti/MT need many iterations to relax it —
     //     empirically underperforms on B7 (u_max ~226 vs HEM 394).
     //
-    //   PS_FLASH_PROJECT_SAT=1 (T-Full-saturation-projection): dm
+    //   CAMR.ps_flash_project_sat=1 (T-Full-saturation-projection): dm
     //     chosen such that the seeded trace phase's ρ equals
     //     ρ_L_sat(T_dom) or ρ_V_sat(T_dom) from the CO2 sat table.
     //     Also updates the trace phase's e to sit at h_L_sat / h_V_sat.
@@ -4033,11 +4578,9 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
     //     equilibrium sat locus by construction.  Closes the B7
     //     HEM-analytic gap and eliminates the trace-phase T_2 spike
     //     at α transitions.
-    static const bool project_sat_env = []{
-        const char* v = std::getenv("PS_FLASH_PROJECT_SAT");
-        return v && std::strcmp(v, "1") == 0;
-    }();
-    const bool project_sat = (project_sat_in < 0) ? project_sat_env
+    static const bool project_sat_key =
+        ps_knob_int("ps_flash_project_sat", 0) != 0;
+    const bool project_sat = (project_sat_in < 0) ? project_sat_key
                                                   : (project_sat_in != 0);
 
     double alpha_1_new, dm;
@@ -4056,7 +4599,7 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
         // Grow α_2 (vapor)
         const double alpha_2_target = alpha_seed_target;
         const double alpha_2_new = alpha_2 + blend * (alpha_2_target - alpha_2);
-        if (alpha_2_new <= alpha_2) return false;
+        if (alpha_2_new <= alpha_2) PS_FLASH_REFUSE(PS_FLR_DA2);
         const double d_alpha_2 = alpha_2_new - alpha_2;
         // Choose ρ_2_target: sat vapor density (project) or current ρ_2 (no-project)
         const double rho_2_target = (project_sat && rho_L_sat > 0.0)
@@ -4069,7 +4612,7 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
         const double alpha_1_target = alpha_seed_target;
         const double alpha_1_curr = alpha_1;
         alpha_1_new = alpha_1_curr + blend * (alpha_1_target - alpha_1_curr);
-        if (alpha_1_new <= alpha_1_curr) return false;
+        if (alpha_1_new <= alpha_1_curr) PS_FLASH_REFUSE(PS_FLR_DA1);
         const double d_alpha_1 = alpha_1_new - alpha_1_curr;
         const double rho_1_target = (project_sat && rho_L_sat > 0.0)
                                     ? rho_L_sat : rho_1;
@@ -4077,7 +4620,7 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
         if (dm >= 0.5 * m_2) dm = 0.5 * m_2;
     }
     if (alpha_1_new < alpha_floor || alpha_1_new > 1.0 - alpha_floor)
-        return false;
+        PS_FLASH_REFUSE(PS_FLR_A_FLOOR);
 
     // If projecting, also blend the trace phase's existing mass toward
     // the sat state on m and e.  Otherwise the newly-added dm is at
@@ -4090,13 +4633,20 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
                                ? (flash_liq ? h_V_sat : h_L_sat)
                                : 0.0;
     const bool   using_projection = (project_sat && rho_L_sat > 0.0);
+    //  From ABSENT there is nothing to extend: the newborn state MUST be
+    //  constructed, so the absent path REQUIRES the saturation projection.
+    //  If the sat query failed, refuse rather than invent (D10 policy:
+    //  no manufactured state).
+    if (abs_trace && !using_projection) PS_FLASH_REFUSE(PS_FLR_NOPROJ);
 
     // Interface enthalpy for the energy transfer.  Query the OTHER
     // (trace) phase's state; if it's unphysical fall back to h_dom.
     PsPhase p_other{};
     p_other.alpha = (liq_dominant ? alpha_2 : alpha_1);
-    if (liq_dominant) eos.state_from_rho_e_phase(2, rho_2, e_2, p_other);
-    else              eos.state_from_rho_e_phase(1, rho_1, e_1, p_other);
+    if (!abs_trace) {   // an ABSENT phase has no state to query (fence above)
+        if (liq_dominant) eos.state_from_rho_e_phase(2, rho_2, e_2, p_other);
+        else              eos.state_from_rho_e_phase(1, rho_1, e_1, p_other);
+    }
     // Energy transfer policy (env-gated via PS_FLASH_H_MODE):
     //   "dom"    (default): moved mass carries the DOMINANT phase's own
     //                        specific enthalpy — physically the "gentle"
@@ -4124,9 +4674,9 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
     //             supercritical, transitional through the critical
     //             region.
     static const int h_mode = []{
-        const char* v = std::getenv("PS_FLASH_H_MODE");
-        if (v && std::strcmp(v, "avg") == 0) return 1;
-        if (v && std::strcmp(v, "dom") == 0) return 0;
+        const std::string v = ps_knob_str("ps_flash_h_mode", "auto");
+        if (v == "avg") return 1;
+        if (v == "dom") return 0;
         return 2;   // "auto" default
     }();
     const bool other_ok = p_other.valid && std::isfinite(p_other.h)
@@ -4135,18 +4685,28 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
     const double h_trace = other_ok ? p_other.h : h_dom;
     double h_transfer;
     if (using_projection) {
-        // With saturation projection, place the trace phase on the sat
-        // locus for RHO (via dm = ρ_trace_sat · dα), but transfer the
-        // mass carrying the DEPARTING phase's sat enthalpy (h_L_sat
-        // for flash_liq, h_V_sat for flash_vap).  This preserves the
-        // step's total-energy conservation: mass leaves at its own
-        // local enthalpy (≈ sat enthalpy since the dominant is
-        // metastable), and arrives in the trace phase carrying that
-        // enthalpy — no latent-heat source is inserted at this step.
-        // Latent-heat effects appear downstream through the coupled
-        // Pelanti + Newton MT iterations that resolve P and g
-        // equilibration.
-        h_transfer = flash_liq ? h_L_sat : h_V_sat;
+        //  REWRITTEN 2026-08-15 (F0, [PS-FLASH-REF] s1_ph2 = 1534/1534 on
+        //  B9): the previous form -- transfer at the DEPARTING phase's
+        //  TABLE sat enthalpy -- stacked two defects.  (1) The table's h
+        //  columns are in a different reference convention than this EOS's
+        //  e-scale (measured: hem e_V(63, 270 K) = +1.008e5 J/kg vs the
+        //  table-implied -9.4e4 -- offset ~2e5 J/kg).  (2) Handing the
+        //  newborn the DONOR's enthalpy puts a from-ABSENT seed's WHOLE
+        //  phase below its branch window -- unrepresentable, so the
+        //  fractional limiter collapsed every proposed flash to s* = 0 and
+        //  the nucleator silently never fired.  Now the transferred mass
+        //  carries the SEEDED phase's EOS-CONSISTENT saturation enthalpy,
+        //  derived from the EOS itself at the seed density (the table's
+        //  DENSITY columns are convention-free and stay).  Total energy is
+        //  conserved identically (dm x H_I swap); the enthalpy difference
+        //  appears as the DONOR's energy drop -- which is the latent heat,
+        //  where the physics puts it.
+        const int    ph_new  = flash_liq ? 2 : 1;
+        const double rho_new = flash_liq ? rho_V_sat : rho_L_sat;
+        const double e_new   = ps_flash_e_of_rhoT(eos, ph_new, rho_new,
+                                                  p_dom.T);
+        if (!std::isfinite(e_new)) PS_FLASH_REFUSE(PS_FLR_H_NAN);
+        h_transfer = e_new + P_sat_here / rho_new;
     } else if (h_mode == 1) {
         h_transfer = 0.5 * (h_dom + h_trace);
     } else if (h_mode == 0) {
@@ -4163,7 +4723,7 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
         const double h_avg = 0.5 * (h_dom + h_trace);
         h_transfer = f_dom * h_dom + (1.0 - f_dom) * h_avg;
     }
-    if (!std::isfinite(h_transfer)) return false;
+    if (!std::isfinite(h_transfer)) PS_FLASH_REFUSE(PS_FLR_H_NAN);
     const double H_I = h_transfer + 0.5 * u_mix * u_mix;
 
     // Fractional-flash limiter (task #55).  The previous design committed the
@@ -4208,10 +4768,37 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
         return std::isfinite(c1.T) && std::isfinite(c1.P) && c1.T > 0.0
             && std::isfinite(c2.T) && std::isfinite(c2.P) && c2.T > 0.0;
     };
+    //  F0 attribution: when the FULL step is inadmissible, name the failing
+    //  sub-test at s = 1 (the bisection below then only reports how much
+    //  survives; WITHOUT this the whole population reads as one 'sstar').
+    auto count_full_step_reason = [&]() {
+        double a1t, U1t, U2t, U4t, U5t;
+        trial(1.0, a1t, U1t, U2t, U4t, U5t);
+        if (!std::isfinite(U1t) || !std::isfinite(U2t) ||
+            !std::isfinite(U4t) || !std::isfinite(U5t) ||
+            U1t <= 0.0 || U2t <= 0.0) {
+            ++ps_flash_refuse_count(PS_FLR_S1_MASS); return;
+        }
+        if (a1t < alpha_floor || a1t > 1.0 - alpha_floor) {
+            ++ps_flash_refuse_count(PS_FLR_S1_AFLOOR); return;
+        }
+        const double r1t = U1t / a1t, r2t = U2t / (1.0 - a1t);
+        const double e1t = U4t / U1t - ke_cell;
+        const double e2t = U5t / U2t - ke_cell;
+        PsPhase c1t{}, c2t{};
+        c1t.alpha = a1t; c2t.alpha = 1.0 - a1t;
+        eos.state_from_rho_e_phase(1, r1t, e1t, c1t);
+        eos.state_from_rho_e_phase(2, r2t, e2t, c2t);
+        const bool ok1 = std::isfinite(c1t.T) && std::isfinite(c1t.P) && c1t.T > 0.0;
+        const bool ok2 = std::isfinite(c2t.T) && std::isfinite(c2t.P) && c2t.T > 0.0;
+        if (!ok1) ++ps_flash_refuse_count(PS_FLR_S1_PH1);
+        if (!ok2) ++ps_flash_refuse_count(PS_FLR_S1_PH2);
+    };
     double s_star;
     if (valid_at(1.0)) {
         s_star = 1.0;                       // full flash admissible
     } else {
+        count_full_step_reason();
         // Largest valid s in [0,1] by bisection (s=0 is the valid current
         // cell).  24 iters -> s to ~6e-8, far below round-off relative to the
         // committed dm = s*.dm; more iters were pure cost (perf: the flash
@@ -4223,7 +4810,7 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
         }
         s_star = s_lo;
     }
-    if (s_star <= 0.0) return false;        // no admissible flash this step
+    if (s_star <= 0.0) PS_FLASH_REFUSE(PS_FLR_SSTAR);        // no admissible flash this step
 
     double a1_new, U1_new, U2_new, U4_new, U5_new;
     trial(s_star, a1_new, U1_new, U2_new, U4_new, U5_new);
@@ -4234,6 +4821,7 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
     U[4] = U4_new;
     U[5] = U5_new;
     ++ps_flash_source_count();
+    ++ps_flash_refuse_count(PS_FLR_FIRED);   // slot 0 = fires
     return true;
 }
 

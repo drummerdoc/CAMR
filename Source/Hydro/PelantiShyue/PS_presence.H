@@ -7,12 +7,27 @@
 //  THE three constants of the design, single-sourced (§2 of the note):
 //
 //    alpha_vanish (1e-8)  death threshold — below this a phase is folded
-//                         to exactly zero (standalone-validated value).
-//    alpha_cond   (1e-2)  conditioning bound — at or above this
-//                         rho_k = m_k/alpha_k is trustworthy
-//                         (eta/eps derivation, handoff §4.5; 2-D
-//                         production eta recorded in design §14).
-//    alpha_birth  (2e-2)  flash-nucleation seed level (= 2*alpha_cond).
+//                         to exactly zero (standalone-validated value;
+//                         decade sweep {1e-9, 1e-7} measured bit-identical
+//                         on the 20-case battery, WORKLOG 2026-08-15 M-B).
+//    alpha_cond   (2e-2)  conditioning bound — at or above this
+//                         rho_k = m_k/alpha_k is trustworthy.  RE-DERIVED
+//                         2026-08-15 (Stage 5, after the design's own
+//                         insensitivity sweep finally ran and PASSED):
+//                         eta_max/eps with the 2-D PRODUCTION eta_max =
+//                         9.6e-4 (design §14) and eps = 5 % gives 1.92e-2
+//                         -> 2e-2.  The 1-D-only value was 1e-2 (eta_max =
+//                         5.2e-4); the sweep over [4.2e-3, 2e-2] moved no
+//                         case above scheme error (largest 0.014 abs on
+//                         B7's 0.66 P error), so the deployment-wide bound
+//                         is adopted.
+//    alpha_birth  (4e-2)  flash-nucleation seed level (= 2*alpha_cond,
+//                         factor unchanged; the factor sweep {1.5, 2, 4}
+//                         was measured BIT-IDENTICAL on the battery).
+//                         Note this departs from the flash kernel's
+//                         historical alpha_seed_target = 0.02; the seed is
+//                         single-sourced from here (PS_sources.H S3), and
+//                         the 4e-2 point was measured directly.
 //
 //  Regimes per phase (design §1):
 //    ABSENT      alpha_k <= alpha_vanish, or m_k <= 0: the phase does
@@ -39,8 +54,8 @@
 
 struct PsPres {
     amrex::Real alpha_vanish = amrex::Real(1.0e-8);
-    amrex::Real alpha_cond   = amrex::Real(1.0e-2);
-    amrex::Real alpha_birth  = amrex::Real(2.0e-2);
+    amrex::Real alpha_cond   = amrex::Real(2.0e-2);   // re-derived 2026-08-15
+    amrex::Real alpha_birth  = amrex::Real(4.0e-2);   // = 2*alpha_cond
     //  The legacy (enabled == 0) path is DELETED.  Presence semantics are
     //  the only semantics: alpha free in [0,1] so ABSENT is reachable, phase
     //  states formed by checked construction, branch-locked queries only for
@@ -78,6 +93,28 @@ struct PsPres {
     //         than the frozen speed, so if the fan stops bounding the true
     //         waves this is where it shows.
     int         cmix_model   = 0;
+    //  CAMR.ps_rk_model -- HOW THE STAR-STATE PARTIAL MASSES CONTRACT through
+    //  the acoustic fan (D7 instrument; PLAN_measurements_and_fixes.md S1 C5,
+    //  REVIEW_RESPONSE.md D7).  Rides this struct for the same reason
+    //  cmix_model does: it is already the by-value carrier reaching the star
+    //  builders (PS_hllc.H hllc_flux / ps_star_state) with no ParmParse in a
+    //  device-callable function.
+    //
+    //    0  SHARED (default, bit-identical): both phase masses scale by the
+    //         one ratio r_K = (S_K - u)/(S_K - S_M) (Pelanti 2022 B.14).
+    //         Encodes "acoustic compression does not change composition" --
+    //         true for a dispersed mixture, questionable at a contact where
+    //         the acoustic wave lives in one phase only.
+    //    1  PER-PHASE (instrument, NOT a design): each phase contracts by its
+    //         own acoustic ratio r_k built from S_{K,k} = u -/+ c_k, then both
+    //         are renormalised by a common factor so that
+    //         m_1 r_1' + m_2 r_2' = (m_1+m_2) r_K exactly -- the MIXTURE mass
+    //         keeps the HLLC Rankine-Hugoniot contraction, conservation is
+    //         untouched, and only the PARTITION of the compression between
+    //         the phases moves.  The per-phase energy fluxes (q_k path) are
+    //         deliberately unchanged so the dial isolates the mass-partition
+    //         question.  Any degeneracy falls back to SHARED.
+    int         rk_model     = 0;
 };
 
 //  Single-sourced mixture sound speed SQUARED.  One definition for all three
@@ -176,6 +213,7 @@ inline const PsPres& ps_presence_params()
         pp.query("ps_alpha_cond",       v.alpha_cond);
         pp.query("ps_alpha_birth",      v.alpha_birth);
         pp.query("ps_cmix_model",       v.cmix_model);
+        pp.query("ps_rk_model",         v.rk_model);
         pp.query("ps_presence_vanish",  v.alpha_vanish);   // unified with the
         // fold's CAMR.ps_alpha_vanish at S3 (that key currently means
         // "fold threshold, 0 = fold off"; this one is the presence

@@ -136,7 +136,13 @@ main(int argc, char* argv[])
     pp_ps.query("ps_dilute_probe", ps_dilute_probe);
     int ps_dev_relax_test = 0;
     pp_ps.query("ps_dev_relax_test", ps_dev_relax_test);
-    if (ps_ptg_selftest || ps_relax_sweep || ps_prelax_test || ps_mode3_test || ps_dilute_probe || ps_dev_relax_test) {
+    int ps_m2_test = 0;                    // M2 ordering measurement (Stage 5)
+    pp_ps.query("ps_m2_test", ps_m2_test);
+    int ps_asy1_probe_f = 0;               // ASY1 non-overshoot probe (Stage 6)
+    pp_ps.query("ps_asy1_probe", ps_asy1_probe_f);
+    int ps_x3_test = 0;                    // X3 fixed-point acceptance (F4)
+    pp_ps.query("ps_x3_test", ps_x3_test);
+    if (ps_ptg_selftest || ps_relax_sweep || ps_prelax_test || ps_mode3_test || ps_dilute_probe || ps_dev_relax_test || ps_m2_test || ps_asy1_probe_f || ps_x3_test) {
       // CI gate (#82/#80): nonzero exit on any failure so ctest/CI can fail
       // the build.  Only IOProcessor runs the (serial, deterministic) checks.
       int fail = 0;
@@ -147,6 +153,9 @@ main(int argc, char* argv[])
         if (ps_mode3_test)   fail += ps_mode3_stifflimit_test();
         if (ps_dilute_probe) fail += ps_dilute_relax_probe();
         if (ps_dev_relax_test) fail += ps_dev_relax_bitmatch_test();
+        if (ps_m2_test)      fail += ps_m2_ordering_test();
+        if (ps_asy1_probe_f) fail += ps_asy1_probe();
+        if (ps_x3_test)      fail += ps_x3_fixedpoint_test();
       }
       amrex::ParallelDescriptor::Bcast(&fail, 1,
                                        amrex::ParallelDescriptor::IOProcessorNumber());

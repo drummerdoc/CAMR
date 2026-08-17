@@ -84,6 +84,8 @@ struct Face {
     amrex::Real P_1, P_2;        // per-phase branch-locked pressure
     amrex::Real P_mix;           // α₁ P₁ + α₂ P₂ (P-S 2014 eq. 5)
     amrex::Real c_frozen;        // Wallis frozen mixture c
+    amrex::Real c_1, c_2;        // per-phase c (guarded); read only by the
+                                 // ps_rk_model=1 instrument (D7)
     bool        valid;
 };
 
@@ -289,6 +291,8 @@ Face face_from_state(int idir, const amrex::Real U[NVAR],
     f.P_mix = f.alpha_1 * f.P_1 + f.alpha_2 * f.P_2;
     if (!std::isfinite(c1) || c1 <= Real(0.0)) c1 = Real(1.0);
     if (!std::isfinite(c2) || c2 <= Real(0.0)) c2 = Real(1.0);
+    f.c_1 = c1;                  // guarded per-phase speeds, for ps_rk_model=1
+    f.c_2 = c2;
 
     // Wallis frozen mixture sound speed:  c² = Y₁ c₁² + Y₂ c₂²
     // with Y_k = α_k ρ_k / ρ_mix.  Matches the standalone driver
@@ -432,6 +436,52 @@ WaveSpeeds wave_speeds(const Face& fL, const Face& fR) noexcept
 
 
 // -------------------------------------------------------------------
+//  Star-state partial masses -- SINGLE-SOURCED for hllc_flux (Godunov path)
+//  and ps_star_state (wp fluctuation path), so the D7 instrument cannot
+//  drift between them (the four-way-copy lesson, STATUS_multiphase.md 6.1).
+//
+//  rk_model == 0 (default): m_k* = m_k r_K, both phases scale by the shared
+//  contraction r_K (Pelanti 2022 B.14) -- bit-identical to the historical
+//  expression.
+//  rk_model == 1 (D7 INSTRUMENT, not a design): each phase gets its own
+//  acoustic ratio r_k from S_{K,k} = u + sgn(S_K - u) c_k, then both are
+//  renormalised by one factor so m_1 r_1' + m_2 r_2' = (m_1 + m_2) r_K
+//  EXACTLY: the mixture mass keeps the HLLC Rankine-Hugoniot contraction
+//  and only the partition of the compression between phases moves.  Any
+//  degeneracy (non-finite, non-positive ratio, vanishing denominator)
+//  falls back to the shared form.  The per-phase energy fluxes (q_k) are
+//  deliberately NOT touched: the dial isolates the mass-partition question.
+// -------------------------------------------------------------------
+AMREX_GPU_HOST_DEVICE
+AMREX_FORCE_INLINE
+void ps_star_masses(const Face& fK, amrex::Real S_K, amrex::Real S_M,
+                    amrex::Real r_K, int rk_model,
+                    amrex::Real& m1s, amrex::Real& m2s) noexcept
+{
+    using amrex::Real;
+    m1s = fK.m_1 * r_K;
+    m2s = fK.m_2 * r_K;
+    if (rk_model != 1) return;
+    const Real sgn = (S_K >= fK.u_n) ? Real(1.0) : Real(-1.0);
+    const Real Sk1 = fK.u_n + sgn * fK.c_1;
+    const Real Sk2 = fK.u_n + sgn * fK.c_2;
+    const Real d1  = Sk1 - S_M;
+    const Real d2  = Sk2 - S_M;
+    if (!std::isfinite(d1) || !std::isfinite(d2) ||
+        std::abs(d1) < Real(1.0e-30) || std::abs(d2) < Real(1.0e-30)) return;
+    const Real r1 = (Sk1 - fK.u_n) / d1;
+    const Real r2 = (Sk2 - fK.u_n) / d2;
+    if (!std::isfinite(r1) || !std::isfinite(r2) ||
+        r1 <= Real(0.0) || r2 <= Real(0.0)) return;
+    const Real mr = fK.m_1 * r1 + fK.m_2 * r2;
+    if (!(mr > Real(0.0)) || !std::isfinite(mr)) return;
+    const Real scale = (fK.m_1 + fK.m_2) * r_K / mr;
+    if (!std::isfinite(scale)) return;
+    m1s = fK.m_1 * r1 * scale;
+    m2s = fK.m_2 * r2 * scale;
+}
+
+// -------------------------------------------------------------------
 //  Pelanti 2022 HLLC flux, all NVAR slots.
 //
 //  Called from PS_umeth's face loop when CAMR.ps_flux = hllc.  Takes
@@ -492,9 +542,10 @@ bool hllc_flux(int idir,
     if (!std::isfinite(denom_r) || std::abs(denom_r) < Real(1.0e-30)) return false;
     const Real r_K = (S_K - fK.u_n) / denom_r;
 
-    // Star-state per-phase partial masses (both phases scale identically).
-    const Real m1_star = fK.m_1 * r_K;
-    const Real m2_star = fK.m_2 * r_K;
+    // Star-state per-phase partial masses (shared r_K by default; the
+    // ps_rk_model=1 D7 instrument redistributes, mixture mass unchanged).
+    Real m1_star, m2_star;
+    ps_star_masses(fK, S_K, w.S_M, r_K, pr.rk_model, m1_star, m2_star);
     if (m1_star < Real(0.0) || m2_star < Real(0.0)) return false;
     const Real rho_star = m1_star + m2_star;
     if (rho_star <= Real(0.0)) return false;
@@ -608,7 +659,8 @@ bool ps_star_state(int idir, const Face& fK, const amrex::Real UK[NVAR],
                    amrex::Real S_K, amrex::Real S_M,
                    amrex::Real U_star[NVAR],
                    int pk_ef = 0,          // #85: per-phase P_k in star energy
-                   int* cause = nullptr) noexcept   // W0 refusal-cause audit
+                   int* cause = nullptr,   // W0 refusal-cause audit
+                   int rk_model = 0) noexcept   // D7 instrument (default shared)
 {
     using amrex::Real;
     //  Every early return names itself.  `cause` is optional so the signature
@@ -618,8 +670,8 @@ bool ps_star_state(int idir, const Face& fK, const amrex::Real UK[NVAR],
     if (!std::isfinite(denom) || std::abs(denom) < Real(1.0e-30))
         PS_ST_REFUSE(PS_FL_ST_DENOM);
     const Real r_K = (S_K - fK.u_n) / denom;
-    const Real m1s = fK.m_1 * r_K;
-    const Real m2s = fK.m_2 * r_K;
+    Real m1s, m2s;
+    ps_star_masses(fK, S_K, S_M, r_K, rk_model, m1s, m2s);
     if (m1s < Real(0.0) || m2s < Real(0.0)) PS_ST_REFUSE(PS_FL_ST_MASSNEG);
     const Real rhos = m1s + m2s;
     if (rhos <= Real(0.0)) PS_ST_REFUSE(PS_FL_ST_RHO);
@@ -772,9 +824,11 @@ bool fluctuations(int idir, const amrex::Real UL[NVAR], const amrex::Real UR[NVA
 
     Real UsL[NVAR], UsR[NVAR];
     int stc = PS_FL_OK;
-    if (!ps_star_state(idir, fL, UL, w.S_L, w.S_M, UsL, pk_ef, &stc)) {
+    if (!ps_star_state(idir, fL, UL, w.S_L, w.S_M, UsL, pk_ef, &stc,
+                       pr.rk_model)) {
         PS_W0_FL_FAIL(stc); PS_W0_FL_SIDE(0); return false; }
-    if (!ps_star_state(idir, fR, UR, w.S_R, w.S_M, UsR, pk_ef, &stc)) {
+    if (!ps_star_state(idir, fR, UR, w.S_R, w.S_M, UsR, pk_ef, &stc,
+                       pr.rk_model)) {
         PS_W0_FL_FAIL(stc); PS_W0_FL_SIDE(1); return false; }
 #undef PS_W0_FL_FAIL
 #undef PS_W0_FL_SIDE
