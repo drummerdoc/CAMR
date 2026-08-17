@@ -46,6 +46,24 @@ TWOPHASE = {'B1-Comp-L-expand':'B1',        'B2-Evap-wave':'B2',
             'B9-Deep-Expansion':'B9',       'B10-Cross-critical-hot':'B10',
             'B11-Subcrit-contact-dT':'B11'}
 
+#  STAGE 4 (2026-08-15, PLAN_measurements_and_fixes.md): THE ACCEPTANCE
+#  BRACKET.  Every HEM reference above rewards the equilibrium limit (D21):
+#  a model permanently at equal p and T scores better while containing less
+#  physics.  The battery therefore now scores BOTH limits:
+#    * B11 is the FROZEN-limit CONTACT anchor (full scored membership: its
+#      exact solution is the translated initial condition -- zero
+#      equilibration -- so a model that equilibrates at a smeared contact is
+#      punished there);
+#    * the flashing pair below is ALSO scored against the FROZEN (tau ->
+#      infinity, no phase change) exact solutions of the same ICs
+#      (exact_riemann.py --model frozen, N=800, HEM regen verified
+#      bit-identical the day these were minted).  The same plotfile gets an
+#      HEM row and a FROZEN row; the truth lies between them, so a model can
+#      no longer win a row by sitting at either limit.  While B2/B9 abort
+#      (their standing red state) neither row scores -- the bracket becomes
+#      informative the day they complete (Stage 6).
+FROZEN_BRACKET = {'B2-Evap-wave':'B2', 'B9-Deep-Expansion':'B9'}
+
 def load_profile(name):
     rows=[l for l in open('%s/suite/profiles/%s.csv'%(STAND,name)) if not l.startswith('#') and l.strip()]
     h=[c.strip() for c in rows[0].split(',')]; d=list(csv.reader(rows[1:]))
@@ -56,6 +74,10 @@ def load_hem(short):
     d=np.loadtxt('%s/suite/exact_%s_pr.csv'%(STAND,short))
     return dict(x=d[:,0], rho=d[:,1], u=d[:,2], P=d[:,3])
 
+def load_frozen(short):
+    d=np.loadtxt('%s/suite/exact_%s_pr_frozen.csv'%(STAND,short))
+    return dict(x=d[:,0], rho=d[:,1], u=d[:,2], P=d[:,3])
+
 def run(case, flux, pref):
     c=F.CD[case]; tf=c[3]
     ov={'amr.n_cell':N,'geometry.prob_lo':0.0,'geometry.prob_hi':1.0,
@@ -63,9 +85,22 @@ def run(case, flux, pref):
         'CAMR.cfl':0.25,'CAMR.do_mol':0,'stop_time':tf,
         'CAMR.ps_flux':flux,'CAMR.ps_wp_order':2,'CAMR.ps_recon':1}
     if case in TWOPHASE:                      # stiff relaxation -> HEM limit
-        ov.update({'CAMR.ps_do_relax':1,'CAMR.ps_relax_mode':4,
+        #  ps_relax_mode=5 (X3, the coupled source with P1=P2 as the DAE
+        #  constraint) is the CANONICAL mode since 2026-08-17 (Marc's
+        #  call, WORKLOG F4 session 4: the mode-4 score advantage on
+        #  B2/B9 was measured to be its failing thermal target solve
+        #  leaving the front vapour ~60 K artificially hot — a defect
+        #  the HEM-biased references rewarded, D21).  ps_mt_tau is kept
+        #  for mode-4 A/B runs; at mode 5 it has no effect (X3 owns MT,
+        #  rate from SRT).
+        #  ps_flash_from_absent=1 default since 2026-08-17 (Marc's call,
+        #  F5): selective by measurement (8 cases bit-identical), strictly
+        #  better on B2/B9/B7, no aborts under X3.  ONE global config for
+        #  all 20 cases — Y4 is history.
+        ov.update({'CAMR.ps_do_relax':1,'CAMR.ps_relax_mode':5,
                    'CAMR.ps_theta_tau':1e-7,'CAMR.ps_mt_tau':1e-7,
-                   'CAMR.ps_flash_tau':1e-7})
+                   'CAMR.ps_flash_tau':1e-7,
+                   'CAMR.ps_flash_from_absent':1})
     else:                                     # single phase: no phase change
         ov.update({'CAMR.ps_do_relax':0})
     ov.update(F.camr_side(c[1],'L')); ov.update(F.camr_side(c[2],'R'))
@@ -167,5 +202,11 @@ def main():
         print('%-22s %s %s %s | %s %s %s   ok'
               % (case, fmt(e['rho']), fmt(e['u']), fmt(e['P']),
                  fmtv(e['rho']), fmtv(e['u']), fmtv(e['P'])))
+        if case in FROZEN_BRACKET:
+            ef=l2(num, load_frozen(FROZEN_BRACKET[case]))
+            print('%-22s %s %s %s | %s %s %s   (same run, FROZEN ref)'
+                  % ('  `- vs FROZEN limit', fmt(ef['rho']), fmt(ef['u']),
+                     fmt(ef['P']), fmtv(ef['rho']), fmtv(ef['u']),
+                     fmtv(ef['P'])))
 
 main()
