@@ -1,7 +1,9 @@
-# RealFluidCO2 EOS backend
+# PR EOS backend (Peng-Robinson CO₂)
 
-**Status:** Phase 2 landed — device-inline Peng-Robinson CO₂ EOS.
-Phase 3 (T-Blowdown) and Phase 4 (multi-backend) pending.
+**Status:** production backend of the PS acceptance battery
+(`Eos_Model := PR`).  Historical note: this directory was originally
+named `RealFluidCO2`; the text below predates the rename and the
+2026-08 branch work — read it as the design record of Phase 2.
 
 ## What this is
 

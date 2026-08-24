@@ -33,15 +33,14 @@
 //   diffusion for auxiliary slots (UTEMP, UFS...) that don't
 //   participate in the star state.
 //
-//  Wave-propagation form for α_1 (this HLLC path).  Unlike the LLF
-//  branch which writes F[UALPHA1] = 0 and post-adds a per-cell WP
-//  α_1 update, HLLC gives us F[UALPHA1] = α · S_M directly.  Under
-//  the divergence in hydro_consup this produces the same
-//  contact-preserving advection the WP kernel was designed to
-//  emulate — only better, because S_M is the local u_star at each
-//  face rather than a globally averaged mixture u.  When the HLLC
-//  branch is selected, the outer WP-α cell kernel MUST be skipped
-//  to avoid double-counting.  See PS_umeth.cpp's ps_flux dispatch.
+//  α_1 handling (task #202): this file writes F[UALPHA1] = 0 on the
+//  subsonic paths and the per-cell WP-α kernel in PS_umeth.cpp runs
+//  for BOTH the LLF and HLLC paths.  (The claim in earlier versions
+//  of this header — that HLLC supplies F[UALPHA1] = α · S_M directly
+//  and the WP-α kernel must be skipped — is WRONG in general; see
+//  the task #202 note at the flux-assembly site below.  A latent
+//  exception remains: the supersonic S_L≥0 / S_R≤0 branches still
+//  emit F[UALPHA1] = α·u_n — see AUDIT 2026-08-24 B9.)
 //
 //  Falls back to the caller-supplied fallback flux when the HLLC
 //  computation hits a pathology (non-finite intermediate, negative

@@ -17,7 +17,7 @@ using namespace amrex::literals;
 //
 // Defaults reproduce the standalone co2-eos-cfd T-Blowdown case:
 //    p0    = 100 bar  (initial pressure in the closed pipe)
-//    T0    = 300 K    (supercritical CO₂; T > Tc = 304 K)
+//    T0    = 300 K    (compressed-liquid CO₂; T < Tc = 304.13 K)
 //    p_amb =   1 bar  (atmospheric — the ambient the vent opens to)
 struct ProbParmDevice
 {

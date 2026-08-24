@@ -1,5 +1,15 @@
 # Guard inventory, failure attribution, and a physics-based guard design
 
+> **STALENESS NOTICE (2026-08-24 audit).**  Part 1's headline counts are
+> HISTORICAL — they predate the 2026-08-15 env-knob retirement and the
+> guard consolidation.  Current truth at co2-eos HEAD: **2** getenv sites
+> remain tree-wide (`CAMR_BC_COPY_INTERIOR` in three Exec prob.H files —
+> still un-provenanced, see AUDIT 2026-08-24 B15 — and `GERG_EXT_C`,
+> which is ParmParse-overridden and job_info'd); the P1/P2 sanity guard
+> is consolidated into `ps_guard::sanitize_phase_pressure` (PS_guards.H);
+> `ps_pres_floor` now defaults to **0** (disabled), not 1e5.  Read Part 1
+> as the historical record it is; the analysis in Parts 2-3 still stands.
+
 Scan of `Source/` (excluding four stale `.fuse_hidden*` copies of
 `hem_pelanti_shyue.H` sitting in `Hydro/PelantiShyue/` — delete them; they
 corrupt greps and are 160 kB each).

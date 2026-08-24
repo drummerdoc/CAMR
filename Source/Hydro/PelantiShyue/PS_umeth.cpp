@@ -508,12 +508,10 @@ ps_physical_flux_from_state(int idir, const Real U[NVAR], Real F[NVAR],
 //    * Non-conservative α transport: this file still ships
 //      F[UALPHA1] = α₁ u_n, whose conservative divergence carries
 //      a spurious α · ∇·u contribution beyond the true u · ∇α
-//      transport term.  Phase 4c-β3 (this commit) adds
-//      ps_correct_alpha_transport (PS_alpha_transport.H) which
-//      cancels the spurious term post-consup by adding
-//         Δα = dt · α · ∇·u
-//      to S_new[UALPHA1].  Called from CAMR::CAMR_advance
-//      immediately before ps_apply_relaxation.  The T-Blowdown
+//      transport term.  Phase 4c-β3 added a post-consup cancellation
+//      (ps_correct_alpha_transport / PS_alpha_transport.H, since
+//      superseded by the WP-α cell kernel and deleted 2026-08-17 —
+//      see PRIMER_godunov_vs_wave_propagation.md).  The T-Blowdown
 //      case initially α₁ ≈ 1 everywhere then relies on the
 //      correction + relaxation to keep α_1 pinned to 1 − α_floor
 //      as it should be for a single-phase evolution.
@@ -2271,9 +2269,9 @@ PS_umeth(const Box& bx,
     //
     //  This also OBVIATES the ps_correct_alpha_transport call in
     //  CAMR::CAMR_advance — CAMR_advance.cpp is updated to skip it
-    //  when running PS mode.  PS_alpha_transport.H is preserved but
-    //  unused (documentation of the Godunov-era cancellation
-    //  approach for reference).
+    //  when running PS mode.  (PS_alpha_transport.H, the Godunov-era
+    //  cancellation approach, was deleted 2026-08-17; see
+    //  PRIMER_godunov_vs_wave_propagation.md for the history.)
     // ==============================================================
 
     amrex::ParallelFor(bx,
@@ -2439,7 +2437,8 @@ PS_umeth(const Box& bx,
 #endif
     });
 
-    }  // end if (use_hllc == 0) — WP-α kernel gate for task #187.
+    }  // end WP-α kernel block (unconditional since task #202 — runs for
+       // BOTH the LLF and HLLC paths; the old use_hllc==0 gate is gone).
 
     // Task #22 P2: expose the per-face phase-energy WP-vs-Godunov defect
     // for the Berger-LeVeque fluctuation register.  wp_corr_{x,y,z} hold

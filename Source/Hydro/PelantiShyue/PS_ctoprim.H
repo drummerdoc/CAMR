@@ -52,8 +52,9 @@ ps_augment_primitives(int i, int j, int k,
     const amrex::Real E1_tot   = u(i,j,k, UE1);       // α₁ ρ₁ E₁
     const amrex::Real E2_tot   = u(i,j,k, UE2);       // α₂ ρ₂ E₂
 
-    // Volume-fraction clamp — α ∈ [α_floor, 1 − α_floor].  The floor
-    // matches the standalone driver's default PS_ALPHA_TRACE = 1e-6.
+    // Volume-fraction clamp — α ∈ [0, 1].  (Historical note: this used
+    // to clamp into [α_floor, 1 − α_floor]; the presence machinery now
+    // owns the small-α semantics and the clamp is to the physical box.)
     constexpr amrex::Real alpha_floor = amrex::Real(1.0e-6);
     amrex::Real a1 = alpha_1;
     if (a1 < amrex::Real(0.0)) a1 = amrex::Real(0.0);
@@ -61,11 +62,10 @@ ps_augment_primitives(int i, int j, int k,
     const amrex::Real a2 = amrex::Real(1.0) - a1;
     //  Contract 3: regime computed honestly on BOTH paths (was: forced
     //  Independent on legacy, i.e. asserting both phases exist).
-    //  NOTE: on the legacy path a1 is clamped into [alpha_floor, 1-alpha_floor]
-    //  ABOVE, before this test, so alpha can never fall below ps_regime's
-    //  vanish edge and Absent is unreachable there.  That clamp is a
-    //  contract-4 item; until it goes, this predicate is weaker than it looks
-    //  on the legacy path.
+    //  NOTE: a1 is clamped only into [0, 1] above, so ps_regime sees the
+    //  true small-α values and Absent IS reachable here.  (An earlier
+    //  version of this note claimed an [α_floor, 1−α_floor] clamp made
+    //  Absent unreachable — that clamp no longer exists.)
     const PsRegime rg1 = ps_regime(a1, m1rho1, pr);
     const PsRegime rg2 = ps_regime(a2, m2rho2, pr);
 

@@ -1019,7 +1019,6 @@ void ps_newton_solve_T_fixed(const PRFluid& f, amrex::Real v_m,
 }
 
 AMREX_GPU_HOST_DEVICE
-AMREX_GPU_HOST_DEVICE
 inline State state_from_rho_e(const PRFluid& f, amrex::Real rho, amrex::Real e_target,
                               amrex::Real /*T_init*/ = amrex::Real(-1.0))
 {
@@ -1185,7 +1184,6 @@ inline State state_from_rho_e(const PRFluid& f, amrex::Real rho, amrex::Real e_t
 //  The Newton on T uses the same iteration as the single-phase prelude
 //  of state_from_rho_e; only the post-Newton dispatch differs.
 // =====================================================================
-AMREX_GPU_HOST_DEVICE
 AMREX_GPU_HOST_DEVICE
 inline bool state_from_rho_e_phase_try(const PRFluid& f, amrex::Real rho,
                                        amrex::Real e_target, Phase3 phase,

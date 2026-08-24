@@ -13,10 +13,11 @@
 //  Phase 4c-β implementation task.  The plumbing is real; the
 //  algorithm is not.
 //
-//  Phase 4c-β (subsequent commit): lift `hem::ps_hllc_fluctuations`
-//  from Source/Hydro/PelantiShyue/hem_pelanti_shyue.H into an
-//  amrex::ParallelFor kernel that accumulates the A±ΔQ update
-//  directly into `dsdt_arr`.  See ../README.md §4c.
+//  Phase 4c-β (done): the production fluctuation kernel is
+//  PS_HLLC::fluctuations in PS_hllc.H, accumulated into `dsdt_arr`
+//  by the ParallelFor kernels in PS_umeth.cpp.  (The old plan to
+//  lift hem::ps_hllc_fluctuations was overtaken — that hem copy is
+//  dead code awaiting removal.)  See ../README.md §4c.
 // =====================================================================
 
 #include "IndexDefines.H"

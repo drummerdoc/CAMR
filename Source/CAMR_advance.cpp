@@ -4,18 +4,16 @@
 #include "PS_relaxation.H"
 #include "PS_sources.H"
 #include "PS_validate.H"   // S0: gated invariant tripwire (CAMR.ps_validate)
-// PS_alpha_transport.H — preserved in-tree but no longer used; the
-// wave-propagation form inside PS_umeth (Phase 4c-β3 second pass)
-// obsoletes the conservative-flux + post-consup cancellation.
+// PS_alpha_transport.H — deleted 2026-08-17; the wave-propagation
+// form inside PS_umeth (Phase 4c-β3 second pass) obsoletes the
+// conservative-flux + post-consup cancellation.
 #endif
 
 #include <cmath>
 #include <AMReX_ParallelDescriptor.H>        // ReduceRealMax/ReduceLongSum in the PS-MASS probe
 #ifdef USE_PS_HYDRO
 #include "Hydro/PelantiShyue/PS_guards.H"    // guard audit counters
-#ifdef USE_PS_HYDRO
 #include "Hydro/PelantiShyue/PS_hllc.H"      // W0 face-audit counters
-#endif
 #endif
 
 using std::string;
