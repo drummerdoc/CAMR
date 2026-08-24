@@ -86,10 +86,8 @@ _to_delete/
 # reference-suite tarballs and diagnostic dumps
 _*refs.tgz
 _snap_inputs.txt
-Exec/CO2_RiemannSuite/mlpx2_diag.txt
 # compiled EOS probe binaries (sources ARE tracked alongside them)
 Exec/CO2_PipeBreak/gergstats
 Exec/CO2_PipeBreak/gergtab_pathcost
 # pre-rename net-relic weight headers (deleted; the PRTab backend has been
 # a bicubic table EOS since the table-vs-net shootout)
-Source/EOS/PRTab/mlpx2_fwd_net_lam*.H
