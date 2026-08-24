@@ -3358,13 +3358,12 @@ inline bool ps_x3_relax_cell(V6& U, const PsPhaseAPI& eos, double dt,
         //  cannot exchange heat with the other, so the donor energy walks
         //  out of the reachable set -- the mode-0 dilute-phase runaway
         //  wearing mass transfer.  MT without a thermal leg is not a
-        //  configuration.  Left as it was pending the decision between
-        //  (a) instantaneous thermal here (T1 = T2 added to the constraint
-        //  set, the documented modes-2/3/4 convention, 1-D Newton in dm
-        //  alone) and (b) a nonzero physical default for theta.  Until
-        //  then theta = 0 still dead-ends this operator -- but [PS-X3] now
-        //  prints "EVERY cell structurally dead ... NO-OP" every sweep, so
-        //  it is loud instead of silent.
+        //  configuration.  DECIDED (Marc, 2026-08-24): route (a) stands —
+        //  theta <= 0 means instantaneous thermal (T1 = T2 in the
+        //  constraint set, 1-D Newton in dm alone), implemented by the
+        //  joint_pt path above; and the DEFAULT is the acceptance value
+        //  theta = 1e-7 s (THETA-DEFAULTS), so bare defaults reproduce
+        //  the acceptance configuration.
         rT = joint_pt ? 0.0 : (s.p1.T - s.p2.T) / (xp.theta * inv);
         const double a_geom = (s.p1.g > s.p2.g)
                             ? (a2 + xp.srt_delta) * a1

@@ -754,7 +754,7 @@ ps_canonical_relax_cell(int i, int j, int k,
             hem::ps_iso_thermal_relax_cell_finite(Uv, eos, double(dt),
                                                   double(theta));
         }
-        //  S5-F1(a) (CAMR.ps_mech_close, default 0 = previous behaviour):
+        //  S5-F1(a) (CAMR.ps_mech_close, default 1 since 2026-08-15; 0 = previous behaviour):
         //  CLOSING MECHANICAL PASS.  Measured (WORKLOG 2026-08-15, M-A): the
         //  thermal leg leaves 12-96 % |P1-P2|/P at chain exit (B5 0.124 on
         //  all 64 cells, B9 0.957, B11 0.888) because mode 4 has no
@@ -1089,12 +1089,23 @@ inline int ps_mech_close()
 
 
 
-// Cached CAMR.ps_theta_tau (thermal relaxation time [s], default 0 =
-// instantaneous).  Used by ps_relax_mode=2 and 3.
+// Cached CAMR.ps_theta_tau (thermal relaxation time [s]).  Used by
+// ps_relax_mode=2, 4 and 5 (mode 3 is deleted and aborts at dispatch).
+//
+// SEMANTICS (Marc's call, 2026-08-24, after the THETA FORK route (a)):
+//   theta <= 0  =  INSTANTANEOUS thermal equilibrium — at mode 5, T1 = T2
+//                  joins the P1 = P2 DAE constraint (hem joint_pt path).
+//                  It does NOT mean "thermal relaxation off"; "MT without
+//                  a thermal leg is not a configuration" (WORKLOG T1-a).
+//   theta > 0   =  finite BE rate.
+// DEFAULT = 1e-7 s, the acceptance-configuration value (THETA-DEFAULTS
+// 2026-08-24): code defaults ARE the acceptance configuration, so the
+// harness no longer re-states this dial and a change to the default is
+// visible in the acceptance table (same principle as WORKLOG G-DEF).
 inline amrex::Real ps_theta_tau()
 {
     static const amrex::Real v = []() -> amrex::Real {
-        amrex::Real val = amrex::Real(0.0);
+        amrex::Real val = amrex::Real(1.0e-7);
         amrex::ParmParse pp("CAMR");
         pp.query("ps_theta_tau", val);
         return val;
@@ -2295,10 +2306,10 @@ inline PsFoldAudit& ps_fold_audit() { static PsFoldAudit a; return a; }
 //  Ordering: call AFTER ps_apply_vanish_fold, per the helper's own docstring
 //  ("place this AFTER ps_apply_vanish_fold in clamp so we don't double-count").
 //
-//  Gated by CAMR.ps_temp_floor (default 0 = disabled), reusing the existing
-//  parameter rather than adding another knob.  NOTE this is the same parameter
-//  ps_apply_floor uses to RAISE e_k; the two are complementary -- raising the
-//  energy keeps a phase that can be saved, folding removes one that cannot.
+//  Gated by its OWN knob CAMR.ps_tfloor_fold (default 0 = disabled) -- see the
+//  accessor below, which warns why this must NOT be bound to CAMR.ps_temp_floor.
+//  The two are complementary -- ps_apply_floor RAISES e_k to keep a phase that
+//  can be saved; the fold removes one that cannot.
 // -----------------------------------------------------------------
 inline void
 ps_apply_tfloor_fold(amrex::MultiFab& S_new, int nghost = 0)
@@ -2610,10 +2621,12 @@ ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
         dc.reset();
     }
     //  [PS-X3] (cleanup step 0): the coupled operator's own outcome and
-    //  the P1 = P2 constraint's failures, cause-split.  Mode 5 only; the
-    //  kernel's bool used to be discarded, so a battery-wide no-op was
-    //  invisible (theta <= 0 -> non-finite thermal rate -> rc=2 on the
-    //  first sub-step -> thermal AND mass transfer both dead).
+    //  the P1 = P2 constraint's failures, cause-split.  Mode 5 only.
+    //  (Historical: before THETA FORK route (a), theta <= 0 dead-ended
+    //  the kernel — rc=2 on the first sub-step — and the discarded bool
+    //  made that battery-wide no-op invisible.  theta <= 0 now means
+    //  INSTANTANEOUS thermal equilibrium, so that failure shape is gone;
+    //  rc=2 'dead' now only counts genuinely structural refusals.)
     if (ps_relax_mode() == 5) {
         hem::PsX3Stats& xs = hem::ps_x3_stats();
         if (ps_pres_diag() != 0 && xs.n_calls > 0) {
@@ -2634,7 +2647,7 @@ ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
             if (xs.n_dead > 0 && xs.n_ok == 0) {
                 amrex::AllPrint()
                     << "   *** EVERY cell structurally dead: the operator "
-                       "is a NO-OP this sweep (check CAMR.ps_theta_tau > 0)";
+                       "is a NO-OP this sweep";
             }
             amrex::AllPrint() << "\n";
         }

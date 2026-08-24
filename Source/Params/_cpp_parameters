@@ -88,12 +88,12 @@ ps_bc_nscbc_sigma            Real         0.25
 # ---------------------------------------------------------------------
 # Flash nucleation relaxation timescale (standalone PS_FLASH_TAU).
 # 0 = disabled.  >0 enables ps_flash_source_cell (Wagner Psat) — task 4g-2.
-ps_flash_tau                 Real         0.0
+ps_flash_tau                 Real         1.0e-7
 
 # Finite-rate mass-transfer timescale (standalone PS_MT_TAU).
 # 0 = instantaneous Newton (current behaviour).  >0 enables the
 # finite-rate ps_mass_transfer_finite_cell — task 4g-4.
-ps_mt_tau                    Real         0.0
+ps_mt_tau                    Real         1.0e-7
 
 # Triple-point / solid-CO2 avoidance action (standalone
 # PS_TRIPLE_POINT_ACTION).  0=OFF, 1=WARN, 2=CLIP, 3=ERROR — task 4g-3.

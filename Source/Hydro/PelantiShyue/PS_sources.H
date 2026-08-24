@@ -40,8 +40,14 @@
 //  ps_do_relax pattern used elsewhere in the PS solver).
 // -----------------------------------------------------------------
 struct PsSourceDials {
-    amrex::Real flash_tau          = amrex::Real(0.0);
-    amrex::Real mt_tau             = amrex::Real(0.0);
+    //  THETA-DEFAULTS (2026-08-24): both rates default to the acceptance-
+    //  configuration value 1e-7 s, so bare code defaults reproduce the
+    //  acceptance table and the harness no longer re-states them.
+    //  flash_tau <= 0 still means the flash source is OFF (any_enabled);
+    //  mt_tau is a mode-4-only A/B knob — at the default ps_relax_mode=5
+    //  the X3 kernel owns MT (SRT rate, no tau dependence).
+    amrex::Real flash_tau          = amrex::Real(1.0e-7);
+    amrex::Real mt_tau             = amrex::Real(1.0e-7);
     // Reference Gibbs scale for the finite-rate MT driving force
     // (task #32).  0 = legacy (mis-scaled, unstable at physical tau);
     // >0 non-dimensionalises g_diff so tau is a true physical time.
@@ -394,7 +400,7 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                 // INDEPENDENT — corridor phases are transport-only and pure
                 // cells have nothing to transfer.  The kernel's own legacy
                 // cuts (alpha_mt_thr 5e-3 etc.) are then automatically
-                // satisfied (alpha_cond = 1e-2 > 5e-3) and inert.
+                // satisfied (alpha_cond = 2e-2 > 5e-3) and inert.
                 if (!(ps_regime(a1, m1, l_pr) == PsRegime::Independent &&
                       ps_regime(amrex::Real(1.0) - a1, m2, l_pr) == PsRegime::Independent)) {
                     return;

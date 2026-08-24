@@ -90,31 +90,30 @@ def run(case, flux, pref):
     #  defaults actually run" probe); PROBE_OV="k=v,k=v" appends overrides.
     #  Both default off, so the acceptance path is untouched.
     nodials = os.environ.get('PS_NODIALS', '0') != '0'
-    if case in TWOPHASE and not nodials:      # stiff relaxation -> HEM limit
-        #  ps_relax_mode=5 (X3, the coupled source with P1=P2 as the DAE
-        #  constraint) is the CANONICAL mode since 2026-08-17 (Marc's
-        #  call, WORKLOG F4 session 4: the mode-4 score advantage on
-        #  B2/B9 was measured to be its failing thermal target solve
-        #  leaving the front vapour ~60 K artificially hot — a defect
-        #  the HEM-biased references rewarded, D21).  ps_mt_tau is kept
-        #  for mode-4 A/B runs; at mode 5 it has no effect (X3 owns MT,
-        #  rate from SRT).
-        #  ps_flash_from_absent=1 (selective by measurement: 8 cases
-        #  bit-identical, strictly better on B2/B9/B7, no aborts under X3)
-        #  and ps_relax_mode=5 are CODE DEFAULTS since 2026-08-17 (WORKLOG
-        #  G-DEF), so this harness no longer re-states them: a change to
-        #  either default must be visible in this table, which is exactly
-        #  what run_ac_suite's job_info replay could not do.  ONE global
-        #  config for all 20 cases — Y4 is history.
-        ov.update({'CAMR.ps_do_relax':1,
-                   'CAMR.ps_theta_tau':1e-7,'CAMR.ps_mt_tau':1e-7,
-                   'CAMR.ps_flash_tau':1e-7})
-    elif not nodials:                         # single phase: no phase change
+    #  THETA-DEFAULTS (Marc's call, 2026-08-24): the B-case acceptance
+    #  configuration is now PURE CODE DEFAULTS.  ps_relax_mode=5 and
+    #  ps_flash_from_absent=1 were made defaults by G-DEF (2026-08-17);
+    #  the three stiffness rates ps_theta_tau / ps_mt_tau / ps_flash_tau
+    #  now default to the acceptance value 1e-7 as well, and theta<=0
+    #  means INSTANTANEOUS thermal (route (a)), not "off".  This harness
+    #  therefore passes NO relaxation dials for B cases: any change to
+    #  any default is visible in this table (the G-DEF principle,
+    #  completed).  ONE global config for all 20 cases — Y4 is history.
+    #
+    #  A/C cases still force ps_do_relax=0 (historical sixth dial, AUDIT
+    #  2026-08-24 B3).  Dropping it is a separate measured flip: at bare
+    #  defaults relaxation also runs on single-phase states, which should
+    #  be inert (D22 A/C invariance) but must be MEASURED before the
+    #  branch is deleted.
+    if case not in TWOPHASE and not nodials:  # single phase: no phase change
         ov.update({'CAMR.ps_do_relax':0})
+    ov.update(F.camr_side(c[1],'L')); ov.update(F.camr_side(c[2],'R'))
+    #  PROBE_OV is applied LAST so its overrides always win — matching
+    #  _stage2.py's `extra` precedence.  (It used to run before camr_side,
+    #  which silently clobbered any prob.* key it set.)
     for _kv in os.environ.get('PROBE_OV', '').split(','):
         if _kv.strip():
             _k, _v = _kv.split('='); ov[_k.strip()] = _v.strip()
-    ov.update(F.camr_side(c[1],'L')); ov.update(F.camr_side(c[2],'R'))
     cmd=[EXE,'inputs']+['%s=%s'%(k,v) for k,v in ov.items()]
     cmd+=['amr.plot_int=-1','amr.plot_per=%g'%tf,'amr.plot_file=%s'%pref,
           'amr.v=0','CAMR.v=0']
@@ -123,11 +122,18 @@ def run(case, flux, pref):
         open(os.environ['PROBE_LOG'],'a').write('#### '+' '.join(cmd)+'\n'+r.stdout)
     return r.returncode, r.stdout
 
-def read(pref):
+def read(pref, tf=None):
     import glob
     g=[p for p in glob.glob(pref+'*') if os.path.isdir(p) and '.old' not in p and '.temp' not in p]
     if not g: return None
     p=max(g,key=os.path.getmtime)
+    #  AUDIT 2026-08-24 A6: verify the plotfile is from THIS run at THE
+    #  requested time.  Without this a run that hit max_step early (rc=0),
+    #  or wrote no new plotfile, scored a stale/short plotfile as `ok`.
+    if tf is not None:
+        _, t = R.hdr(p)
+        if abs(t - tf) > max(1e-9, 1e-6*abs(tf)):
+            return ('WRONG_TIME', p, t)
     rho=R.rd1d(p,'density'); n=len(rho)
     return dict(x=(np.arange(n)+0.5)/n, rho=rho,
                 u=R.rd1d(p,'xmom')/rho, P=R.rd1d(p,'pressure'))
@@ -197,14 +203,27 @@ def main():
           ' identically zero there)' % '')
     for case in cases:
         pref='ex_%s_%s_'%(flux,case.split('-')[0])
-        rc,out=run(case,flux,pref)
+        #  AUDIT 2026-08-24 B16: a timeout or a missing reference used to
+        #  raise out of main() and kill the WHOLE battery (after burning the
+        #  run time); mark the row failed and keep going instead.
+        try:
+            rc,out=run(case,flux,pref)
+        except subprocess.TimeoutExpired:
+            print('%-22s RUN TIMEOUT (600 s) — NOT SCORED'%case); continue
         if rc!=0:
             bad=[l for l in out.split('\n') if 'PS-EOS' in l or 'PS-STATE' in l]
             print('%-22s %s'%(case,'RUN FAILED rc=%d  %s'%(rc,bad[0] if bad else '')))
             continue
-        num=read(pref)
+        num=read(pref, F.CD[case][3])
         if num is None: print('%-22s no plotfile'%case); continue
-        ana = load_hem(TWOPHASE[case]) if case in TWOPHASE else load_profile(case)
+        if isinstance(num, tuple) and num[0]=='WRONG_TIME':
+            print('%-22s plotfile %s at t=%.6g != stop_time=%.6g — NOT SCORED'
+                  % (case, num[1], num[2], F.CD[case][3]))
+            continue
+        try:
+            ana = load_hem(TWOPHASE[case]) if case in TWOPHASE else load_profile(case)
+        except (OSError, IOError) as ex:
+            print('%-22s no reference (%s) — NOT SCORED'%(case,ex)); continue
         e=l2(num,ana)
         def fmt(t):
             v,absol,_ = t
@@ -216,7 +235,11 @@ def main():
               % (case, fmt(e['rho']), fmt(e['u']), fmt(e['P']),
                  fmtv(e['rho']), fmtv(e['u']), fmtv(e['P'])))
         if case in FROZEN_BRACKET:
-            ef=l2(num, load_frozen(FROZEN_BRACKET[case]))
+            try:
+                frz = load_frozen(FROZEN_BRACKET[case])
+            except (OSError, IOError) as ex:
+                print('%-22s no FROZEN reference (%s)'%('  `- vs FROZEN limit',ex)); continue
+            ef=l2(num, frz)
             print('%-22s %s %s %s | %s %s %s   (same run, FROZEN ref)'
                   % ('  `- vs FROZEN limit', fmt(ef['rho']), fmt(ef['u']),
                      fmt(ef['P']), fmtv(ef['rho']), fmtv(ef['u']),
