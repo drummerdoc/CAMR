@@ -27,6 +27,13 @@ endif
 ifeq ($(USE_PS_HYDRO), TRUE)
   DEFINES += -DUSE_PS_HYDRO
   USERSuffix += .PS
+  # The PS module requires the extended EOS contract (T_triple, per-phase
+  # branch-locked entry points, saturation curve...).  GammaLaw does not
+  # provide it; fail early with a clear message instead of a wall of
+  # missing-function errors.  (AUDIT 2026-08-24, A2.)
+  ifeq ($(Eos_Model),$(filter $(Eos_Model),GammaLaw))
+    $(error USE_PS_HYDRO=TRUE requires an EOS backend with the extended PS contract (PR, PRTab, GERG, GERGTab); Eos_Model=$(Eos_Model) does not provide it)
+  endif
 endif
 
 # ---------------------------------------------------------------------
@@ -99,10 +106,6 @@ clean-tables:
 ifeq ($(Eos_Model),$(filter $(Eos_Model),GammaLaw))
    DEFINES += -DUSE_GAMMALAW_EOS
    EOS_DIR = GammaLaw
-endif
-ifeq ($(Eos_Model),$(filter $(Eos_Model),TableEOS))
-   DEFINES += -DUSE_TABLE_EOS
-   EOS_DIR = TableEOS
 endif
 ifeq ($(Eos_Model),$(filter $(Eos_Model),PR))
    DEFINES += -DUSE_PR_EOS

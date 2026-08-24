@@ -1461,8 +1461,12 @@ CAMR::computeTemp(amrex::MultiFab& S, int ng)
 {
   reset_internal_energy(S, ng);
   const int l_ps_hydro = ps_hydro;              // task #52: per-phase T for PS state
-  const amrex::Real l_T_trip = EOS::T_triple(); // fluid triple point (EOS, not hardcoded)
 #ifdef USE_PS_HYDRO
+  const amrex::Real l_T_trip = EOS::T_triple(); // fluid triple point (EOS, not hardcoded).
+                                                // Guarded: only the extended PS EOS
+                                                // contract provides T_triple() (GammaLaw
+                                                // does not), and l_T_trip's only use is
+                                                // inside the USE_PS_HYDRO block below.
   const PsPres l_pr = ps_presence_params();     // host read once, by value (GPU 12.2)
 #endif
 

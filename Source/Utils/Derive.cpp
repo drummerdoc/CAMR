@@ -680,7 +680,9 @@ CAMR_derpres(
   auto const dat = datfab.const_array();
   auto pfab = derfab.array();
 
+#ifdef USE_PS_HYDRO
   const PsPres l_pres = ps_presence_params();   // S2 (one host read)
+#endif
   amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
     const amrex::Real rho = dat(i, j, k, URHO);
 #ifdef AMREX_USE_EB
