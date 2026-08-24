@@ -1,3 +1,4 @@
+import os
 import numpy as np, re, struct, glob, sys
 import matplotlib; matplotlib.use('Agg'); import matplotlib.pyplot as plt
 import matplotlib.patches as patches
@@ -36,5 +37,5 @@ for a,(v,ti,cm) in zip(ax,[('alpha_1','vapor/void fraction α₁ (dark = flashin
     a.set_title(ti,fontsize=10); a.set_ylabel('y [m]')
 ax[-1].set_xlabel('x [m]   (cyan = level-1 AMR patches; rupture gap at x=0, y≈0.5)')
 fig.suptitle('CO2_PipeBreak Phase-0: flashing jet with AMR tracking (HLLC, 96×48 + L1)',fontsize=12)
-fig.tight_layout(rect=[0,0,1,0.96]); fig.savefig('/sessions/adoring-keen-cori/mnt/outputs/pipebreak_amr.png',dpi=115)
+fig.tight_layout(rect=[0,0,1,0.96]); fig.savefig(os.environ.get('OUT_PNG', 'pipebreak_amr.png'),dpi=115)
 print('wrote pipebreak_amr.png')

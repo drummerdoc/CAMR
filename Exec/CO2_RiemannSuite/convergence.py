@@ -72,7 +72,7 @@ def run_case(case, N, exe):
 def find_exact(case, eos):
     cands = [os.environ.get('EXACT_DIR',''),
              os.path.join('..','..','..','co2-eos-cfd','suite'),
-             '/sessions/vibrant-compassionate-keller/mnt/co2-eos-cfd/suite', '.']
+             os.environ.get('CO2_STANDALONE', '/Users/marcusd/src/SINTEF/co2-eos-cfd') + '/suite', '.']
     for d in cands:
         f = os.path.join(d, 'exact_%s_%s.csv' % (case, eos))
         if d != '' and os.path.exists(f): return f

@@ -1,3 +1,4 @@
+import os
 import numpy as np, re, struct, glob, sys
 import matplotlib; matplotlib.use('Agg'); import matplotlib.pyplot as plt
 p=sys.argv[1]
@@ -27,5 +28,5 @@ for a,(v,ti,cm) in zip(ax,[('alpha_1','vapor/void fraction  α₁','viridis'),('
     a.set_ylabel('y [m]')
 ax[-1].set_xlabel('x [m]  (rupture plane at x=0, gap at y≈0.5)')
 fig.suptitle('CO2_PipeBreak Phase-0: flashing under-expanded jet (HLLC, 128×64)',fontsize=12)
-fig.tight_layout(rect=[0,0,1,0.97]); fig.savefig('/sessions/adoring-keen-cori/mnt/outputs/pipebreak_phase0.png',dpi=110)
+fig.tight_layout(rect=[0,0,1,0.97]); fig.savefig(os.environ.get('OUT_PNG', 'pipebreak_phase0.png'),dpi=110)
 print('wrote pipebreak_phase0.png; α₁ range',np.nanmin(load('alpha_1')),np.nanmax(load('alpha_1')))
