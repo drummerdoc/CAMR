@@ -1088,17 +1088,29 @@ ps_viscous_face(int d, int i, int j, int k,
 int ps_flux_selector()
 {
     static const int v = []() -> int {
-        std::string s = "llf";
+        //  PROBE #27 (2026-08-25): the compiled default is now wp — the
+        //  acceptance flux — closing the last G-DEF gap (defaults ARE the
+        //  acceptance config).  llf was the historical default but is
+        //  standing red on stiff two-phase cases (B2/B7/B11: the split
+        //  path's non-conservative phase-energy update drifts vapour e out
+        //  of the PR reachable band; no wp_phase_energy_defect equivalent),
+        //  and the T-Blowdown A/B measured wp within 0.17% of llf on the
+        //  vent-rate QoI with zero aborts and clean counters — so the one
+        //  deck family that ran the default (TBlowdown) loses nothing and
+        //  is pinned explicitly.  Unknown strings also force to wp for the
+        //  same reason.  llf remains selectable pending retirement.
+        std::string s = "wp";
         amrex::ParmParse pp("CAMR");
         pp.query("ps_flux", s);
-        int r = 0;
+        int r = 2;
         if      (s == "hllc") { r = 1; }
         else if (s == "wp")   { r = 2; }  // Berger-LeVeque fluctuation interior (BL-1)
-        else if (s == "llf" || s.empty()) { r = 0; }
+        else if (s == "llf")  { r = 0; }
+        else if (s.empty())   { r = 2; }
         else {
             amrex::Print() << "  PS_umeth: unknown CAMR.ps_flux='" << s
-                           << "' — forcing to llf\n";
-            r = 0;
+                           << "' — forcing to wp (the acceptance flux)\n";
+            r = 2;
         }
         //  AUDIT 2026-08-24 B5/C.6: force-add the RESOLVED canonical name so
         //  job_info records which solver actually ran (gerg_ext_c idiom) —
@@ -1204,13 +1216,18 @@ PS_umeth(const Box& bx,
 
     // Task #187: face-flux dispatch.  CAMR.ps_flux selects the Riemann
     // solver applied to each face:
-    //   0 (default) = LLF Rusanov            (works for T-Blowdown-class)
+    //   0 (llf)     = LLF Rusanov            (historical default; standing
+    //                                          red on stiff two-phase cases
+    //                                          B2/B7/B11 — retirement
+    //                                          pending, see PROBE #27)
     //   1           = Pelanti 2022 HLLC      (contact-preserving; use for
     //                                          B4-class cross-critical
     //                                          Riemann fans).  The WP-α
     //                                          cell kernel runs for BOTH
     //                                          paths since task #202.
-    //   2 (wp)      = Berger-LeVeque fluctuation interior (BL-1).
+    //   2 (wp, DEFAULT since 2026-08-25) = Berger-LeVeque fluctuation
+    //                                          interior (BL-1) — the
+    //                                          acceptance flux.
     const int use_hllc = ps_flux_selector();   // single read (AUDIT C.4)
 
     // #85 (level-b): per-phase P_k energy flux (two-pressure / disequilibrium

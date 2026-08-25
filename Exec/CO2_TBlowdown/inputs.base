@@ -43,6 +43,12 @@ CAMR.ppm_type = 1
 
 CAMR.ps_hydro = 1
 CAMR.ps_recon = 0
+#  PROBE #27 (2026-08-25): pinned EXPLICITLY to the acceptance flux.
+#  These decks historically ran the compiled default (llf); the measured
+#  llf-vs-wp A/B on this case (WORKLOG 2026-08-25) put wp within 0.17%%
+#  of llf on the vent-rate QoI with zero aborts, and the compiled default
+#  is now wp — the pin records the choice rather than inheriting it.
+CAMR.ps_flux  = wp
 # NSCBC now dispatches on all six faces (task #169) via
 # PS_NSCBC::outflow_face in PS_nscbc.H.  Both the symmetry test and
 # ordinary T-Blowdown runs can use NSCBC uniformly.

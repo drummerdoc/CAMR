@@ -136,9 +136,31 @@ with all counters zero.  NEW OPEN QUESTION (NSCBC-2, not a defect):
 B4's NSCBC u-error (.3809 vs bcnormal .1261) is now measured to be a
 property of the invariant/relaxation formulation, not the pack.
 
-OPEN: llf split-path stiff-case aborts (B2/B7/B11, standing red,
-attributable to the path itself); NSCBC-2 (formulation-level accuracy
-question above).  Batch 3b is COMPLETE.
+MEASUREMENT PACKAGE (2026-08-25, Marc's single-flux-path decision).
+Probe #27 (TBlowdown llf-vs-wp A/B, container, 2-D 256x32 + AMR
+variant): wp serves TBlowdown — vented-mass QoI within 0.17% of llf,
+zero aborts, all counters zero, AMR/reflux clean.  The llf stiff-abort
+class was also characterised: the split path's non-conservative
+phase-energy update drifts vapour e out of the PR reachable band
+(B7: 9.8 kJ/kg below the T=1K floor at step ~3; B11: 937 J/kg below;
+B2: 2.7 kJ/kg above the T=5000K ceiling) — no wp_phase_energy_defect
+equivalent exists on that path.  REMEDIATION LANDED (same day,
+verified D1-D5): compiled default flux llf -> wp (closing the last
+G-DEF gap), unknown strings force to wp, TBlowdown decks pin
+ps_flux = wp explicitly; battery bit-identical, pinned deck
+bit-identical to the A/B run, GammaLaw build clean.
+
+OPEN: llf split path — now CONSUMER-FREE and retirement-pending
+(every deck selects its flux explicitly); retirement waits on the
+pk_ef (#85) fate decision, since that experiment pairs only with llf.
+NSCBC-2 (probe #29 queued).  NEW: TBLOW-NSCBC-D — NSCBC v2 vs legacy
+shifts TBlowdown's vented mass 4.2% (legacy 2.579 vs v2 2.470 over
+the probe window; local p up to 16% at the front); which construction
+is correct is undetermined — adjudicate by a plenum-style control
+(boundary moved two tube-lengths downstream as reference).
+Remaining probes queued: #28 flush, #29 oracle-ghost B4, #30
+refinement sweep, #31 flashing-front, #32 wp-vs-hllc 2-D.
+Batch 3b is COMPLETE.
 
 ---
 

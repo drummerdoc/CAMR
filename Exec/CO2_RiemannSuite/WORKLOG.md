@@ -6526,3 +6526,158 @@ legacy (v2=0): still aborts (control).  B4-NSCBC legacy:
 printed row, with the variation-metric u column flickering in the
 last digit (.2907 vs .2908) — the same sub-print-precision bitwise
 difference the container measured, confirming v2 is engaged.
+
+====================================================================
+2026-08-25 — PROBE #27 (measurement package, item 1): T-Blowdown
+llf-vs-wp A/B — the single-flux-path decision gate.  PREDICTIONS
+FIRST.
+
+CONTEXT.  Marc's decision (2026-08-25): ONE algorithm path (wp)
+through the 1-D battery and T-Blowdown before 2-D testing.  The
+compiled default flux is llf; all 7 TBlowdown decks set no ps_flux
+and therefore run llf — the last llf consumers.  llf is standing
+red on B2/B7/B11 (measured this session: the split path's
+non-conservative phase-energy update drifts vapour e out of the PR
+reachable band — 9.8 kJ/kg below the T=1K floor on B7 at step ~3,
+937 J/kg below on B11, 2.7 kJ/kg above the T=5000K ceiling on B2 —
+the wp path's wp_phase_energy_defect correction has no llf
+equivalent).  This A/B decides: wp serves TBlowdown -> pin decks,
+flip default, schedule llf retirement (+ pk_ef fate); wp fails ->
+the llf fix acquires a real consumer.
+
+SETUP.  inputs-x (primary): 2-D 256x32, closed x-lo, NSCBC vent at
+x-hi (sigma=0.25), p0=100 bar / T0=320 K supercritical CO2 venting
+to p_amb=1 bar, ps_recon=0, max_step=300 (binds before stop_time).
+Runs (container, deck untouched, overrides on the command line):
+  R1  llf + NSCBC legacy (ps_bc_nscbc_v2=0)  — the true historical
+      config, control for the BC variable
+  R2  llf + NSCBC v2 (current defaults)      — BC isolation
+  R3  wp  + NSCBC v2 (CAMR.ps_flux=wp)       — the decision run
+plot_int=25 for a 12-point closed-end pressure trace.  NOTE these
+decks are ALSO the first application consumers of NSCBC v2: at a
+100:1 vent pressure ratio v2's linearization bound may refuse vent
+fills (counted, nscbc_zg lin) — R1-vs-R2 measures what v2 does to
+an application case, R2-vs-R3 isolates the flux.
+
+PREDICTIONS (falsifiers in brackets).
+T1. R1 completes 300 steps — TBlowdown is the historical llf-class
+    case, its decks carry validated-wall-pressure-history comments.
+    [R1 aborting means the llf red class already reaches TBlowdown
+    at current tree state; the A/B becomes moot and wp is the only
+    candidate standing.]
+T2. R3 (wp) completes 300 steps — THE funding prediction.  [Abort
+    = wp does not serve TBlowdown; llf fix gets scheduled with a
+    real consumer; single-path goal deferred.]
+T3. R2 vs R1: differences confined to vent-adjacent cells; some
+    nscbc_zg lin refusals early (100:1 far field), direction of the
+    blowdown-rate change MEASURED not predicted.  [Large global
+    divergence means NSCBC v2 changes the application class and
+    needs its own decision before the flux one.]
+T4. R3 vs R2 (the flux A/B, BC held fixed): closed-end p(t) agrees
+    to a few % over the window; wp (less diffusive at ps_recon=0's
+    first-order faces? — llf Rusanov vs wp fluctuation form)
+    resolves the rarefaction/flash front sharper; total-mass m(t)
+    venting slightly faster under wp.  Field-level differences
+    largest at the flash front, not the smooth core.  [Order-one
+    QoI divergence, or wp-only pathologies (flux_sanit, gate
+    counters firing), refute "wp serves TBlowdown as-is".]
+T5. flux_sanit = 0 and no [PS-EOS] aborts in all three runs.
+
+MEASURED (container, 2-D 256x32, 300 steps to t = 1.02 ms; AMR
+variant 128x16 2-level to stop_time = 1.65 ms).
+T1 CONFIRMED.  R1 (llf + legacy NSCBC): 300 steps, zero aborts.
+T2 CONFIRMED — the funding prediction.  R3 (wp): 300 steps, zero
+aborts, and slightly FASTER wall-clock than llf (1247 s vs 1295 s).
+T3 PARTIALLY REFUTED, and it is the finding of the probe: the
+v2-vs-legacy NSCBC difference is NOT confined in effect to the
+vent neighbourhood.  Vented mass over the window: legacy 2.579,
+v2 2.470 — a 4.2% shift in the case's primary QoI; local pressure
+differences reach 16% near the front, max field diffs at the vent
+column.  The BC variable moves TBlowdown ~25x more than the flux
+variable.  WHICH construction is more correct is undetermined here:
+hypothesis (from NSCBC-1's diagnosis) — legacy's vent ghosts ran
+RYP2E on in-dome (rho,P) pairs during two-phase venting and wrote
+saturation-mixture e into both phase slots, so v2 may be the
+CORRECTION — adjudicable by a plenum-style control (extend the
+domain, boundary two lengths downstream, compare vent-plane fluxes
+against both BCs; the PeleC/CERFACS methodology).  Recorded as new
+open item TBLOW-NSCBC-D; does not block the flux decision, which
+was measured at fixed BC.
+T4 CONFIRMED — the decision measurement.  R2 vs R3 (llf vs wp, BC
+held at v2): vented mass 2.4700 vs 2.4659 (0.17%); rho L2 0.10%,
+max 0.50% at the flash front (i~190); pressure max 1.7% at the
+front; two-phase band (2016 cells, alpha1 down to 0.943) crossed
+by both fluxes without incident.  Honest note: the closed-end
+wall-pressure trace is NON-discriminating in this window — the
+rarefaction head reaches x ~ 0.7 of 1.0 by t = 1.02 ms and the
+wall still reads exactly p0; the vent-rate QoI carries the A/B.
+AMR variant (subcycled 2-level, reflux live): both fluxes to
+stop_time, dm/m = 1.5e-4, max rel drho 0.47%.
+T5 CONFIRMED.  flux_sanit = 0, reflux_cap/clamp = 0, nscbc_zg =
+(0,0,0,0) across llf and wp, plain and AMR — notably the v2
+linearization bound NEVER trips at the 100:1 vent (the A1-style
+refusal speculation does not extend to this case class), and the
+reflux alpha co-move limiters never engage on a real 2-level
+blowdown.
+
+DECISION OUTPUT (#27 gate): wp SERVES T-Blowdown — differences vs
+llf are 0.17% on the primary QoI with no aborts and clean counters,
+llf's stiff-abort class never reached this case's mild two-phase
+band either.  Per the recorded gate, the remediation batch is now
+justified: pin CAMR.ps_flux = wp in the 7 TBlowdown decks, flip the
+compiled default llf -> wp (G-DEF: defaults = acceptance config),
+and schedule llf retirement with the pk_ef fate decision.  Not yet
+executed — Marc's go required for the code/deck batch.
+
+====================================================================
+2026-08-25 — REMEDIATION (probe #27's gate output): the compiled
+default flux becomes wp; the TBlowdown decks pin their choice.
+PREDICTIONS FIRST.
+
+WHAT.  (1) ps_flux_selector: default string llf -> wp; unknown
+strings force to wp (was llf); empty -> wp.  The llf and hllc
+selections are untouched.  (2) The three TBlowdown deck files
+(inputs.base — covering the four sym variants via FILE= — plus
+inputs-x and inputs-x-amr) pin CAMR.ps_flux = wp explicitly with
+the decision comment, so the one family that ran the compiled
+default now records its flux as a choice.  (3) Comments at the
+dispatch site and PS_umeth.H updated; llf marked
+retirement-pending.  This closes the last G-DEF gap: every dial's
+compiled default is now the acceptance configuration.
+
+PREDICTIONS (falsifiers in brackets).
+D1. Full wp battery BIT-IDENTICAL — the harness and the suite deck
+    both set ps_flux explicitly, so the default flip is invisible
+    there.  [Any row moving means something read the flux OUTSIDE
+    ps_flux_selector — a C.4 violation to hunt.]
+D2. Pinned inputs-x reproduces probe #27's R3 run BIT-FOR-BIT at
+    step 50 (same exe modulo the selector default, same config now
+    reached via the deck instead of the command line).  [A bitwise
+    difference means the pin and the override resolve differently
+    — a ParmParse ordering defect.]
+D3. A deliberately silent-deck run (inputs-x with the pin line
+    removed via command-line-only deck copy) banners flux=wp and
+    job_info records ps_flux = "wp".  [llf appearing anywhere
+    means the flip missed a reader.]
+D4. A sym deck (FILE=inputs.base) banners flux=wp — the pin
+    propagates through the include.  [llf means include-order
+    surprise.]
+D5. Sod GammaLaw build still compiles (selector is PS-agnostic
+    code compiled everywhere).
+
+MEASURED (container).
+D1 CONFIRMED.  Full wp battery identical to the post-NSCBC-1
+baseline at every printed decimal — no reader outside
+ps_flux_selector.
+D2 CONFIRMED.  Pinned inputs-x at step 50 is BIT-IDENTICAL
+(binary cmp of Cell_D) to probe #27's R3, which reached the same
+configuration via the command line.
+D3 CONFIRMED.  A deck with no ps_flux line banners flux=wp and its
+job_info records CAMR.ps_flux = "wp".
+D4 CONFIRMED.  inputs-sym-x-hi (FILE = inputs.base) banners
+flux=wp — the pin propagates through the include.
+D5 CONFIRMED.  Sod GammaLaw DIM=2 compiles clean.
+Follow-on scheduled, not executed: llf retirement (now
+consumer-free — every deck in the tree selects its flux
+explicitly) awaits the pk_ef decision (#85 pairs only with llf);
+hllc's fate awaits probe #32.
