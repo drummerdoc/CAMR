@@ -30,10 +30,25 @@ int main(int argc, char** argv)
     double rho, e;
     while (scanf("%lf %lf", &rho, &e) == 2) {
         hem::State s;
-        if (mode == 1)      s = hem::state_from_rho_e_phase(CO2, rho, e, hem::Phase3::Liquid);
-        else if (mode == 2) s = hem::state_from_rho_e_phase(CO2, rho, e, hem::Phase3::Vapor);
-        else                s = hem::state_from_rho_e(CO2, rho, e);
-        int ok = std::isfinite(s.T) && std::isfinite(s.s) && s.T > 0.0;
+        int ok;
+        if (mode == 1 || mode == 2) {
+            //  AUDIT 2026-08-24 B7: in this HEM_NO_AMREX build ps_eos_noroot
+            //  is a no-op, so the non-try branch solve returned the
+            //  bracket-end probe state (T = 1 K or 5000 K) MARKED ok on
+            //  no-root grid points -- baking wild values into TBL_TL/TBL_TV
+            //  that Catmull-Rom bled into physical neighbours near the
+            //  reachability boundary, defeating build_table.py's
+            //  nearest-valid EDT fill.  Use the _try entry: ok now reports
+            //  whether the branch actually has a root, and the EDT fill
+            //  supplies nearest-valid values for the rest.
+            const hem::Phase3 ph = (mode == 1) ? hem::Phase3::Liquid
+                                               : hem::Phase3::Vapor;
+            ok = hem::state_from_rho_e_phase_try(CO2, rho, e, ph, s) ? 1 : 0;
+        } else {
+            s  = hem::state_from_rho_e(CO2, rho, e);
+            ok = 1;
+        }
+        ok = ok && std::isfinite(s.T) && std::isfinite(s.s) && s.T > 0.0;
         printf("%.10e %.10e %d\n", ok ? s.T : 0.0, ok ? s.s : 0.0, ok);
     }
     return 0;

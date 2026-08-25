@@ -466,6 +466,14 @@ namespace EOS {
       const double xu = (double(e)   - prtab::U_M)   / prtab::U_S;
       if (std::abs(xr) > 4.0 || std::abs(xu) > 4.0)
           return hem::state_from_rho_e(f, rho, e);
+      //  AUDIT 2026-08-24 A5(family): the whitened-rho guard never rejects
+      //  LOW densities (xr > -0.79 for all rho > 0) while the table's
+      //  log10-rho axis starts at LR0 -- below it the lookup silently
+      //  clamped rho and served flat edge extrapolation with no PR
+      //  fallback.  Require the point inside the table's rho extent.
+      if (!(double(rho) > 0.0) ||
+          std::log10(double(rho)) < double(prtab::LR0))
+          return hem::state_from_rho_e(f, rho, e);
       // MLP forward: (rho,e) -> T_pred from the AUTO table (trained on the
       // PR auto-detect surface, so inside the dome it approximates the
       // equilibrium T(rho,e)).
@@ -539,6 +547,10 @@ namespace EOS {
       const double xr = (double(rho) - prtab::RHO_M) / prtab::RHO_S;
       const double xu = (double(e)   - prtab::U_M)   / prtab::U_S;
       if (std::abs(xr) > 4.0 || std::abs(xu) > 4.0)
+          return hem::state_from_rho_e_phase(f, rho, e, phase, amrex::Real(-1.0));
+      //  Low-rho in-domain check -- see the auto entry above (AUDIT A5).
+      if (!(double(rho) > 0.0) ||
+          std::log10(double(rho)) < double(prtab::LR0))
           return hem::state_from_rho_e_phase(f, rho, e, phase, amrex::Real(-1.0));
       const int ph_lv = (phase == hem::Phase3::Liquid) ? 1 : 2;
 #if !defined(__CUDA_ARCH__) && !defined(__HIP_DEVICE_COMPILE__) && !defined(__SYCL_DEVICE_ONLY__)

@@ -93,9 +93,15 @@ def main():
         return ((A*t+B)*t+C)*t+p1
 
     def base_eval(TT, lr, e):           # lr,e flat arrays -> base value
-        fu = np.clip((lr-LR0)/(LR1-LR0)*(NLR-1), 1, NLR-3)
-        fv = np.clip((e-E0)/(E1-E0)*(NE-1), 1, NE-3)
-        iu = fu.astype(int); iv = fv.astype(int); tu = fu-iu; tv = fv-iv
+        #  MIRRORS prtab_bicubic's clamp exactly (AUDIT 2026-08-24 A5:
+        #  coordinate clamped to N-2, index capped at N-3, so the last
+        #  supportable cell interpolates instead of collapsing).  The two
+        #  MUST stay in lockstep or the patch's pinned boundary drifts off
+        #  the runtime base surface and the seam stops being C0.
+        fu = np.clip((lr-LR0)/(LR1-LR0)*(NLR-1), 1, NLR-2)
+        fv = np.clip((e-E0)/(E1-E0)*(NE-1), 1, NE-2)
+        iu = np.minimum(fu.astype(int), NLR-3); iv = np.minimum(fv.astype(int), NE-3)
+        tu = fu-iu; tv = fv-iv
         rv = np.empty((lr.size, 4))
         for m in (-1, 0, 1, 2):
             cols = [TT[iu+m, iv+n] for n in (-1, 0, 1, 2)]

@@ -51,8 +51,17 @@ PRTAB_HD inline void prtab_bicubic(const double* TT,const double* SS,
   using namespace prtab;
   double lr=std::log10(rho<1e-3?1e-3:rho);
   double fu=(lr-LR0)/(LR1-LR0)*(NLR-1), fv=(e-E0)/(E1-E0)*(NE-1);
-  if(fu<1.0)fu=1.0; if(fu>NLR-3)fu=NLR-3; if(fv<1.0)fv=1.0; if(fv>NE-3)fv=NE-3;
-  int iu=(int)fu, iv=(int)fv; double tu=fu-iu, tv=fv-iv;
+  //  AUDIT 2026-08-24 A5(family): the old top clamp (fu>NLR-3 -> NLR-3,
+  //  tu=0) discarded the last fully-supportable Catmull-Rom cell
+  //  [NLR-3, NLR-2] on each axis, collapsing it to its left node's value.
+  //  Clamp the COORDINATE to NLR-2 and cap the INDEX at NLR-3 so that
+  //  cell interpolates properly (tu spans [0,1]); beyond-edge queries now
+  //  flatten at node NLR-2 instead of NLR-3.  (The bottom cell [0,1] has
+  //  no i-1 stencil support and legitimately stays collapsed.)
+  if(fu<1.0)fu=1.0; if(fu>NLR-2)fu=NLR-2; if(fv<1.0)fv=1.0; if(fv>NE-2)fv=NE-2;
+  int iu=(int)fu, iv=(int)fv;
+  if(iu>NLR-3)iu=NLR-3; if(iv>NE-3)iv=NE-3;
+  double tu=fu-iu, tv=fv-iv;
   double rT[4],rS[4];
   for(int m=-1;m<=2;++m){int r=iu+m; double cT[4],cS[4];
     for(int n=-1;n<=2;++n){int cc=iv+n; cT[n+1]=TT[r*NE+cc]; cS[n+1]=SS[r*NE+cc];}
@@ -76,8 +85,18 @@ PRTAB_HD inline double prtab_patchT(const double* F,const double* FX,
   using namespace prtab;
   double lr=std::log10(rho<1e-3?1e-3:rho);
   double fu=(lr-PLR0)/(PLR1-PLR0)*(NP-1), fv=(e-PE0)/(PE1-PE0)*(NP-1);
-  if(fu<0)fu=0; if(fu>NP-2)fu=NP-2; if(fv<0)fv=0; if(fv>NP-2)fv=NP-2;
-  int i=(int)fu, j=(int)fv; double u=fu-i, v=fv-j;
+  //  AUDIT 2026-08-24 A5: the old clamp (fu>NP-2 -> NP-2, u=0) mapped the
+  //  ENTIRE last Hermite cell to the value AT node NP-2, so the boundary
+  //  row NP-1 -- pinned by build_table.py to the base bicubic for the
+  //  documented C0+C1 seam -- was never evaluated: a value discontinuity
+  //  sat exactly on the dome box's high-lr and high-e edges, which the PS
+  //  hot path crosses routinely.  Clamp the coordinate to NP-1 and cap
+  //  the index at NP-2: the last cell now interpolates to the pinned
+  //  boundary and the seam is C0 again.
+  if(fu<0)fu=0; if(fu>NP-1)fu=NP-1; if(fv<0)fv=0; if(fv>NP-1)fv=NP-1;
+  int i=(int)fu, j=(int)fv;
+  if(i>NP-2)i=NP-2; if(j>NP-2)j=NP-2;
+  double u=fu-i, v=fv-j;
   int a=i*NP+j, b=(i+1)*NP+j, c=i*NP+j+1, d=(i+1)*NP+j+1;
   double fj =prtab_h1(F[a], F[b],  FX[a], FX[b],  u);
   double gj =prtab_h1(FY[a],FY[b], FXY[a],FXY[b], u);

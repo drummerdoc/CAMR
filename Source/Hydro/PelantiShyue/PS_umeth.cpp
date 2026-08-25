@@ -676,7 +676,8 @@ ps_wp_face(int idir, int i, int j, int k, int iL, int jL, int kL,
            amrex::Array4<amrex::Real> const& wv,   // wave/speed store (BL-2); unused if store_waves=false
            bool store_waves,
            amrex::Box vbox,                 // flx/wpf written only here; waves may extend into ghost faces
-           int pk_ef, const PsPres& l_pres) noexcept          // #85: per-phase P_k energy flux
+           int pk_ef, const PsPres& l_pres,        // #85: per-phase P_k energy flux
+           int llf_id = 1) noexcept                // A4: identity-consistent LLF fallback (see below)
 {
     using amrex::Real;
     const bool in_valid = vbox.contains(amrex::IntVect(AMREX_D_DECL(i,j,k)));
@@ -717,6 +718,51 @@ ps_wp_face(int idir, int i, int j, int k, int iL, int jL, int kL,
             Am[n]      = -half;                    // symmetric fluct split
             Ap[n]      =  half;
             flx_loc[n] = Real(0.5) * (FL[n] + FR[n]) - half;   // LLF flux
+        }
+        //  AUDIT 2026-08-24 A4 (Marc's call, phase 1): the split above gives
+        //  the NON-CONSERVED slots pure diffusion — Am+Ap = 0 ≠ ΔF — while
+        //  UEDEN gets the full LLF flux through flx_loc.  A refused face
+        //  therefore transported total energy but no phase energy, measured
+        //  as the sole source of B7's stage-A phase-energy identity defect
+        //  (PS_hllc.H W0 notes: correlation 22/22, cells-affected ==
+        //  faces-failed + 1 exactly).  Identity-consistent split:
+        //    UE1/UE2:  Am = ½(ΔF − λΔU),  Ap = ½(ΔF + λΔU)   (Am+Ap = ΔF,
+        //              matching the LLF flux difference UEDEN sees);
+        //    α:        the WP-consistent advective form ū·Δα with
+        //              ū = ½(u_nL + u_nR) — NOT ΔF[UALPHA1] = Δ(α·u_n),
+        //              which would re-introduce the spurious α∇·u term the
+        //              WP α form exists to avoid.  ū is symmetric, so
+        //              mirror faces (u_nL = −u_nR → ū = 0) keep exact
+        //              y-reflection symmetry.
+        //  CAMR.ps_llf_identity=0 recovers the previous pure-diffusion
+        //  fallback bit-for-bit (ps_src_p_reproject escape idiom).
+        if (llf_id != 0) {
+            const int nslots[2] = { UE1, UE2 };
+            for (int q = 0; q < 2; ++q) {
+                const int n = nslots[q];
+                const Real dF   = FR[n] - FL[n];
+                const Real half = Real(0.5) * lam * (UR[n] - UL[n]);
+                Am[n] = Real(0.5) * dF - half;
+                Ap[n] = Real(0.5) * dF + half;
+            }
+            const int mcomp = (idir == 0) ? UMX
+#if (AMREX_SPACEDIM >= 2)
+                            : (idir == 1) ? UMY
+#endif
+#if (AMREX_SPACEDIM == 3)
+                            : UMZ
+#else
+                            : UMX
+#endif
+                            ;
+            const Real rL  = UL[URHO], rR = UR[URHO];
+            const Real unL = (rL > Real(0.0)) ? UL[mcomp] / rL : Real(0.0);
+            const Real unR = (rR > Real(0.0)) ? UR[mcomp] / rR : Real(0.0);
+            const Real ubar = Real(0.5) * (unL + unR);
+            const Real da   = UR[UALPHA1] - UL[UALPHA1];
+            const Real halfa = Real(0.5) * lam * da;
+            Am[UALPHA1] = Real(0.5) * ubar * da - halfa;
+            Ap[UALPHA1] = Real(0.5) * ubar * da + halfa;
         }
 #if !defined(AMREX_USE_GPU) && defined(CAMR_PS_DIAG)
         //  Diagnostic (CAMR.ps_llf_diag, default 0 = off).  Reports the faces
@@ -1225,6 +1271,17 @@ PS_umeth(const Box& bx,
         return c;
     }();
 
+    //  A4 (2026-08-24): identity-consistent LLF fallback for the
+    //  non-conserved slots.  Default ON; CAMR.ps_llf_identity=0 recovers the
+    //  pre-A4 pure-diffusion fallback bit-for-bit.  Host-read once, threaded
+    //  by value into the face kernels (GPU rules 12.2).
+    const int llf_id = []() -> int {
+        static int c = -1;
+        if (c < 0) { int v = 1; amrex::ParmParse pp("CAMR");
+                     pp.query("ps_llf_identity", v); c = v; }
+        return c;
+    }();
+
     // S1: presence-discrete params (DESIGN_ps_presence_discrete.md).  One
     // host-side ParmParse read, captured by value into every kernel below —
     // the GPU-clean pattern (§12.2).  Default disabled = bit-identical.
@@ -1528,18 +1585,18 @@ PS_umeth(const Box& bx,
         BL_PROFILE_VAR("PS::wp_face_riemann()", ps_wp_face_prof);
         amrex::ParallelFor(wxbx,
         [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
-            ps_wp_face(0, i, j, k, i-1, j, k, uin_arr, flx1, wp_fluct_x, wp_wave_x, store_w, xfbx, pk_ef, l_pres);
+            ps_wp_face(0, i, j, k, i-1, j, k, uin_arr, flx1, wp_fluct_x, wp_wave_x, store_w, xfbx, pk_ef, l_pres, llf_id);
         });
 #if (AMREX_SPACEDIM >= 2)
         amrex::ParallelFor(wybx,
         [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
-            ps_wp_face(1, i, j, k, i, j-1, k, uin_arr, flx2, wp_fluct_y, wp_wave_y, store_w, yfbx, pk_ef, l_pres);
+            ps_wp_face(1, i, j, k, i, j-1, k, uin_arr, flx2, wp_fluct_y, wp_wave_y, store_w, yfbx, pk_ef, l_pres, llf_id);
         });
 #endif
 #if (AMREX_SPACEDIM == 3)
         amrex::ParallelFor(wzbx,
         [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
-            ps_wp_face(2, i, j, k, i, j, k-1, uin_arr, flx3, wp_fluct_z, wp_wave_z, store_w, zfbx, pk_ef, l_pres);
+            ps_wp_face(2, i, j, k, i, j, k-1, uin_arr, flx3, wp_fluct_z, wp_wave_z, store_w, zfbx, pk_ef, l_pres, llf_id);
         });
 #endif
         BL_PROFILE_VAR_STOP(ps_wp_face_prof);

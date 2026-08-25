@@ -31,12 +31,33 @@ LANDED & battery-verified bit-identical:
   B15 (CAMR.ps_bc_copy_interior ParmParse + job_info provenance; the
   retired ps_alpha_vanish key scrubbed from 23 inputs files).
 
-OPEN (Batch 3b — each changes accepted numbers; one at a time,
-predictions first): A4 (LLF-fallback identity decision), A5+B7 (PRTab
-seam clamp + table regeneration), B4 (tiny-step residual check), B6
-(GERG endpoint-clamp contract), B8 (wave-speed consolidation), B13
-(counter coverage), B14 (derive routing), B5/C.6 (provenance
-force-adds for the remaining raw dials).
+LANDED (Batch 3b item 1, 2026-08-24): A5+B7 — patch seam clamp fixed
+(measured: 3.66 K discontinuity on the dome box's high-e edge -> 2.7e-4 K),
+base Catmull-Rom top clamp fixed (+ build_table base_eval mirror in
+lockstep), low-rho PR fallback added at both EOS entries, gen_table now
+marks no-root branch points honestly (branch grids only 59.8% valid; the
+EDT nearest-valid fill finally engages on the other 40.2%).  PRTab
+battery A/B (old vs new, container): identical at every printed decimal;
+first recorded PRTab-vs-PR comparison rides in WORKLOG.  PR battery
+untouched by construction.
+
+LANDED (Batch 3b item 2, 2026-08-24): A4 CLOSED, both halves measured
+(Marc's call: both in sequence).  Phase 1: the LLF fallback is now
+identity-consistent — UE1/UE2 carry Am=½(ΔF−λΔU)/Ap=½(ΔF+λΔU) so
+Am+Ap=ΔF matches UEDEN's LLF flux difference, α carries the
+WP-consistent ū·Δα (ū=½(u_nL+u_nR), mirror-symmetric) — behind
+CAMR.ps_llf_identity=1 with =0 recovering the old fallback
+bit-for-bit.  Phase 2 resolved by census: the W0 face audit at the
+current tree measures ZERO refusals on B7/B2/B9 (8777+6901+6901 faces,
+fl_fail=0) — the population that caused the 22/22 identity defect was
+eliminated by the intervening X3/G-DEF/guard work.  Battery at the new
+default: identical to baseline at every printed decimal on the device
+(B3's 1e-11 u-floor bit-identical).  The fix guards the latent path.
+
+OPEN (Batch 3b, remaining — one at a time, predictions first): B4
+(tiny-step residual check), B6 (GERG endpoint-clamp contract), B8
+(wave-speed consolidation), B13 (counter coverage), B14 (derive
+routing), B5/C.6 (provenance force-adds for the remaining raw dials).
 
 ---
 

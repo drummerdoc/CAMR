@@ -6089,3 +6089,88 @@ and clears with ps_mt_tau=0; job_info records
 CAMR.ps_bc_copy_interior=1 on a bare run.  The acceptance
 configuration is now literally the code defaults — the harness
 states nothing.
+
+====================================================================
+2026-08-24 — BATCH 3b item 1 (AUDIT A5+B7): PRTab seam clamp, base
+clamp, low-rho fallback, honest table generation
+
+WHAT.  (1) prtab_patchT's index clamp mapped the ENTIRE last Hermite
+cell to the value AT node NP-2, so the boundary row pinned to the
+base bicubic was never evaluated — MEASURED: a 3.66 K temperature
+DISCONTINUITY exactly on the dome box's high-e edge (probe at mid-lr,
+old code vs new: jump 3.659 K -> 2.7e-4 K; the high-lr edge is flat
+in T and was ~5e-7 K either way).  Fixed: coordinate clamped to NP-1,
+index capped at NP-2 — the last cell interpolates to the pinned
+boundary and the seam is C0 again.  (2) Same family in the base
+Catmull-Rom: top clamp discarded the last fully-supportable cell per
+axis; coordinate now clamps to N-2 with the index capped at N-3
+(build_table.py's base_eval mirror updated in lockstep — the two MUST
+match or the patch pinning drifts off the runtime surface).  (3) Low
+density: the 4-sigma whitened-rho guard never rejects low rho
+(xr > -0.79 for all rho > 0) while the table starts at LR0; below it
+the lookup silently clamped rho and served flat extrapolation.  Both
+EOS entry points now require lr >= LR0, else PR fallback.  (4) B7:
+gen_table's HEM_NO_AMREX build made ps_eos_noroot a no-op, so no-root
+branch grid points were recorded ok with bracket-end states (T=1 K /
+5000 K) baked into TBL_TL/TBL_TV — MEASURED: with the _try entry the
+branch grids are only 59.8% valid; the other 40.2% were garbage that
+the nearest-valid EDT fill (which had never engaged) now supplies.
+
+MEASURED (A/B, container, PRTab build, full 20-case battery + both
+FROZEN rows): old code+old tables vs new code+new tables IDENTICAL at
+every printed decimal — the N=64 acceptance states do not cross the
+patch seam or the reachability boundary, so the defects close without
+moving any accepted number.  The PRTab battery itself tracks the PR
+battery to the 3rd-4th decimal (B2 P .1485 vs PR .1511, B3 u
+1.4e-4 m/s abs vs 3e-11, B11 P .0928 vs .0927; all other rows
+identical) — first recorded PRTab-vs-PR comparison.  PR battery
+untouched by construction (no PR-side file changed).  Auto-patch box
+placement unchanged by the honest fill (same 32 hot cells).  NOTE:
+the generated tables in this checkout were REPLACED with the fixed
+generation (built in the audit sandbox; this machine's VM lacks scipy
+for make tables).
+
+====================================================================
+2026-08-24 — BATCH 3b item 2 (AUDIT A4, Marc's call: both halves,
+measured in sequence): identity-consistent LLF fallback + refusal
+census
+
+WHAT (phase 1).  On a refused-HLLC (LLF-fallback) face the
+non-conserved slots {alpha, UE1, UE2} got PURE DIFFUSION (Am+Ap = 0,
+no ΔF) while UEDEN got the full LLF flux — the mechanism of B7's
+historical stage-A phase-energy identity defect (W0 notes:
+correlation 22/22, cells == faces+1).  Fallback is now
+identity-consistent: UE1/UE2 carry Am = ½(ΔF−λΔU), Ap = ½(ΔF+λΔU)
+(Am+Ap = ΔF, matching UEDEN's LLF flux difference); alpha carries
+the WP-consistent ū·Δα with ū = ½(u_nL+u_nR) — NOT Δ(αu_n), which
+would re-introduce the spurious α∇·u term; ū symmetric => mirror
+faces stay exactly y-reflection symmetric.  Threaded host->kernel
+by value (GPU 12.2).  CAMR.ps_llf_identity=0 recovers the old
+pure-diffusion fallback bit-for-bit (ps_src_p_reproject idiom).
+CTU path already routes ΔF through the conservative divergence —
+untouched.
+
+MEASURED (phase 2 first — the census decides how much phase 1 can
+matter).  W0 face audit (CAMR.ps_face_diag=1, counters live in the
+default CPU build) on the three historical cases at the current
+tree, N=64 wp: B7 fl_seen=8777 fl_fail=0; B2 6901/0; B9 6901/0.
+ZERO refusals — the population that caused the identity defect was
+eliminated by the intervening work (X3 + G-DEF + mech_close + the
+guard consolidation); "stop refusing" is already achieved, with the
+census as the measurement.  Consequently: B7 old-vs-new fallback is
+BIT-IDENTICAL (all fields, maxdiff 0.0), end-state identity
+max|UE1+UE2-UEDEN| = 2.7e-16 rel both ways, and the FULL battery at
+ps_llf_identity=1 (sandbox) is identical to the recorded baseline at
+every printed decimal (B3's u differs in the 3rd digit of its 1e-11
+m/s absolute noise floor — sandbox FP, settled by the device run
+below).  Phase 1 therefore lands as a LATENT-path correction: the
+fallback remains the safety net, and if it ever fires again it now
+transports phase energy consistently with total energy.
+
+MEASURED (device confirmation).  Full battery on this machine at
+ps_llf_identity=1 (the new default): all 20 rows AND both FROZEN
+bracket rows identical to the recorded baseline at every printed
+decimal, including B3's u absolute floor (3.139e-11, bit-identical —
+the sandbox's 3.117e-11 was its FP).  A4 is CLOSED: the latent
+fallback is identity-consistent, and the refusal population that
+made it matter is measured at zero.
