@@ -2641,11 +2641,16 @@ struct PsX3Stats {
     long n_newton = 0;       // sub-steps that failed to converge (rc=1)
     long n_dead = 0;         // structurally-dead rate evaluation (rc=2)
     long n_subcap = 0;       // hit the 64-sub-step cap
+    long n_tiny_nonconv = 0; // tiny-increment COMMITS whose residual was
+                             //   still unmet (>1%% of the step scale) —
+                             //   the stalled-iterate restarts B4 made
+                             //   visible; commits are unchanged (see the
+                             //   B4 note at the tiny exit)
     long n_proj_entry = 0;   // entry projection failures
     long n_proj_path = 0;    // path projection failures (line search)
     long n_pr_input = 0, n_pr_eos = 0, n_pr_slope = 0, n_pr_maxiter = 0;
     void reset() { n_calls = n_entry_refused = n_gate_stood = n_ok = 0;
-                   n_newton = n_dead = n_subcap = 0;
+                   n_newton = n_dead = n_subcap = n_tiny_nonconv = 0;
                    n_proj_entry = n_proj_path = 0;
                    n_pr_input = n_pr_eos = n_pr_slope = n_pr_maxiter = 0; }
 };
@@ -2957,7 +2962,48 @@ inline bool ps_x3_relax_cell(V6& U, const PsPhaseAPI& eos, double dt,
             const bool tiny = (std::abs(qn - q) <= tol_q &&
                                std::abs(dmn - dm) <= tol_m);
             q = qn; dm = dmn; Wl = Wn; sl = sn;
-            if (tiny) { Wc = Wl; scur = sl; return 0; }
+            if (tiny) {
+                //  AUDIT 2026-08-24 B4: a tiny INCREMENT is not
+                //  convergence.  When clampx pins the iterate at the box
+                //  or the admissibility backtrack collapses the step, the
+                //  increment goes to ~0 while the residuals R1/R2 can be
+                //  O(1); committing here under-integrated the rates while
+                //  n_ok counted a full success — a clamp masking
+                //  non-convergence where the discipline says the failure
+                //  path (rc=1 -> halve dtl) should engage.  Verify the
+                //  residuals at the accepted iterate; refuse when unmet.
+                //  AUDIT 2026-08-24 B4 — MEASURED AND RESOLVED AS
+                //  ACCOUNTING, NOT CONTROL FLOW.  The audit flagged this
+                //  exit for committing stalled iterates (tiny increment,
+                //  residual possibly O(1)) as successes.  The refuse
+                //  variant (return 1 -> ladder halves) was implemented and
+                //  REFUTED by the 0-D route/basin gate: the accept-on-tiny
+                //  commit is a RESTART mechanism — committing the stalled
+                //  iterate moves the base state, and the next sub-step's
+                //  fresh Jacobian makes progress toward the (dt-independent)
+                //  fixed point.  Refusing instead stalls routes A/B short
+                //  of thermal equality (|T1-T2| ~ 1e-2 K vs C's 1e-11) and
+                //  flips the gate at state (290, 0.40, 830, 120); a 1%%
+                //  relative acceptance fails identically.  What survives of
+                //  the finding is the ACCOUNTING: a tiny-commit with unmet
+                //  residual is no longer indistinguishable from clean
+                //  convergence — it is counted (n_tiny_nonconv, printed by
+                //  [PS-X3]) so a battery-wide reliance on stalled commits
+                //  can be seen.  Control flow unchanged: bit-identical.
+                {
+                    double rTt = 0.0, rMt = 0.0;
+                    if (rates(Wl, sl, rTt, rMt)) {
+                        const double R1t = q  - dtl * rTt;
+                        const double R2t = dm - dtl * rMt;
+                        const double S1 = std::abs(q)  + std::abs(dtl * rTt) + tol_q;
+                        const double S2 = std::abs(dm) + std::abs(dtl * rMt) + tol_m;
+                        if (std::abs(R1t) > 1.0e-2 * S1 ||
+                            std::abs(R2t) > 1.0e-2 * S2)
+                            ++x3s.n_tiny_nonconv;
+                    }
+                }
+                Wc = Wl; scur = sl; return 0;
+            }
         }
         return 1;
     };
