@@ -20,6 +20,7 @@ struct PCHypFillExtDir
   int         use_nscbc;
   amrex::Real nscbc_sigma;
   int         nscbc_order;    // 1 or 2 — R+ extrapolation order.
+  int         nscbc_v2;       // NSCBC-1: 1 = v2 construction, 0 = legacy.
 #ifdef USE_PS_HYDRO
   PsPres      pres;           // S2: presence params, captured HOST-side at
                               // functor construction (§12.2 rule 1 — never
@@ -30,7 +31,8 @@ struct PCHypFillExtDir
   explicit PCHypFillExtDir(const ProbParmDevice* d_prob_parm,
                            int         use_nscbc_,
                            amrex::Real nscbc_sigma_,
-                           int         nscbc_order_
+                           int         nscbc_order_,
+                           int         nscbc_v2_
 #ifdef USE_PS_HYDRO
                            , const PsPres& pres_
 #endif
@@ -39,6 +41,7 @@ struct PCHypFillExtDir
     , use_nscbc(use_nscbc_)
     , nscbc_sigma(nscbc_sigma_)
     , nscbc_order(nscbc_order_)
+    , nscbc_v2(nscbc_v2_)
 #ifdef USE_PS_HYDRO
     , pres(pres_)
 #endif
@@ -121,6 +124,7 @@ struct PCHypFillExtDir
         params.sigma        = nscbc_sigma;
         params.L_ref        = prob_hi[idir] - prob_lo[idir];
         params.nscbc_order  = nscbc_order;
+        params.v2           = nscbc_v2;   // NSCBC-1 (0 = legacy bit-for-bit)
         amrex::Real s_ghost[NVAR];
         PS_NSCBC::outflow_face(s_N, s_Nm1, s_Nm2, dx[idir],
                                 idir, sgn, layer, params, s_ghost);
@@ -191,15 +195,19 @@ CAMR_bcfill_hyp(
   // the deck was silent (gerg_ext_c idiom).  Values are captured into the
   // PCHypFillExtDir functor so the device operator() can act on them
   // without touching CAMR class internals.
-  struct NscbcCfg { int use; amrex::Real sigma; int order; };
+  struct NscbcCfg { int use; amrex::Real sigma; int order; int v2; };
   static const NscbcCfg nscbc_cfg = []() -> NscbcCfg {
     int u = 0;
     amrex::Real sg = amrex::Real(0.25);
     int od = 2;   // 1 or 2 — R+ extrapolation order.
+    int v2 = 1;   // NSCBC-1 (2026-08-24): 1 = v2 ghost construction
+                  // (unified subsonic branch + per-phase isentropic pack);
+                  // 0 = legacy construction, bit-for-bit.
     amrex::ParmParse pp("CAMR");
     pp.query("ps_bc_use_nscbc",   u);
     pp.query("ps_bc_nscbc_sigma", sg);
     pp.query("ps_bc_nscbc_order", od);
+    pp.query("ps_bc_nscbc_v2",    v2);
 #ifndef USE_PS_HYDRO
     u = 0;   // safety: NSCBC is a no-op without PS_HYDRO.
 #endif
@@ -211,11 +219,13 @@ CAMR_bcfill_hyp(
     pp.add("ps_bc_use_nscbc",   u);
     pp.add("ps_bc_nscbc_sigma", sg);
     pp.add("ps_bc_nscbc_order", od);
-    return NscbcCfg{u, sg, od};
+    pp.add("ps_bc_nscbc_v2",    v2);
+    return NscbcCfg{u, sg, od, v2};
   }();
   const int         use_nscbc   = nscbc_cfg.use;
   const amrex::Real nscbc_sigma = nscbc_cfg.sigma;
   const int         nscbc_order = nscbc_cfg.order;
+  const int         nscbc_v2    = nscbc_cfg.v2;
 
   // One-time per-run banner so runlogs record which outflow BC path
   // is actually in play.  Diagnostic-only; no performance impact.
@@ -234,7 +244,7 @@ CAMR_bcfill_hyp(
   }
 
   amrex::GpuBndryFuncFab<PCHypFillExtDir> hyp_bndry_func(
-    PCHypFillExtDir{lprobparm, use_nscbc, nscbc_sigma, nscbc_order
+    PCHypFillExtDir{lprobparm, use_nscbc, nscbc_sigma, nscbc_order, nscbc_v2
 #ifdef USE_PS_HYDRO
                     , ps_presence_params()   // S2: host-side read here
 #endif

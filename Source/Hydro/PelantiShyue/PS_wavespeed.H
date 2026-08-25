@@ -47,15 +47,29 @@ ps_finite_or(Real x, Real fallback) noexcept
 }
 
 
-//  AUDIT 2026-08-24 B8: the frozen mixture sound speed, extracted so the
-//  NSCBC boundary impedance shares THE one construction (host-slaving,
-//  G1 clamps, #199 Wallis form) instead of carrying a drifted copy.
-//  ps_max_wave_speed_from_state below is |u_n| + this.
+//  NSCBC-1 (2026-08-24): the per-phase decomposition underneath the frozen
+//  mixture sound speed, extracted as a struct-returning helper so the NSCBC
+//  ghost pack can perturb each phase along its OWN branch (same host-slaving,
+//  same G1 clamps, same floors) instead of pushing a single-fluid mixture
+//  inversion into both phase-energy slots.  ps_frozen_cmix_from_state below
+//  is a thin Wallis wrapper over this — FP-identical to the pre-split body.
+struct PsPhaseSpeeds {
+    Real rho;                     // floored mixture density
+    Real ux, uy, uz;              // mixture velocity
+    Real rho1, rho2;              // per-phase densities (G1-clamped)
+    Real e1, e2;                  // per-phase specific internal energies
+    Real P1, P2, c1, c2;          // branch-locked P/c (floored)
+    Real m1, m2;                  // non-negative partial masses
+    Real alpha1, alpha2;          // clamped volume fractions
+    PsRegime rg1, rg2;
+};
+
 AMREX_GPU_HOST_DEVICE
 AMREX_FORCE_INLINE
-Real
-ps_frozen_cmix_from_state(const Real U[NVAR], const PsPres& pr) noexcept
+PsPhaseSpeeds
+ps_phase_speeds_from_state(const Real U[NVAR], const PsPres& pr) noexcept
 {
+    PsPhaseSpeeds o;
     const Real rho    = amrex::max(ps_finite_or(U[URHO], Real(1.0)), Real(1.0e-6));
     const Real inv_r  = Real(1.0) / rho;
     const Real ux     = ps_finite_or(U[UMX], Real(0.0)) * inv_r;
@@ -137,16 +151,37 @@ ps_frozen_cmix_from_state(const Real U[NVAR], const PsPres& pr) noexcept
     if (!std::isfinite(c1) || c1 <= Real(0.0)) c1 = Real(1.0);
     if (!std::isfinite(c2) || c2 <= Real(0.0)) c2 = Real(1.0);
 
+    o.rho = rho;  o.ux = ux;  o.uy = uy;  o.uz = uz;
+    o.rho1 = rho_1;  o.rho2 = rho_2;  o.e1 = e1;  o.e2 = e2;
+    o.P1 = P1;  o.P2 = P2;  o.c1 = c1;  o.c2 = c2;
+    o.m1 = m1;  o.m2 = m2;  o.alpha1 = alpha_1;  o.alpha2 = alpha_2;
+    o.rg1 = rg1;  o.rg2 = rg2;
+    return o;
+}
+
+//  AUDIT 2026-08-24 B8: the frozen mixture sound speed, extracted so the
+//  NSCBC boundary impedance shares THE one construction (host-slaving,
+//  G1 clamps, #199 Wallis form) instead of carrying a drifted copy.
+//  ps_max_wave_speed_from_state below is |u_n| + this.
+//  (NSCBC-1: now a Wallis wrapper over ps_phase_speeds_from_state above —
+//  same operations in the same order, FP-identical.)
+AMREX_GPU_HOST_DEVICE
+AMREX_FORCE_INLINE
+Real
+ps_frozen_cmix_from_state(const Real U[NVAR], const PsPres& pr) noexcept
+{
+    const PsPhaseSpeeds s = ps_phase_speeds_from_state(U, pr);
+
     Real c2_frozen;
     // S1: the CORRECT Wallis form (task #199 — this copy was one of the
     // three still carrying the erroneous extra alpha factor, feeding dt).
     // Mass fractions from the conserved masses directly: exact for
     // ABSENT (m = 0), well-conditioned everywhere else.
-    const Real Y1 = m1 / rho;
+    const Real Y1 = s.m1 / s.rho;
     const Real Y2 = Real(1.0) - Y1;
-    c2_frozen = ps_cmix2(Y1, Y2, c1, c2);
+    c2_frozen = ps_cmix2(Y1, Y2, s.c1, s.c2);
     return (c2_frozen > Real(0.0)) ? std::sqrt(c2_frozen)
-                                   : amrex::max(c1, c2);
+                                   : amrex::max(s.c1, s.c2);
 }
 
 AMREX_GPU_HOST_DEVICE

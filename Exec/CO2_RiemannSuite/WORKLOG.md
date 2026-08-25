@@ -6402,3 +6402,127 @@ MEASURED (device, incremental PR rebuild, spot rows).  A1, B2
 every printed decimal (B3's u column at its device value 3.139e-11,
 the known platform-FP artifact).  CONFIRMED on the authoritative
 platform.
+
+====================================================================
+2026-08-24 — NSCBC-1: the ghost-cell NSCBC's reversed-flow branch is
+a positive-feedback pump; the pack can write dome-mixture energy
+into both phase slots.  DIAGNOSIS MEASURED, then PREDICTIONS FIRST.
+
+DIAGNOSIS (measured, container, A1 + ps_bc_use_nscbc=1).
+The B8 session recorded A1-under-NSCBC aborting on vapour
+e = -103.6 kJ/kg at rho = 120 and attributed it to the R+ ghost
+construction.  Measured today, that attribution was WRONG in an
+instructive way:
+ (1) The abort arms only at step 161 of ~292 — when structure
+     reaches a boundary — not at the first fill.
+ (2) A standalone probe replaying the x-lo R+ construction on the
+     actual step-160 stencil (rho 93.8/97.6/104.5, P 7.85/8.25/9.02
+     MPa, pure vapour) gives ADMISSIBLE supercritical ghosts at
+     every layer (Pg = 7.74 MPa > Pc, e = 245 kJ/kg, vapour-branch
+     root exists).  The outflow side is NOT the defect.
+ (3) The x-hi boundary at step 160 is a P = P_amb = 5e6 plateau
+     moving INWARD at u = -5047 m/s (Mach ~15) — pumped by the
+     REVERSED-FLOW branch, which anchors ghost energy to P_amb (50x
+     the 1-bar interior, from the harness's blanket prob.p_amb)
+     while COPYING the interior velocity, inward normal included:
+     every fill re-endorses the reversal it reacts to.
+ (4) The abort itself is downstream wreckage: at |u| ~ 5 km/s the
+     kinetic term (~1.3e7 J/kg) swamps the phase-energy
+     bookkeeping, front cells crash into the dome, flash nucleates
+     liquid (the abort cell's alpha1 = 0.0024, m1 = 3.58 — absent
+     everywhere at step 160), and a vapour slot lands 38 kJ/kg
+     below the T = 1 K bound.
+ (5) A REAL but latent second defect sits in the pack: ghost e from
+     EOS::RYP2E = state_from_P_rho, whose subcritical in-dome answer
+     is the saturation-mixture lever-rule e, written into BOTH
+     phase-energy slots (UE_k = m_k E_g).  Reachable whenever P_g
+     dips below Pc with rho_g inside the dome; not A1's trigger.
+
+FIX (CAMR.ps_bc_nscbc_v2 = 1 default; = 0 legacy bit-for-bit).
+ (a) ONE subsonic characteristic branch for both flow signs
+     (-1 < Mach < 1): R+ extrapolated while it leaves (u_out > -c),
+     R- imposed from the far field, u_g and P_g from the SAME
+     invariants — anchoring cannot manufacture momentum.  The
+     legacy reversed-flow branch is deleted from the v2 path.
+     Supersonic inflow -> counted zero-gradient (nothing well-posed
+     without a full ambient state).
+ (b) Per-phase ISENTROPIC pack: each present phase moves along its
+     own branch by the common acoustic dP (drho_k = dP/c_k^2,
+     de_k = P_k/rho_k^2 drho_k) from ps_phase_speeds_from_state —
+     the same host-slaved G1-clamped decomposition the wave speed
+     uses (extracted from B8's ps_frozen_cmix_from_state as an
+     FP-identical refactor).  Mixture ASSEMBLED from phases
+     (rho_g = m1_g + m2_g exactly); NO (rho,P) inversion anywhere;
+     UTEMP zero-gradient.  |drho_k| > 0.2 rho_k for any present
+     phase -> counted zero-gradient refusal (refuse to linearize a
+     huge far-field jump instead of manufacturing a state).
+ (c) All four fallback causes counted, [PS-GUARD]
+     nscbc_zg(c,lin,sup,slots) — "ran everywhere" vs "fell back
+     everywhere" must be distinguishable from outside.
+
+PREDICTIONS (falsifiers in brackets).
+V1. Default battery BIT-IDENTICAL (NSCBC default-off; the
+    PS_wavespeed extraction is FP-identical and sits on the hot
+    path — the battery is precisely its regression gate).  [Any
+    row moving indicts the extraction.]
+V2. A1 + NSCBC v2: runs to tf, NO abort.  At x-hi the far field is
+    still 50x the interior — v2's lin bound refuses those fills
+    (counted, nscbc_zg lin > 0) and the boundary degrades to
+    zero-gradient: SAFE, HONEST, and visible, instead of a Mach-15
+    pump ending in an EOS abort.  No runaway: max|u| stays
+    O(interior wave speeds), not km/s.  The A1-NSCBC score is
+    recorded but NOT an acceptance row (the blanket p_amb poses a
+    different physical problem than the exact solution).
+    [Abort, or |u| growing without bound, refutes the fix.]
+V3. A1 + NSCBC legacy (v2=0): still aborts (control).  [If it no
+    longer aborts, the environment changed and the A/B is invalid.]
+V4. B4 + NSCBC legacy (v2=0): reproduces B8's recorded row
+    .0639/.3809/.2178 exactly — the escape dial's bit-for-bit
+    claim, checked on the one working NSCBC measurement.  [Any
+    deviation refutes "legacy preserved".]
+V5. B4 + NSCBC v2: runs and scores; direction vs legacy is
+    MEASURED, not predicted (if the legacy u-column error .3809 vs
+    bcnormal .1261 was boundary contamination, v2 should close
+    some of that gap).
+V6. Counters: A1-v2 shows lin > 0 (the x-hi refusals) and sup
+    rare/zero after the pump is gone; B4-v2 shows all four ~0
+    (its dP/(rho c^2) is small).  [lin dominating on B4 would mean
+    v2 is a de-facto zero-gradient BC there and the B4-v2 score is
+    not evidence for the pack.]
+
+MEASURED (sandbox, PR DIM=1).
+V1 CONFIRMED.  Full wp battery identical to the post-sweep baseline
+at every printed decimal — the ps_phase_speeds_from_state extraction
+survives its hot-path regression gate.
+V2 CONFIRMED.  A1 + NSCBC v2 runs to tf, no abort, all fields
+finite; final max|u| = 626 m/s (interior wave-speed scale — the
+Mach-15 pump is gone).  Score .1856/.0987/.2404 recorded, NOT an
+acceptance row (the blanket p_amb = 5e6 far field is a different
+physical problem than the exact solution; bcnormal A1 for scale:
+.0119/.0119/.0154).
+V3 CONFIRMED.  Legacy (v2=0) still aborts — valid A/B.
+V4 CONFIRMED.  B4 + NSCBC legacy reproduces B8's recorded row
+.0639/.3809/.2178 at every digit — the escape dial's bit-for-bit
+claim holds on the one working NSCBC measurement.
+V5 MEASURED.  B4 + NSCBC v2: identical to legacy at every PRINTED
+digit (.0639/.3809/.2178); the runs differ bitwise (max rel deltas:
+rho 7.2e-6, P 4.5e-4, xmom 2.3e-1 only at a near-zero-u boundary
+cell).  The legacy-vs-bcnormal u gap (.3809 vs .1261) is therefore
+NOT the pack: on B4 the two packs agree to first order (dP small)
+and the gap must come from the invariant/relaxation formulation
+itself — recorded as an open QUESTION, not regressed.
+V6 CONFIRMED.  B4-v2: nscbc_zg = (c=0, lin=0, sup=0, slots=0) over
+80 steps — the new construction runs everywhere there, so V5 is
+evidence about the pack.  A1-v2: lin = 320 over 80 steps = exactly
+4 ghost layers/step refusing at the 50x far-field face; sup = 0
+(no supersonic inflow ever develops once the pump is gone).
+
+MEASURED (device, incremental PR rebuild).  Default rows A1, B2
+(+FROZEN), B7 identical to the device baseline (V1 on the
+authoritative platform).  A1-NSCBC-v2 runs and scores
+.1856/.0987/.2404 — the container numbers exactly.  A1-NSCBC
+legacy (v2=0): still aborts (control).  B4-NSCBC legacy:
+.0639/.3809/.2178, B8's recorded digits.  B4-NSCBC-v2: same
+printed row, with the variation-metric u column flickering in the
+last digit (.2907 vs .2908) — the same sub-print-precision bitwise
+difference the container measured, confirming v2 is engaged.

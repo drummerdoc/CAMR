@@ -330,6 +330,41 @@ AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_reflux_clamp() noexcept {}
 #endif
 
 // ---------------------------------------------------------------------
+//  NSCBC-1 (2026-08-24): the ghost-cell NSCBC's zero-gradient fallbacks,
+//  SPLIT BY CAUSE (ground rule 2).  A fallback ghost is a legitimate safe
+//  exit, but each cause needs its own tally or "the new construction ran
+//  everywhere" and "the new construction fell back everywhere" are
+//  indistinguishable from outside:
+//    c     : the impedance sound speed came back non-finite/non-positive
+//            (pre-existing fallback, previously silent).
+//    lin   : |dP| too large for the linearized per-phase isentropic
+//            update (|Δρ_k| would exceed 20% of ρ_k) — refusing to
+//            linearize a huge far-field jump instead of manufacturing
+//            a state (the A1 p_amb=50x case lands here by design).
+//    sup   : supersonic INFLOW at the face — every characteristic enters,
+//            nothing is well-posed without a full ambient state.
+//    slots : 6-eq slots inconsistent with the mixture (m1+m2 far from ρ).
+//  Report + reset with the other guard counters ([PS-GUARD] line).
+// ---------------------------------------------------------------------
+#if !defined(AMREX_USE_GPU)
+inline long& n_nscbc_zg_c()     { static long n = 0; return n; }
+inline long& n_nscbc_zg_lin()   { static long n = 0; return n; }
+inline long& n_nscbc_zg_sup()   { static long n = 0; return n; }
+inline long& n_nscbc_zg_slots() { static long n = 0; return n; }
+inline void  count_nscbc_zg_c()     { ++n_nscbc_zg_c(); }
+inline void  count_nscbc_zg_lin()   { ++n_nscbc_zg_lin(); }
+inline void  count_nscbc_zg_sup()   { ++n_nscbc_zg_sup(); }
+inline void  count_nscbc_zg_slots() { ++n_nscbc_zg_slots(); }
+inline void  reset_nscbc_counts() { n_nscbc_zg_c() = 0; n_nscbc_zg_lin() = 0;
+                                    n_nscbc_zg_sup() = 0; n_nscbc_zg_slots() = 0; }
+#else
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_nscbc_zg_c()     noexcept {}
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_nscbc_zg_lin()   noexcept {}
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_nscbc_zg_sup()   noexcept {}
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_nscbc_zg_slots() noexcept {}
+#endif
+
+// ---------------------------------------------------------------------
 //  CTOPRIM REFERENCE AUDIT  (2026-08-12)
 //
 //  ps_augment_primitives used to take its per-phase pressure reference from

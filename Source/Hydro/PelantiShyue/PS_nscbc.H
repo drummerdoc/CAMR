@@ -91,6 +91,18 @@ struct Params {
     // Exposed as a runtime tunable so a bit-for-bit cross-check with the
     // standalone can be performed without recompiling.
     int         nscbc_order = 2;
+    //  NSCBC-1 (2026-08-24): ghost-construction revision.
+    //    1 (default) = v2: ONE subsonic characteristic branch for both flow
+    //        signs (the legacy reversed-flow branch anchored P to P_amb
+    //        while COPYING the interior inward velocity — a positive
+    //        feedback that pumped A1's x-hi boundary to Mach ~15 before
+    //        the phase-energy bookkeeping collapsed and aborted), and a
+    //        per-phase ISENTROPIC pack (each phase perturbed along its own
+    //        branch by the common acoustic dP; no single-fluid (rho,P)->e
+    //        inversion anywhere, so the state_from_P_rho dome-mixture root
+    //        can never be written into a phase-energy slot).
+    //    0 = legacy construction, bit-for-bit.
+    int         v2 = 1;
 };
 
 
@@ -223,7 +235,7 @@ _wallis_c_at_cell(const amrex::Real s[NVAR],
 AMREX_GPU_HOST_DEVICE
 AMREX_FORCE_INLINE
 void
-outflow_face(const amrex::Real s_N  [NVAR],
+_outflow_face_legacy(const amrex::Real s_N  [NVAR],
              const amrex::Real s_Nm1[NVAR],
              const amrex::Real s_Nm2[NVAR],
              amrex::Real       dx_normal,
@@ -441,6 +453,286 @@ outflow_face(const amrex::Real s_N  [NVAR],
     // Final sanitisation: any non-finite slot reverts to N.
     for (int n = 0; n < NVAR; ++n)
         if (!std::isfinite(s_ghost[n])) s_ghost[n] = s_N[n];
+}
+
+
+// ---------------------------------------------------------------------
+//  NSCBC-1 (2026-08-24): v2 ghost construction.
+//
+//  What was wrong with the legacy construction, both halves MEASURED on
+//  A1 with CAMR.ps_bc_use_nscbc=1 (WORKLOG entry of this date):
+//
+//  (a) THE DRIVER — the reversed-flow branch was a positive-feedback
+//      pump.  On detecting u_out < 0 it anchored the ghost energy to
+//      P_amb at the interior density while COPYING the full interior
+//      velocity, inward normal component included.  With the harness's
+//      far field at 50x the interior pressure (A1 x-hi), every fill
+//      re-endorsed the reversal it was reacting to: measured Mach ~15
+//      inflow jet and a P = P_amb plateau by step 160.  The abort at
+//      step 161 was downstream wreckage — at |u| ~ 5 km/s the kinetic
+//      energy (~1.3e7 J/kg) swamps the phase-energy bookkeeping, front
+//      cells crash into the dome, flash nucleates liquid, and a vapour
+//      slot ends up 38 kJ/kg below the T = 1 K reachable bound.
+//      v2: ONE subsonic characteristic branch for BOTH flow signs.  For
+//      -1 < Mach < 1 the invariant algebra is well-posed as-is (R+ still
+//      leaves the domain while u_out > -c; R- is imposed from the far
+//      field), and u_g comes from the SAME invariants as P_g, so the
+//      anchoring cannot manufacture momentum.  Supersonic INFLOW falls
+//      back to zero-gradient, counted ([PS-GUARD] nscbc_zg sup) — every
+//      characteristic enters and nothing is well-posed without a full
+//      ambient state.
+//
+//  (b) THE LATENT TRAP — the pack.  Ghost internal energy came from
+//      EOS::RYP2E(rho_g, P_g) = state_from_P_rho, whose subcritical
+//      in-dome answer is the SATURATION-MIXTURE lever-rule energy; that
+//      mixture e was then written into BOTH phase-energy slots
+//      (UE_k = m_k E_g), handing a near-pure vapour cell a liquid-
+//      contaminated e the branch-locked EOS may have no root for.  (Not
+//      A1's trigger — the measured A1 x-lo ghosts stay supercritical
+//      and admissible — but reachable whenever P_g dips below P_c with
+//      rho_g inside the dome.)
+//      v2: per-phase ISENTROPIC pack.  Each phase present is perturbed
+//      along its own branch by the common acoustic dP:
+//          drho_k = dP / c_k^2,   de_k = (P_k / rho_k^2) drho_k,
+//      with (rho_k, e_k, P_k, c_k) from ps_phase_speeds_from_state —
+//      the SAME host-slaved, G1-clamped decomposition the wave speed
+//      uses.  Ghost phase states are small perturbations of admissible
+//      interior states, so they stay admissible; the mixture is then
+//      ASSEMBLED from the phases (rho_g = m1_g + m2_g exactly), and no
+//      (rho,P) inversion is performed anywhere.  When |dP| is too large
+//      for the linearization (|drho_k| > LIN_ETA * rho_k for any present
+//      phase) the cell refuses and falls back to zero-gradient, counted
+//      ([PS-GUARD] nscbc_zg lin) — refusing to linearize a huge far-field
+//      jump instead of manufacturing a state.  UTEMP is zero-gradient
+//      (diagnostic slot; v2 performs no inversion to fill it).
+//
+//  CAMR.ps_bc_nscbc_v2 = 0 recovers the legacy construction bit-for-bit.
+// ---------------------------------------------------------------------
+AMREX_GPU_HOST_DEVICE
+AMREX_FORCE_INLINE
+void
+_outflow_face_v2(const amrex::Real s_N  [NVAR],
+                 const amrex::Real s_Nm1[NVAR],
+                 const amrex::Real s_Nm2[NVAR],
+                 amrex::Real       dx_normal,
+                 int               idir,
+                 int               sgn,
+                 int               layer_offset,
+                 Params const&     p,
+                 amrex::Real       s_ghost[NVAR]) noexcept
+{
+    using amrex::Real;
+    amrex::ignore_unused(dx_normal);   // reserved for future full-NSCBC
+
+    // ---- 1. Mixture primitives at N, N-1, N-2 ---------------------
+    // P here is the stock mixture inversion, used ONLY inside the
+    // acoustic invariants (a consistent stencil quantity; the pack
+    // below works from dP and per-phase states, never from (rho,P)).
+    Real rho_N,   ux_N,   uy_N,   uz_N,   e_N,   P_N;
+    Real rho_Nm1, ux_Nm1, uy_Nm1, uz_Nm1, e_Nm1, P_Nm1;
+    Real rho_Nm2, ux_Nm2, uy_Nm2, uz_Nm2, e_Nm2, P_Nm2;
+    Real Y_N[NUM_SPECIES], Y_Nm1[NUM_SPECIES], Y_Nm2[NUM_SPECIES];
+    _cell_primitives(s_N,   rho_N,   ux_N,   uy_N,   uz_N,   e_N,   P_N,   Y_N);
+    _cell_primitives(s_Nm1, rho_Nm1, ux_Nm1, uy_Nm1, uz_Nm1, e_Nm1, P_Nm1, Y_Nm1);
+    _cell_primitives(s_Nm2, rho_Nm2, ux_Nm2, uy_Nm2, uz_Nm2, e_Nm2, P_Nm2, Y_Nm2);
+
+    auto pick_un = [idir] (Real ux, Real uy, Real uz) -> Real {
+        if      (idir == 0) return ux;
+        else if (idir == 1) return uy;
+        else                return uz;
+    };
+    const Real un_int_N   = pick_un(ux_N,   uy_N,   uz_N);
+    const Real un_int_Nm1 = pick_un(ux_Nm1, uy_Nm1, uz_Nm1);
+    const Real un_int_Nm2 = pick_un(ux_Nm2, uy_Nm2, uz_Nm2);
+
+    // ---- 2. Per-phase decomposition + Wallis impedance at N -------
+    // ONE decomposition serves both the impedance c_N (same Wallis
+    // combination as the legacy path / PS_umeth) and the per-phase
+    // isentropic pack below.
+    const PsPhaseSpeeds ph = ps_phase_speeds_from_state(s_N, p.pres);
+    const Real Yw1 = ph.m1 / ph.rho;
+    const Real Yw2 = Real(1.0) - Yw1;
+    const Real c2f = ps_cmix2(Yw1, Yw2, ph.c1, ph.c2);
+    const Real c_N = (c2f > Real(0.0)) ? std::sqrt(c2f)
+                                       : amrex::max(ph.c1, ph.c2);
+    if (!std::isfinite(c_N) || c_N <= Real(0.0)) {
+        ps_guard::count_nscbc_zg_c();
+        _zero_gradient_ghost(s_N, s_ghost);
+        return;
+    }
+
+    // 6-eq slot sanity: the pack assembles the ghost mixture FROM the
+    // phases, so m1 + m2 must actually describe rho.
+    const Real msum = ph.m1 + ph.m2;
+    if (!(msum > Real(0.0)) ||
+        std::abs(msum - ph.rho) > Real(0.5) * ph.rho) {
+        ps_guard::count_nscbc_zg_slots();
+        _zero_gradient_ghost(s_N, s_ghost);
+        return;
+    }
+
+    const Real n_sgn = static_cast<Real>(-sgn);   // +1 for hi, -1 for lo
+    const Real un_out_N   = n_sgn * un_int_N;
+    const Real un_out_Nm1 = n_sgn * un_int_Nm1;
+    const Real un_out_Nm2 = n_sgn * un_int_Nm2;
+    const Real Mach_N     = un_out_N / c_N;
+
+    // ---- 3. Mach dispatch -----------------------------------------
+    if (Mach_N >= Real(1.0)) {
+        // Supersonic outflow: no characteristic enters — zero-gradient
+        // copy is exact (unchanged from legacy; not a fallback).
+        _zero_gradient_ghost(s_N, s_ghost);
+        return;
+    }
+    if (Mach_N <= Real(-1.0)) {
+        // Supersonic inflow: every characteristic enters; without a
+        // full ambient state nothing is well-posed.  Counted fallback.
+        ps_guard::count_nscbc_zg_sup();
+        _zero_gradient_ghost(s_N, s_ghost);
+        return;
+    }
+
+    // ---- 4. Subsonic (either sign): characteristic invariants -----
+    // Identical algebra to the legacy subsonic-outflow branch; for
+    // -1 < Mach < 0 it is the well-posed reversed-flow treatment the
+    // legacy inflow branch should have been (see header note (a)).
+    const Real rho_c = ph.rho * c_N;
+
+    const Real Rp_N   = un_out_N   + P_N   / rho_c;
+    const Real Rp_Nm1 = un_out_Nm1 + P_Nm1 / rho_c;
+    const Real Rp_Nm2 = un_out_Nm2 + P_Nm2 / rho_c;
+
+    Real dRp_scaled;                            // dx · ∂R_+/∂x |_N
+    if (p.nscbc_order <= 1) {
+        dRp_scaled = Real(0.0);
+    } else {
+        const Real slope_hi = Rp_N   - Rp_Nm1;
+        const Real slope_lo = Rp_Nm1 - Rp_Nm2;
+        if (slope_hi * slope_lo <= Real(0.0)) {
+            dRp_scaled = Real(0.0);
+        } else if (std::abs(slope_hi) < std::abs(slope_lo)) {
+            dRp_scaled = slope_hi;
+        } else {
+            dRp_scaled = slope_lo;
+        }
+    }
+    const Real Rp_ghost = Rp_N
+                        + static_cast<Real>(layer_offset) * dRp_scaled;
+
+    Real Rm_target = -p.P_amb / rho_c;
+    if (p.sigma > Real(0.0)) {
+        Rm_target -= p.sigma * (P_N - p.P_amb) / rho_c;
+    }
+
+    Real un_out_g = Real(0.5) * (Rp_ghost + Rm_target);
+    Real P_g      = Real(0.5) * rho_c * (Rp_ghost - Rm_target);
+
+    const Real P_floor = amrex::max(Real(1.0e-3) * p.P_amb, Real(1.0));
+    if (!std::isfinite(P_g) || P_g < P_floor) P_g = P_floor;
+    if (!std::isfinite(un_out_g)) un_out_g = un_out_N;
+
+    const Real un_int_g = n_sgn * un_out_g;
+
+    // ---- 5. Per-phase isentropic pack -----------------------------
+    const Real dP = P_g - P_N;
+
+    // Linearization validity: refuse rather than extrapolate a huge
+    // far-field jump through a linear acoustic relation.
+    constexpr Real LIN_ETA = Real(0.2);   // max |drho_k| / rho_k
+    constexpr Real m_tiny  = Real(1.0e-12);
+    const bool p1_present = (ph.m1 > m_tiny);
+    const bool p2_present = (ph.m2 > m_tiny);
+    if ((p1_present && std::abs(dP) > LIN_ETA * ph.rho1 * ph.c1 * ph.c1) ||
+        (p2_present && std::abs(dP) > LIN_ETA * ph.rho2 * ph.c2 * ph.c2)) {
+        ps_guard::count_nscbc_zg_lin();
+        _zero_gradient_ghost(s_N, s_ghost);
+        return;
+    }
+
+    // Each present phase moves along its own isentrope by the common
+    // acoustic dP; an absent phase's sliver (m_k <= m_tiny) is dropped —
+    // ABSENT is a representable state, a manufactured sliver is not.
+    Real m1_g = Real(0.0), m2_g = Real(0.0);
+    Real e1_g = Real(0.0), e2_g = Real(0.0);
+    if (p1_present) {
+        const Real drho1 = dP / (ph.c1 * ph.c1);
+        const Real rho1g = ps_guard::clamp_phase_density(
+            ph.rho1 + drho1, EOS::rho_min(), EOS::rho_max());
+        e1_g = ph.e1 + (ph.P1 / (ph.rho1 * ph.rho1)) * drho1;
+        m1_g = ph.alpha1 * rho1g;
+    }
+    if (p2_present) {
+        const Real drho2 = dP / (ph.c2 * ph.c2);
+        const Real rho2g = ps_guard::clamp_phase_density(
+            ph.rho2 + drho2, EOS::rho_min(), EOS::rho_max());
+        e2_g = ph.e2 + (ph.P2 / (ph.rho2 * ph.rho2)) * drho2;
+        m2_g = ph.alpha2 * rho2g;
+    }
+    const Real rho_g = m1_g + m2_g;   // mixture ASSEMBLED from phases
+    if (!(rho_g > Real(1.0e-6)) || !std::isfinite(rho_g)) {
+        ps_guard::count_nscbc_zg_slots();
+        _zero_gradient_ghost(s_N, s_ghost);
+        return;
+    }
+
+    Real ux_g = ph.ux, uy_g = ph.uy, uz_g = ph.uz;
+    if      (idir == 0) ux_g = un_int_g;
+    else if (idir == 1) uy_g = un_int_g;
+    else                uz_g = un_int_g;
+    const Real ke_spec_g = Real(0.5) * (ux_g*ux_g + uy_g*uy_g + uz_g*uz_g);
+
+    // ---- 6. Pack conservative ghost state -------------------------
+    const Real rhoe_g = m1_g * e1_g + m2_g * e2_g;
+    s_ghost[URHO ] = rho_g;
+    s_ghost[UMX  ] = rho_g * ux_g;
+#if (AMREX_SPACEDIM >= 2)
+    s_ghost[UMY  ] = rho_g * uy_g;
+#endif
+#if (AMREX_SPACEDIM == 3)
+    s_ghost[UMZ  ] = rho_g * uz_g;
+#endif
+    s_ghost[UEINT] = rhoe_g;
+    s_ghost[UEDEN] = rhoe_g + rho_g * ke_spec_g;
+    s_ghost[UTEMP] = s_N[UTEMP];   // diagnostic slot: zero-gradient (see hdr)
+    for (int n = 0; n < NUM_SPECIES; ++n)
+        s_ghost[UFS + n] = Y_N[n] * rho_g;
+
+    s_ghost[UALPHA1] = ph.alpha1;
+    s_ghost[UM1RHO1] = m1_g;
+    s_ghost[UM2RHO2] = m2_g;
+    s_ghost[UE1    ] = m1_g * (e1_g + ke_spec_g);
+    s_ghost[UE2    ] = m2_g * (e2_g + ke_spec_g);
+
+    // Final sanitisation: any non-finite slot reverts to N.
+    for (int n = 0; n < NVAR; ++n)
+        if (!std::isfinite(s_ghost[n])) s_ghost[n] = s_N[n];
+}
+
+
+// ---------------------------------------------------------------------
+//  outflow_face — dispatch on Params::v2 (CAMR.ps_bc_nscbc_v2).
+//  1 (default) = NSCBC-1 v2 construction; 0 = legacy, bit-for-bit.
+// ---------------------------------------------------------------------
+AMREX_GPU_HOST_DEVICE
+AMREX_FORCE_INLINE
+void
+outflow_face(const amrex::Real s_N  [NVAR],
+             const amrex::Real s_Nm1[NVAR],
+             const amrex::Real s_Nm2[NVAR],
+             amrex::Real       dx_normal,
+             int               idir,
+             int               sgn,
+             int               layer_offset,
+             Params const&     p,
+             amrex::Real       s_ghost[NVAR]) noexcept
+{
+    if (p.v2 != 0) {
+        _outflow_face_v2(s_N, s_Nm1, s_Nm2, dx_normal, idir, sgn,
+                         layer_offset, p, s_ghost);
+    } else {
+        _outflow_face_legacy(s_N, s_Nm1, s_Nm2, dx_normal, idir, sgn,
+                             layer_offset, p, s_ghost);
+    }
 }
 
 

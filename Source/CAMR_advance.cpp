@@ -325,12 +325,27 @@ CAMR::CAMR_advance (Real time,
             amrex::ParallelDescriptor::ReduceLongSum(rk_);
             amrex::Print() << " | flux_sanit = " << fs_
                            << "  reflux_cap = " << rc_
-                           << "  reflux_clamp = " << rk_ << "\n";
+                           << "  reflux_clamp = " << rk_;
+            //  NSCBC-1: ghost-fill zero-gradient fallbacks, cause-split
+            //  (PS_guards.H).  All zero unless CAMR.ps_bc_use_nscbc=1.
+            amrex::Long nc_ = ps_guard::n_nscbc_zg_c();
+            amrex::Long nl_ = ps_guard::n_nscbc_zg_lin();
+            amrex::Long ns_ = ps_guard::n_nscbc_zg_sup();
+            amrex::Long nt_ = ps_guard::n_nscbc_zg_slots();
+            amrex::ParallelDescriptor::ReduceLongSum(nc_);
+            amrex::ParallelDescriptor::ReduceLongSum(nl_);
+            amrex::ParallelDescriptor::ReduceLongSum(ns_);
+            amrex::ParallelDescriptor::ReduceLongSum(nt_);
+            amrex::Print() << " | nscbc_zg(c=" << nc_
+                           << ",lin=" << nl_
+                           << ",sup=" << ns_
+                           << ",slots=" << nt_ << ")\n";
             ps_guard::reset_ctop_counts();
             ps_guard::reset_counts();
             ps_guard::reset_rho_counts();
             ps_guard::reset_slaved();
             ps_guard::reset_b13_counts();
+            ps_guard::reset_nscbc_counts();
             // W0 face audit (DESIGN_ps_wp_front.md §5): report + reset at
             // the same cadence, gated on CAMR.ps_face_diag (default off;
             // the counters themselves cost a few compares per face).

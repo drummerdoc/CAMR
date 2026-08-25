@@ -117,10 +117,28 @@ sweep — battery bit-identical (measured, container).
   post-forcing read).  job_info verified listing all ten.
   Builds: PR 1D, Sod GammaLaw 2D, PipeBreak PR 2D all clean.
 
-OPEN: NSCBC-1 (single-phase ghost-state e inadmissible under
-ps_bc_use_nscbc=1, found during B8's A/B); llf split-path stiff-case
-aborts (B2/B7/B11, standing red, attributable to the path itself).
-Batch 3b is otherwise COMPLETE.
+LANDED (NSCBC-1, 2026-08-24): the B8 attribution ("R+ ghost
+construction produces inadmissible vapour e") was measured WRONG —
+the R+ outflow ghosts are admissible; the defect was the REVERSED-FLOW
+branch, a positive-feedback pump (P anchored to P_amb while the
+interior inward velocity is COPIED; measured Mach ~15 boundary jet on
+A1 before the abort), plus a latent pack trap (RYP2E's in-dome
+saturation-mixture e written into BOTH phase slots).  Fix behind
+CAMR.ps_bc_nscbc_v2 (default 1; 0 = legacy bit-for-bit, verified on
+B4's recorded row): one subsonic characteristic branch for both flow
+signs, per-phase ISENTROPIC pack from ps_phase_speeds_from_state (the
+wave speed's own decomposition, extracted FP-identically — battery
+bit-identical), no (rho,P) inversion anywhere, four counted
+zero-gradient fallback causes ([PS-GUARD] nscbc_zg).  A1-under-NSCBC
+now runs to tf (no abort; the 50x far-field fills are refused and
+counted, 4/step); B4-under-NSCBC unchanged at every printed digit
+with all counters zero.  NEW OPEN QUESTION (NSCBC-2, not a defect):
+B4's NSCBC u-error (.3809 vs bcnormal .1261) is now measured to be a
+property of the invariant/relaxation formulation, not the pack.
+
+OPEN: llf split-path stiff-case aborts (B2/B7/B11, standing red,
+attributable to the path itself); NSCBC-2 (formulation-level accuracy
+question above).  Batch 3b is COMPLETE.
 
 ---
 
