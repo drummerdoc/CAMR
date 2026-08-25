@@ -4,7 +4,29 @@
 #include "IndexDefines.H"
 #include "CAMR_Constants.H"
 #ifdef USE_PS_HYDRO
+#include <AMReX_ParmParse.H>
 #include "PS_ctoprim.H"   // ps_mixture_pressure_from_cons (task #21)
+#include "PS_wavespeed.H" // ps_frozen_cmix_from_state (AUDIT B14)
+
+//  AUDIT 2026-08-24 B14: CAMR.ps_hydro, single cached read.  CAMR::ps_hydro
+//  is a protected static member, unreadable from these free functions (the
+//  PS_umeth.cpp accessors document the same constraint); ParmParse returns
+//  the value CAMR::read_params queried at startup.  Needed because, unlike
+//  derpres, the sound-speed routing must NOT engage when the 6-eq slots are
+//  carried as passive scalars (ps_hydro=0): the single-fluid c is the true
+//  characteristic speed of that scheme.
+namespace {
+int ps_derive_ps_hydro()
+{
+    static const int v = []() -> int {
+        int r = 0;
+        amrex::ParmParse pp("CAMR");
+        pp.query("ps_hydro", r);
+        return r;
+    }();
+    return v;
+}
+}
 #endif
 
 void
@@ -596,6 +618,17 @@ CAMR_dersoundspeed(
   auto const dat = datfab.const_array();
   auto cfab = derfab.array();
 
+#ifdef USE_PS_HYDRO
+  //  AUDIT 2026-08-24 B14: on a PS run (ps_hydro=1) this derive used the
+  //  SINGLE-FLUID mixture inversion EOS::REY2P/REY2Gam — a speed the scheme
+  //  never propagates with (Timestep.H's diagnostic said as much), and an
+  //  inversion that can ABORT on healthy two-phase states (a recorded B7
+  //  plot failure).  Route through THE consolidated frozen Wallis c_mix
+  //  (PS_wavespeed.H, B8) that dt and the fluxes use.  ps_hydro=0 (slots
+  //  passive) keeps the single-fluid c — there it IS the scheme's speed.
+  const int    l_ps   = ps_derive_ps_hydro();
+  const PsPres l_pres = ps_presence_params();   // one host read
+#endif
   amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
     const amrex::Real rho = dat(i, j, k, URHO);
 #ifdef AMREX_USE_EB
@@ -604,9 +637,17 @@ CAMR_dersoundspeed(
     } else
 #endif
     {
+    amrex::Real c;
+#ifdef USE_PS_HYDRO
+    if (l_ps != 0) {
+      amrex::Real Uloc[NVAR];
+      for (int n = 0; n < NVAR; ++n) Uloc[n] = dat(i, j, k, n);
+      c = ps_frozen_cmix_from_state(Uloc, l_pres);
+    } else
+#endif
+    {
     const amrex::Real rhoInv = 1.0 / rho;
     amrex::Real massfrac[NUM_SPECIES];
-    amrex::Real c;
     for (int n = 0; n < NUM_SPECIES; ++n) {
       massfrac[n] = dat(i, j, k, UFS + n) * rhoInv;
     }
@@ -616,6 +657,7 @@ CAMR_dersoundspeed(
     EOS::REY2Gam(rho,eint,massfrac,gam);
     c = std::sqrt(gam*pres/rho);
    // EOS::RTY2Cs(rho, T, massfrac, c);
+    }
     cfab(i, j, k) = c;
     }
   });
@@ -636,6 +678,11 @@ CAMR_dermachnumber(
   auto const dat = datfab.const_array();
   auto mach = derfab.array();
 
+#ifdef USE_PS_HYDRO
+  //  AUDIT 2026-08-24 B14: same routing as CAMR_dersoundspeed above.
+  const int    l_ps   = ps_derive_ps_hydro();
+  const PsPres l_pres = ps_presence_params();   // one host read
+#endif
   amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
     const amrex::Real rho = dat(i, j, k, URHO);
 #ifdef AMREX_USE_EB
@@ -644,9 +691,17 @@ CAMR_dermachnumber(
     } else
 #endif
     {
+    amrex::Real c;
+#ifdef USE_PS_HYDRO
+    if (l_ps != 0) {
+      amrex::Real Uloc[NVAR];
+      for (int n = 0; n < NVAR; ++n) Uloc[n] = dat(i, j, k, n);
+      c = ps_frozen_cmix_from_state(Uloc, l_pres);
+    } else
+#endif
+    {
     const amrex::Real rhoInv = 1.0 / rho;
     amrex::Real massfrac[NUM_SPECIES];
-    amrex::Real c;
     for (int n = 0; n < NUM_SPECIES; ++n) {
       massfrac[n] = dat(i, j, k, UFS + n) * rhoInv;
     }
@@ -656,6 +711,7 @@ CAMR_dermachnumber(
     EOS::REY2Gam(rho,eint,massfrac,gam);
     c = std::sqrt(gam*pres/rho);
     //EOS::RTY2Cs(rho, T, massfrac, c);
+    }
     AMREX_D_TERM(const amrex::Real datxsq = dat(i, j, k, UMX) * dat(i, j, k, UMX);,
                  const amrex::Real datysq = dat(i, j, k, UMY) * dat(i, j, k, UMY);,
                  const amrex::Real datzsq = dat(i, j, k, UMZ) * dat(i, j, k, UMZ););

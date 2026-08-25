@@ -180,29 +180,42 @@ CAMR_bcfill_hyp(
 {
   const ProbParmDevice* lprobparm = CAMR::d_prob_parm;
 
-  // Fetch the NSCBC dispatch settings once per call.  CAMR::ps_bc_*
-  // members are protected static, so we can't read them from this
-  // free function directly; ParmParse gives the same values that
-  // CAMR::read_params queried at startup.  Values are captured into
-  // the PCHypFillExtDir functor so the device operator() can act on
-  // them without touching CAMR class internals.
-  int         use_nscbc   = 0;
-  amrex::Real nscbc_sigma = amrex::Real(0.25);
-  int         nscbc_order = 2;   // 1 or 2 — R+ extrapolation order.
-  {
+  // Fetch the NSCBC dispatch settings ONCE per run (AUDIT 2026-08-24
+  // B5/C.6; was once per fill call — the ParmParse table is fixed after
+  // startup, so per-call re-reads could never see a different value).
+  // CAMR::ps_bc_* members are protected static, so we can't read them from
+  // this free function directly; ParmParse gives the same values that
+  // CAMR::read_params queried at startup.  The RESOLVED values (after the
+  // no-PS_HYDRO force-off and the order forcing) are force-added back to
+  // the table so job_info records the BC path that actually ran even when
+  // the deck was silent (gerg_ext_c idiom).  Values are captured into the
+  // PCHypFillExtDir functor so the device operator() can act on them
+  // without touching CAMR class internals.
+  struct NscbcCfg { int use; amrex::Real sigma; int order; };
+  static const NscbcCfg nscbc_cfg = []() -> NscbcCfg {
+    int u = 0;
+    amrex::Real sg = amrex::Real(0.25);
+    int od = 2;   // 1 or 2 — R+ extrapolation order.
     amrex::ParmParse pp("CAMR");
-    pp.query("ps_bc_use_nscbc",   use_nscbc);
-    pp.query("ps_bc_nscbc_sigma", nscbc_sigma);
-    pp.query("ps_bc_nscbc_order", nscbc_order);
-  }
+    pp.query("ps_bc_use_nscbc",   u);
+    pp.query("ps_bc_nscbc_sigma", sg);
+    pp.query("ps_bc_nscbc_order", od);
 #ifndef USE_PS_HYDRO
-  use_nscbc = 0;   // safety: NSCBC is a no-op without PS_HYDRO.
+    u = 0;   // safety: NSCBC is a no-op without PS_HYDRO.
 #endif
-  if (nscbc_order != 1 && nscbc_order != 2) {
-    amrex::Print() << "  CAMR bcfill: unknown ps_bc_nscbc_order="
-                   << nscbc_order << ", forcing to 2.\n";
-    nscbc_order = 2;
-  }
+    if (od != 1 && od != 2) {
+      amrex::Print() << "  CAMR bcfill: unknown ps_bc_nscbc_order="
+                     << od << ", forcing to 2.\n";
+      od = 2;
+    }
+    pp.add("ps_bc_use_nscbc",   u);
+    pp.add("ps_bc_nscbc_sigma", sg);
+    pp.add("ps_bc_nscbc_order", od);
+    return NscbcCfg{u, sg, od};
+  }();
+  const int         use_nscbc   = nscbc_cfg.use;
+  const amrex::Real nscbc_sigma = nscbc_cfg.sigma;
+  const int         nscbc_order = nscbc_cfg.order;
 
   // One-time per-run banner so runlogs record which outflow BC path
   // is actually in play.  Diagnostic-only; no performance impact.

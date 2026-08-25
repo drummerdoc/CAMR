@@ -47,11 +47,14 @@ ps_finite_or(Real x, Real fallback) noexcept
 }
 
 
+//  AUDIT 2026-08-24 B8: the frozen mixture sound speed, extracted so the
+//  NSCBC boundary impedance shares THE one construction (host-slaving,
+//  G1 clamps, #199 Wallis form) instead of carrying a drifted copy.
+//  ps_max_wave_speed_from_state below is |u_n| + this.
 AMREX_GPU_HOST_DEVICE
 AMREX_FORCE_INLINE
 Real
-ps_max_wave_speed_from_state(int idir, const Real U[NVAR],
-                             const PsPres& pr) noexcept
+ps_frozen_cmix_from_state(const Real U[NVAR], const PsPres& pr) noexcept
 {
     const Real rho    = amrex::max(ps_finite_or(U[URHO], Real(1.0)), Real(1.0e-6));
     const Real inv_r  = Real(1.0) / rho;
@@ -66,10 +69,6 @@ ps_max_wave_speed_from_state(int idir, const Real U[NVAR],
 #else
     const Real uz     = Real(0.0);
 #endif
-    Real un = ux;
-    if      (idir == 1) un = uy;
-    else if (idir == 2) un = uz;
-
     Real alpha_1 = ps_finite_or(U[UALPHA1], Real(1.0));
     constexpr Real alpha_floor = Real(1.0e-6);
     if (alpha_1 < Real(0.0)) alpha_1 = Real(0.0);
@@ -146,9 +145,26 @@ ps_max_wave_speed_from_state(int idir, const Real U[NVAR],
     const Real Y1 = m1 / rho;
     const Real Y2 = Real(1.0) - Y1;
     c2_frozen = ps_cmix2(Y1, Y2, c1, c2);
-    const Real c_mix = (c2_frozen > Real(0.0)) ? std::sqrt(c2_frozen)
-                                                : amrex::max(c1, c2);
-    return std::abs(un) + c_mix;
+    return (c2_frozen > Real(0.0)) ? std::sqrt(c2_frozen)
+                                   : amrex::max(c1, c2);
+}
+
+AMREX_GPU_HOST_DEVICE
+AMREX_FORCE_INLINE
+Real
+ps_max_wave_speed_from_state(int idir, const Real U[NVAR],
+                             const PsPres& pr) noexcept
+{
+    const Real rho    = amrex::max(ps_finite_or(U[URHO], Real(1.0)), Real(1.0e-6));
+    const Real inv_r  = Real(1.0) / rho;
+    Real un = ps_finite_or(U[UMX], Real(0.0)) * inv_r;
+#if (AMREX_SPACEDIM >= 2)
+    if (idir == 1) un = ps_finite_or(U[UMY], Real(0.0)) * inv_r;
+#endif
+#if (AMREX_SPACEDIM == 3)
+    if (idir == 2) un = ps_finite_or(U[UMZ], Real(0.0)) * inv_r;
+#endif
+    return std::abs(un) + ps_frozen_cmix_from_state(U, pr);
 }
 
 #endif  // USE_PS_HYDRO

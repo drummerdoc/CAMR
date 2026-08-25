@@ -1068,10 +1068,20 @@ CAMR::reflux()
                         // reconciles the small residual).
                         constexpr amrex::Real da_cap = amrex::Real(0.05);
                         amrex::Real da = d_m / rho1;
+                        //  AUDIT 2026-08-24 B13: both limiters COUNTED (were
+                        //  silent).  A firing cap/clamp leaves an α-vs-mass
+                        //  residual for the next-step resync to reconcile;
+                        //  [PS-GUARD] reflux_cap / reflux_clamp make its
+                        //  frequency observable.  (Host builds; the counters
+                        //  compile to no-ops under AMREX_USE_GPU.)
+                        const amrex::Real da_raw = da;
                         da = amrex::min(amrex::max(da, -da_cap), da_cap);
+                        if (da != da_raw) { ps_guard::count_reflux_cap(); }
                         amrex::Real a1_new = a1_old + da;
+                        const amrex::Real a1_unclamped = a1_new;
                         a1_new = amrex::min(amrex::max(a1_new, amin),
                                             amrex::Real(1.0) - amin);
+                        if (a1_new != a1_unclamped) { ps_guard::count_reflux_clamp(); }
                         s(i,j,k,UALPHA1) = a1_new;
                     }
                 }
@@ -1374,6 +1384,22 @@ void
 CAMR::derive(
   const std::string& name, amrex::Real time, amrex::MultiFab& mf_to_fill, int dcomp)
 {
+#ifdef USE_PS_HYDRO
+  //  AUDIT 2026-08-24 B14: this overload fell through to AmrLevel::derive,
+  //  whose registered function for flash_rate is CAMR_dernull — the
+  //  destination component was NEVER FILLED (whatever memory the caller
+  //  handed in went to the plotfile as "flash_rate").  Mirror the
+  //  unique_ptr overload above: zeros, then flash_src where it matches.
+  if (name == "flash_rate") {
+    mf_to_fill.setVal(0.0, dcomp, 1, mf_to_fill.nGrow());
+    if (flash_src.ok() &&
+        flash_src.boxArray() == mf_to_fill.boxArray() &&
+        flash_src.DistributionMap() == mf_to_fill.DistributionMap()) {
+      amrex::MultiFab::Copy(mf_to_fill, flash_src, 0, dcomp, 1, 0);
+    }
+    return;
+  }
+#endif
 #ifdef AMREX_USE_EB
   if (name == "vfrac" || name == "volfrac") {
     amrex::MultiFab::Copy(mf_to_fill, *volfrac, 0, 0, 1, 0);
@@ -1883,6 +1909,7 @@ CAMR::clean_state(amrex::MultiFab& S, bool refresh_temp)
   static const bool lazy_temp = []() {
       int v = 1; amrex::ParmParse pp("CAMR");
       pp.query("lazy_temp", v);
+      pp.add("lazy_temp", v);   // AUDIT 2026-08-24 B5/C.6: resolved -> job_info
       return v != 0;
   }();
   if (refresh_temp || !lazy_temp) {

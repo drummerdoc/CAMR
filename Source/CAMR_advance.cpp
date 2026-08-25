@@ -160,12 +160,16 @@ CAMR::CAMR_advance (Real time,
                          "re-enable ps_do_relax.");
         }
 #endif
+        //  AUDIT 2026-08-24 B5/C.6: force-add the RESOLVED value so job_info
+        //  records it even when the deck is silent (gerg_ext_c idiom).
+        pp.add("ps_do_relax", v);
         return v;
     }();
     static const int ps_strang_cached = []() -> int {
         int v = 0;
         amrex::ParmParse pp("CAMR");
         pp.query("ps_strang", v);
+        pp.add("ps_strang", v);   // B5/C.6: resolved value -> job_info
         return v;
     }();
     // R(dt_r): vanish-fold, mechanical relaxation (instantaneous projection,
@@ -309,11 +313,24 @@ CAMR::CAMR_advance (Real time,
             amrex::ParallelDescriptor::ReduceLongSum(cf_);
             amrex::Print() << " | ctop_seen = " << ck_
                            << "  ctop_sub = " << cs_
-                           << "  ctop_host_floor = " << cf_ << "\n";
+                           << "  ctop_host_floor = " << cf_;
+            //  AUDIT 2026-08-24 B13: the three formerly-silent limiters
+            //  (flux belt-and-suspenders zero, reflux α co-move cap/clamp)
+            //  report + reset at the same cadence.
+            amrex::Long fs_ = ps_guard::n_flux_sanit();
+            amrex::Long rc_ = ps_guard::n_reflux_cap();
+            amrex::Long rk_ = ps_guard::n_reflux_clamp();
+            amrex::ParallelDescriptor::ReduceLongSum(fs_);
+            amrex::ParallelDescriptor::ReduceLongSum(rc_);
+            amrex::ParallelDescriptor::ReduceLongSum(rk_);
+            amrex::Print() << " | flux_sanit = " << fs_
+                           << "  reflux_cap = " << rc_
+                           << "  reflux_clamp = " << rk_ << "\n";
             ps_guard::reset_ctop_counts();
             ps_guard::reset_counts();
             ps_guard::reset_rho_counts();
             ps_guard::reset_slaved();
+            ps_guard::reset_b13_counts();
             // W0 face audit (DESIGN_ps_wp_front.md §5): report + reset at
             // the same cadence, gated on CAMR.ps_face_diag (default off;
             // the counters themselves cost a few compares per face).

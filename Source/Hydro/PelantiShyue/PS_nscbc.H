@@ -68,6 +68,7 @@
 #include "PS_presence.H"   // S2
 #include "IndexDefines.H"
 #include "EOS.H"
+#include "PS_wavespeed.H"   // B8: the one wave-speed construction
 #include <AMReX_GpuQualifiers.H>
 #include <cmath>
 
@@ -167,46 +168,20 @@ _wallis_c_at_cell(const amrex::Real s[NVAR],
                   const PsPres&     pr) noexcept
 {
     using amrex::Real;
-    Real alpha_1 = _finite_or(s[UALPHA1], Real(1.0));
-    constexpr Real alpha_floor = Real(1.0e-6);
-    if (alpha_1 < Real(0.0)) alpha_1 = Real(0.0);
-    if (alpha_1 > Real(1.0)) alpha_1 = Real(1.0);
-    const Real alpha_2 = Real(1.0) - alpha_1;
-
-    const Real m1 = amrex::max(_finite_or(s[UM1RHO1], Real(0.0)), Real(0.0));
-    const Real m2 = amrex::max(_finite_or(s[UM2RHO2], Real(0.0)), Real(0.0));
-    constexpr Real rho_floor = Real(1.0e-6);
-    Real rho_1 = (m1 > Real(0.0)) ? m1 / alpha_1 : rho_floor;
-    Real rho_2 = (m2 > Real(0.0)) ? m2 / alpha_2 : rho_floor;
-    if (rho_1 < rho_floor) rho_1 = rho_floor;
-    if (rho_2 < rho_floor) rho_2 = rho_floor;
-
-    const Real ke_spec = Real(0.5) * (ux*ux + uy*uy + uz*uz);
-    const Real E1_tot = _finite_or(s[UE1], Real(0.0));
-    const Real E2_tot = _finite_or(s[UE2], Real(0.0));
-    Real e_1 = (m1 > Real(1.0e-12)) ? E1_tot / m1 - ke_spec : e_mix;
-    Real e_2 = (m2 > Real(1.0e-12)) ? E2_tot / m2 - ke_spec : e_mix;
-
-    // Per-phase (P, c) via branch-locked EOS (task #185): phase 1 →
-    // liquid branch, phase 2 → vapor/SC branch.  The NSCBC only reads
-    // these to build the Wallis frozen mixture c below, so any
-    // per-phase inconsistency here would corrupt the boundary
-    // impedance.
-    // One branch-locked solve per phase -> both P and c (device-clean 2->1).
-    Real P_1, P_2, c1, c2;
-    EOS::REY2PCs_liquid(rho_1, e_1, Y, P_1, c1);
-    EOS::REY2PCs_vapor (rho_2, e_2, Y, P_2, c2);
-    if (!std::isfinite(P_1) || P_1 <= Real(0.0)) P_1 = P_mix;
-    if (!std::isfinite(P_2) || P_2 <= Real(0.0)) P_2 = P_mix;
-    if (!std::isfinite(c1) || c1 <= Real(0.0)) c1 = Real(1.0);
-    if (!std::isfinite(c2) || c2 <= Real(0.0)) c2 = Real(1.0);
-
-    Real c2_frozen;
-    const Real Y1 = alpha_1 * rho_1 / rho_mix;
-    const Real Y2 = Real(1.0) - Y1;
-    c2_frozen = Y1 * c1*c1 + Y2 * c2*c2;
-    return (c2_frozen > Real(0.0)) ? std::sqrt(c2_frozen)
-                                     : amrex::max(c1, c2);
+    //  AUDIT 2026-08-24 B8: this was the THIRD drifted wave-speed copy —
+    //  no regime dispatch, an unguarded m_k/alpha_k division that went
+    //  inf -> NaN on pure-phase cells with trace opposite mass (after the
+    //  alpha clamp changed to [0,1]), branch-locked EOS queried
+    //  unconditionally with c = 1 m/s floors (the A3 discontinuity, kept
+    //  alive at the boundary), a Y-weighted c^2 form that #199 refuted,
+    //  and a threaded `pr` parameter that was never read.  Now THE one
+    //  construction (PS_wavespeed.H ps_frozen_cmix_from_state):
+    //  host-slaving, G1 density clamps, #199 Wallis form — and `pr`
+    //  finally does its job.  rho_mix/e_mix/velocities/P_mix/Y are
+    //  retained in the signature for call-site stability but no longer
+    //  read: the consolidated form works from the conserved state alone.
+    amrex::ignore_unused(rho_mix, e_mix, ux, uy, uz, P_mix, Y);
+    return ps_frozen_cmix_from_state(s, pr);
 }
 
 

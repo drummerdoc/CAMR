@@ -18,7 +18,9 @@ struct TaggingParm
   amrex::Real tempgrad = 1.0e10;
   amrex::Real ftracerr = 1.0e10;
   amrex::Real ftracgrad = 1.0e10;
-  amrex::Real alphaerr = 1.0e10;
+  //  (alphaerr removed, AUDIT 2026-08-24 B14: no tagging routine ever read
+  //   it — see the note in Tagging.cpp; use amr.refinement_indicators with
+  //   field_name = ps_alpha1 instead.)
 
   int max_denerr_lev = 10;
   int max_dengrad_lev = 10;
@@ -31,7 +33,6 @@ struct TaggingParm
   int max_tempgrad_lev = 10;
   int max_ftracerr_lev = 10;
   int max_ftracgrad_lev = 10;
-  int max_alphaerr_lev = 10;
 };
 
 AMREX_GPU_DEVICE

@@ -54,10 +54,73 @@ eliminated by the intervening X3/G-DEF/guard work.  Battery at the new
 default: identical to baseline at every printed decimal on the device
 (B3's 1e-11 u-floor bit-identical).  The fix guards the latent path.
 
-OPEN (Batch 3b, remaining — one at a time, predictions first): B4
-(tiny-step residual check), B6 (GERG endpoint-clamp contract), B8
-(wave-speed consolidation), B13 (counter coverage), B14 (derive
-routing), B5/C.6 (provenance force-adds for the remaining raw dials).
+LANDED (Batch 3b item 3, 2026-08-24): B4 — REFUTED as control flow,
+landed as accounting.  The refuse-on-unmet-residual variant (strict AND
+1%-relative) flips the 0-D route/basin gate: accept-on-tiny is a restart
+mechanism (committing the stalled iterate moves the base; the next
+sub-step's fresh Jacobian progresses to the dt-independent fixed point).
+Landed: stalled commits with residual > 1% of the step scale are counted
+(PsX3Stats.n_tiny_nonconv, in the [PS-X3] print), control flow unchanged
+(bit-identical); the refuted dial was removed, not left inert.  Production
+incidence measured ZERO on B2/B7/B9 (525/2129/731 kernel calls); the
+failure shape exists only in the 0-D harness's synthetic states.  Device:
+0-D gate PASS, B2 (+FROZEN) and B7 rows identical.
+
+LANDED (Batch 3b item 4, 2026-08-24): B6 — GERG bisections now
+bracket-or-abort on BOTH sides (Marc's call: no low-side clamp proxy;
+sub-triple states are out of GERG's domain, full stop), aligned with
+PR's ps_eos_noroot contract; gergtab lookup() rejects on the doubles
+before the int conversion (NaN/overflow UB fence, the masked wrappers'
+only fence).  A/B (realclean per the build rule): 18/19 rows + both
+FROZEN rows bit-identical; the one divergence IS the finding —
+B7-under-GERG aborts on vapour 45 kJ/kg below e(T_trip), i.e. the old
+row was scored on invented T_trip endpoint states.  B7 is now a KNOWN
+out-of-domain case for Eos_Model=GERG.  PR battery untouched by
+construction.
+
+LANDED (Batch 3b item 5, 2026-08-24): B8 — three wave-speed copies ->
+ONE construction (ps_frozen_cmix_from_state extracted; split-path cell
+copy and NSCBC's _wallis_c_at_cell now delegate; the alpha=0-division
+NaN and the #199-refuted Y-weighted c^2 form are gone with them).
+Measured: wp acceptance battery bit-identical (prediction confirmed);
+llf leg A1/B1 identical pre/post while B2/B7/B11's pre-existing aborts
+persist (now cleanly attributable to the split path itself, not the
+copies); NSCBC leg: B4 went from IMMEDIATE ABORT to running and scoring
+(first working two-phase NSCBC measurement) — A1-under-NSCBC still
+aborts on a DISTINCT ghost-state defect (R+ extrapolation makes vapour
+e inadmissible), recorded OPEN as candidate NSCBC-1.
+
+LANDED (Batch 3b item 6, 2026-08-24): B13 + B14 + B5/C.6, the closing
+sweep — battery bit-identical (measured, container).
+  B13: the three silent limiters are counted — flux belt-and-suspenders
+  ([PS-GUARD] flux_sanit), reflux alpha co-move cap/clamp ([PS-GUARD]
+  reflux_cap/reflux_clamp), S4 presence-gate refusals (ONE shared
+  counter, 5 sites/all modes; [ps_relax] gate_presence + [PS-GATE]
+  under ps_pres_diag).  Measured: B2 shows 1-3 in-band refusals/sweep
+  that were previously invisible; A1 zero; flux/reflux counters zero
+  on B2/B7 and trivially battery-wide (1-D, no AMR).
+  B14: soundspeed/MachNumber derives route through THE frozen Wallis
+  c_mix (B8's ps_frozen_cmix_from_state) when ps_hydro=1.  Measured on
+  B7-final (A/B exe): the old single-fluid inversion did NOT abort on
+  this state — the abort half of the prediction is REFUTED there
+  (abort class still attested by Timestep.H's record) — it was
+  SILENTLY WRONG: c=79.4 m/s in a pure-liquid cell vs 290.2 branch-
+  locked, 37/64 cells >1% off, reported Mach_max 1.395 (spurious
+  supersonic) vs true 0.769.  flash_rate's MultiFab& derive overload
+  no longer falls through to dernull (destination was never filled);
+  dead tagging.alphaerr knob removed (live route: refinement_indicators
+  + ps_alpha1).
+  B5/C.6: ten dials force-add their RESOLVED values (gerg_ext_c idiom):
+  ps_do_relax, ps_strang, ps_flux (canonical name), ps_recon,
+  ps_alpha_limiter (canonical name), ps_llf_identity, lazy_temp,
+  ps_bc_use_nscbc/_sigma/_order (BCfill also moved to one cached
+  post-forcing read).  job_info verified listing all ten.
+  Builds: PR 1D, Sod GammaLaw 2D, PipeBreak PR 2D all clean.
+
+OPEN: NSCBC-1 (single-phase ghost-state e inadmissible under
+ps_bc_use_nscbc=1, found during B8's A/B); llf split-path stiff-case
+aborts (B2/B7/B11, standing red, attributable to the path itself).
+Batch 3b is otherwise COMPLETE.
 
 ---
 

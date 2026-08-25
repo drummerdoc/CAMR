@@ -204,23 +204,24 @@ ps_physical_flux(int i, int j, int k,
     // Final belt-and-suspenders: any F component that somehow ended
     // up non-finite gets replaced with zero.  Better a zero flux
     // (locally stagnates the wave) than a NaN flux (poisons dsdt).
-    for (int n = 0; n < NVAR; ++n) F[n] = ps_finite_or(F[n], Real(0.0));
+    //  AUDIT 2026-08-24 B13: COUNTED (was silent).  Every input above is
+    //  already ps_finite_or-guarded, so a hit here means the arithmetic
+    //  produced the non-finite; [PS-GUARD] flux_sanit reports it.
+    for (int n = 0; n < NVAR; ++n) {
+        if (!std::isfinite(F[n])) { F[n] = Real(0.0); ps_guard::count_flux_sanit(); }
+    }
 }
 
 // =====================================================================
 //  ps_max_wave_speed
 //
-//  Maximum wave speed at cell (i,j,k) for direction `idir`, used as
-//  the LLF diffusion coefficient in Phase 4c-β2b:
-//        λ_max = |u_n| + c_frozen
-//  with the P-S 2014 "Wallis-style" frozen sound speed
-//        c_frozen² = α₁ Y₁ c₁² + α₂ Y₂ c₂²
-//  where Y_k = α_k ρ_k / ρ_mix is the mass fraction of phase k.
-//
-//  Requires EOS::RPY2Cs to be device-inline (PR and
-//  GammaLaw both satisfy this).
+//  Maximum wave speed at cell (i,j,k) for direction `idir` — the LLF
+//  diffusion coefficient of the split path: λ_max = |u_n| + c_frozen with
+//  the #199-correct Wallis frozen sound speed (ps_cmix2, NO extra alpha
+//  factor).  Since B8 (2026-08-24) this is a wrapper over the one
+//  consolidated construction in PS_wavespeed.H.
 // =====================================================================
-AMREX_GPU_HOST_DEVICE
+AMREX_GPU_DEVICE
 AMREX_FORCE_INLINE
 Real
 ps_max_wave_speed(int i, int j, int k,
@@ -229,84 +230,20 @@ ps_max_wave_speed(int i, int j, int k,
                   Array4<const Real> const& q,
                   const PsPres& pr) noexcept
 {
-    Real un = ps_finite_or(q(i,j,k, QU), Real(0.0));
-#if (AMREX_SPACEDIM >= 2)
-    if (idir == 1) un = ps_finite_or(q(i,j,k, QV), Real(0.0));
-#endif
-#if (AMREX_SPACEDIM == 3)
-    if (idir == 2) un = ps_finite_or(q(i,j,k, QW), Real(0.0));
-#endif
-
-    const Real rho_mix = amrex::max(ps_finite_or(U(i,j,k, URHO), Real(1.0)), Real(1.0e-6));
-    Real alpha_1 = ps_finite_or(q(i,j,k, QALPHA1), Real(1.0));
-    constexpr Real alpha_floor = Real(1.0e-6);
-    if (alpha_1 < Real(0.0)) alpha_1 = Real(0.0);
-    if (alpha_1 > Real(1.0)) alpha_1 = Real(1.0);
-    const Real alpha_2 = Real(1.0) - alpha_1;
-    const Real rho_1   = amrex::max(ps_finite_or(q(i,j,k, QRHO1), Real(1.0)), Real(1.0e-6));
-    const Real rho_2   = amrex::max(ps_finite_or(q(i,j,k, QRHO2), Real(1.0)), Real(1.0e-6));
-
-    // Per-phase specific internal energy from U's UE1/UE2 slots
-    // (task #185: avoid the (P, ρ) inversion path which auto-detects
-    // phase; compute c directly from (ρ, e, phase) via branch-locked
-    // REY2Cs_liquid / REY2Cs_vapor).
-    const Real inv_rho_mix = Real(1.0) / rho_mix;
-    const Real ux = ps_finite_or(U(i,j,k, UMX), Real(0.0)) * inv_rho_mix;
-#if (AMREX_SPACEDIM >= 2)
-    const Real uy = ps_finite_or(U(i,j,k, UMY), Real(0.0)) * inv_rho_mix;
-#else
-    const Real uy = Real(0.0);
-#endif
-#if (AMREX_SPACEDIM == 3)
-    const Real uz = ps_finite_or(U(i,j,k, UMZ), Real(0.0)) * inv_rho_mix;
-#else
-    const Real uz = Real(0.0);
-#endif
-    const Real ke_spec = Real(0.5) * (ux*ux + uy*uy + uz*uz);
-    const Real m1 = amrex::max(ps_finite_or(U(i,j,k, UM1RHO1), Real(0.0)), Real(0.0));
-    const Real m2 = amrex::max(ps_finite_or(U(i,j,k, UM2RHO2), Real(0.0)), Real(0.0));
-    const Real E1_tot = ps_finite_or(U(i,j,k, UE1), Real(0.0));
-    const Real E2_tot = ps_finite_or(U(i,j,k, UE2), Real(0.0));
-    const Real e_mix  = ps_finite_or(U(i,j,k, UEINT), Real(0.0)) * inv_rho_mix;
-    const Real e1 = (m1 > Real(1.0e-12)) ? E1_tot / m1 - ke_spec : e_mix;
-    const Real e2 = (m2 > Real(1.0e-12)) ? E2_tot / m2 - ke_spec : e_mix;
-
-    Real Y_dummy[NUM_SPECIES];
-    Y_dummy[0] = Real(1.0);
-    for (int n = 1; n < NUM_SPECIES; ++n) Y_dummy[n] = Real(0.0);
-
-    // Clamp per-phase (ρ, e) before the branch-locked EOS call —
-    // LLF diffusion can transiently drive the trace phase into a
-    // non-physical corner before relaxation is available to correct
-    // it.  The Newton inside state_from_rho_e_phase is bounded but
-    // can produce a NaN c if fed extreme inputs; the finite-check
-    // below then floors to 1 m/s.
-    const Real rho_floor = Real(1.0e-6);
-    const Real rho_1_safe = (rho_1 > rho_floor && std::isfinite(rho_1)) ? rho_1 : rho_floor;
-    const Real rho_2_safe = (rho_2 > rho_floor && std::isfinite(rho_2)) ? rho_2 : rho_floor;
-
-    Real c1, c2;
-    EOS::REY2Cs_liquid(rho_1_safe, e1, Y_dummy, c1);
-    EOS::REY2Cs_vapor (rho_2_safe, e2, Y_dummy, c2);
-    if (!std::isfinite(c1) || c1 <= Real(0.0)) c1 = Real(1.0);
-    if (!std::isfinite(c2) || c2 <= Real(0.0)) c2 = Real(1.0);
-
-    Real c_mix;
-    if (rho_mix > Real(1.0e-30)) {
-        Real c2_frozen;
-        // S2: correct Wallis form (task #199; this was the second of the
-        // three remaining wrong copies -- extra alpha factor removed in
-        // the presence branch only, so ungated dt is untouched).
-        const Real Y1 = alpha_1 * rho_1_safe / rho_mix;
-        const Real Y2 = Real(1.0) - Y1;
-        c2_frozen = ps_cmix2(Y1, Y2, c1, c2);
-        c_mix = (c2_frozen > Real(0.0)) ? std::sqrt(c2_frozen)
-                                        : amrex::max(c1, c2);
-    } else {
-        c_mix = amrex::max(c1, c2);
-    }
-
-    return std::abs(un) + c_mix;
+    //  AUDIT 2026-08-24 B8: this was an 85-line DRIFTED private copy of the
+    //  consolidated wave speed — no regime dispatch / host slaving, both
+    //  branch-locked EOS queried at q's UNCLAMPED corridor densities, and
+    //  failures floored to c = 1 m/s (the A3 discontinuity the consolidated
+    //  copy removed) — live on the split (ps_flux=llf) path while dt was
+    //  estimated with the consolidated speed, so the two could disagree at
+    //  trace-phase cells.  Now a thin wrapper over THE wave speed
+    //  (PS_wavespeed.H).  `q` is kept in the signature for call-site
+    //  stability but no longer read: the consolidated form works from the
+    //  conserved state alone.
+    amrex::ignore_unused(q);
+    Real Uc[NVAR];
+    for (int n = 0; n < NVAR; ++n) Uc[n] = U(i,j,k,n);
+    return ps_max_wave_speed_from_state(idir, Uc, pr);
 }
 
 
@@ -477,7 +414,10 @@ ps_physical_flux_from_state(int idir, const Real U[NVAR], Real F[NVAR],
     F[UE1    ] = (ps_finite_or(U[UE1], Real(0.0)) + alpha_1 * Pe1) * un;
     F[UE2    ] = (ps_finite_or(U[UE2], Real(0.0)) + alpha_2 * Pe2) * un;
 
-    for (int n = 0; n < NVAR; ++n) F[n] = ps_finite_or(F[n], Real(0.0));
+    //  AUDIT 2026-08-24 B13: counted, as in ps_physical_flux above.
+    for (int n = 0; n < NVAR; ++n) {
+        if (!std::isfinite(F[n])) { F[n] = Real(0.0); ps_guard::count_flux_sanit(); }
+    }
 }
 
 
@@ -1151,12 +1091,20 @@ int ps_flux_selector()
         std::string s = "llf";
         amrex::ParmParse pp("CAMR");
         pp.query("ps_flux", s);
-        if (s == "hllc") return 1;
-        if (s == "wp")   return 2;   // Berger-LeVeque fluctuation interior (BL-1)
-        if (s == "llf" || s.empty()) return 0;
-        amrex::Print() << "  PS_umeth: unknown CAMR.ps_flux='" << s
-                       << "' — forcing to llf\n";
-        return 0;
+        int r = 0;
+        if      (s == "hllc") { r = 1; }
+        else if (s == "wp")   { r = 2; }  // Berger-LeVeque fluctuation interior (BL-1)
+        else if (s == "llf" || s.empty()) { r = 0; }
+        else {
+            amrex::Print() << "  PS_umeth: unknown CAMR.ps_flux='" << s
+                           << "' — forcing to llf\n";
+            r = 0;
+        }
+        //  AUDIT 2026-08-24 B5/C.6: force-add the RESOLVED canonical name so
+        //  job_info records which solver actually ran (gerg_ext_c idiom) —
+        //  including when the deck was silent or the string was forced.
+        pp.add("ps_flux", std::string((r == 1) ? "hllc" : (r == 2) ? "wp" : "llf"));
+        return r;
     }();
     return v;
 }
@@ -1176,6 +1124,7 @@ int ps_recon_selector()
         int r = 0;
         amrex::ParmParse pp("CAMR");
         pp.query("ps_recon", r);
+        pp.add("ps_recon", r);   // B5/C.6: resolved value -> job_info
         return r;
     }();
     return v;
@@ -1187,7 +1136,11 @@ int ps_alpha_limiter_minmod()
         std::string s = "vanleer";
         amrex::ParmParse pp("CAMR");
         pp.query("ps_alpha_limiter", s);
-        return (s == "minmod") ? 1 : 0;
+        const int m = (s == "minmod") ? 1 : 0;
+        // B5/C.6: resolved canonical name -> job_info (any string other than
+        // "minmod" resolves to vanleer; record what actually ran).
+        pp.add("ps_alpha_limiter", std::string(m ? "minmod" : "vanleer"));
+        return m;
     }();
     return v;
 }
@@ -1278,7 +1231,9 @@ PS_umeth(const Box& bx,
     const int llf_id = []() -> int {
         static int c = -1;
         if (c < 0) { int v = 1; amrex::ParmParse pp("CAMR");
-                     pp.query("ps_llf_identity", v); c = v; }
+                     pp.query("ps_llf_identity", v);
+                     pp.add("ps_llf_identity", v);   // B5/C.6 -> job_info
+                     c = v; }
         return c;
     }();
 

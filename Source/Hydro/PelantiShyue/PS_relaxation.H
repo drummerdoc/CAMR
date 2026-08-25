@@ -76,6 +76,14 @@ struct PsRelaxDiag {
     int n_skip_hi_ok   = 0;   // α_in ∈ (1 − α_floor, 1.0] (legitimate near-pure-1)
     int n_skip_hi_bad  = 0;   // α_in > 1.0               (impossible → flux bug)
     int n_skip_mk      = 0;   // m_1 or m_2 non-positive
+    //  AUDIT 2026-08-24 B13: the S4 presence gate's refusals were the ONE
+    //  uncounted early-out on the relax entry path (5 call sites, all
+    //  modes) — a cell inside the α band whose phase pair is not
+    //  Independent+Independent silently kept its pressure disequilibrium.
+    //  ONE shared counter: the five sites apply the identical predicate to
+    //  the identical inputs, so a per-mode split would only re-encode
+    //  ps_relax_mode.
+    int n_gate_presence = 0;  // S4 presence gate refused (per sweep, all modes)
     // -----------------------------------------------------------------
     int n_failed       = 0;   // ps_pressure_relax_cell returned false
     // --- failure taxonomy (task #41) ---
@@ -346,7 +354,10 @@ ps_mechanical_relax_cell(int i, int j, int k,
     }
     // S4 presence gate (design §5); replaces #88 below when enabled.
     const PsPres& prS4 = ps_presence_params();
-    if (!ps_presence_relax_gate(alpha1_in, m1, m2, prS4)) { return; }
+    if (!ps_presence_relax_gate(alpha1_in, m1, m2, prS4)) {
+        ++diag.n_gate_presence;   // B13: counted (was silent)
+        return;
+    }
 
     // Mixture momentum magnitude → V6[3] = ρ_mix · |u| so that
     // ½ (V6[3]/ρ_mix)² = ½|u|² is what the standalone uses for
@@ -459,7 +470,10 @@ ps_pt_equilibrium_relax_cell(int i, int j, int k,
     if (m1 <= Real(0.0) || m2 <= Real(0.0)) return;
     {   // S4 presence gate (design §5)
         const PsPres& prS4g = ps_presence_params();
-        if (!ps_presence_relax_gate(alpha1_in, m1, m2, prS4g)) { return; }
+        if (!ps_presence_relax_gate(alpha1_in, m1, m2, prS4g)) {
+            ++ps_relax_diag().n_gate_presence;   // B13: counted (was silent)
+            return;
+        }
     }
 
     const Real px = U(i,j,k, UMX);
@@ -522,7 +536,10 @@ ps_ptg_relax_cell(int i, int j, int k,
     if (m1 <= Real(0.0) || m2 <= Real(0.0)) return;
     {   // S4 presence gate (design §5)
         const PsPres& prS4g = ps_presence_params();
-        if (!ps_presence_relax_gate(alpha1_in, m1, m2, prS4g)) { return; }
+        if (!ps_presence_relax_gate(alpha1_in, m1, m2, prS4g)) {
+            ++ps_relax_diag().n_gate_presence;   // B13: counted (was silent)
+            return;
+        }
     }
 
     const Real px = U(i,j,k, UMX);
@@ -601,7 +618,10 @@ ps_canonical_relax_cell(int i, int j, int k,
     if (m1 <= Real(0.0) || m2 <= Real(0.0)) return;
     {   // S4 presence gate (design §5)
         const PsPres& prS4g = ps_presence_params();
-        if (!ps_presence_relax_gate(alpha1_in, m1, m2, prS4g)) { return; }
+        if (!ps_presence_relax_gate(alpha1_in, m1, m2, prS4g)) {
+            ++ps_relax_diag().n_gate_presence;   // B13: counted (was silent)
+            return;
+        }
     }
 
     const Real px = U(i,j,k, UMX);
@@ -877,7 +897,10 @@ ps_x3_grid_relax_cell(int i, int j, int k,
     if (m1 <= Real(0.0) || m2 <= Real(0.0)) return;
     {   // S4 presence gate, exactly as the canonical cell applies it
         const PsPres& prS4g = ps_presence_params();
-        if (!ps_presence_relax_gate(alpha1_in, m1, m2, prS4g)) { return; }
+        if (!ps_presence_relax_gate(alpha1_in, m1, m2, prS4g)) {
+            ++ps_relax_diag().n_gate_presence;   // B13: counted (was silent)
+            return;
+        }
     }
     const Real px = U(i,j,k, UMX);
 #if (AMREX_SPACEDIM >= 2)
@@ -2602,6 +2625,17 @@ ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
             << " mean=" << mean(pd.dp_skip_sum, pd.n_skipped)
             << " | post-invalid=" << pd.n_postinval
             << "   (|P1-P2|/max(P1,P2) at chain exit)\n";
+        //  AUDIT 2026-08-24 B13: S4 presence-gate refusals, per sweep, all
+        //  modes (counted at the five relax entry sites; the cells [PS-X3]
+        //  never even sees).  Not an anomaly — a refused cell is the gate
+        //  doing its job — but a STALL routed through it must be visible.
+        if (ps_relax_diag().n_gate_presence > 0) {
+            amrex::AllPrint()
+                << "[PS-GATE] S4 presence relax gate refused n="
+                << ps_relax_diag().n_gate_presence
+                << " in-band cells this sweep (phase pair not "
+                   "Independent+Independent; all modes)\n";
+        }
         //  [PS-DT] (F4 session 3): thermal completeness — |T1-T2| at
         //  entry (post-mech/projection) vs exit, cells whose leg ran.
         if (pd.n_dt > 0) {
@@ -2644,6 +2678,7 @@ ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
                 << " entry_refused=" << xs.n_entry_refused
                 << " | dead(rc2)=" << xs.n_dead
                 << " newton_nonconv=" << xs.n_newton
+                << " tiny_nonconv=" << xs.n_tiny_nonconv
                 << " subcap=" << xs.n_subcap
                 << " | constraint: entry_fail=" << xs.n_proj_entry
                 << " (input=" << xs.n_pr_input
@@ -2702,6 +2737,7 @@ ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
             <<    ",hi_ok="   << d.n_skip_hi_ok
             <<    ",hi_BAD="  << d.n_skip_hi_bad
             <<    ",mk="      << d.n_skip_mk << ")"
+            << " gate_presence=" << d.n_gate_presence   // B13 (not an anomaly)
             << " failed=" << d.n_failed
             << " (eos=" << d.n_fail_eos
             <<  ",slope=" << d.n_fail_slope

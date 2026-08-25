@@ -28,6 +28,12 @@ CAMR::read_tagging_params()
   pp.query("tempgrad", tagging_parm->tempgrad);
   pp.query("max_tempgrad_lev", tagging_parm->max_tempgrad_lev);
 
-  pp.query("alphaerr", tagging_parm->alphaerr);
-  pp.query("max_alphaerr_lev", tagging_parm->max_alphaerr_lev);
+  //  AUDIT 2026-08-24 B14: tagging.alphaerr / tagging.max_alphaerr_lev were
+  //  read into TaggingParm fields NO tagging routine consumed — a deck
+  //  setting them got no α refinement and no warning.  Removed rather than
+  //  wired: the LIVE route for α-based refinement is the errtagging path,
+  //      amr.refinement_indicators = <name>
+  //      amr.<name>.field_name     = ps_alpha1
+  //  (+ value_greater / adjacent_difference_greater etc., CAMR_error.cpp),
+  //  which the two-phase decks already use.
 }

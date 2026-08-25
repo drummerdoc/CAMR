@@ -6174,3 +6174,231 @@ decimal, including B3's u absolute floor (3.139e-11, bit-identical —
 the sandbox's 3.117e-11 was its FP).  A4 is CLOSED: the latent
 fallback is identity-consistent, and the refusal population that
 made it matter is measured at zero.
+
+====================================================================
+2026-08-24 — BATCH 3b item 3 (AUDIT B4): tiny-step residual check —
+REFUTED as control flow, landed as accounting
+
+PREDICTION (before the runs).  The audit's claim: the X3 BE
+sub-step's tiny-increment exit commits stalled iterates (residual
+possibly O(1)) as successes; refusing them (rc=1 -> ladder halves)
+should make the accounting honest with the fixed point unchanged.
+
+REFUTED.  The refuse variant flips the 0-D route/basin gate at
+state (290 K, 0.40, 830, 120): with the stalled-commit restart
+removed, routes A/B stall short of thermal equality (|T1-T2| =
+9.3e-3 / 4.7e-2 K vs perturbed-C's 2.4e-11) and the route spread
+fails (alpha 6.6e-5, P 5.3e-4 rel).  A 1%-relative acceptance fails
+IDENTICALLY — the stall is base-state-dependent, not
+tolerance-marginal.  Mechanism: committing the stalled iterate MOVES
+THE BASE, and the next sub-step's fresh Jacobian progresses toward
+the dt-independent fixed point — accept-on-tiny is a restart
+mechanism, not (only) a leak.
+
+LANDED.  Accounting only: on a tiny-increment commit the residuals
+are now evaluated (pure read) and commits with residual > 1%% of the
+step scale are counted — PsX3Stats.n_tiny_nonconv, printed by
+[PS-X3] — so a battery-wide reliance on stalled commits is visible.
+Control flow unchanged: bit-identical by construction.  The
+implemented-and-refuted dial (ps_x3_tiny_residual) was REMOVED, not
+left as an inert knob.
+
+MEASURED.  X3 0-D gate PASS at the landed tree.  Production
+incidence of stalled commits on the stiff battery cases: B2
+calls=525 ok=511 tiny_nonconv=0; B7 2129/2044/0; B9 731/728/0 —
+ZERO.  The failure shape exists only in the 0-D harness's synthetic
+strong-flash states; the counter stands guard.  Sandbox spot-score
+B2 (+FROZEN) and B7: identical to baseline at every printed decimal.
+
+====================================================================
+2026-08-24 — BATCH 3b item 4 (AUDIT B6): GERG endpoint-clamp
+contract — bracket-or-abort, BOTH sides (Marc's call)
+
+WHAT.  GERG's cached (rho,e)->T bisections (g_T_bisect_auto/_phase)
+ran 64 unconditional steps over [T_trip, T_max] with no bracket
+check: an e outside the reachable range converged to a BOX ENDPOINT
+returned LOOKING VALID — the silent-clamp shape PR removed
+(FINDINGS 10j.3).  The file's own REY2PTS_phase_try carried the
+check while every other route (REY2T/REY2P/REY2P_phase/REY2Cs_*/
+REY2_prim) did not, so the PR/GERG contract diverged exactly on bad
+data.  Now: e must lie strictly between the endpoint energies at
+this rho, else g_noroot() aborts with full context (PR ps_eos_noroot
+idiom; device-safe).  Same-family fence: gergtab lookup() now
+rejects on the DOUBLES before the int conversion (int(floor(NaN))
+was UB and could index the OK mask out of bounds; the masked
+T_auto/T_liq/T_vap wrappers have no other fence) — bit-identical
+for all in-domain traffic by construction.
+
+MEASURED (A/B, sandbox, Eos_Model=GERG after make realclean per
+Marc's build rule; scored against the PR references as the recorded
+GERG-vs-PR comparison): 18 of 19 rows + both FROZEN rows
+BIT-IDENTICAL pre/post.  ONE divergence, and it is the finding:
+B7-Rupture-Sonic now ABORTS ~114 flash events in — vapour at
+rho = 10.19 kg/m^3 reaches e = -156.8 kJ/kg, 45 kJ/kg BELOW
+e(T_trip) at that rho — i.e. the pre-fix B7-under-GERG row
+(0.1956/0.7418/0.2871 "ok") was computed on invented T=T_trip
+endpoint states.  (B5 not A/B'd row-wise: it exceeds the sandbox's
+600 s scoring timeout under GERG's 64-eval bisections; its states
+are covered by the same code path as the 18 identical rows.)
+
+DECIDED (Marc): abort BOTH sides.  PR deliberately extrapolates
+below the triple point; GERG has no extrapolation, and the low-side
+clamp was a silent de-facto proxy for one.  GERG declares sub-triple
+states OUT OF DOMAIN, full stop — B7 (and any case whose transient
+dips below triple) is a KNOWN out-of-domain case for Eos_Model=GERG.
+The clamp-low-with-accounting alternative was considered and
+declined.
+
+NOTE.  PR acceptance battery untouched by construction (no PR-side
+file changed).  This checkout's GERG exe predates B6 — rebuild with
+`make realclean && make ... Eos_Model=GERG` before the next GERG run.
+
+====================================================================
+2026-08-24 — BATCH 3b item 5 (AUDIT B8): wave-speed consolidation —
+three drifted copies -> one construction
+
+WHAT.  (1) PS_wavespeed.H: the frozen mixture sound speed extracted
+as ps_frozen_cmix_from_state (host-slaving, G1 density clamps, #199
+Wallis form); ps_max_wave_speed_from_state is now |u_n| + that —
+FP-identical refactor.  (2) PS_umeth's 85-line split-path (llf) cell
+copy — no regime dispatch, both branch EOS at unclamped corridor
+densities, c=1 m/s floors (the A3 discontinuity), while dt used the
+consolidated speed — is now a thin wrapper over the consolidated
+form.  (3) PS_nscbc's _wallis_c_at_cell — unguarded m_k/alpha_k
+(inf -> NaN on pure-phase cells after the [0,1] clamp change), the
+#199-refuted Y-weighted c^2 form, and a threaded `pr` never read —
+likewise delegates; `pr` finally does its job.  Stale header
+comments carrying the pre-#199 alpha-weighted formula rewritten.
+
+PREDICTION.  wp acceptance battery BIT-IDENTICAL (the wp path
+already used the consolidated speed; the refactor is FP-identical).
+llf and NSCBC legs may change — measured, not predicted.
+
+MEASURED (wp).  Full battery (sandbox): identical to baseline at
+every printed decimal.  CONFIRMED.
+
+MEASURED (llf, device A/B, PROBE_OV=CAMR.ps_flux=llf).  Pre-B8:
+A1 .0209/.0274/.0258, B1 .0076/.1056/.0467; B2, B7, B11 all ABORT
+([PS-EOS] NO ROOT).  Post-B8: A1 and B1 IDENTICAL to pre-B8 (the
+drift was invisible where phases are pure/independent); B2, B7, B11
+STILL abort — the split path's stiff-case failures are NOT
+wave-speed-copy artifacts and are now cleanly attributable to the
+path itself.  (llf is not the acceptance flux; standing red.)
+
+MEASURED (NSCBC, device A/B, PROBE_OV=CAMR.ps_bc_use_nscbc=1).
+Pre-B8: A1 AND B4 abort immediately ([PS-EOS] NO ROOT) — NSCBC
+unusable, consistent with the audit's alpha=0-division NaN feeding
+garbage ghost states.  Post-B8: B4 RUNS and scores
+(.0639/.3809/.2178 vs its bcnormal .0635/.1261/.0493) — first
+working two-phase NSCBC measurement.  A1 STILL aborts: the R+
+ghost construction produces vapour e = -103.6 kJ/kg at rho = 120,
+below even the T=1 K bound — a DISTINCT pre-existing NSCBC
+ghost-state defect (vapour-branch e inadmissible), recorded here as
+OPEN (candidate NSCBC-1), not a wave-speed issue.
+
+====================================================================
+2026-08-24 — BATCH 3b item 6 (AUDIT B13 + B14 + B5/C.6): the
+three-item closing sweep — count the silent limiters, route the
+derives, record the resolved dials.  PREDICTIONS FIRST.
+
+WHAT.
+B13 (counters — contract 4, every surviving repair named+counted):
+ (a) flux belt-and-suspenders (ps_physical_flux{,_from_state}
+     final non-finite->0 loop): counted, [PS-GUARD] flux_sanit.
+     FP-identical rewrite (isfinite test replaces ps_finite_or).
+ (b) task-#51 reflux alpha co-move cap (|da|<=0.05) and [amin,1-amin]
+     clamp: counted, [PS-GUARD] reflux_cap / reflux_clamp.
+ (c) S4 presence relax gate refusals — the ONE uncounted early-out on
+     the relax entry path, 5 call sites, all modes: ONE shared
+     per-sweep counter (identical predicate, identical inputs; a
+     per-mode split would just re-encode ps_relax_mode).  Reported
+     in the [ps_relax] anomaly line (gate_presence=) and as
+     [PS-GATE] under ps_pres_diag=1 when nonzero.
+B14 (derive routing):
+ (a) soundspeed / MachNumber derives used the SINGLE-FLUID mixture
+     inversion (REY2P/REY2Gam) — a speed the scheme never propagates
+     with, and an inversion that can ABORT on healthy two-phase
+     states (recorded B7 plot failure).  Under ps_hydro=1 they now
+     use ps_frozen_cmix_from_state — THE consolidated frozen Wallis
+     c_mix (B8) that dt and the fluxes use.  ps_hydro=0 keeps the
+     single-fluid c (there it IS the scheme's speed).
+ (b) the MultiFab& overload of CAMR::derive fell through to
+     AmrLevel::derive for flash_rate, whose registered function is
+     CAMR_dernull — the destination was NEVER FILLED.  Mirrors the
+     unique_ptr overload (zeros, then flash_src where it matches).
+ (c) tagging.alphaerr / max_alphaerr_lev: read into TaggingParm
+     fields NO tagging routine consumed.  Removed (query + fields);
+     comment names the live route (amr.refinement_indicators +
+     ps_alpha1).
+B5/C.6 (provenance, gerg_ext_c idiom — pp.add the RESOLVED value at
+the single read site so job_info records it even on a silent deck):
+ ps_do_relax, ps_strang (CAMR_advance), ps_flux (canonical name,
+ incl. forced-to-llf), ps_recon, ps_alpha_limiter (canonical name),
+ ps_llf_identity (PS_umeth), lazy_temp (CAMR::clean_state),
+ ps_bc_use_nscbc / ps_bc_nscbc_sigma / ps_bc_nscbc_order (BCfill —
+ also converted from once-per-fill-call reads to one cached read of
+ the post-forcing values; the table is fixed after startup, so no
+ behavior change is possible from the caching).
+
+PREDICTIONS (falsifiers in brackets).
+P1. Full wp battery BIT-IDENTICAL on all 22 rows (B3 u as
+    round-off).  Nothing here touches the solution path: counters
+    observe, derives feed only plotted diagnostic fields absent
+    from the battery's scoring (density/xmom/pressure), pp.add
+    changes only the ParmParse table's tail.  [ANY row moving
+    refutes the "observers only" claim and stops the batch.]
+P2. A B7 wp run with soundspeed+MachNumber derived at plot time:
+    pre-sweep the derive path can abort (B7's post-shock two-phase
+    states defeat the single-fluid inversion — Timestep.H records
+    the same abort class); post-sweep it completes and the fields
+    are finite.  [Post-sweep abort refutes the B14 routing.]
+P3. job_info of a defaults-only run lists all ten dials with their
+    resolved values.  [A missing dial refutes the pp.add placement —
+    e.g. an accessor whose first call happens after job_info is
+    written; ps_do_relax/ps_strang/lazy_temp/BCfill fire in step 1,
+    BEFORE the first plotfile's job_info, ps_flux/ps_recon/
+    ps_alpha_limiter/ps_llf_identity at first hydro — also before.
+    If any lands after, job_info misses it: measure, don't assume.]
+P4. [PS-GATE]/gate_presence: a two-phase diag run (B2) shows
+    nonzero presence-gate refusals; A1 (single-phase) shows zero
+    in-band refusals.  [Zero on B2 would mean the gate never
+    refuses where corridor phases exist — surprising, investigate.]
+P5. flux_sanit = 0, reflux_cap = 0, reflux_clamp = 0 across the 1-D
+    battery (no AMR -> no reflux; arithmetic-produced non-finites
+    should not occur on passing cases).  [Nonzero flux_sanit on a
+    passing case is a NEW finding: a non-finite the input guards
+    missed, currently being silently zeroed.]
+
+MEASURED (sandbox, PR DIM=1 wp).
+P1 CONFIRMED.  Full 20-case battery identical to the post-B8
+baseline at every printed decimal (B3 u included, same platform).
+P2 SPLIT.  Post-sweep: B7 with amr.derive_plot_vars="soundspeed
+MachNumber" completes; both fields finite and physical (c in
+[269.3, 319.5] m/s, Mach_max = 0.769).  Pre-sweep (A/B exe with the
+routing forced off): the ABORT half is REFUTED on this state — the
+single-fluid inversion did NOT abort on B7's final field.  What it
+did instead is WORSE and was invisible: c = 79.4 m/s in a PURE
+LIQUID cell (alpha1 = 1) where the branch-locked speed is 290.2 —
+the mixture (rho,e) inversion lands in the dome and returns an
+equilibrium-ish gamma — 37/64 cells wrong by >1 % (max 73 %), and
+the reported Mach_max flips from 0.769 to 1.395: a spurious
+SUPERSONIC diagnostic on a subsonic flow.  The abort class remains
+attested by Timestep.H's recorded B7 dt-estimator failure; on this
+state the defect is silent wrongness, not fragility.
+P3 CONFIRMED.  job_info of the first plotfile lists all ten dials
+with resolved values (deck-set ones appear deck+add, last wins;
+ps_flux records the canonical name).
+P4 CONFIRMED.  B2 with ps_pres_diag=1: [PS-GATE] n=1..3 in-band
+refusals per sweep — cells that were invisibly skipped before.
+A1: zero.
+P5 CONFIRMED.  flux_sanit / reflux_cap / reflux_clamp all zero on
+B7 and B2 (30 steps each, ps_diag_mass=1, 150 [PS-GUARD] lines
+per case) and trivially across the 1-D battery (no AMR).
+Builds: PR DIM=1, Sod GammaLaw DIM=2 (non-PS path), PipeBreak PR
+DIM=2 (2-D reflux code) all compile clean.
+
+MEASURED (device, incremental PR rebuild, spot rows).  A1, B2
+(+FROZEN bracket), B3, B7 all identical to the device baseline at
+every printed decimal (B3's u column at its device value 3.139e-11,
+the known platform-FP artifact).  CONFIRMED on the authoritative
+platform.

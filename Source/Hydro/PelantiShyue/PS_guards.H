@@ -296,6 +296,40 @@ AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_slaved() noexcept {}
 #endif
 
 // ---------------------------------------------------------------------
+//  AUDIT 2026-08-24 B13 — surviving repairs/limiters that were UNCOUNTED
+//  (contract 4: every surviving repair is named and counted).
+//    flux_sanit   : the belt-and-suspenders loop at the end of
+//                   ps_physical_flux / ps_physical_flux_from_state replaced
+//                   a non-finite flux component with 0.  Every INPUT to those
+//                   functions is already ps_finite_or-guarded, so a hit here
+//                   means the arithmetic itself produced the non-finite
+//                   (e.g. inf*0) — a class the input guards cannot see.
+//    reflux_cap   : the task-#51 reflux α₁ co-move rate limit |Δα₁| ≤ 0.05
+//                   engaged at a coarse-fine cell.
+//    reflux_clamp : the co-moved α₁ hit the [amin, 1−amin] positivity clamp.
+//  Counting is always on (host builds; compiled out under AMREX_USE_GPU,
+//  like the W0 face audit); reported on the [PS-GUARD] line at the
+//  ps_diag_mass cadence and reset with the other guard counters.  NOTE the
+//  reflux counters accumulate in post_timestep and are therefore picked up
+//  by the FOLLOWING step's [PS-GUARD] report — same-interval, off-by-one
+//  in the label.
+// ---------------------------------------------------------------------
+#if !defined(AMREX_USE_GPU)
+inline long& n_flux_sanit()   { static long n = 0; return n; }
+inline long& n_reflux_cap()   { static long n = 0; return n; }
+inline long& n_reflux_clamp() { static long n = 0; return n; }
+inline void  count_flux_sanit()   { ++n_flux_sanit(); }
+inline void  count_reflux_cap()   { ++n_reflux_cap(); }
+inline void  count_reflux_clamp() { ++n_reflux_clamp(); }
+inline void  reset_b13_counts() { n_flux_sanit() = 0; n_reflux_cap() = 0;
+                                  n_reflux_clamp() = 0; }
+#else
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_flux_sanit()   noexcept {}
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_reflux_cap()   noexcept {}
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_reflux_clamp() noexcept {}
+#endif
+
+// ---------------------------------------------------------------------
 //  CTOPRIM REFERENCE AUDIT  (2026-08-12)
 //
 //  ps_augment_primitives used to take its per-phase pressure reference from
