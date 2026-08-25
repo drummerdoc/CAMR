@@ -151,9 +151,56 @@ namespace EOS {
   //  larger effective cv on the equilibrium surface in the dome).
   //  The pure-bisection forms are standalone so the eos_diag reference
   //  can call them directly (they ARE the analytic backend).
+  //  AUDIT 2026-08-24 B6: e is monotone in T on each guarded surface, so a
+  //  root exists in [T_trip, T_max] iff e lies strictly between the
+  //  endpoint energies at this rho.  Without the check these bisections
+  //  converged to a box endpoint and returned it LOOKING VALID — the
+  //  silent-clamp shape PR removed (FINDINGS 10j.3).  This file's own
+  //  REY2PTS_phase_try carried the check while every other route
+  //  (REY2T / REY2P / REY2P_phase / REY2Cs_* / REY2_prim) did not, so the
+  //  PR/GERG contract diverged exactly on bad data.  Aligned with PR's
+  //  ps_eos_noroot: an impossible (rho,e) is an unconditional abort — not
+  //  a clamp, and not contingent on which routine called us.  (_try
+  //  pre-checks the same bracket and never reaches this abort.)
+  //
+  //  DECIDED (Marc, 2026-08-24, B6): the abort applies to BOTH sides,
+  //  including e < e(T_trip).  PR deliberately EXTRAPOLATES below the
+  //  triple point; GERG has no extrapolation, and the old low-side
+  //  endpoint clamp was a silent de-facto proxy for one.  GERG now
+  //  declares sub-triple states OUT OF DOMAIN, full stop.  MEASURED
+  //  consequence: B7-Rupture-Sonic under Eos_Model=GERG aborts (~114
+  //  flash events in: vapour at rho=10.19 reaches e=-156.8 kJ/kg,
+  //  45 kJ/kg below e(T_trip)) — a KNOWN out-of-domain case for GERG,
+  //  previously scored on invented T=T_trip endpoint states.  All other
+  //  battery rows are bit-identical across this change.
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void g_noroot(const char* surf, double rho, double e,
+                double e_lo, double e_hi)
+  {
+      AMREX_IF_ON_DEVICE((
+          amrex::ignore_unused(surf, rho, e, e_lo, e_hi);
+          amrex::Abort();
+      ))
+      AMREX_IF_ON_HOST((
+          amrex::Print() << "\n[GERG-EOS] NO ROOT -- this (rho,e) is not a"
+                            " state on the " << surf << " surface.\n"
+                         << "  rho = " << rho << " kg/m^3    e = " << e
+                         << " J/kg\n"
+                         << "  reachable e-range at this rho over T = ["
+                         << gerg::T_trip << ", " << gerg::T_max << "] K is ["
+                         << e_lo << ", " << e_hi << "] J/kg\n"
+                         << "  Fix the data going in.  The EOS will not"
+                            " invent a state.\n\n";
+          amrex::Abort("GERG-EOS: (rho,e) has no root on the requested"
+                       " surface");
+      ))
+  }
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   double g_T_bisect_auto(double rho, double e)
   {
+      const double e_lo = gerg::state_TR_auto(gerg::T_trip, rho).e;
+      const double e_hi = gerg::state_TR_auto(gerg::T_max,  rho).e;
+      if (!(e > e_lo && e < e_hi)) g_noroot("auto", rho, e, e_lo, e_hi);
       double lo = gerg::T_trip, hi = gerg::T_max;
       for (int it = 0; it < 64; ++it) {
           const double m = 0.5*(lo + hi);
@@ -164,6 +211,12 @@ namespace EOS {
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   double g_T_bisect_phase(double rho, double e, gerg::Phase ph)
   {
+      const double e_lo = gerg::state_TR_phase(gerg::T_trip, rho, ph).e;
+      const double e_hi = gerg::state_TR_phase(gerg::T_max,  rho, ph).e;
+      if (!(e > e_lo && e < e_hi))
+          g_noroot(ph == gerg::Phase::Liquid ? "liquid" :
+                   ph == gerg::Phase::Vapor  ? "vapor"  : "phase",
+                   rho, e, e_lo, e_hi);
       double lo = gerg::T_trip, hi = gerg::T_max;
       for (int it = 0; it < 64; ++it) {
           const double m = 0.5*(lo + hi);

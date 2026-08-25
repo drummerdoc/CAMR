@@ -42,10 +42,21 @@ GERGTAB_HD inline double cr1(double tm1, double t0, double t1, double t2, double
 GERGTAB_HD inline bool lookup(const double* A, const unsigned char* OK,
                               double rho, double e, double& T)
 {
+    //  AUDIT 2026-08-24 B6(family): reject on the DOUBLES before the int
+    //  conversion.  The old order computed int(std::floor(x)) first, which
+    //  is UB for NaN (rho <= 0 -> log10 NaN) and for out-of-int-range x —
+    //  a garbage i could pass the bounds test and index OK[] out of
+    //  bounds.  The double-form test below accepts exactly the i,j the old
+    //  test accepted (x in [1, NLR-2), y in [1, NE-2)) and NaN fails every
+    //  comparison, so in-domain traffic is bit-identical.  The masked
+    //  T_auto/T_liq/T_vap wrappers call this directly (no in_domain), so
+    //  this is their only fence.
+    if (!(rho > 0.0)) return false;
     const double x = (std::log10(rho) - LR0)/(LR1 - LR0)*(NLR - 1);
     const double y = (e - E0)/(E1 - E0)*(NE - 1);
+    if (!(x >= 1.0) || !(x < double(NLR-2)) ||
+        !(y >= 1.0) || !(y < double(NE-2))) return false;
     const int i = int(std::floor(x)), j = int(std::floor(y));
-    if (i < 1 || i > NLR-3 || j < 1 || j > NE-3) return false;
     if (OK && !OK[i*NE + j]) return false;   // OK==nullptr => seed-only use
     const double tx = x - i, ty = y - j;
     double c[4];
