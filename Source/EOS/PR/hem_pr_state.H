@@ -100,10 +100,19 @@ inline void strict_abort(const char* site, const char* what, double rho,
 //  Unconditional no-root reporter.  (rho,e) that no temperature reproduces on
 //  the requested branch is a DATA defect, not a numerical one, so it stops the
 //  run in every build -- no dial, no clamp, no silent substitution.
-inline void ps_eos_noroot(const char* what, double rho, double e,
-                          double e_bound, double T_bound, int phase)
+AMREX_GPU_HOST_DEVICE inline void
+ps_eos_noroot(const char* what, double rho, double e,
+              double e_bound, double T_bound, int phase)
 {
 #if !defined(HEM_NO_AMREX)
+    //  AUDIT 2026-08-24 B12(b): this is reached from device-annotated
+    //  state_from_rho_e[_phase]; a GPU build must be able to compile it.
+    //  On device: trap without the (host-only) diagnostic print.
+    AMREX_IF_ON_DEVICE((
+        amrex::ignore_unused(what, rho, e, e_bound, T_bound, phase);
+        amrex::Abort();
+    ))
+    AMREX_IF_ON_HOST((
     amrex::Print() << "\n[PS-EOS] NO ROOT -- this (rho,e) is not a state.\n"
                    << "  " << what << "\n"
                    << "  rho = " << rho << " kg/m^3    e = " << e << " J/kg"
@@ -114,6 +123,7 @@ inline void ps_eos_noroot(const char* what, double rho, double e,
                    << " 1.0 0.0\" | ./probe_pr\n"
                    << "  Fix the data going in.  The EOS will not invent a state.\n\n";
     amrex::Abort("PS-EOS: (rho,e) has no root on the requested branch");
+    ))
 #else
     (void)what; (void)rho; (void)e; (void)e_bound; (void)T_bound; (void)phase;
 #endif

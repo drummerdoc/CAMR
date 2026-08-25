@@ -108,7 +108,14 @@ ps_augment_primitives(int i, int j, int k,
     // Fall back to the mixture specific internal energy if the
     // per-phase partial mass goes bad — an approximation but keeps
     // downstream EOS calls in a valid regime.
-    const amrex::Real E_mix = u(i,j,k, UEINT) / u(i,j,k, URHO);
+    //  AUDIT 2026-08-24 (hydro finding 14): floor the denominator like every
+    //  comparable site (cf. ps_mixture_pressure_from_cons) — this runs on
+    //  grown boxes where unfilled ghost corners are least trustworthy.
+    //  Identical on all finite states.
+    const amrex::Real rho_mix_den =
+        (std::isfinite(u(i,j,k, URHO)) && u(i,j,k, URHO) > amrex::Real(1.0e-6))
+        ? u(i,j,k, URHO) : amrex::Real(1.0e-6);
+    const amrex::Real E_mix = u(i,j,k, UEINT) / rho_mix_den;
     const PsPhaseQuot q1 = ps_phase_quot(a1, m1rho1, E1_tot, ke_spec, pr);
     const PsPhaseQuot q2 = ps_phase_quot(a2, m2rho2, E2_tot, ke_spec, pr);
     const amrex::Real rho1 = q1.exists ? q1.rho : rho_mix_c;
@@ -254,9 +261,7 @@ ps_mixture_pressure_from_cons(const amrex::Real U[NVAR], amrex::Real P_stock,
                               const PsPres& pr)
 {
     using amrex::Real;
-    constexpr Real alpha_floor = Real(1.0e-6);
     constexpr Real rho_floor   = Real(1.0e-6);
-    constexpr Real P_floor     = Real(1.0);
 
     Real a1 = U[UALPHA1];
     if (a1 < Real(0.0)) a1 = Real(0.0);
@@ -288,7 +293,6 @@ ps_mixture_pressure_from_cons(const amrex::Real U[NVAR], amrex::Real P_stock,
     const PsRegime rg2 = ps_regime(a2, m2, pr);
     const PsPhaseQuot q1 = ps_phase_quot(a1, m1, U[UE1], ke_spec, pr);
     const PsPhaseQuot q2 = ps_phase_quot(a2, m2, U[UE2], ke_spec, pr);
-    amrex::ignore_unused(rho_floor);
     const Real rho1 = q1.exists ? q1.rho : rho;      // no state -> mixture, by definition
     const Real rho2 = q2.exists ? q2.rho : rho;
     const Real e1   = q1.exists ? q1.e   : E_mix;
@@ -306,12 +310,6 @@ ps_mixture_pressure_from_cons(const amrex::Real U[NVAR], amrex::Real P_stock,
                                         ps_guard::sanitize_phase_pressure(P2, P_ss); }
     else                              { P2 = P_ss; }
     return a1 * P1 + a2 * P2;   // exact alpha: ABSENT contributes 0
-    EOS::REY2P_liquid(rho1, e1, Y, P1);
-    EOS::REY2P_vapor (rho2, e2, Y, P2);
-
-    // SINGLE-SOURCE (see PS_guards.H) -- was a second, one-sided copy.
-    return ps_guard::mixture_pressure(a1, P1, a2, P2,
-                                      ps_guard::sanitize_stock_pressure(P_stock));
 }
 
 // ---------------------------------------------------------------------

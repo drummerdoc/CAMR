@@ -14,6 +14,7 @@
 #ifdef USE_PS_HYDRO
 #include "Hydro/PelantiShyue/PS_guards.H"    // guard audit counters
 #include "Hydro/PelantiShyue/PS_hllc.H"      // W0 face-audit counters
+#include "Hydro/PelantiShyue/PS_umeth.H"    // dial accessors (AUDIT C.4)
 #endif
 
 using std::string;
@@ -37,6 +38,7 @@ CAMR::advance(
 
     if (do_mol) {
         amrex::Print() << "Doing MOL Advance" << std::endl;
+#ifdef USE_PS_HYDRO
     } else if (ps_hydro != 0) {
         // Pelanti-Shyue 6-equation branch.  "flux" is the Riemann/fluctuation
         // solver (CAMR.ps_flux: wp / hllc / llf); "recon" is the face-state
@@ -48,15 +50,15 @@ CAMR::advance(
         // conflated the reconstruction stage with the overall method, so it is
         // named by order here.  A wp run legitimately uses piecewise-constant
         // base states and gets 2nd order from the limited BL correction flux.)
-        static const std::string l_ps_flux = []{
-            std::string s = "llf"; amrex::ParmParse pp("CAMR");
-            pp.query("ps_flux", s); return s;
-        }();
-        const char* l_recon = (ps_recon == 2) ? "piecewise-parabolic (PPM)"
-                            : (ps_recon == 1) ? "piecewise-linear (MUSCL/PLM)"
-                                              : "piecewise-constant";
-        amrex::Print() << "Doing PS Advance (flux=" << l_ps_flux
+        //  AUDIT C.4: report the RESOLVED selections through the single-read
+        //  accessors, so the banner can never assert a flux that didn't run.
+        const int  l_pr    = ps_recon_selector();
+        const char* l_recon = (l_pr == 2) ? "piecewise-parabolic (PPM)"
+                            : (l_pr == 1) ? "piecewise-linear (MUSCL/PLM)"
+                                          : "piecewise-constant";
+        amrex::Print() << "Doing PS Advance (flux=" << ps_flux_name()
                        << ", recon=" << l_recon << ")" << std::endl;
+#endif  // USE_PS_HYDRO
     } else {
         amrex::Print() << "Doing Godunov Advance" << std::endl;
     }

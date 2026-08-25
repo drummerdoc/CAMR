@@ -5963,3 +5963,85 @@ PS_NODIALS=1 (pass no relaxation dials at all) and PROBE_OV="k=v,..."
 (append overrides), both default off, acceptance path untouched and verified
 so.  PS_NODIALS reproduces the bare-defaults numbers the deleted copy
 produced (B11 .0805/.0278/.0928, B5 .0446/.1762/.0199).
+
+====================================================================
+2026-08-24 — THETA-DEFAULTS (decision: Marc; implementation +
+measurement: audit session, see AUDIT_co2eos_2026-08-24.md)
+
+DECISION.  (1) theta <= 0 means INSTANTANEOUS for thermal (and the
+X3 SRT MT rate has no tau — route (a), commit 0a3387d, STANDS).
+(2) Code defaults must provide the best measured performance across
+the full validation suite: ps_theta_tau / ps_mt_tau / ps_flash_tau
+now DEFAULT to the acceptance value 1e-7 (accessor + PsSourceDials +
+the dead registry copies kept in sync), and exact_suite passes NO
+relaxation dials for B cases.  G-DEF principle completed: every
+default change is now visible in the acceptance table.  A/C rows
+still pass ps_do_relax=0 — dropping that sixth dial is a separate
+measured flip (AUDIT B3), not done today.
+
+PREDICTION (before the run).  Identity: the harness previously passed
+exactly the values that are now the defaults, and each dial has a
+single read site (audit-verified), so the defaults-only battery must
+reproduce the recorded acceptance baseline (HANDOFF §3) to every
+printed decimal.  Falsifier: ANY row moving means a second read site
+or an order-of-initialization dependence the audit missed.
+
+MEASURED (this machine, rebuilt exe, DIM=1 PR, N=64, wp).  All 20
+rows + both FROZEN bracket rows IDENTICAL to the recorded baseline
+to all 4 printed decimals.  B-rows: B1 .0051/.1106/.0485 ·
+B2 .0929/.7816/.1511 (FROZEN .0938/.6914/.3878) · B3 .0486/3.1e-11a/0
+· B4 .0635/.1261/.0493 · B5 .0446/.1762/.0199 · B6 .0236/.0667/.0308
+· B7 .1654/.7099/.3211 · B8 .0115/.1647/.0527 · B9 .1125/.7565/.1437
+(FROZEN .1133/.6234/.3371) · B10 .0705/.1202/.0833 ·
+B11 .0805/.0278/.0927.  A/C rows unchanged (D22 invariant holds).
+Prediction confirmed; the acceptance configuration is now ZERO
+harness dials for B cases and the bare `inputs` run IS the
+acceptance physics.
+
+NOTE.  The G-DEF "bare inputs bit-identical" measurement (2026-08-17)
+predates route (a) and is superseded — see the THETA-DEFAULTS
+addendum in HANDOFF_2026-08-17.md.  The X3 0-D fixed-point gate
+(CAMR.ps_x3_test=1) passes at the new defaults.
+
+====================================================================
+2026-08-24 — BATCH 2 (audit session): dead code out, one read per
+dial, mode whitelist, DIM=1 fluctreg fix, GPU/OMP fences
+
+WHAT.  (T-style sweep, compiler as witness:) deleted the caller-less
+hem family — ps_wave_speeds (+PsWaveSpeeds, and with it the orphaned
+dials ps_wave_speed/ps_pvrs_qmax/ps_chord_uncapped), ps_hllc_
+fluctuations (+PsFluctuations), single_fluid_hllc, the temperature-
+relax stub, all seven std::vector grid wrappers, both finite-rate
+pressure kernels + their 0-D test and CAMR.ps_prelax_test dial,
+ps_llf_fallback_count, the dead sat-table h columns (+h_trace_sat),
+the hem string ps_triple_point_action accessor (+enum), the retired
+CAMR.ps_alpha_vanish read (a set key now aborts).  Consolidated:
+7 dead registry entries removed from _cpp_parameters (regenerated);
+ps_flux/ps_recon/ps_alpha_limiter get single accessors in PS_umeth
+(banners now print the RESOLVED flux); the 5 multi-read diag knobs
+get hem::ps_diag_* single reads; eos_warmstart one read; eos_table+
+eos_mlp both set now aborts; ps_mt_update_alpha=-1 into the kernel
+now aborts (caller resolves).  Whitelist: unknown ps_relax_mode
+aborts at the single read site (was: silent mode-0 + split-MT
+re-enable).  Guards: DIM=1 fluctreg transverse clamp (fineadd was a
+silent no-op at rr.y==0); #error fences on _OPENMP at the three EOS
+ring caches; device-safe ps_eos_noroot + GERG ext_c_enabled; URHO
+floor in ps_augment_primitives; unreachable tail + unused constants
+out of PS_ctoprim.
+
+PREDICTION (before the run).  Battery BIT-IDENTICAL to the recorded
+baseline: every deletion is caller-less (repo-wide grep + link),
+every consolidated dial resolves to the same value at defaults, all
+new aborts sit on paths the battery never takes, the fluctreg fix is
+gated behind ps_bl_reflux=0, and the URHO floor is identity on
+finite states.  Falsifier: any row moving means something deleted
+had a hidden caller or a consolidated default disagreed.
+
+MEASURED.  Battery re-run at the Batch-2 tree (device build 16:09,
+rebuilt after a truncated-link 0-byte exe was moved aside): all 20
+rows AND both FROZEN bracket rows identical to the recorded baseline
+at every printed decimal (A1-A6, C1-C3, B1-B11; B2 .0929/.7816/.1511
++ FROZEN .0938/.6914/.3878; B9 .1125/.7565/.1437 + FROZEN
+.1133/.6234/.3371; B7 .1654/.7099/.3211).  Prediction CONFIRMED.
+Also verified: X3 0-D gate PASS at the new tree; ps_relax_mode=7
+aborts with the whitelist message; GammaLaw Exec/Sod compiles.

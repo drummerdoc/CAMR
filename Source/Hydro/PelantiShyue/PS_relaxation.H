@@ -153,11 +153,7 @@ inline PsPresDiag& ps_pres_diag_data() {
 }
 
 inline int ps_pres_diag() {
-    static const int v = []() -> int {
-        int val = 0; amrex::ParmParse pp("CAMR");
-        pp.query("ps_pres_diag", val); return val;
-    }();
-    return v;
+    return hem::ps_diag_pres();   // single read site (AUDIT C.4)
 }
 
 inline int ps_coexit_diag() {
@@ -633,8 +629,7 @@ ps_canonical_relax_cell(int i, int j, int k,
     //  thermal pass, plus the coexistence decision gating the thermal pass.
     //  See FINDINGS Addendum 10g.
     auto relax_probe = [&](const char* stage, const hem::V6& V) {
-        static const int rd = []() { int v = -1; amrex::ParmParse pp("CAMR");
-                                     pp.query("ps_relax_diag", v); return v; }();
+        const int rd = hem::ps_diag_relax_cell();   // single read (AUDIT C.4)
         if (rd < 0 || i != rd) return;
         const double a1p = V[0];
         const double r1p = V[1] / a1p, r2p = V[2] / (1.0 - a1p);
@@ -826,8 +821,7 @@ ps_canonical_relax_cell(int i, int j, int k,
         }
 #ifdef CAMR_PS_DIAG
         {
-            static const int rd2 = []() { int v = -1; amrex::ParmParse pp("CAMR");
-                                          pp.query("ps_relax_diag", v); return v; }();
+            const int rd2 = hem::ps_diag_relax_cell();   // single read (AUDIT C.4)
             if (rd2 >= 0 && i == rd2) {
                 amrex::Print() << "[RELAX-PROBE " << i << "] GATE       coexist="
                                << int(coexist) << "  thermal="
@@ -1002,6 +996,17 @@ inline int ps_relax_mode()
         int v = 5;
         amrex::ParmParse pp("CAMR");
         pp.query("ps_relax_mode", v);
+        //  AUDIT 2026-08-24 B2: an unrecognized mode used to fall through
+        //  the dispatch to mode-0 mechanical AND re-open the split MT
+        //  source (whose ownership gate keys on `!= 5`) — a silently
+        //  different physics configuration from a typo.  Whitelist here,
+        //  at the single read site, so every consumer sees only valid
+        //  values.  (Mode 3 is additionally aborted at dispatch with its
+        //  own message — deleted 2026-08-17.)
+        if (v != 0 && v != 1 && v != 2 && v != 3 && v != 4 && v != 5) {
+            amrex::Abort("CAMR.ps_relax_mode = " + std::to_string(v) +
+                         " is not a mode (valid: 0,1,2,4,5)");
+        }
         return v;
     }();
     return m;
@@ -2382,24 +2387,26 @@ ps_apply_tfloor_fold(amrex::MultiFab& S_new, int nghost = 0)
 inline void
 ps_apply_vanish_fold(amrex::MultiFab& S_new, int nghost = 0)
 {
-    static const amrex::Real alpha_vanish_cached = []() -> amrex::Real {
-        amrex::Real v = amrex::Real(0.0);
-        amrex::ParmParse pp("CAMR");
-        pp.query("ps_alpha_vanish", v);
-        return v;
-    }();
     // S3 (design §3): under presence semantics the vanish fold is not
     // optional — phase DEATH is part of the model's discrete state, and its
-    // threshold is the presence classifier's alpha_vanish (single-sourced).
-    // Legacy behaviour (fold only if CAMR.ps_alpha_vanish > 0, at that
-    // value) is untouched when presence is disabled.
+    // threshold is the presence classifier's alpha_vanish (single-sourced:
+    // CAMR.ps_presence_vanish).  The retired CAMR.ps_alpha_vanish knob was
+    // read here but provably inert — presence is hard-enabled — so the read
+    // is deleted (AUDIT 2026-08-24, dial-hygiene 9); a set key now aborts.
+    static const bool s_retired_key_checked = []() {
+        amrex::ParmParse pp("CAMR");
+        if (pp.contains("ps_alpha_vanish")) {
+            amrex::Abort("CAMR.ps_alpha_vanish is retired and was already "
+                         "inert; the live knob is CAMR.ps_presence_vanish");
+        }
+        return true;
+    }();
+    amrex::ignore_unused(s_retired_key_checked);
     const PsPres& prS3 = ps_presence_params();
-    const amrex::Real a_v = (prS3.enabled != 0) ? prS3.alpha_vanish
-                                                : alpha_vanish_cached;
+    const amrex::Real a_v = prS3.alpha_vanish;
     if (a_v <= amrex::Real(0.0)) return;
     BL_PROFILE("PS::ps_apply_vanish_fold()");
     const double alpha_vanish = double(a_v);
-    const PsPres prF = ps_presence_params();          // E2' (by value)
     const double rminF = double(EOS::rho_min());      // E2' vacuum criterion
 
     for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
@@ -2547,9 +2554,7 @@ ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
     // validity-guarded bracketing fallback (65 samples x 2 per-phase EOS
     // inversions + up to 60 bisections per cell -- the expensive path).
     {
-        static const int rx_diag = []() -> int {
-            int v = 0; amrex::ParmParse pp("CAMR");
-            pp.query("ps_prdiag", v); return v; }();
+        const int rx_diag = hem::ps_diag_prdiag();   // single read (AUDIT C.4)
         if (rx_diag != 0) {
             hem::PsPrStats& st = hem::ps_pr_stats();
             const long solved = st.seen - st.trivial;

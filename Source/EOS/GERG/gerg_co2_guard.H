@@ -128,6 +128,13 @@ inline int& ext_c_flag()                     // -1 = not set -> use the env var
 inline void set_ext_c(bool on) { ext_c_flag() = on ? 1 : 0; }
 GERG_HD bool ext_c_enabled()
 {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__) || defined(__SYCL_DEVICE_ONLY__)
+    //  AUDIT 2026-08-24 B12(c): the host body below (function-local static,
+    //  std::getenv) cannot compile for device.  On device the extension is
+    //  the compiled-in default (ON); a real GPU port that wants the flag
+    //  runtime-switchable must thread the resolved value in by value.
+    return true;
+#else
     const int f = ext_c_flag();
     if (f >= 0) return f != 0;               // explicitly set by the AMReX layer
     static const bool e = []{
@@ -135,6 +142,7 @@ GERG_HD bool ext_c_enabled()
         return !(v && v[0] == '0');          // DEFAULT ON; only "0" disables
     }();
     return e;
+#endif
 }
 GERG_HD double c_extension(const State& es, double rho)
 {

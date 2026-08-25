@@ -249,6 +249,21 @@ namespace EOS {
   // learned seed + fixed Newton is what makes the every-cell device solve
   // affordable and branch-convergent once the caches fall away.
 #if !defined(__CUDA_ARCH__) && !defined(__HIP_DEVICE_COMPILE__) && !defined(__SYCL_DEVICE_ONLY__)
+  //  Single-read accessor for CAMR.eos_warmstart (AUDIT 2026-08-24 C.4:
+  //  it was read by two identical static lambdas in the auto and phase
+  //  ring caches — agreeing defaults by luck).  NOTE the dial's documented
+  //  role is largely vestigial: the MRU T_init it enables is accepted but
+  //  IGNORED by the robust (rho,e) solvers (their T_init parameter is
+  //  commented out); it only matters combined with eos_warmstart_fixed.
+  inline bool ps_eos_warmstart()
+  {
+      static const bool v = []() {
+          int w = 0; amrex::ParmParse pp("CAMR");
+          pp.query("eos_warmstart", w); return (w != 0);
+      }();
+      return v;
+  }
+
   inline bool ps_eos_warmstart_fixed()
   {
       static const bool e = []() {
@@ -313,6 +328,13 @@ namespace EOS {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__) || defined(__SYCL_DEVICE_ONLY__)
       return co2_solve_rho_e(rho, e);
 #else
+      //  AUDIT 2026-08-24 B12(d): the (rho,e) ring caches below are mutable
+      //  function-local statics — safe only single-threaded.  The documented
+      //  USE_OMP=FALSE restriction was advisory; make it a compile error so
+      //  flipping USE_OMP=TRUE cannot silently tear the cached states.
+#ifdef _OPENMP
+#error "The EOS ring caches (function-local statics) are not thread-safe; build with USE_OMP=FALSE or add omp threadprivate first."
+#endif
       constexpr int NSLOTS = 4;
       static amrex::Real rho_cache[NSLOTS] = {amrex::Real(-1), amrex::Real(-1),
                                               amrex::Real(-1), amrex::Real(-1)};
@@ -331,10 +353,7 @@ namespace EOS {
       // Miss: optional MRU warm-start (CPU-only, OFF by default — it makes the
       // converged state depend on cell-traversal order, breaking box-
       // independence; opt-in via CAMR.eos_warmstart=1).  Default T_init=-1.
-      static const bool s_warmstart = []() {
-          int w = 0; amrex::ParmParse pp("CAMR");
-          pp.query("eos_warmstart", w); return (w != 0);
-      }();
+      const bool s_warmstart = ps_eos_warmstart();   // single read (AUDIT C.4)
       const int mru = (next_slot + NSLOTS - 1) % NSLOTS;
       const amrex::Real T_init = (s_warmstart && rho_cache[mru] > amrex::Real(0))
                                   ? state_cache[mru].T
@@ -407,10 +426,7 @@ namespace EOS {
       // See co2_state_from_rho_e_cached above for the rationale.  (The
       // old CAMR.eos_disable_warmstart flag is superseded — warm-start is
       // now off unless eos_warmstart is set.)
-      static const bool s_warmstart = []() {
-          int w = 0; amrex::ParmParse pp("CAMR");
-          pp.query("eos_warmstart", w); return (w != 0);
-      }();
+      const bool s_warmstart = ps_eos_warmstart();   // single read (AUDIT C.4)
       const int mru = (next_slot[p] + NSLOTS - 1) % NSLOTS;
       const amrex::Real T_init = (s_warmstart && rho_cache[p][mru] > amrex::Real(0))
                                   ? state_cache[p][mru].T

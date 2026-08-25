@@ -1084,6 +1084,58 @@ ps_viscous_face(int d, int i, int j, int k,
     flx(i,j,k,UE2)  =ps_finite_or(flx(i,j,k,UE2)  +Y2*Ef,Real(0.0));
 }
 
+// ---------------------------------------------------------------------
+//  Solver-selection dial accessors (declared in PS_umeth.H; AUDIT C.4).
+//  One ParmParse read per knob, process-wide.
+// ---------------------------------------------------------------------
+int ps_flux_selector()
+{
+    static const int v = []() -> int {
+        std::string s = "llf";
+        amrex::ParmParse pp("CAMR");
+        pp.query("ps_flux", s);
+        if (s == "hllc") return 1;
+        if (s == "wp")   return 2;   // Berger-LeVeque fluctuation interior (BL-1)
+        if (s == "llf" || s.empty()) return 0;
+        amrex::Print() << "  PS_umeth: unknown CAMR.ps_flux='" << s
+                       << "' — forcing to llf\n";
+        return 0;
+    }();
+    return v;
+}
+
+const char* ps_flux_name()
+{
+    switch (ps_flux_selector()) {
+        case 1:  return "hllc";
+        case 2:  return "wp";
+        default: return "llf";
+    }
+}
+
+int ps_recon_selector()
+{
+    static const int v = []() -> int {
+        int r = 0;
+        amrex::ParmParse pp("CAMR");
+        pp.query("ps_recon", r);
+        return r;
+    }();
+    return v;
+}
+
+int ps_alpha_limiter_minmod()
+{
+    static const int v = []() -> int {
+        std::string s = "vanleer";
+        amrex::ParmParse pp("CAMR");
+        pp.query("ps_alpha_limiter", s);
+        return (s == "minmod") ? 1 : 0;
+    }();
+    return v;
+}
+
+
 void
 PS_umeth(const Box& bx,
          const int* /*bclo*/, const int* /*bchi*/,
@@ -1138,50 +1190,18 @@ PS_umeth(const Box& bx,
     // in a function-local static.  Under USE_OMP=FALSE + MPI-only
     // this is race-free.  A future public accessor on CAMR would
     // remove the redundant query — this is the least-invasive fix.
-    auto ps_recon_cached = []() -> int
-    {
-        static int cached = -1;
-        if (cached < 0) {
-            int v = 0;
-            amrex::ParmParse pp("CAMR");
-            pp.query("ps_recon", v);
-            cached = v;
-        }
-        return cached;
-    };
-    const int use_muscl = ps_recon_cached();
+    const int use_muscl = ps_recon_selector();   // single read (AUDIT C.4)
 
     // Task #187: face-flux dispatch.  CAMR.ps_flux selects the Riemann
     // solver applied to each face:
     //   0 (default) = LLF Rusanov            (works for T-Blowdown-class)
     //   1           = Pelanti 2022 HLLC      (contact-preserving; use for
     //                                          B4-class cross-critical
-    //                                          Riemann fans).  When
-    //                                          selected, HLLC's α · S_M
-    //                                          flux replaces the WP-α
-    //                                          post-step kernel below.
-    // Cached the same way as ps_recon so the ParmParse query is one-shot.
-    auto ps_flux_cached = []() -> int
-    {
-        static int cached = -1;
-        if (cached < 0) {
-            std::string s = "llf";
-            amrex::ParmParse pp("CAMR");
-            pp.query("ps_flux", s);
-            int v = 0;
-            if      (s == "hllc")  v = 1;
-            else if (s == "wp")    v = 2;   // Berger-LeVeque fluctuation interior (BL-1)
-            else if (s == "llf" || s.empty()) v = 0;
-            else {
-                amrex::Print() << "  PS_umeth: unknown CAMR.ps_flux='"
-                                << s << "' — forcing to llf\n";
-                v = 0;
-            }
-            cached = v;
-        }
-        return cached;
-    };
-    const int use_hllc = ps_flux_cached();
+    //                                          Riemann fans).  The WP-α
+    //                                          cell kernel runs for BOTH
+    //                                          paths since task #202.
+    //   2 (wp)      = Berger-LeVeque fluctuation interior (BL-1).
+    const int use_hllc = ps_flux_selector();   // single read (AUDIT C.4)
 
     // #85 (level-b): per-phase P_k energy flux (two-pressure / disequilibrium
     // form).  Host-read once here; captured by value into the [=] face kernels
@@ -1210,18 +1230,7 @@ PS_umeth(const Box& bx,
     // CAMR.ps_alpha_limiter = "vanleer" (default, validated) or "minmod".
     // Cached one-shot like ps_recon / ps_flux (free function can't read the
     // CAMR:: static member directly).  Returns 1 for minmod, 0 for vanleer.
-    auto ps_alpha_minmod_cached = []() -> int
-    {
-        static int cached = -1;
-        if (cached < 0) {
-            std::string s = "vanleer";
-            amrex::ParmParse pp("CAMR");
-            pp.query("ps_alpha_limiter", s);
-            cached = (s == "minmod") ? 1 : 0;
-        }
-        return cached;
-    };
-    const int use_alpha_minmod = ps_alpha_minmod_cached();
+    const int use_alpha_minmod = ps_alpha_limiter_minmod();   // single read (AUDIT C.4)
 
     // BL-2: wave-propagation order for ps_flux=wp.
     //   CAMR.ps_wp_order = 1 (default) → 1st-order fluctuations (BL-1).

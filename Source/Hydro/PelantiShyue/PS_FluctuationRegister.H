@@ -90,10 +90,14 @@ void camr_ps_fluctreg_fineadd_hi (
 {
     const auto lo = amrex::lbound(bx);
     const auto hi = amrex::ubound(bx);
-    // In 2D, IntVect::dim3() gives rr.z==0, so clamp the transverse-z
-    // loop bound to 1 (there is no z refinement).  This mirrors what the
-    // dimension-specific base kernels (_2D_K.H / _3D_K.H) do implicitly.
+    // IntVect::dim3() zero-fills the unused dimensions (rr.z==0 in 2D,
+    // rr.y==rr.z==0 in 1D), so clamp EVERY transverse loop bound to 1.
+    // Before 2026-08-24 only z was clamped: in a DIM=1 build the x-branch
+    // ran `joff < rr.y` = `joff < 0` and FineAddOneSided deposited NOTHING
+    // while CrseAddOneSided still ran — a one-sided-only C-F "correction"
+    // (AUDIT 2026-08-24 A3).  No behavior change for DIM>=2.
     const int nkoff = (AMREX_SPACEDIM == 3) ? rr.z : 1;
+    const int njoff = (AMREX_SPACEDIM >= 2) ? rr.y : 1;
     if (idim == 0) {                        // x hi-side (cf. base case 1)
         for (int n = 0; n < nc; ++n) {
         for (int k = lo.z; k <= hi.z; ++k) {
@@ -101,7 +105,7 @@ void camr_ps_fluctreg_fineadd_hi (
             const int i = lo.x; const int ii = i*rr.x;
             T* AMREX_RESTRICT dp = &(d(i,j,k,n));
             for (int koff = 0; koff < nkoff;  ++koff) { const int kk = k*rr.z + koff;
-            for (int joff = 0; joff < rr.y;   ++joff) { const int jj = j*rr.y + joff;
+            for (int joff = 0; joff < njoff;  ++joff) { const int jj = j*rr.y + joff;
                 amrex::HostDevice::Atomic::Add(dp, -dtdx*f(ii,jj,kk,n)); } }
         }}}
     }

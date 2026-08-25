@@ -436,6 +436,11 @@ namespace EOS {
       return gerg::state_TR_auto(g_T_from_e_auto(rho, e), rho);
 #else
       constexpr int NS = 4;
+      //  AUDIT 2026-08-24 B12(d): mutable function-local-static ring cache —
+      //  single-thread only; make the restriction a compile error.
+#ifdef _OPENMP
+#error "The GERG EOS ring caches (function-local statics) are not thread-safe; build with USE_OMP=FALSE."
+#endif
       static amrex::Real rc[NS] = {-1,-1,-1,-1}, ec[NS] = {0,0,0,0};
       static gerg::State sc[NS];
       static int nxt = 0;

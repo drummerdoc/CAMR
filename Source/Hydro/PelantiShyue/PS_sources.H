@@ -197,9 +197,7 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                 //  every ROUTED one-absent cell prints BEFORE the kernel call,
                 //  so "no events" splits into "driver never routed" vs
                 //  "kernel refused" (ground rule 3).  Capped per sweep.
-                static const int fl_evd = []() -> int {
-                    int v = 0; amrex::ParmParse pp("CAMR");
-                    pp.query("ps_flash_ev_diag", v); return v; }();
+                const int fl_evd = hem::ps_diag_flash_ev();   // single read (AUDIT C.4)
                 if (fl_evd >= 2 && one_absent) {
                     static int n_abs_rep = 0;
                     if (n_abs_rep < 40) {
@@ -230,9 +228,7 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                     //  the threshold-free discriminator candidate (a
                     //  smeared contact never nucleates, so it can never
                     //  acquire Sigma).
-                    static const int fl_ev = []() -> int {
-                        int v = 0; amrex::ParmParse pp("CAMR");
-                        pp.query("ps_flash_ev_diag", v); return v; }();
+                    const int fl_ev = hem::ps_diag_flash_ev();   // single read (AUDIT C.4)
                     if (fl_ev != 0 &&
                         (Uv[0] != Uv_pre[0] || Uv[1] != Uv_pre[1] ||
                          Uv[4] != Uv_pre[4])) {
@@ -260,9 +256,7 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
         //  refusal-cause table per sweep, [PS-MTCAUSE]-style — "zero events"
         //  decomposes by cause instead of staying a mystery.
         {
-            static const int fl_evd2 = []() -> int {
-                int v = 0; amrex::ParmParse pp("CAMR");
-                pp.query("ps_flash_ev_diag", v); return v; }();
+            const int fl_evd2 = hem::ps_diag_flash_ev();   // single read (AUDIT C.4)
             if (fl_evd2 >= 2) {
                 static const char* fn[hem::PS_FLR_NCAUSE] = {
                     "FIRED", "tau", "eos", "a_nan", "not_dom", "m_guard",
@@ -334,9 +328,7 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
         // measurement inside the kernel (a second equilibrium solve per
         // transferring cell), so level 1 keeps its present cost.  Host-read
         // once, threaded by value (GPU rules 12.2).
-        static const int mt_diag_lvl = []() -> int {
-            int v = 0; amrex::ParmParse pp("CAMR");
-            pp.query("ps_mt_diag", v); return v; }();
+        const int mt_diag_lvl = hem::ps_diag_mt();   // single read (AUDIT C.4)
         const int l_mt_cr = (mt_diag_lvl >= 2) ? 1 : 0;
         // D2 experiment: CAMR.ps_mt_h_weight.  0.5 = mean (default, previous
         // behaviour bit-for-bit); negative = upwind by transfer direction.
@@ -436,9 +428,7 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
         //  [PS-DT], reset unconditional so the census never straddles
         //  sweeps.
         {
-            static const int dm_diag = []() -> int {
-                int v = 0; amrex::ParmParse pp("CAMR");
-                pp.query("ps_pres_diag", v); return v; }();
+            const int dm_diag = hem::ps_diag_pres();   // single read (AUDIT C.4)
             hem::PsDmCensus& dc = hem::ps_dm_census();
             if (dm_diag != 0 && dc.n > 0) {
                 amrex::AllPrint() << "[PS-DM mt] cells=" << dc.n
@@ -481,9 +471,7 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
         // Answers: is the equilibrium Gibbs-Newton converging cheaply, or
         // burning max_iter (=30) on most cells?  Printed per call (once per
         // level per subcycle) so a run killed mid-step still yields data.
-        static const int mt_diag = []() -> int {
-            int v = 0; amrex::ParmParse pp("CAMR");
-            pp.query("ps_mt_diag", v); return v; }();
+        const int mt_diag = hem::ps_diag_mt();   // single read (AUDIT C.4)
         if (mt_diag != 0) {
             hem::PsMtStats& st = hem::ps_mt_stats();
             const double per = (st.eqsolve > 0)
@@ -680,9 +668,7 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
         long nfb = 0;
         for (int c = 1; c < hem::PS_HRM_NCAUSE; ++c) nfb += hem::ps_hrm_cause(c);
         if (r.n > 0 || nfb > 0) {
-            static const int rx = []() -> int {
-                int v = 0; amrex::ParmParse pp("CAMR");
-                pp.query("ps_prdiag", v); return v; }();
+            const int rx = hem::ps_diag_prdiag();   // single read (AUDIT C.4)
             if (rx != 0) {
                 static const char* hn[hem::PS_HRM_NCAUSE] = {
                     "ok","supercrit","psat_bad","denom","psi_zero","alpha_zero","nonfin" };

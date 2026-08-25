@@ -4,6 +4,7 @@
 #include "CAMR_Constants.H"
 #ifdef USE_PS_HYDRO
 #include "PS_ctoprim.H"
+#include "PS_umeth.H"                // dial accessors (AUDIT C.4)
 #endif
 
 #include <atomic>
@@ -22,22 +23,23 @@ CAMR::construct_hydro_source (const MultiFab& S,
     if (verbose) {
         if (do_mol) {
             amrex::Print() << "... Computing MOL-based hydro advance" << std::endl;
+#ifdef USE_PS_HYDRO
         } else if (ps_hydro != 0) {
             // Pelanti-Shyue path: report the actual PS flux (CAMR.ps_flux) and
             // the reconstruction order named by what it is (piecewise-
             // constant / -linear / -parabolic).  "Godunov-based" (non-PS
             // branch below) is the generic single-step-unsplit driver label
             // and does NOT mean a Godunov flux; for PS runs name the real flux.
-            static const std::string l_ps_flux = []{
-                std::string s = "llf"; amrex::ParmParse pp("CAMR");
-                pp.query("ps_flux", s); return s;
-            }();
-            const char* l_recon = (ps_recon == 2) ? "piecewise-parabolic (PPM)"
-                                : (ps_recon == 1) ? "piecewise-linear (MUSCL/PLM)"
-                                                  : "piecewise-constant";
+            //  AUDIT C.4: resolved selections via the single-read accessors.
+            const int  l_pr    = ps_recon_selector();
+            const char* l_recon = (l_pr == 2) ? "piecewise-parabolic (PPM)"
+                                : (l_pr == 1) ? "piecewise-linear (MUSCL/PLM)"
+                                              : "piecewise-constant";
             amrex::Print() << "... Computing PS unsplit hydro advance (flux="
-                           << l_ps_flux << ", recon=" << l_recon << ")"
+                           << ps_flux_name() << ", recon=" << l_recon << ")"
                            << std::endl;
+#endif  // USE_PS_HYDRO (accessors live in PS_umeth.cpp; non-PS builds
+        //                 cannot run the PS path, so the branch is elided)
         } else {
             amrex::Print() << "... Computing Godunov-based hydro advance" << std::endl;
         }

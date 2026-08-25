@@ -56,6 +56,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>            // ps_knob_str (env knobs retired 2026-08-15)
+#include <AMReX.H>           // amrex::Abort (dial-contract violations)
 #include <AMReX_ParmParse.H> // CAMR.* runtime knobs (formerly PS_* env vars)
 
 // Session 89af: per-phase real-fluid exact Riemann solver for the
@@ -85,7 +86,6 @@ using V6 = std::array<double, 6>;
 // ---------------------------------------------------------------------
 //  Diagnostic counters.
 // ---------------------------------------------------------------------
-inline int& ps_llf_fallback_count()       { static int n = 0; return n; }
 inline int& ps_pressure_relax_count()     { static int n = 0; return n; }
 inline int& ps_mass_transfer_count()      { static int n = 0; return n; }
 
@@ -446,6 +446,16 @@ inline double ps_dial_mt_h_weight()       { static const double v = ps_knob_real
 inline double ps_dial_mt_srt_d()          { static const double v = ps_knob_real("ps_mt_srt_d",         0.1); return v; }
 inline double ps_dial_mt_srt_delta()      { static const double v = ps_knob_real("ps_mt_srt_delta",    0.01); return v; }
 
+//  Diagnostic-knob single-read accessors (AUDIT 2026-08-24 C.4).  Each of
+//  these keys used to be read at 2-3 independent static sites across
+//  PS_relaxation.H / PS_sources.H — defaults agreeing only by luck, the
+//  exact substrate the ps_relax_mode defect grew from.  One read each.
+inline int ps_diag_pres()       { static const int v = ps_knob_int("ps_pres_diag",     0); return v; }
+inline int ps_diag_prdiag()     { static const int v = ps_knob_int("ps_prdiag",        0); return v; }
+inline int ps_diag_mt()         { static const int v = ps_knob_int("ps_mt_diag",       0); return v; }
+inline int ps_diag_flash_ev()   { static const int v = ps_knob_int("ps_flash_ev_diag", 0); return v; }
+inline int ps_diag_relax_cell() { static const int v = ps_knob_int("ps_relax_diag",   -1); return v; }
+
 
 
 // Session 89av: T-floor fold.  When a phase's implied temperature falls
@@ -766,410 +776,8 @@ inline PsState ps_state_from_cons(const V6& U, const PsPhaseAPI& eos,
 }
 
 
-// ---------------------------------------------------------------------
-//  Wave speeds for the 6-equation Riemann problem.
-//
-//  Structure: 6 waves with a 4-fold degenerate contact at u_*.  We
-//  need only two distinct wave speeds S_L, S_R (outer acoustics) and
-//  the contact S_M for the HLLD-style flux construction:
-//
-//      S_L = min(u_L - c_L, u_R - c_R, u_* - c_*_L)
-//      S_R = max(u_L + c_L, u_R + c_R, u_* + c_*_R)
-//      S_M = u_*                                (from HLLC pressure balance)
-//
-//  For the initial implementation we use Davis wavespeeds; Toro-Batten
-//  adaptive q-factor can be added later for stronger shocks.
-// ---------------------------------------------------------------------
-struct PsWaveSpeeds {
-    double S_L, S_R, S_M, P_star;
-    bool   valid;
-};
 
 
-inline PsWaveSpeeds ps_wave_speeds(const PsState& sL, const PsState& sR)
-{
-    PsWaveSpeeds w;
-    w.valid = false;
-    if (!sL.valid || !sR.valid) return w;
-
-    // Session 89ap: env-selectable wave-speed estimator.
-    //   davis (default): S_L = min(u_L - c_L, u_R - c_R), etc.  Uses
-    //                    each cell's own c_frozen; min/max is
-    //                    dominated by the larger-c side (liquid across
-    //                    a phase contact).
-    //   roe:             S_L = u_bar - c_bar, S_R = u_bar + c_bar with
-    //                    u_bar = 0.5*(u_L+u_R) and c_bar = geometric
-    //                    or Roe-averaged mixture c.  Symmetric estimate.
-    //   chord:           c_bar from the Roe-chord identity
-    //                      c_bar^2 = (P_R - P_L) / (rho_R - rho_L)
-    //                    when the density jump is non-trivial; falls
-    //                    back to max(c_L, c_R) otherwise.  This is the
-    //                    "shock-consistent" mixture speed.
-    //   pvrs:            Toro's Primitive Variable Riemann Solver two-
-    //                    shock estimator (Toro §9.5.1 / §10.5.2).  Uses
-    //                    a linearized-acoustic P* estimate, then applies
-    //                    Rankine-Hugoniot q_K correction on each side:
-    //                       S_L = u_L - c_L * q_L
-    //                       S_R = u_R + c_R * q_R
-    //                    with
-    //                       q_K = 1                             (P* ≤ P_K, rarefaction)
-    //                       q_K = sqrt(1 + (γ+1)/(2γ)*(P*/P_K - 1)) (P* > P_K, shock)
-    //                    An effective γ_K = c_K² ρ_K / P_K is used per
-    //                    side to keep the correction real-fluid-aware.
-    //                    Motivation: on B1 the Davis outer bound caps
-    //                    S_R at (u_R + c_R) even though the shock moves
-    //                    faster; the q_R > 1 factor closes that gap.
-    static const int ws_mode = []{
-        const std::string v = ps_knob_str("ps_wave_speed", "davis");
-        if (v == "roe")   return 1;
-        if (v == "chord") return 2;
-        if (v == "pvrs")  return 3;
-        return 0;   // davis
-    }();
-
-    double S_L, S_R;
-    if (ws_mode == 0) {
-        // Davis (baseline).
-        S_L = std::min(sL.u - sL.c_frozen, sR.u - sR.c_frozen);
-        S_R = std::max(sL.u + sL.c_frozen, sR.u + sR.c_frozen);
-    } else if (ws_mode == 3) {
-        // PVRS two-shock estimator (Toro §10.5.2).
-        //
-        // 1) Linearized-acoustic P* estimate:
-        //      P*_pvrs = 0.5*(P_L + P_R) + 0.5*(u_L - u_R)*ρ_bar*c_bar
-        //    with ρ_bar = 0.5*(ρ_L + ρ_R), c_bar = 0.5*(c_L + c_R).
-        //    Clamped to a small positive floor to avoid P*/P_K < 0
-        //    (which would happen for extreme two-rarefaction problems;
-        //    a q_K = 1 then applies on both sides naturally).
-        // 2) Per-side effective γ_K = c_K² ρ_K / P_K (matches ideal-gas
-        //    definition; for real fluids it produces a locally accurate
-        //    q_K coefficient because the RH shock adiabat's leading-
-        //    order expansion is controlled by exactly this combination).
-        // 3) q_K = 1 for a rarefaction (P* ≤ P_K), else the RH factor.
-        // 4) S_L = u_L - c_L*q_L,  S_R = u_R + c_R*q_R.
-        const double P_L    = sL.P_mix;
-        const double P_R    = sR.P_mix;
-        const double rho_L  = sL.rho_mix;
-        const double rho_R  = sR.rho_mix;
-        const double c_L    = sL.c_frozen;
-        const double c_R    = sR.c_frozen;
-        const double u_L    = sL.u;
-        const double u_R    = sR.u;
-        const double rho_bar = 0.5 * (rho_L + rho_R);
-        const double c_bar   = 0.5 * (c_L + c_R);
-        double P_star_est = 0.5 * (P_L + P_R)
-                             + 0.5 * (u_L - u_R) * rho_bar * c_bar;
-        const double P_floor = 1.0e-3 * std::min(P_L, P_R);
-        if (!std::isfinite(P_star_est) || P_star_est < P_floor) {
-            P_star_est = P_floor;
-        }
-        // Cap on the RH q-factor.  Empirically B5 (Both-2P) drives
-        // gamma_eff into a regime where q_K ~ 5+ from an anomalously
-        // small mixture sound speed vs a phase-mixture pressure jump,
-        // producing wildly asymmetric fluxes.  Cap keeps PVRS a safe
-        // widening of the fan without letting it explode.  Env-tunable
-        // via PS_PVRS_QMAX (default 2.0).
-        static const double q_max = []{
-            const double d = ps_knob_real("ps_pvrs_qmax", 2.0);
-            return (d >= 1.0 && d <= 10.0) ? d : 2.0;
-        }();
-        auto q_factor = [](double P_star, double P_K, double rho_K,
-                            double c_K) -> double {
-            if (P_star <= P_K) return 1.0;                  // rarefaction
-            if (P_K   <= 0.0 || rho_K <= 0.0 || c_K <= 0.0) return 1.0;
-            const double gamma_eff = c_K * c_K * rho_K / P_K;
-            if (!std::isfinite(gamma_eff) || gamma_eff <= 1.0) return 1.0;
-            const double A = 0.5 * (gamma_eff + 1.0) / gamma_eff;
-            const double arg = 1.0 + A * (P_star / P_K - 1.0);
-            if (arg <= 0.0 || !std::isfinite(arg)) return 1.0;
-            const double q = std::sqrt(arg);
-            return std::min(q, q_max);
-        };
-        const double q_L = q_factor(P_star_est, P_L, rho_L, c_L);
-        const double q_R = q_factor(P_star_est, P_R, rho_R, c_R);
-        S_L = u_L - c_L * q_L;
-        S_R = u_R + c_R * q_R;
-        // Robustness bracket: never let the PVRS estimate produce a
-        // narrower fan than Davis; the extra half-width from q > 1 is
-        // the whole point, and PVRS may only widen the fan.
-        S_L = std::min(S_L, std::min(u_L - c_L, u_R - c_R));
-        S_R = std::max(S_R, std::max(u_L + c_L, u_R + c_R));
-    } else {
-        const double u_bar = 0.5 * (sL.u + sR.u);
-        double c_bar;
-        if (ws_mode == 2) {
-            // Chord speed from ΔP/Δρ.  For a contact, both differences
-            // are near zero and the ratio is ill-defined; use max cell-c
-            // as a robust bound.  For a real shock or rarefaction, the
-            // ratio is well-behaved and gives the true wave speed.
-            const double dP   = sR.P_mix   - sL.P_mix;
-            const double drho = sR.rho_mix - sL.rho_mix;
-            if (std::abs(drho) < 1.0e-6 * (sL.rho_mix + sR.rho_mix)) {
-                c_bar = std::max(sL.c_frozen, sR.c_frozen);
-            } else {
-                const double c2 = dP / drho;
-                if (c2 <= 0.0 || !std::isfinite(c2)) {
-                    c_bar = std::max(sL.c_frozen, sR.c_frozen);
-                } else {
-                    // Raw chord speed (no outer-bound cap).  Env-gated
-                    // PS_CHORD_UNCAPPED=1 keeps chord below cell-c
-                    // (may violate HLLC's outer-wave requirement but
-                    // exposes the chord's intrinsic behavior for
-                    // diagnostic purposes).
-                    static const bool uncapped =
-                        ps_knob_int("ps_chord_uncapped", 0) != 0;
-                    c_bar = std::sqrt(c2);
-                    if (!uncapped) {
-                        const double c_max = std::max(sL.c_frozen, sR.c_frozen);
-                        if (c_bar < c_max) c_bar = c_max;
-                    }
-                }
-            }
-        } else {
-            // Roe-like geometric mean of cell c's.  Symmetric across
-            // the face regardless of asymmetric phase composition.
-            c_bar = std::sqrt(sL.c_frozen * sR.c_frozen);
-        }
-        S_L = u_bar - c_bar;
-        S_R = u_bar + c_bar;
-    }
-    const double denom = sL.rho_mix * (S_L - sL.u) - sR.rho_mix * (S_R - sR.u);
-    if (!std::isfinite(denom) || std::abs(denom) < 1.0e-30) return w;
-
-    const double S_M = (sR.P_mix - sL.P_mix
-                        + sL.rho_mix * sL.u * (S_L - sL.u)
-                        - sR.rho_mix * sR.u * (S_R - sR.u)) / denom;
-    if (!std::isfinite(S_M)) return w;
-    const double P_star = sL.P_mix + sL.rho_mix * (S_L - sL.u) * (S_M - sL.u);
-    if (!std::isfinite(P_star) || P_star <= 0.0) return w;
-
-    w.S_L    = S_L;
-    w.S_R    = S_R;
-    w.S_M    = S_M;
-    w.P_star = P_star;
-    w.valid  = true;
-    return w;
-}
-
-
-
-
-
-
-
-
-// ---------------------------------------------------------------------
-//  Session 89an: Wave-propagation (fluctuation) form of the HLLC solver.
-//
-//  Ported from COTT musta_df_mc.f90 HLLC_v (lines 1721-1858) with
-//  RHS assembly per rhs_df_mc_HLLC (lines 622-628).  This is the
-//  LeVeque / CLAWPACK-style wave-propagation form.
-//
-//  Difference from the standard Godunov flux `ps_hlld_flux`:
-//
-//    * The standard form produces ONE face flux `F_{i+1/2}` and
-//      updates cells via `-(F_{i+1/2} - F_{i-1/2}) / Δx`.  Non-
-//      conservative source terms (α transport, Σ term in phase
-//      energies) are applied as SEPARATE volume source terms.
-//
-//    * The wave-propagation form produces TWO fluctuations
-//      `A^− ΔQ_{i+1/2}` (left-going, affects cell i on left side)
-//      and `A^+ ΔQ_{i+1/2}` (right-going, affects cell i+1 on
-//      right side), computed from the individual HLLC waves W^l
-//      and speeds s^l:
-//          A^− ΔQ = Σ_{s^l < 0} s^l · W^l
-//          A^+ ΔQ = Σ_{s^l > 0} s^l · W^l
-//      Cell update: dU/dt = -(A^+ ΔQ_{i-1/2} + A^- ΔQ_{i+1/2}) / Δx.
-//      For a NON-CONSERVATIVE variable (α, or α_k E_k with Σ ≠ 0),
-//      A^+ ΔQ ≠ -A^- ΔQ at the SAME face and the non-conservative
-//      contribution is embedded at the face level automatically.
-//
-//  For a CONSERVATIVE variable, A^+ + A^- = ΔF (R–H sum), and the
-//  wave-propagation form reduces to the standard Godunov flux.
-//  The difference matters for the α equation and (via the Σ NCP
-//  source that our conservative-flux version approximates with a
-//  volume source) for the phase-energy equations.
-//
-//  This is meant to be called at each face in a separate driver
-//  (ppm_1d_ps_wp.cpp) that does its cell-update loop with the
-//  A^± ΔQ machinery rather than the standard Godunov (F_{i+1/2}
-//  minus F_{i-1/2})/Δx pattern.
-// ---------------------------------------------------------------------
-struct PsFluctuations {
-    V6 A_minus;         // left-going fluctuation (Σ_{s^l < 0} s^l · W^l)
-    V6 A_plus;          // right-going fluctuation (Σ_{s^l > 0} s^l · W^l)
-    // Individual waves and speeds — needed for the second-order
-    // limited-correction fluxes (LeVeque-CLAWPACK).  W[l], s[l] for
-    // l = 0 (S_L wave), 1 (S* wave), 2 (S_R wave).
-    std::array<V6, 3> W;
-    std::array<double, 3> s;
-    bool valid;
-};
-
-inline PsFluctuations ps_hllc_fluctuations(const PsState& sL,
-                                            const PsState& sR)
-{
-    PsFluctuations f{};
-    f.valid = false;
-    for (int k = 0; k < 6; ++k) { f.A_minus[k] = 0.0; f.A_plus[k] = 0.0; }
-
-    const PsWaveSpeeds w = ps_wave_speeds(sL, sR);
-    if (!w.valid) return f;
-
-    // Left, right conservative vectors.
-    const V6 U_L = ps_cons_from_prim(sL.p1.alpha, sL.p1.rho, sL.p2.rho,
-                                     sL.u, sL.p1.e, sL.p2.e);
-    const V6 U_R = ps_cons_from_prim(sR.p1.alpha, sR.p1.rho, sR.p2.rho,
-                                     sR.u, sR.p1.e, sR.p2.e);
-
-    // Star states — use the COTT HLLC_v shape (mixture p_L, per-phase ρ_k).
-    // This matches the reference solver's star-state phase-energy formula.
-    const double p_L_mix = sL.p1.alpha * sL.p1.P
-                           + (1.0 - sL.p1.alpha) * sL.p2.P;
-    const double p_R_mix = sR.p1.alpha * sR.p1.P
-                           + (1.0 - sR.p1.alpha) * sR.p2.P;
-
-    // r_L, r_R contraction ratios per side.
-    const double r_L = (w.S_L - sL.u) / (w.S_L - w.S_M);
-    const double r_R = (w.S_R - sR.u) / (w.S_R - w.S_M);
-    if (!std::isfinite(r_L) || !std::isfinite(r_R)) return f;
-
-    const double a1r1_starL = sL.p1.alpha * sL.p1.rho * r_L;
-    const double a2r2_starL = sL.p2.alpha * sL.p2.rho * r_L;
-    const double a1r1_starR = sR.p1.alpha * sR.p1.rho * r_R;
-    const double a2r2_starR = sR.p2.alpha * sR.p2.rho * r_R;
-
-    // Specific total energies on each side.
-    const double E_1_L = sL.p1.e + 0.5 * sL.u * sL.u;
-    const double E_2_L = sL.p2.e + 0.5 * sL.u * sL.u;
-    const double E_1_R = sR.p1.e + 0.5 * sR.u * sR.u;
-    const double E_2_R = sR.p2.e + 0.5 * sR.u * sR.u;
-
-    // Per-phase mass-flux denominators.
-    const double q_L1 = sL.p1.rho * (w.S_L - sL.u);
-    const double q_L2 = sL.p2.rho * (w.S_L - sL.u);
-    const double q_R1 = sR.p1.rho * (w.S_R - sR.u);
-    const double q_R2 = sR.p2.rho * (w.S_R - sR.u);
-    if (std::abs(q_L1) < 1e-30 || std::abs(q_L2) < 1e-30
-     || std::abs(q_R1) < 1e-30 || std::abs(q_R2) < 1e-30) return f;
-
-    // Star-state phase energies (mixture p, per-phase ρ_k) — matches
-    // COTT HLLC_v Q_est_L(5,6).
-    const double E_1_starL = E_1_L + (w.S_M - sL.u) * (w.S_M + p_L_mix / q_L1);
-    const double E_2_starL = E_2_L + (w.S_M - sL.u) * (w.S_M + p_L_mix / q_L2);
-    const double E_1_starR = E_1_R + (w.S_M - sR.u) * (w.S_M + p_R_mix / q_R1);
-    const double E_2_starR = E_2_R + (w.S_M - sR.u) * (w.S_M + p_R_mix / q_R2);
-    if (!std::isfinite(E_1_starL) || !std::isfinite(E_2_starL)
-     || !std::isfinite(E_1_starR) || !std::isfinite(E_2_starR)) return f;
-
-    // Star-state conservative vectors.  Note α is advected (Q_star[0]
-    // = Q_side[0]); mixture momentum uses star mixture density × S*.
-    V6 U_starL, U_starR;
-    U_starL[0] = sL.p1.alpha;
-    U_starL[1] = a1r1_starL;
-    U_starL[2] = a2r2_starL;
-    U_starL[3] = (a1r1_starL + a2r2_starL) * w.S_M;
-    U_starL[4] = a1r1_starL * E_1_starL;
-    U_starL[5] = a2r2_starL * E_2_starL;
-
-    U_starR[0] = sR.p1.alpha;
-    U_starR[1] = a1r1_starR;
-    U_starR[2] = a2r2_starR;
-    U_starR[3] = (a1r1_starR + a2r2_starR) * w.S_M;
-    U_starR[4] = a1r1_starR * E_1_starR;
-    U_starR[5] = a2r2_starR * E_2_starR;
-
-    // Waves W^l = U^{star or side} - U^{previous}, for l = 1, 2, 3.
-    for (int k = 0; k < 6; ++k) {
-        f.W[0][k] = U_starL[k] - U_L[k];     // W^1 (S_L wave)
-        f.W[1][k] = U_starR[k] - U_starL[k]; // W^2 (S* wave)
-        f.W[2][k] = U_R[k] - U_starR[k];     // W^3 (S_R wave)
-    }
-    f.s[0] = w.S_L;
-    f.s[1] = w.S_M;
-    f.s[2] = w.S_R;
-
-    // Fluctuations: sum by wave-speed sign.
-    for (int l = 0; l < 3; ++l) {
-        const double sl = f.s[l];
-        if (sl < 0.0) {
-            for (int k = 0; k < 6; ++k) f.A_minus[k] += sl * f.W[l][k];
-        } else if (sl > 0.0) {
-            for (int k = 0; k < 6; ++k) f.A_plus[k] += sl * f.W[l][k];
-        }
-        // sl == 0 contributes nothing.
-    }
-    f.valid = true;
-    return f;
-}
-
-
-// ---------------------------------------------------------------------
-//  Session 89t: single-fluid 3-wave HLLC helper.  Standard Davis wave
-//  speeds; returns mass, momentum, and energy flux for one phase.
-// ---------------------------------------------------------------------
-inline bool single_fluid_hllc(
-    double rho_L, double u_L, double P_L, double e_L, double c_L,
-    double rho_R, double u_R, double P_R, double e_R, double c_R,
-    double& F_mass, double& F_mom, double& F_energy, double& S_M_out)
-{
-    if (rho_L <= 0.0 || rho_R <= 0.0 || c_L <= 0.0 || c_R <= 0.0) return false;
-
-    const double S_L = std::min(u_L - c_L, u_R - c_R);
-    const double S_R = std::max(u_L + c_L, u_R + c_R);
-    const double denom = rho_L * (S_L - u_L) - rho_R * (S_R - u_R);
-    if (std::abs(denom) < 1.0e-30) return false;
-
-    const double S_M = (P_R - P_L
-                        + rho_L * u_L * (S_L - u_L)
-                        - rho_R * u_R * (S_R - u_R)) / denom;
-    if (!std::isfinite(S_M)) return false;
-    S_M_out = S_M;
-
-    const double E_L = e_L + 0.5 * u_L * u_L;
-    const double E_R = e_R + 0.5 * u_R * u_R;
-
-    const double F_L_mass   = rho_L * u_L;
-    const double F_L_mom    = rho_L * u_L * u_L + P_L;
-    const double F_L_energy = u_L * (rho_L * E_L + P_L);
-    const double F_R_mass   = rho_R * u_R;
-    const double F_R_mom    = rho_R * u_R * u_R + P_R;
-    const double F_R_energy = u_R * (rho_R * E_R + P_R);
-
-    if (S_L >= 0.0) {
-        F_mass = F_L_mass;  F_mom = F_L_mom;  F_energy = F_L_energy;
-        return true;
-    }
-    if (S_R <= 0.0) {
-        F_mass = F_R_mass;  F_mom = F_R_mom;  F_energy = F_R_energy;
-        return true;
-    }
-
-    if (S_M >= 0.0) {
-        const double denomL = S_L - S_M;
-        if (std::abs(denomL) < 1.0e-30) return false;
-        const double rho_star = rho_L * (S_L - u_L) / denomL;
-        const double q_L      = rho_L * (S_L - u_L);
-        if (std::abs(q_L) < 1.0e-30) return false;
-        const double E_star   = E_L + (S_M - u_L) * (S_M + P_L / q_L);
-        F_mass   = F_L_mass   + S_L * (rho_star           - rho_L);
-        F_mom    = F_L_mom    + S_L * (rho_star * S_M     - rho_L * u_L);
-        F_energy = F_L_energy + S_L * (rho_star * E_star  - rho_L * E_L);
-    } else {
-        const double denomR = S_R - S_M;
-        if (std::abs(denomR) < 1.0e-30) return false;
-        const double rho_star = rho_R * (S_R - u_R) / denomR;
-        const double q_R      = rho_R * (S_R - u_R);
-        if (std::abs(q_R) < 1.0e-30) return false;
-        const double E_star   = E_R + (S_M - u_R) * (S_M + P_R / q_R);
-        F_mass   = F_R_mass   + S_R * (rho_star           - rho_R);
-        F_mom    = F_R_mom    + S_R * (rho_star * S_M     - rho_R * u_R);
-        F_energy = F_R_energy + S_R * (rho_star * E_star  - rho_R * E_R);
-    }
-    if (!std::isfinite(F_mass) || !std::isfinite(F_mom) || !std::isfinite(F_energy))
-        return false;
-    return true;
-}
 
 
 
@@ -1443,50 +1051,6 @@ inline bool ps_pressure_relax_cell(V6& U, const PsPhaseAPI& eos,
     // Failed to converge within max_iter; leave U unchanged.
     if (out_reason) *out_reason = PSR_MAXITER;
     return false;
-}
-
-
-// ---------------------------------------------------------------------
-//  Finite-rate MECHANICAL pressure relaxation (task #80, ps_relax_mode=3).
-//
-//  Relax P_1 -> P_2 by adjusting the volume fraction alpha at a PHYSICAL
-//  rate 1/tau_p, rather than the instantaneous mechanical-equilibrium
-//  projection (ps_pressure_relax_cell).  Lets genuine mechanical
-//  disequilibrium (P_1 != P_2) persist over a finite flow distance
-//  ~ u*tau_p -- the Baer-Nunziato / Saurel-Abgrall pressure-relaxation
-//  regime -- which (a) thickens the flash/relaxation front and (b)
-//  represents metastable delayed equilibration (fast decompression /
-//  cavitation / flashing).
-//
-//  Integrator: exact-exponential toward the instantaneous-equilibrium
-//  target (alpha_eq, e1_eq, e2_eq) -> unconditionally stable, strictly
-//  non-overshooting for any dt/tau_p.  tau_p -> 0 recovers the
-//  instantaneous relax; tau_p -> inf freezes alpha (mechanically frozen).
-//  Conserves mixture energy EXACTLY (convex blend of two states that each
-//  keep UE1+UE2 fixed) and keeps alpha in (0,1) (convex blend of two
-//  in-range alphas).  Masses / momentum untouched.
-//
-//  SCOPE (level-a): the wp flux still forms P_mix / the mixture sound
-//  speed assuming mechanical equilibrium, so this is a RELAXATION-substep
-//  extension, consistent in the stiff limit (tau_p not >> flow time).  A
-//  genuine pressure-disequilibrium flux (per-phase P, frozen wave speeds)
-//  is the level-b follow-on.
-// ---------------------------------------------------------------------
-inline bool ps_pressure_relax_cell_finite(
-    V6& U, const PsPhaseAPI& eos, double dt, double tau_p,
-    const PsPressureRelaxParams& p = PsPressureRelaxParams{},
-    int* out_reason = nullptr)
-{
-    if (tau_p <= 0.0) return ps_pressure_relax_cell(U, eos, p, out_reason);
-    if (!(dt > 0.0)) { if (out_reason) *out_reason = PSR_OK; return true; }
-    V6 Ueq = U;
-    if (!ps_pressure_relax_cell(Ueq, eos, p, out_reason)) return false; // no valid target
-    const double frac = -std::expm1(-dt / tau_p);   // 1 - exp(-dt/tau_p) in [0,1)
-    U[0] += frac * (Ueq[0] - U[0]);   // alpha lags toward mechanical equilibrium
-    U[4] += frac * (Ueq[4] - U[4]);   // per-phase energies (mechanical work)
-    U[5] += frac * (Ueq[5] - U[5]);
-    if (out_reason) *out_reason = PSR_OK;
-    return true;
 }
 
 
@@ -1835,62 +1399,15 @@ inline bool ps_iso_thermal_relax_cell_finite(V6& U, const PsPhaseAPI& eos,
 // rate (the dispersive/frozen-vs-equilibrium decompression physics).
 // Conserves mixture internal energy exactly (convex blend of two
 // energy-conserving states).  tau_p<=0 -> instantaneous.
-inline bool ps_iso_pressure_relax_cell_finite(V6& U, const PsPhaseAPI& eos,
-                                              double dt, double tau_p,
-                                              double tol_rel = 1.0e-5,
-                                              int    max_iter = 30)
-{
-    if (tau_p <= 0.0) return ps_iso_pressure_relax_cell(U, eos, tol_rel, max_iter);
-    if (!(dt > 0.0))  return true;
-    V6 Ueq = U;
-    if (!ps_iso_pressure_relax_cell(Ueq, eos, tol_rel, max_iter)) return false;
-    const double frac = -std::expm1(-dt / tau_p);   // 1 - exp(-dt/tau_p) in [0,1)
-    U[4] += frac * (Ueq[4] - U[4]);
-    U[5] += frac * (Ueq[5] - U[5]);
-    return true;
-}
 
 
 // Grid wrapper: thermal + pressure re-equilibration (Picard-style
 // outer loop that alternates T and P iso relaxations until both
 // converge).  Since pressure and temperature relaxations are 1D each,
 // alternating a few times converges to joint equilibrium.
-inline int ps_iso_full_relax_grid(std::vector<V6>& U,
-                                   const PsPhaseAPI& eos,
-                                   int NG,
-                                   int outer_iters = 3)
-{
-    if (!eos.valid()) return 0;
-    int n_ok = 0;
-    const int N = static_cast<int>(U.size());
-    for (int j = NG; j < N - NG; ++j) {
-        bool ok = true;
-        for (int it = 0; it < outer_iters; ++it) {
-            ok = ok && ps_iso_pressure_relax_cell(U[j], eos);
-            ok = ok && ps_iso_thermal_relax_cell (U[j], eos);
-        }
-        if (ok) ++n_ok;
-    }
-    return n_ok;
-}
 
 
 // Grid wrapper for iso relaxation.
-inline int ps_iso_pressure_relax_grid(std::vector<V6>& U,
-                                       const PsPhaseAPI& eos,
-                                       int NG,
-                                       double tol_rel = 1.0e-5,
-                                       int    max_iter = 30)
-{
-    if (!eos.valid()) return 0;
-    int n_relaxed = 0;
-    const int N = static_cast<int>(U.size());
-    for (int j = NG; j < N - NG; ++j) {
-        if (ps_iso_pressure_relax_cell(U[j], eos, tol_rel, max_iter))
-            ++n_relaxed;
-    }
-    return n_relaxed;
-}
 
 
 // ---------------------------------------------------------------------
@@ -2050,56 +1567,8 @@ inline bool ps_pelanti_relax_cell(V6& U, const PsPhaseAPI& eos,
 }
 
 
-// Grid wrapper for the Pelanti relaxation.
-inline int ps_pelanti_relax_grid(std::vector<V6>& U,
-                                  const PsPhaseAPI& eos,
-                                  int NG,
-                                  double tol_rel = 1.0e-5,
-                                  int    max_iter = 5)
-{
-    if (!eos.valid()) return 0;
-    int n_relaxed = 0;
-    const int N = static_cast<int>(U.size());
-    for (int j = NG; j < N - NG; ++j) {
-        if (ps_pelanti_relax_cell(U[j], eos, tol_rel, max_iter))
-            ++n_relaxed;
-    }
-    return n_relaxed;
-}
 
 
-// Grid-level wrapper.  Applies ps_pressure_relax_cell to every cell,
-// counting successes and failures.  Cells that fail are left in their
-// pre-relaxation state (typically also the correct behavior -- pressure
-// disequilibrium is a physical possibility in the P-S framework).
-inline int ps_pressure_relax_grid(std::vector<V6>& U,
-                                   const PsPhaseAPI& eos,
-                                   int NG,
-                                   const PsPressureRelaxParams& p =
-                                       PsPressureRelaxParams{})
-{
-    if (!eos.valid()) return 0;
-    int n_relaxed = 0;
-    const int N = static_cast<int>(U.size());
-    for (int j = NG; j < N - NG; ++j) {
-        if (ps_pressure_relax_cell(U[j], eos, p)) ++n_relaxed;
-    }
-    return n_relaxed;
-}
-
-
-// ---------------------------------------------------------------------
-//  Instantaneous temperature relaxation.  Session 6c implementation.
-//  Redistributes internal energy between phases to bring T_1 -> T_2.
-// ---------------------------------------------------------------------
-inline void ps_temperature_relax(V6& /*U*/, const PsPhaseAPI& /*eos*/)
-{
-    // SESSION 6c: apply temperature relaxation.  Solve for e_1_new,
-    // e_2_new such that T_1(rho_1, e_1_new) == T_2(rho_2, e_2_new)
-    // AND total energy conservation: alpha_1*rho_1*e_1_new +
-    // alpha_2*rho_2*e_2_new == original mixture internal energy.
-    ++ps_temperature_relax_count();
-}
 
 
 // ---------------------------------------------------------------------
@@ -2401,24 +1870,6 @@ inline bool ps_mass_transfer_relax_cell(
 }
 
 
-// Grid-level wrapper for mass-transfer relaxation.
-inline int ps_mass_transfer_relax_grid(
-    std::vector<V6>& U,
-    const PsPhaseAPI& eos,
-    int NG,
-    const PsMassTransferParams& mt_p = PsMassTransferParams{},
-    const PsPressureRelaxParams& pr_p = PsPressureRelaxParams{})
-{
-    if (!eos.valid()) return 0;
-    int n_relaxed = 0;
-    const int N = static_cast<int>(U.size());
-    for (int j = NG; j < N - NG; ++j) {
-        if (ps_mass_transfer_relax_cell(U[j], eos, mt_p, pr_p))
-            ++n_relaxed;
-    }
-    return n_relaxed;
-}
-
 
 // ---------------------------------------------------------------------
 //  Session 89ax: FINITE-RATE MASS-TRANSFER RELAXATION
@@ -2600,12 +2051,16 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
     //  The (E.1) decision is hoisted ABOVE the equilibrium solve so the target
     //  can be made to travel the same path as the step (CAMR.ps_mt_target).
     //  It used to be taken only just before the write-back.
-    //  update_alpha < 0 never arrives from CAMR (PS_sources resolves the
-    //  -1 auto before calling); the fallback reads the SAME key.
-    static const bool mt_upd_alpha_key_h =
-        ps_knob_int("ps_mt_update_alpha", 0) > 0;
-    const bool upd_hoisted = (update_alpha < 0) ? mt_upd_alpha_key_h
-                                                : (update_alpha != 0);
+    //  update_alpha must arrive RESOLVED (0/1): PS_sources resolves the -1
+    //  auto before calling.  The old -1 fallback re-read the same key with
+    //  default 0 while the CAMR resolution defaulted auto->presence->1 —
+    //  the two-defaults-waiting-to-disagree pattern (AUDIT C.3); a caller
+    //  passing -1 now aborts instead of silently getting the OTHER default.
+    if (update_alpha < 0) {
+        amrex::Abort("ps_mass_transfer_finite_cell: update_alpha=-1 (auto) "
+                     "must be resolved by the caller (PS_sources does)");
+    }
+    const bool upd_hoisted = (update_alpha != 0);
 
     //  ONE construction of the equilibrium-solver settings, used by BOTH the
     //  dm_eq solve and the 5.2 contraction re-solve.  These were two copies
@@ -3117,18 +2572,6 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
     return true;
 }
 
-inline int ps_mass_transfer_finite_grid(std::vector<V6>& U,
-                                         const PsPhaseAPI& eos,
-                                         int NG, double dt, double tau_g)
-{
-    if (!eos.valid() || tau_g <= 0.0) return 0;
-    int n = 0;
-    const int N = static_cast<int>(U.size());
-    for (int j = NG; j < N - NG; ++j) {
-        if (ps_mass_transfer_finite_cell(U[j], eos, dt, tau_g)) ++n;
-    }
-    return n;
-}
 
 
 // =====================================================================
@@ -3574,7 +3017,7 @@ inline double co2_P_sat_wagner(double T) {
 }
 
 // -----------------------------------------------------------------
-// CO2 saturation-locus tabulation (ρ_L_sat, ρ_V_sat, h_L_sat, h_V_sat).
+// CO2 saturation-locus tabulation (ρ_L_sat, ρ_V_sat).
 // Used by the T-Full-saturation-projection extension of the flash
 // source: when a metastable single-phase cell is triggered for
 // nucleation, place the newly-formed trace phase at its equilibrium
@@ -3595,10 +3038,14 @@ inline double co2_P_sat_wagner(double T) {
 // point (structural — the curves are singular there).  Good enough
 // for the flash-source-seed placement.
 // -----------------------------------------------------------------
-inline void co2_sat_state(double T, double& rho_L, double& rho_V,
-                                    double& h_L,   double& h_V)
+inline void co2_sat_state(double T, double& rho_L, double& rho_V)
 {
-    // T [K], rho [kg/m³], h [J/kg]
+    // T [K], rho [kg/m³].  (The enthalpy columns were deleted 2026-08-24,
+    // AUDIT F9: their only consumer, h_trace_sat, had been an unused local
+    // since the 2026-08-15 projection rewrite — e now comes from
+    // ps_flash_e_of_rhoT — and the h_V column was internally inconsistent
+    // near the critical point under the reference-convention mismatch
+    // recorded at the projection site.)
     static constexpr int N = 20;
     static constexpr double T_tab[N] = {
         216.60, 220.00, 225.00, 230.00, 235.00, 240.00, 245.00, 250.00,
@@ -3615,23 +3062,9 @@ inline void co2_sat_state(double T, double& rho_L, double& rho_V,
         40.28, 47.34, 64.15, 89.62, 100.15, 121.53,
         145.10, 172.34, 208.20, 268.58, 300.68, 337.10, 402.06, 467.60
     };
-    static constexpr double hL_tab[N] = {
-        -426680., -419450., -408920., -397680., -386800., -375440.,
-        -363810., -352470., -328540., -303210., -290260., -276740.,
-        -262550., -247310., -230300., -210950., -201400., -195870.,
-        -184330., -159600.
-    };
-    static constexpr double hV_tab[N] = {
-        -80148., -78832., -76889., -74838., -72760., -70842.,
-        -68843., -66830., -62755., -58509., -56302., -53971.,
-        -51473., -48784., -45820., -42417., -39730., -37505.,
-        -32960., -159600.  // at critical, h_V = h_L
-    };
     // Clamp to table range
-    if (T <= T_tab[0])     { rho_L = rhoL_tab[0];     rho_V = rhoV_tab[0];
-                              h_L = hL_tab[0];         h_V   = hV_tab[0];    return; }
-    if (T >= T_tab[N - 1]) { rho_L = rhoL_tab[N - 1]; rho_V = rhoV_tab[N - 1];
-                              h_L = hL_tab[N - 1];     h_V   = hV_tab[N - 1]; return; }
+    if (T <= T_tab[0])     { rho_L = rhoL_tab[0];     rho_V = rhoV_tab[0];    return; }
+    if (T >= T_tab[N - 1]) { rho_L = rhoL_tab[N - 1]; rho_V = rhoV_tab[N - 1]; return; }
     // Binary search
     int lo = 0, hi = N - 1;
     while (hi - lo > 1) {
@@ -3641,8 +3074,6 @@ inline void co2_sat_state(double T, double& rho_L, double& rho_V,
     const double w = (T - T_tab[lo]) / (T_tab[hi] - T_tab[lo]);
     rho_L = rhoL_tab[lo] + w * (rhoL_tab[hi] - rhoL_tab[lo]);
     rho_V = rhoV_tab[lo] + w * (rhoV_tab[hi] - rhoV_tab[lo]);
-    h_L   = hL_tab[lo]   + w * (hL_tab[hi]   - hL_tab[lo]);
-    h_V   = hV_tab[lo]   + w * (hV_tab[hi]   - hV_tab[lo]);
 }
 
 inline int& ps_flash_source_count() { static int n = 0; return n; }
@@ -3651,30 +3082,12 @@ inline int& ps_triple_point_count() { static int n = 0; return n; }
 // CO2 triple point (NIST): T = 216.592 K, P = 5.1795 × 10⁵ Pa
 // Below this point in (T, P), the fluid should solidify, but the PR
 // EOS continues to extrapolate analytically past it, producing states
-// that are mathematically valid but physically wrong.  ps_triple_point_flag
-// returns true if the state (T, P) is inside the solid region and the
-// user has opted into flagging.  Environment variable
-// PS_TRIPLE_POINT_ACTION selects the response:
-//   "off"   (default): no check; solid-region cells advance normally
-//                       via PR extrapolation.  Fine for runs that
-//                       don't reach solid conditions.
-//   "warn"           : count occurrences; emit summary at end of run.
-//   "clip"           : clip T to T_triple whenever it would go lower,
-//                       preserving continuity but preventing PR from
-//                       extrapolating into the solid region.
-//   "error"          : throw / abort as soon as a solid-region cell
-//                       is detected (useful for regression testing).
-enum class TriplePtAction { OFF, WARN, CLIP, ERROR };
-inline TriplePtAction ps_triple_point_action() {
-    static const TriplePtAction a = []{
-        const std::string v = ps_knob_str("ps_triple_point_action", "off");
-        if (v == "warn")  return TriplePtAction::WARN;
-        if (v == "clip")  return TriplePtAction::CLIP;
-        if (v == "error") return TriplePtAction::ERROR;
-        return TriplePtAction::OFF;
-    }();
-    return a;
-}
+// that are mathematically valid but physically wrong.  The response
+// (OFF / WARN / CLIP / ERROR as ints 0/1/2/3) is selected by the ONE
+// live reader of CAMR.ps_triple_point_action, PS_sources.H's
+// ps_source_dials() — the old env-var-era string accessor here and the
+// dead registry copy were deleted 2026-08-24 (AUDIT C.2: three readers,
+// two types, one dial).
 // Returns true if the state (T, P) is below the CO2 triple point.
 // P_sat here is a sub-triple-point extrapolation of the Wagner curve
 // (used as a crude sublimation-line proxy — good enough for
@@ -3895,7 +3308,7 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
     //   CAMR.ps_flash_project_sat=1 (T-Full-saturation-projection): dm
     //     chosen such that the seeded trace phase's ρ equals
     //     ρ_L_sat(T_dom) or ρ_V_sat(T_dom) from the CO2 sat table.
-    //     Also updates the trace phase's e to sit at h_L_sat / h_V_sat.
+    //     (The newborn e comes from ps_flash_e_of_rhoT at the sat rho.)
     //     Physically places the newly-nucleated phase on the
     //     equilibrium sat locus by construction.  Closes the B7
     //     HEM-analytic gap and eliminates the trace-phase T_2 spike
@@ -3907,9 +3320,9 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
     double alpha_1_new, dm;
     // Sat-locus targets (only used if project_sat).  Query at the
     // dominant-phase T (which is the local T of the metastable cell).
-    double rho_L_sat = 0.0, rho_V_sat = 0.0, h_L_sat = 0.0, h_V_sat = 0.0;
+    double rho_L_sat = 0.0, rho_V_sat = 0.0;
     if (project_sat) {
-        co2_sat_state(p_dom.T, rho_L_sat, rho_V_sat, h_L_sat, h_V_sat);
+        co2_sat_state(p_dom.T, rho_L_sat, rho_V_sat);
         // Safety: fall back to non-projecting if sat query gives nonsense
         if (!(rho_L_sat > 0.0 && rho_V_sat > 0.0 && rho_L_sat > rho_V_sat)) {
             rho_L_sat = 0.0;   // signal fallback
@@ -3949,10 +3362,6 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
     // state it had — which is what caused the T_2 blowup in the first
     // place.  We handle this by ADJUSTING the trace phase's e directly
     // below (see the H_transfer block).
-    // Track sat h to be used in the energy accounting.
-    const double h_trace_sat = (project_sat && rho_L_sat > 0.0)
-                               ? (flash_liq ? h_V_sat : h_L_sat)
-                               : 0.0;
     const bool   using_projection = (project_sat && rho_L_sat > 0.0);
     //  From ABSENT there is nothing to extend: the newborn state MUST be
     //  constructed, so the absent path REQUIRES the saturation projection.
@@ -4146,17 +3555,6 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
     return true;
 }
 
-inline int ps_flash_source_grid(std::vector<V6>& U, const PsPhaseAPI& eos,
-                                 int NG, double dt, double tau_flash)
-{
-    if (!eos.valid() || tau_flash <= 0.0) return 0;
-    int n = 0;
-    const int N = static_cast<int>(U.size());
-    for (int j = NG; j < N - NG; ++j) {
-        if (ps_flash_source_cell(U[j], eos, dt, tau_flash)) ++n;
-    }
-    return n;
-}
 
 
 } // namespace hem

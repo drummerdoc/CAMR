@@ -65,8 +65,17 @@ namespace EOS {
   inline bool prtab_enabled()
   {
       static const bool e = []() {
-          int v = 1; amrex::ParmParse pp("CAMR");
-          pp.query("eos_table", v); pp.query("eos_mlp", v); return v != 0;
+          amrex::ParmParse pp("CAMR");
+          //  AUDIT 2026-08-24 C.4: eos_mlp is the deprecated alias of
+          //  eos_table and used to silently WIN when both were set.  Refuse
+          //  the ambiguous inputs instead of picking one.
+          if (pp.contains("eos_table") && pp.contains("eos_mlp")) {
+              amrex::Abort("Both CAMR.eos_table and its deprecated alias "
+                           "CAMR.eos_mlp are set -- remove eos_mlp");
+          }
+          int v = 1;
+          pp.query("eos_table", v); pp.query("eos_mlp", v);
+          return v != 0;
       }();
       return e;
   }
@@ -93,8 +102,14 @@ namespace EOS {
   inline bool prtab_auto_enabled()
   {
       static const bool a = []() {
-          int v = 1; amrex::ParmParse pp("CAMR");
-          pp.query("eos_table_auto", v); pp.query("eos_mlp_auto", v); return v != 0;
+          amrex::ParmParse pp("CAMR");
+          if (pp.contains("eos_table_auto") && pp.contains("eos_mlp_auto")) {
+              amrex::Abort("Both CAMR.eos_table_auto and its deprecated alias "
+                           "CAMR.eos_mlp_auto are set -- remove eos_mlp_auto");
+          }
+          int v = 1;
+          pp.query("eos_table_auto", v); pp.query("eos_mlp_auto", v);
+          return v != 0;
       }();
       return a;
   }
@@ -559,6 +574,13 @@ namespace EOS {
       amrex::ignore_unused(site);
       return prtab_state_from_rho_e(rho, e);
 #else
+      //  AUDIT 2026-08-24 B12(d): the (rho,e) ring caches below are mutable
+      //  function-local statics — safe only single-threaded.  The documented
+      //  USE_OMP=FALSE restriction was advisory; make it a compile error so
+      //  flipping USE_OMP=TRUE cannot silently tear the cached states.
+#ifdef _OPENMP
+#error "The EOS ring caches (function-local statics) are not thread-safe; build with USE_OMP=FALSE or add omp threadprivate first."
+#endif
       constexpr int NSLOTS = 4;
       static amrex::Real rho_cache[NSLOTS] = {amrex::Real(-1), amrex::Real(-1),
                                               amrex::Real(-1), amrex::Real(-1)};
