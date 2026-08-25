@@ -43,7 +43,6 @@ CAMR.ps_flux    = wp
 CAMR.ps_wp_order = 2            # 2nd order via BL-2 limited correction fluxes
 CAMR.ps_recon   = 0            # piecewise-constant (REQUIRED for wp inlet injection)
 CAMR.ps_bc_use_nscbc = 0        # legacy bcnormal path (rupture-plane BC)
-CAMR.ps_alpha_vanish = 1.0e-8   # fold vanishing trace phase (2-D robustness)
 
 # Relaxation + stabilized finite-rate mass transfer (option 2 default).
 CAMR.ps_do_relax = 1

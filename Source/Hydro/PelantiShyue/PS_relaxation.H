@@ -1055,8 +1055,10 @@ inline int ps_relax_mode()
 //
 //  MT-ungated is reachable independently via CAMR.ps_mt_no_dome_gate=1, so the
 //  combinations need no further code.
-//  Scope: ps_relax_mode=4 (the canonical chain).  Mode 4 has no device twin
-//  (it aborts loudly under ps_relax_device=1), so there is no twin to update.
+//  Scope: ps_relax_mode=4 AND 5.  The dial is threaded into the X3 kernel
+//  (PsX3Params.coexist_action) and, since 2026-08-24 (AUDIT A7), action=1
+//  aborts AT THE KERNEL GATE with full cell context — it is no longer a
+//  mode-4-only response silently ignored at the default mode.
 // -----------------------------------------------------------------
 inline int ps_coexist_action()
 {

@@ -6045,3 +6045,47 @@ at every printed decimal (A1-A6, C1-C3, B1-B11; B2 .0929/.7816/.1511
 .1133/.6234/.3371; B7 .1654/.7099/.3211).  Prediction CONFIRMED.
 Also verified: X3 0-D gate PASS at the new tree; ps_relax_mode=7
 aborts with the whitelist message; GammaLaw Exec/Sod compiles.
+
+====================================================================
+2026-08-24 — BATCH 3a (audit session): the four default-inert design
+items — A1, A7, B3, B15
+
+WHAT.  A1: bsplit's four add() calls used the z-cell-index `c` where
+the sound speed `snd` belongs (the BL3b acoustic eigenvector's energy
+component was H in 2D) — fixed; every BL3b measurement was PRE-fix
+(design-doc addendum); corrected mode 2 re-passed a coarse 128x160
+satjet stability probe (sandbox: 150 steps clean, Pmax 22.7 vs
+mode-0's 22.9 bar, no asymmetry introduced).  A7: ps_coexist_action=1
+now ABORTS at the X3 kernel gate with full cell context (verified on
+B7's known at/above-T_crit band exit); it was a mode-4-only response,
+silently ignored at the default mode.  B3: ps_do_relax=0 + mode 5 +
+mt_tau>0 now aborts at the single ps_do_relax read site (nobody owned
+MT); escape ps_mt_tau=0 verified clean.  MEASURED FLIP: all 9 A/C
+rows at PURE defaults (relaxation ON) are identical to baseline at
+every printed decimal — D22 A/C invariance holds — so the harness's
+historical ps_do_relax=0 sixth dial is DROPPED: exact_suite/_stage2
+now pass ZERO relaxation dials for all 20 cases (PS_NODIALS retired —
+"no dials" is the default path).  B15: CAMR_BC_COPY_INTERIOR (the
+last un-provenanced physics env knob) promoted to
+CAMR.ps_bc_copy_interior in all three prob.H (PS default 1 =
+interior-copy, non-PS default 0 = legacy), resolved value force-added
+so job_info records it (verified in a plotfile).  Fallout: the
+Batch-2 retirement abort caught the stale CAMR.ps_alpha_vanish key
+in 23 inputs files — scrubbed (the key was inert).
+
+PREDICTION (before the run).  Battery BIT-IDENTICAL: A1 is mode-2-
+only (default off), A7 fires only at action=1, B3's abort only at
+the contradictory config, the sixth-dial drop is already measured
+identical on A/C, and B15's default reproduces the env-unset
+behaviour (its only observable delta is the new job_info line).
+Falsifier: any row moving.
+
+MEASURED.  Full battery at the Batch-3a tree, harness passing ZERO
+dials for all 20 cases: every row AND both FROZEN bracket rows
+identical to the recorded baseline at every printed decimal.
+Prediction CONFIRMED.  Targeted: A7 abort fires on B7's band exit
+with full cell context; B3 abort fires on ps_do_relax=0 at defaults
+and clears with ps_mt_tau=0; job_info records
+CAMR.ps_bc_copy_interior=1 on a bare run.  The acceptance
+configuration is now literally the code defaults — the harness
+states nothing.

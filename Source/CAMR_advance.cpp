@@ -145,6 +145,21 @@ CAMR::CAMR_advance (Real time,
         int v = 1;
         amrex::ParmParse pp("CAMR");
         pp.query("ps_do_relax", v);
+#ifdef USE_PS_HYDRO
+        //  AUDIT 2026-08-24 B3: at mode 5 the X3 kernel (run from
+        //  ps_apply_relaxation) OWNS mass transfer, and the split MT source
+        //  in ps_apply_sources is gated out.  ps_do_relax=0 therefore used
+        //  to disable ALL mass transfer silently even with ps_mt_tau>0 —
+        //  nobody owned it.  Refuse the contradictory configuration instead.
+        if (v == 0 && ps_relax_mode() == 5 &&
+            ps_source_dials().mt_tau > amrex::Real(0.0)) {
+            amrex::Abort("CAMR.ps_do_relax=0 with ps_relax_mode=5 and "
+                         "ps_mt_tau>0: mode 5's X3 kernel owns mass transfer "
+                         "and is disabled, so no operator would run it. "
+                         "Set ps_mt_tau=0 (A/C-style no-phase-change run) or "
+                         "re-enable ps_do_relax.");
+        }
+#endif
         return v;
     }();
     static const int ps_strang_cached = []() -> int {

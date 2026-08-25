@@ -33,7 +33,6 @@ CAMR.ps_flux     = wp
 CAMR.ps_wp_order = 1          # <<< BISECTION: first order, no BL-2 correction
 CAMR.ps_recon    = 0
 CAMR.ps_bc_use_nscbc = 0
-CAMR.ps_alpha_vanish = 1.0e-8
 CAMR.ps_wp_transverse = 0
 CAMR.ps_shear_diss    = 0.0
 CAMR.ps_mu            = 2.0

@@ -17,6 +17,29 @@ after the agent pass; [A] = agent-verified with quoted evidence, spot-checked.
 
 ---
 
+## Status ledger (updated 2026-08-24, end of Batch 3a)
+
+LANDED & battery-verified bit-identical:
+  Batch 1 (commits 51b8690..e7670d8): A2, A6, D.2-D.4, B16 harness
+  hardening.  THETA-DEFAULTS (b35abef): B1 resolved by decision.
+  Batch 2: A3, B2, B12(b,c,d fences), C.1-C.4, D.1, PS_ctoprim floor +
+  dead code.  Batch 3a: A1 (bsplit c->snd + coarse re-probe; BL3b doc
+  addendum), A7 (action=1 aborts at the X3 gate; verified on B7's band
+  exit), B3 (contradictory ps_do_relax=0+mode5+mt_tau>0 aborts; the A/C
+  sixth dial dropped after the measured flip — all 9 A/C rows identical
+  at pure defaults; harness now passes ZERO dials for all 20 cases),
+  B15 (CAMR.ps_bc_copy_interior ParmParse + job_info provenance; the
+  retired ps_alpha_vanish key scrubbed from 23 inputs files).
+
+OPEN (Batch 3b — each changes accepted numbers; one at a time,
+predictions first): A4 (LLF-fallback identity decision), A5+B7 (PRTab
+seam clamp + table regeneration), B4 (tiny-step residual check), B6
+(GERG endpoint-clamp contract), B8 (wave-speed consolidation), B13
+(counter coverage), B14 (derive routing), B5/C.6 (provenance
+force-adds for the remaining raw dials).
+
+---
+
 ## A. Confirmed defects
 
 **A1. [V] BL3b transverse acoustic split uses the z-cell-index where the

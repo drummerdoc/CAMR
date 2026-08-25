@@ -37,7 +37,6 @@ CAMR.ps_flux     = wp
 CAMR.ps_wp_order = 2
 CAMR.ps_recon    = 0
 CAMR.ps_bc_use_nscbc = 0
-CAMR.ps_alpha_vanish = 1.0e-8
 CAMR.ps_wp_transverse = 0    # OFF: raw scheme, no transverse coupling knob
 CAMR.ps_shear_diss    = 0.0  # OFF: no dissipation — see the raw instability
 

@@ -2659,7 +2659,8 @@ struct PsX3Params {
     bool   dome_gate  = true;     // the ONE eligibility question
     int    max_newton = 40;
     //  Band-exit policy for the eligibility question — the mode-4
-    //  CAMR.ps_coexist_action semantics VERBATIM (0/1 stand, 2 continue
+    //  CAMR.ps_coexist_action semantics (0 stands silently-but-counted,
+    //  1 ABORTS at the gate (A7, 2026-08-24), 2 continue
     //  unless a hi-side exit, 3 continue always, 4 a lo-side exit
     //  overrides the supercritical veto).  Grid wiring (F4 session 2)
     //  passes the live knob through so Y4's action=3 means the same
@@ -2765,6 +2766,27 @@ inline bool ps_x3_relax_cell(V6& U, const PsPhaseAPI& eos, double dt,
             if (xp.exit_code)
                 *xp.exit_code = (lo ? 1 : 0) | (hi ? 2 : 0) | (cont ? 4 : 0);
             if (!cont) {
+                //  AUDIT 2026-08-24 A7: action=1 is ABORT-on-band-exit
+                //  (X0-(i): a liquid-vapour model holding a "vapour" in the
+                //  solid region is holding a state it cannot describe, and
+                //  should say so rather than keep producing numbers).  It
+                //  used to be honored only by mode 4's split MT source —
+                //  compiled out at the default mode 5 — so requesting the
+                //  abort got silent continuation, the exact failure class
+                //  the discipline forbids.  Honor it here, at the gate.
+                if (xp.coexist_action == 1) {
+                    amrex::AllPrint()
+                        << "\n[PS-X3] COEXISTENCE BAND EXIT (ps_coexist_action=1 -> abort)\n"
+                        << "  side: " << (lo ? "below T_triple" : "")
+                        << (lo && hi ? " AND " : "") << (hi ? "at/above T_crit" : "") << "\n"
+                        << "  alpha1 = " << s0.p1.alpha
+                        << "  T1 = " << s0.p1.T << " K  T2 = " << s0.p2.T << " K\n"
+                        << "  P1 = " << s0.p1.P << " Pa  P2 = " << s0.p2.P << " Pa"
+                        << "  g1-g2 = " << (s0.p1.g - s0.p2.g) << " J/kg\n"
+                        << "  band = (" << Ttr << ", " << Tcr << ") K\n";
+                    amrex::Abort("PS-X3: phase left the coexistence band "
+                                 "(CAMR.ps_coexist_action=1)");
+                }
                 ++x3s.n_gate_stood;
                 for (int n = 0; n < 6; ++n) U[n] = W0[n];
                 return true;

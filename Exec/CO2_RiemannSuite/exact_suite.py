@@ -84,29 +84,17 @@ def run(case, flux, pref):
         'prob.x_diaph':0.5,'prob.alpha_trace':0.0,'prob.p_amb':5.0e6,
         'CAMR.cfl':0.25,'CAMR.do_mol':0,'stop_time':tf,
         'CAMR.ps_flux':flux,'CAMR.ps_wp_order':2,'CAMR.ps_recon':1}
-    #  PROBE MODES (S4, 2026-08-17): _probe_suite.py and _alldef_suite.py were
-    #  212-line copies of this file differing only in which dials they pass.
-    #  PS_NODIALS=1 passes NO relaxation dials at all (the "what do bare
-    #  defaults actually run" probe); PROBE_OV="k=v,k=v" appends overrides.
-    #  Both default off, so the acceptance path is untouched.
-    nodials = os.environ.get('PS_NODIALS', '0') != '0'
-    #  THETA-DEFAULTS (Marc's call, 2026-08-24): the B-case acceptance
-    #  configuration is now PURE CODE DEFAULTS.  ps_relax_mode=5 and
-    #  ps_flash_from_absent=1 were made defaults by G-DEF (2026-08-17);
-    #  the three stiffness rates ps_theta_tau / ps_mt_tau / ps_flash_tau
-    #  now default to the acceptance value 1e-7 as well, and theta<=0
-    #  means INSTANTANEOUS thermal (route (a)), not "off".  This harness
-    #  therefore passes NO relaxation dials for B cases: any change to
-    #  any default is visible in this table (the G-DEF principle,
-    #  completed).  ONE global config for all 20 cases — Y4 is history.
-    #
-    #  A/C cases still force ps_do_relax=0 (historical sixth dial, AUDIT
-    #  2026-08-24 B3).  Dropping it is a separate measured flip: at bare
-    #  defaults relaxation also runs on single-phase states, which should
-    #  be inert (D22 A/C invariance) but must be MEASURED before the
-    #  branch is deleted.
-    if case not in TWOPHASE and not nodials:  # single phase: no phase change
-        ov.update({'CAMR.ps_do_relax':0})
+    #  PROBE MODE (S4, 2026-08-17): PROBE_OV="k=v,k=v" appends overrides
+    #  (applied last, so they always win).  Default off.
+    #  THETA-DEFAULTS (2026-08-24) + BATCH 3a: the acceptance configuration
+    #  is PURE CODE DEFAULTS for ALL 20 cases — this harness passes NO
+    #  relaxation dials at all, so any change to any default is visible in
+    #  this table (the G-DEF principle, completed).  The historical A/C
+    #  sixth dial (ps_do_relax=0, AUDIT B3) was dropped after the measured
+    #  flip: all 9 A/C rows at bare defaults (relaxation ON) are identical
+    #  to the baseline at every printed decimal — relaxation is inert on
+    #  single-phase states (D22 A/C invariance, WORKLOG 2026-08-24 B3a).
+    #  (PS_NODIALS is retired: "no dials" is now simply the default path.)
     ov.update(F.camr_side(c[1],'L')); ov.update(F.camr_side(c[2],'R'))
     #  PROBE_OV is applied LAST so its overrides always win — matching
     #  _stage2.py's `extra` precedence.  (It used to run before camr_side,

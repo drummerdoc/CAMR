@@ -855,12 +855,19 @@ ps_wp_tvterm(int d, int t, int i, int j, int k,
     }
 
     // ---- BL-3b (mode 2): exact ACOUSTIC transverse coupling ----------------
-    //  EXPERIMENTAL (task #18) — analytic acoustic eigen-projection.  Coarse-res
-    //  VALIDATED stable + effective (satjet 256x128: symmetric to 5e-15, Pmax
-    //  bounded 22 bar, transverse odd-even(u) roughly HALVED vs off).  This
-    //  replaced an earlier FD-Jacobian HLL split that blew up (604 bar). Still
-    //  DEFAULT OFF (ps_wp_transverse<2) pending fine-res (512/1024, 3-level AMR)
-    //  validation on real HW — see BL3b_transverse_acoustic_design.md gates 1-5.
+    //  EXPERIMENTAL (task #18) — analytic acoustic eigen-projection.  NOTE
+    //  (AUDIT 2026-08-24 A1): every measurement quoted in the design doc's
+    //  coarse-res validation and GATE 3 was taken with the c-vs-snd defect
+    //  below in place (the eigenvector's energy component carried the z-cell
+    //  INDEX where the sound speed belongs — H in 2D instead of H∓ud·snd).
+    //  The defect is now fixed; the corrected operator re-passed the
+    //  coarse-res stability/symmetry probe (see the design doc's A1
+    //  addendum), but the "oe(u) halved" effectiveness number is PRE-FIX
+    //  and must be re-measured if mode 2 is ever pursued — moot for now,
+    //  since GATE 3's revised diagnosis routes the checkerboard to shear
+    //  dissipation, not acoustics.  This mode replaced an earlier
+    //  FD-Jacobian HLL split that blew up (604 bar).  Still DEFAULT OFF
+    //  (ps_wp_transverse<2) — see BL3b_transverse_acoustic_design.md.
     //  Add the d-projected contribution of the acoustic transverse waves l=0
     //  (S_L) and l=2 (S_R), which BL-3a omits.  For each contributing t-face,
     //  the acoustic FLUCTUATION asdq = s_t,l * W_t[l] is split into d-going
@@ -919,8 +926,12 @@ ps_wp_tvterm(int d, int t, int i, int j, int k,
                 out[UM1RHO1]+=w*Y1;        out[UM2RHO2]+=w*Y2;
                 out[UE1]+=w*f1*Hc;         out[UE2]+=w*f2*Hc;
             };
-            if(want_minus){ if(lm<Real(0.0)) add(lm,am,H-ud*c); if(lp<Real(0.0)) add(lp,ap,H+ud*c); }
-            else          { if(lm>Real(0.0)) add(lm,am,H-ud*c); if(lp>Real(0.0)) add(lp,ap,H+ud*c); }
+            //  AUDIT 2026-08-24 A1: these four calls used `c` — the lambda's
+            //  int z-CELL-INDEX parameter — where the sound speed belongs, so
+            //  the acoustic eigenvector's energy component was H (2D, k=0)
+            //  or H∓ud*k (3D) instead of H∓ud*snd.  Fixed to `snd`.
+            if(want_minus){ if(lm<Real(0.0)) add(lm,am,H-ud*snd); if(lp<Real(0.0)) add(lp,ap,H+ud*snd); }
+            else          { if(lm>Real(0.0)) add(lm,am,H-ud*snd); if(lp>Real(0.0)) add(lp,ap,H+ud*snd); }
             for(int n=0;n<NVAR;++n) out[n]=ps_finite_or(out[n],Real(0.0));
         };
         Real bm0[NVAR], bm1[NVAR], bp0[NVAR], bp1[NVAR];

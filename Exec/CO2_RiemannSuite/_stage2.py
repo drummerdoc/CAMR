@@ -33,13 +33,10 @@ def run(case, extra=None, pref=None, max_step=None):
         'prob.x_diaph':0.5,'prob.alpha_trace':0.0,'prob.p_amb':5.0e6,
         'CAMR.cfl':0.25,'CAMR.do_mol':0,'stop_time':tf,
         'CAMR.ps_flux':'wp','CAMR.ps_wp_order':2,'CAMR.ps_recon':1}
-    if case not in TWOPHASE:
-        #  THETA-DEFAULTS (2026-08-24): B cases run PURE CODE DEFAULTS
-        #  (mode 5 + FA since G-DEF; the three 1e-7 rates are now code
-        #  defaults too).  An A/B that wants mode 4 or other rates must
-        #  pass them explicitly via `extra`.  A/C keep the historical
-        #  ps_do_relax=0 pending the measured flip (AUDIT 2026-08-24 B3).
-        ov.update({'CAMR.ps_do_relax':0})
+    #  THETA-DEFAULTS + BATCH 3a (2026-08-24): ALL cases run PURE CODE
+    #  DEFAULTS — no relaxation dials, A/C included (the ps_do_relax=0
+    #  sixth dial was dropped after the measured flip; see exact_suite.py).
+    #  An A/B that wants mode 4 or other rates passes them via `extra`.
     ov.update(F.camr_side(c[1],'L')); ov.update(F.camr_side(c[2],'R'))
     if extra: ov.update(extra)
     cmd=[EXE,'inputs']+['%s=%s'%(k,v) for k,v in ov.items()]

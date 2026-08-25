@@ -47,6 +47,7 @@
 // =====================================================================
 
 #include <AMReX_Geometry.H>
+#include <AMReX_ParmParse.H>
 #include <AMReX_FArrayBox.H>
 
 #include "IndexDefines.H"
@@ -250,12 +251,13 @@ bcnormal(
     // analytic B4 R-star u* = +8.99 m/s uniformly across the domain
     // long after the wave has left (task #206 verification).
     //
-    // Default for PS-hydro runs: interior-copy.  Users can opt back
-    // into the legacy linear-acoustic Riemann branch by setting
-    // CAMR_BC_COPY_INTERIOR=0 (only meaningful when USE_PS_HYDRO is
-    // defined; for non-PS builds the env var is ignored and the
-    // linear-acoustic path is used as before, matching pre-#206
-    // behaviour for T-Blowdown and single-fluid Riemann cases).
+    // Default for PS-hydro runs: interior-copy.  Opt back into the
+    // legacy linear-acoustic Riemann branch with
+    // CAMR.ps_bc_copy_interior=0 (ParmParse since 2026-08-24, B15 —
+    // formerly the un-provenanced env var CAMR_BC_COPY_INTERIOR).  For
+    // non-PS builds the default is 0 and the linear-acoustic path runs
+    // as before, matching pre-#206 behaviour for T-Blowdown and
+    // single-fluid Riemann cases.
     //
     // Real-fluid c-consistent characteristic BC would be a superior
     // long-term solution (fetch c from the same EOS::RPY2Cs the PS
@@ -263,16 +265,26 @@ bcnormal(
 #ifndef AMREX_USE_GPU
     {
 #ifdef USE_PS_HYDRO
-        // PS-hydro default is interior-copy (see rationale above).
+        //  AUDIT 2026-08-24 B15: promoted from the env var
+        //  CAMR_BC_COPY_INTERIOR — the last un-provenanced physics knob —
+        //  to CAMR.ps_bc_copy_interior.  PS default 1 = interior-copy
+        //  (task #206); the resolved value is force-added so every
+        //  plotfile's job_info records it (gerg_ext_c idiom).
         static const bool s_bc_copy_interior = []() {
-            const char* v = std::getenv("CAMR_BC_COPY_INTERIOR");
-            return !(v && *v == '0');   // absent OR nonzero → true
+            int v = 1;
+            amrex::ParmParse pp("CAMR");
+            pp.query("ps_bc_copy_interior", v);
+            pp.add("ps_bc_copy_interior", v);   // ensure it reaches job_info
+            return v != 0;
         }();
 #else
-        // Non-PS default is legacy linear-acoustic Riemann.
+        //  Non-PS default 0 = legacy linear-acoustic Riemann (pre-#206).
         static const bool s_bc_copy_interior = []() {
-            const char* v = std::getenv("CAMR_BC_COPY_INTERIOR");
-            return v && *v != '0';
+            int v = 0;
+            amrex::ParmParse pp("CAMR");
+            pp.query("ps_bc_copy_interior", v);
+            pp.add("ps_bc_copy_interior", v);   // ensure it reaches job_info
+            return v != 0;
         }();
 #endif
         if (s_bc_copy_interior) {

@@ -153,3 +153,23 @@ This is the mode-correct fix. VALIDATE at fine res (gates 3-5) on user HW: does 
 transverse oe(u)@x=0.04 at uniform 512 STOP growing (today 14.6 by t=1e-3)? Tune
 coef (0.2-0.5). Acoustic mode 2 can be left off (this replaces it for the checker-
 board) or combined. Flip on in inputs.satjet_demo once fine-res gate 3 passes.
+
+## ADDENDUM 2026-08-24 (AUDIT A1): c-vs-snd defect in bsplit — fixed
+
+Every measurement above (the coarse-res validation AND gate 3) was taken
+with a defect in the acoustic eigenvector: `bsplit`'s four `add()` calls
+used `c` — the lambda's int z-cell-index parameter — where the sound
+speed `snd` belongs, so the energy component was H (2D, k=0) instead of
+H∓u_d·snd.  Fixed 2026-08-24.
+
+Re-probe with the corrected operator (sandbox, satjet_zoom config at
+128x160, 150 steps, mode 2 vs mode 0 control): STABLE, no blow-up,
+Pmax 22.7 bar (mode-0 control: 22.9), no asymmetry introduced relative
+to the control (naive y-mirror metric — NOT the Pasym instrument used
+above).  The stability half of the coarse gate re-passes.
+
+The EFFECTIVENESS numbers ("transverse oe(u) roughly halved") are
+PRE-FIX and must be re-measured if mode 2 is ever pursued — currently
+moot: gate 3's revised diagnosis routes the fine-res checkerboard to
+SHEAR dissipation (CAMR.ps_shear_diss family), not acoustic coupling,
+so mode 2 stays experimental and default OFF either way.

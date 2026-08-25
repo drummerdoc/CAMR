@@ -38,7 +38,8 @@ CAMR.ps_hydro        = 1
 CAMR.ps_flux         = hllc
 CAMR.ps_recon        = 0
 CAMR.ps_do_relax     = 0
-CAMR.ps_alpha_vanish = 1e-8
+CAMR.ps_mt_tau       = 0    # no mass transfer (pre-2026-08-24 default, pinned)
+CAMR.ps_flash_tau    = 0    # no flash source  (pre-2026-08-24 default, pinned)
 CAMR.ps_bc_use_nscbc = 0
 
 CAMR.v = 1

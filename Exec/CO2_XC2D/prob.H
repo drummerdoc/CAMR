@@ -22,6 +22,7 @@
 // =====================================================================
 
 #include <AMReX_Geometry.H>
+#include <AMReX_ParmParse.H>
 #include <AMReX_FArrayBox.H>
 
 #include "IndexDefines.H"
@@ -145,14 +146,26 @@ bcnormal(
 #ifndef AMREX_USE_GPU
     {
 #ifdef USE_PS_HYDRO
+        //  AUDIT 2026-08-24 B15: promoted from the env var
+        //  CAMR_BC_COPY_INTERIOR — the last un-provenanced physics knob —
+        //  to CAMR.ps_bc_copy_interior.  PS default 1 = interior-copy
+        //  (task #206); the resolved value is force-added so every
+        //  plotfile's job_info records it (gerg_ext_c idiom).
         static const bool s_bc_copy_interior = []() {
-            const char* v = std::getenv("CAMR_BC_COPY_INTERIOR");
-            return !(v && *v == '0');
+            int v = 1;
+            amrex::ParmParse pp("CAMR");
+            pp.query("ps_bc_copy_interior", v);
+            pp.add("ps_bc_copy_interior", v);   // ensure it reaches job_info
+            return v != 0;
         }();
 #else
+        //  Non-PS default 0 = legacy linear-acoustic Riemann (pre-#206).
         static const bool s_bc_copy_interior = []() {
-            const char* v = std::getenv("CAMR_BC_COPY_INTERIOR");
-            return v && *v != '0';
+            int v = 0;
+            amrex::ParmParse pp("CAMR");
+            pp.query("ps_bc_copy_interior", v);
+            pp.add("ps_bc_copy_interior", v);   // ensure it reaches job_info
+            return v != 0;
         }();
 #endif
         if (s_bc_copy_interior) {
