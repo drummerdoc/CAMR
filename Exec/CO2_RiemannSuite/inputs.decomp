@@ -8,8 +8,9 @@
 #  swept, the effective front speed should transition between the
 #  EQUILIBRIUM (Wood, slow; tau_p->0) and FROZEN (fast; tau_p->inf) limits
 #  -- the dispersive signature that finite-rate pressure relaxation +
-#  two-pressure flux (CAMR.ps_pk_energy_flux=1) captures and instantaneous
-#  mechanical equilibrium cannot.  This is the CO2-pipeline decompression-
+#  a two-pressure flux would capture and instantaneous mechanical
+#  equilibrium cannot.  (CAMR.ps_pk_energy_flux was RETIRED 2026-08-26
+#  along with the finite-rate mechanical program; a set key aborts.)  This is the CO2-pipeline decompression-
 #  wave-speed physics (fracture-arrest design).
 #
 #  Run (single build, three tau_p) e.g.:
@@ -19,9 +20,9 @@
 #    nearest surviving equivalents are mode 0 for instantaneous mechanical
 #    and mode 5 for the coupled source.)
 #   FROZEN :  [mode 3, deleted] CAMR.ps_theta_tau=1.0 \
-#             CAMR.ps_pk_energy_flux=1                     (P relax ~ frozen)
+#             [ps_pk_energy_flux, retired 2026-08-26]      (P relax ~ frozen)
 #   FINITE :  [mode 3, deleted] CAMR.ps_theta_tau=1e-4 \
-#             CAMR.ps_pk_energy_flux=1                     (dispersive)
+#             [ps_pk_energy_flux, retired 2026-08-26]      (dispersive)
 #  Bounds:   CAMR.ps_csound_report=1 max_step=0  -> prints c_frozen, c_wood
 #            at the left two-phase state (the analytic front-speed limits).
 # =====================================================================

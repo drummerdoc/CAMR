@@ -153,6 +153,14 @@ bit-identical to the A/B run, GammaLaw build clean.
 OPEN: llf split path — now CONSUMER-FREE and retirement-pending
 (every deck selects its flux explicitly); retirement waits on the
 pk_ef (#85) fate decision, since that experiment pairs only with llf.
+  RESOLVED 2026-08-26: ps_pk_energy_flux DELETED (Marc: no finite-rate
+  mechanical-relaxation program foreseen; the dial was never measured
+  beneficial and is near-inert by construction at instantaneous
+  mechanical relaxation).  Mixture-P (#211) hard-coded; retired-key
+  abort at the old read site; battery bit-identical; all builds clean.
+  The "pairs only with llf" premise was found STALE before deletion
+  (the HLLC star carried the two-pressure jump) — recorded, now moot.
+  llf AND hllc retirement are both fully unblocked (task #34).
 NSCBC-2 (probe #29 queued).
 TBLOW-NSCBC-D RESOLVED (2026-08-25, plenum control, WORKLOG same
 date): the boundary-free reference ADJUDICATES FOR LEGACY on the

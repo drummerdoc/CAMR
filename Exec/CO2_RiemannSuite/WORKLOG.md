@@ -7080,3 +7080,45 @@ USE_PS_HYDRO guard).
 
 The default is flipped: alpha co-moves with its refluxed mass on
 every PS AMR run unless a deck opts out with ps_bl_reflux=0.
+
+====================================================================
+2026-08-26 — ps_pk_energy_flux (#85) RETIRED (Marc's decision: no
+finite-rate mechanical-relaxation program foreseen).  PREDICTIONS
+FIRST.
+
+WHAT.  The two-pressure phase-energy-flux dial is DELETED, not left
+inert (house rule): the pk_ef parameter is removed from every
+signature and call site in PS_umeth.cpp and PS_hllc.H (physical
+flux x2, HLLC star energy, star state, fluctuations, phase-energy
+defect), the #211 mixture-P form is hard-coded, a set key aborts
+via the retired-key idiom (ps_alpha_vanish pattern) at the old read
+site, and inputs.decomp's historical probe recipe is annotated.
+Its complete measured record, for the ledger: refuted as the wp
+split-drift cause (0.01% on B7 e1_min, nil on B2/B9); spared by the
+S3 purge as "real feature, not measured dead"; never once measured
+beneficial — near-inert by construction at instantaneous mechanical
+relaxation (P1 = P2 every step).  The old "pairs only with llf"
+note was found STALE (the HLLC star carried the two-pressure jump);
+moot now.  Derivation survives in git under #85 if two-pressure
+physics ever returns.
+
+PREDICTIONS (falsifiers in brackets).
+G1. Full wp battery BIT-IDENTICAL — pk_ef=0 was the mixture-P path;
+    the deletion hard-codes it.  [Any row moving means a call site
+    was not actually running the default.]
+G2. A run setting CAMR.ps_pk_energy_flux=1 ABORTS with the
+    retirement message before any hydro.  [A silent run = the
+    retired-key check is unreachable.]
+G3. PR 1-D, TBlowdown 2-D, Sod GammaLaw builds compile clean
+    (compiler as witness for the signature surgery).
+
+MEASURED (container).
+G1 CONFIRMED.  Full wp battery identical to the post-bl_reflux
+baseline at every printed decimal.
+G2 CONFIRMED.  CAMR.ps_pk_energy_flux=1 aborts before any hydro
+with the retirement message.
+G3 CONFIRMED.  PR 1-D, TBlowdown/XC2D/B4 2-D and Sod GammaLaw all
+compile clean — 65 pk_ef occurrences removed across two files with
+the compiler as witness.
+The #85 dial is gone; llf retirement (task #34) has no remaining
+blocker on the pk_ef side.

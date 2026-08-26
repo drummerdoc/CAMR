@@ -471,7 +471,7 @@ bool hllc_flux(int idir,
                 const amrex::Real UL[NVAR], const amrex::Real UR[NVAR],
                 const amrex::Real FL[NVAR], const amrex::Real FR[NVAR],
                 amrex::Real F[NVAR],
-                int pk_ef, const PsPres& pr) noexcept   // #85 / S1 presence
+                const PsPres& pr) noexcept   // S1 presence
 {
     using amrex::Real;
 
@@ -519,14 +519,12 @@ bool hllc_flux(int idir,
     const Real q_2 = fK.rho_2 * (S_K - fK.u_n);
     if (std::abs(q_1) < Real(1.0e-30) || std::abs(q_2) < Real(1.0e-30)) return false;
 
-    // Per-phase specific total energy at the star state.  Default (#211):
-    // MIXTURE P in the pressure boost, PER-PHASE ρ_k in the denominator
-    // (COTT HLLC_v).  #85 two-pressure (pk_ef=1): use the phase's OWN
-    // pressure P_k — the HLLC jump for the phase-k energy carries the phase
-    // pressure-work P_k/q_k, consistent with the P_k physical energy flux.
-    // At mechanical equilibrium P_k = P_mix so pk_ef=1 is bit-identical.
-    const Real Pe1 = (pk_ef != 0) ? fK.P_1 : fK.P_mix;
-    const Real Pe2 = (pk_ef != 0) ? fK.P_2 : fK.P_mix;
+    // Per-phase specific total energy at the star state: MIXTURE P in the
+    // pressure boost, PER-PHASE ρ_k in the denominator (COTT HLLC_v, #211).
+    // (The #85 two-pressure star option was retired 2026-08-26 with
+    // CAMR.ps_pk_energy_flux — see PS_umeth.cpp.)
+    const Real Pe1 = fK.P_mix;
+    const Real Pe2 = fK.P_mix;
     const Real E1_star = fK.E_1 + (w.S_M - fK.u_n) *
                                   (w.S_M + Pe1 / q_1);
     const Real E2_star = fK.E_2 + (w.S_M - fK.u_n) *
@@ -622,7 +620,6 @@ AMREX_FORCE_INLINE
 bool ps_star_state(int idir, const Face& fK, const amrex::Real UK[NVAR],
                    amrex::Real S_K, amrex::Real S_M,
                    amrex::Real U_star[NVAR],
-                   int pk_ef = 0,          // #85: per-phase P_k in star energy
                    int* cause = nullptr,   // W0 refusal-cause audit
                    int rk_model = 0) noexcept   // D7 instrument (default shared)
 {
@@ -643,8 +640,8 @@ bool ps_star_state(int idir, const Face& fK, const amrex::Real UK[NVAR],
     const Real q2 = fK.rho_2 * (S_K - fK.u_n);
     if (std::abs(q1) < Real(1.0e-30) || std::abs(q2) < Real(1.0e-30))
         PS_ST_REFUSE(PS_FL_ST_Q);
-    const Real Pe1 = (pk_ef != 0) ? fK.P_1 : fK.P_mix;   // #85 two-pressure
-    const Real Pe2 = (pk_ef != 0) ? fK.P_2 : fK.P_mix;
+    const Real Pe1 = fK.P_mix;   // #211 mixture-P (the #85 option is retired)
+    const Real Pe2 = fK.P_mix;
     const Real E1s = fK.E_1 + (S_M - fK.u_n) * (S_M + Pe1 / q1);
     const Real E2s = fK.E_2 + (S_M - fK.u_n) * (S_M + Pe2 / q2);
     if (!std::isfinite(E1s) || !std::isfinite(E2s)) PS_ST_REFUSE(PS_FL_ST_ESTAR);
@@ -760,7 +757,7 @@ struct Fluctuations {
 AMREX_GPU_HOST_DEVICE
 AMREX_FORCE_INLINE
 bool fluctuations(int idir, const amrex::Real UL[NVAR], const amrex::Real UR[NVAR],
-                  Fluctuations& f, int pk_ef, const PsPres& pr) noexcept   // #85 / S1
+                  Fluctuations& f, const PsPres& pr) noexcept   // S1
 {
     using amrex::Real;
     f.valid = false;
@@ -787,10 +784,10 @@ bool fluctuations(int idir, const amrex::Real UL[NVAR], const amrex::Real UR[NVA
 
     Real UsL[NVAR], UsR[NVAR];
     int stc = PS_FL_OK;
-    if (!ps_star_state(idir, fL, UL, w.S_L, w.S_M, UsL, pk_ef, &stc,
+    if (!ps_star_state(idir, fL, UL, w.S_L, w.S_M, UsL, &stc,
                        pr.rk_model)) {
         PS_W0_FL_FAIL(stc); PS_W0_FL_SIDE(0); return false; }
-    if (!ps_star_state(idir, fR, UR, w.S_R, w.S_M, UsR, pk_ef, &stc,
+    if (!ps_star_state(idir, fR, UR, w.S_R, w.S_M, UsR, &stc,
                        pr.rk_model)) {
         PS_W0_FL_FAIL(stc); PS_W0_FL_SIDE(1); return false; }
 #undef PS_W0_FL_FAIL
@@ -857,7 +854,7 @@ void wp_phase_energy_defect(int idir,
                              const amrex::Real UR[NVAR],
                              amrex::Real& defect_UE1,
                              amrex::Real& defect_UE2,
-                             int pk_ef, const PsPres& pr) noexcept   // #85 / S1
+                             const PsPres& pr) noexcept   // S1
 {
     using amrex::Real;
     defect_UE1 = Real(0.0);
@@ -911,12 +908,12 @@ void wp_phase_energy_defect(int idir,
     }
 
     // Pelanti star-state per-phase specific total energies.
-    // #85: per-phase P_k (pk_ef=1) vs mixture P (default #211).  Must match
-    // hllc_flux's star energy AND the physical flux below (same pk_ef).
-    const Real PeL1 = (pk_ef != 0) ? fL.P_1 : fL.P_mix;
-    const Real PeL2 = (pk_ef != 0) ? fL.P_2 : fL.P_mix;
-    const Real PeR1 = (pk_ef != 0) ? fR.P_1 : fR.P_mix;
-    const Real PeR2 = (pk_ef != 0) ? fR.P_2 : fR.P_mix;
+    // Mixture P (#211), matching hllc_flux's star energy and the physical
+    // flux.  (The #85 per-phase option is retired — see PS_umeth.cpp.)
+    const Real PeL1 = fL.P_mix;
+    const Real PeL2 = fL.P_mix;
+    const Real PeR1 = fR.P_mix;
+    const Real PeR2 = fR.P_mix;
     const Real E1_starL = fL.E_1 + (w.S_M - fL.u_n) *
                                     (w.S_M + PeL1 / q_L1);
     const Real E2_starL = fL.E_2 + (w.S_M - fL.u_n) *
