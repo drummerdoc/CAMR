@@ -7122,3 +7122,39 @@ compile clean — 65 pk_ef occurrences removed across two files with
 the compiler as witness.
 The #85 dial is gone; llf retirement (task #34) has no remaining
 blocker on the pk_ef side.
+
+====================================================================
+2026-08-26 — SINGLE-PATH, commit 1 of 2: the seven hllc decks pin
+to wp + ps_wp_order=2.  PREDICTIONS FIRST.
+
+WHAT.  CO2_XC2D/inputs, the five CO2_B4 hllc decks, and
+CO2_ADV2D/inputs pin CAMR.ps_flux=wp with CAMR.ps_wp_order=2 (the
+acceptance order — probe #32 measured a bare flux switch at the
+implicit order 1 as 7.9x worse on smooth alpha).  ADV2D/inputs-fb-
+rk2 already carried both; CO2_B4/inputs sets no flux and now runs
+the wp default by design.  Landed as its OWN commit so a revert of
+the path deletion (commit 2) cannot un-pin the decks.
+
+PREDICTIONS.  Every pinned deck COMPLETES as configured under
+wp/order-2/bl_reflux-2 — a configuration none of them has run
+(probe #32's wp legs were order 1 at bl_reflux 0): ADV2D and XC2D
+to stop_time, the five B4 decks to t_final = 7.33959e-4.  Scores
+recorded for the ledger; the B4 trio that was flux-identical at
+order 1 (flashtest/stalled/nearstalled) is expected close to its
+probe-#32 numbers, cf-contact/fixedbox likewise (order-2 wp was
+the battery's acceptance config all along).  [Any abort stops the
+deletion until diagnosed.]
+
+MEASURED.  Prediction CONFIRMED — all seven pinned decks complete
+as configured (rc=0, zero NO ROOT everywhere):
+  ADV2D        96 coarse steps to stop_time (plot 00096)
+  XC2D         STEP 56,  TIME 2.0000e-4 (stop_time)
+  flashtest    STEP 344, TIME 7.33959e-4
+  fixedbox     STEP 410, TIME 7.33959e-4
+  cf-contact   STEP 410, TIME 7.33959e-4
+  nearstalled  STEP 381, TIME 7.33959e-4
+  stalled      STEP 380, TIME 7.33959e-4
+cf-contact and fixedbox — the two decks hllc could not finish in
+probe #32 — run to t_final under the pinned config; the bl_reflux=2
+default is doing exactly what the WP-CF-2D chase measured.  No
+abort, so commit 2 (the deletion) proceeds.

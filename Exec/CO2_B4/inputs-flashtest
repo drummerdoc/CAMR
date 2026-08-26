@@ -35,7 +35,13 @@ CAMR.do_mol   = 0
 CAMR.ppm_type = 1
 
 CAMR.ps_hydro        = 1
-CAMR.ps_flux         = hllc
+#  SINGLE-PATH (2026-08-26, Marc): pinned to the acceptance flux at its
+#  acceptance order.  hllc is retired (probe #32 + WP-CF-2D: with the
+#  ps_bl_reflux=2 default, wp serves every deck in this family — and a
+#  bare flux switch without ps_wp_order=2 silently runs 1st-order
+#  fluctuations, measured 7.9x worse on smooth alpha).
+CAMR.ps_flux         = wp
+CAMR.ps_wp_order     = 2
 CAMR.ps_recon        = 0
 CAMR.ps_do_relax     = 0
 CAMR.ps_mt_tau       = 0    # no mass transfer (pre-2026-08-24 default, pinned)
