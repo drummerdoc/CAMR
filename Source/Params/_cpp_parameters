@@ -59,7 +59,12 @@ ps_hydro                     int          0
 # Berger-LeVeque fluctuation-form coarse-fine reflux for the PS
 # NON-conservative terms (α transport + WP phase-energy defect).
 # 0 = off (only the standard conservative FluxRegister runs).
-# 1 = also run the parallel fluctuation register (hllc defect; wp no-op).
+# 1 = also run the parallel fluctuation register.  HISTORICAL NO-OP
+#     since the single-path deletion (2026-08-26): the register carried
+#     the hllc-path phase-energy defect, and wp — the only flux now —
+#     embeds that physics in its fluctuations and deposits zero.  The
+#     register infrastructure is KEPT as the task-#22 P2 landing pad
+#     for a future wp-form (two-sided A±ΔQ) register.
 # 2 = DEFAULT (2026-08-26, WP-CF-2D): additionally co-move α with its
 #     refluxed mass in CAMR::reflux() — capacity form, flux-mode
 #     independent.  Reflux corrects m_k but not α, so at ps_bl_reflux<2

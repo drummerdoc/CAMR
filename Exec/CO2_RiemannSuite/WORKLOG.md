@@ -7158,3 +7158,79 @@ cf-contact and fixedbox — the two decks hllc could not finish in
 probe #32 — run to t_final under the pinned config; the bl_reflux=2
 default is doing exactly what the WP-CF-2D chase measured.  No
 abort, so commit 2 (the deletion) proceeds.
+
+====================================================================
+2026-08-26 — SINGLE-PATH, commit 2 of 2: DELETE the llf + hllc split
+paths and the CTU scaffold.  PREDICTIONS FIRST.
+
+WHAT.  Marc's call ("I want to do the delete", after the probe #32 /
+WP-CF-2D adjudication and the bl_reflux=2 default): wp (Berger-
+LeVeque fluctuation interior) becomes the ONLY interior flux path.
+Removed from PS_umeth.cpp: the directionally-split face loop
+(llf + hllc), the CTU 3-stage scaffold (P1, never finished — P1.2
+shipped a zero transverse correction), the end-of-file WP-alpha cell
+kernel + phase-energy defect tail (served ONLY the split paths — wp
+returns before it, task #202/#207 history stays in git), and the
+orphaned helpers ps_physical_flux, ps_max_wave_speed (cell forms),
+ps_ctu_recon, ps_ctu_flux_from_states, ps_ctu_transverse_correct.
+Removed from PS_hllc.H: hllc_flux and wp_phase_energy_defect
+(callers were all in the deleted zone); KEPT face_from_state,
+wave_speeds, ps_star_masses, ps_star_state, fluctuations,
+wp_face_class and the face_diag counters — wp mode's working set.
+
+DIALS.  CAMR.ps_flux SURVIVES but accepts only "wp" (or unset);
+llf/hllc/anything else ABORTS with the retirement message — the
+retired-key idiom, not a silent forcing, because a deck that
+names a deleted solver must fail loudly.  CAMR.ps_ctu is retired
+the same way (contains -> Abort) and its dead `CAMR.ps_ctu = 0`
+line is scrubbed from CO2_ADV2D/inputs.  ps_llf_identity stays: it
+gates the A4 identity-consistent LLF FALLBACK inside ps_wp_face
+(unresolvable faces), which is wp's own and is not the split path.
+ps_recon also stays (read by the CAMR_advance banner) but is now
+functionally inert on the PS path — wp never reconstructed;
+flagged as a follow-up retirement candidate, NOT done here (out of
+the approved boundary).  The fluctuation-register infrastructure
+(CAMRPSFluctReg, ps_bl_reflux=1 defect register) is KEPT as the
+task-#22 P2 landing pad; =1 is now documented as a historical
+no-op (wp leaves fcorr at zero).
+
+PREDICTIONS (falsifiers in brackets).
+H1. The full 20-case wp battery is BIT-IDENTICAL to the post-
+    bl_reflux baseline (bg_wp_battery.log): the deletion never
+    touches an instruction wp executes.  [ANY digit differing =
+    the boundary was drawn wrong — stop and diagnose.]
+H2. All five builds compile clean: PR 1-D, TBlowdown 2-D, XC2D,
+    B4 2-D, Sod GammaLaw.  [An undefined-symbol or unused-warning
+    error = an orphan I missed or a keep I broke.]
+H3. Retired-key probes: ps_flux=llf ABORTS, ps_flux=hllc ABORTS,
+    ps_ctu=1 ABORTS (and ps_ctu=0 also aborts — the KEY is
+    retired, not a value), each before any hydro.  [A run that
+    proceeds = the abort is unreachable.]
+H4. The seven commit-1 pinned decks re-run BIT-IDENTICAL final
+    states vs their commit-1 runs (same config, wp untouched).
+    [Spot-row drift = deletion touched shared wp code.]
+
+MEASURED.  All four predictions CONFIRMED.
+H1 CONFIRMED.  Full 20-case wp battery BIT-IDENTICAL to the post-
+bl_reflux baseline (bg_wp_battery.log — sp_wp_battery.log, diff
+empty, every printed decimal).
+H2 CONFIRMED.  All builds compile clean with no warnings: PR 1-D
+(RiemannSuite), RiemannSuite 2-D, TBlowdown, XC2D, B4, ADV2D, and
+Sod GammaLaw (the !USE_PS_HYDRO stub path).  PS_umeth.cpp shrinks
+2573 -> 1627 lines; PS_hllc.H 981 -> 696.
+H3 CONFIRMED.  ps_flux=llf ABORTS, ps_flux=hllc ABORTS, ps_ctu=1
+ABORTS, and ps_ctu=0 ALSO aborts (the key is retired, not a value)
+— each before any hydro, each naming the retirement.  Positive
+control: the default deck runs with the wp banner (BL-2, order 2).
+H4 CONFIRMED.  All seven commit-1 pinned decks re-run to their
+identical final step under the post-deletion executable, and every
+final plotfile is BIT-IDENTICAL on data vs its commit-1 run — the
+only file differing is job_info (timestamps, build metadata, and
+ADV2D's scrubbed ps_ctu line, exactly as expected).
+
+The PS module is single-path: wp/order-2/bl_reflux-2 is the
+compiled default, the acceptance config, and the only config.
+Follow-up retirement candidates left OPEN (out of this boundary):
+ps_recon and ps_alpha_limiter are now functionally inert on the PS
+path (reads kept for job_info); the fluct-reg =1 register is a
+documented historical no-op kept as the task-#22 P2 landing pad.

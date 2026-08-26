@@ -1,5 +1,16 @@
 # PelantiShyue hydro module for CAMR
 
+> **SINGLE-PATH NOTE (2026-08-26):** the llf (Rusanov split) and hllc
+> (Pelanti 2022 Godunov) interior flux paths, the CTU scaffold, and the
+> WP-α cell kernel + `wp_phase_energy_defect` correction tail that
+> served them were **deleted**.  `CAMR.ps_flux=wp` (the Berger-LeVeque
+> fluctuation interior, with `ps_wp_order=2`) is the only interior
+> flux; `ps_flux=llf`, `ps_flux=hllc`, and a set `ps_ctu` key abort.
+> Sections below describing the split-path machinery (WP-α kernel,
+> defect correction, `hllc_flux`) are HISTORY — accurate for the code
+> that was validated then, gone from the tree now (see git history and
+> `PRIMER_godunov_vs_wave_propagation.md`).
+
 **Status (Jul 2026):** Phase 4a through 4f complete.  The module has
 been algorithmically validated on the B4-Cross-critical Riemann
 benchmark — it reproduces the standalone `co2-eos-cfd/ppm_1d_ps_wp`
@@ -569,8 +580,8 @@ fluctuation register for just those slots.
 |----------------------------------|------------------------------------------------------------|
 | `hem_pelanti_shyue.H` (3264 ln)  | full PS algorithm library (mirror of standalone)           |
 | `PS_ctoprim.H`                   | augment primitives with per-phase state                    |
-| `PS_umeth.cpp` / `.H`            | face flux + WP-α source + WP defect correction             |
-| `PS_hllc.H`                      | HLLC solver + `wp_phase_energy_defect` helper              |
+| `PS_umeth.cpp` / `.H`            | wp fluctuation interior (single-path since 2026-08-26)     |
+| `PS_hllc.H`                      | face/star/fluctuation builders for wp (hllc_flux deleted)  |
 | `PS_reconstruction.H`            | MUSCL PLM reconstruction (env `CAMR.ps_recon=1`)           |
 | `PS_relaxation.H`                | Pelanti pressure relaxation Newton                         |
 | `PS_nscbc.H`                     | NSCBC boundary treatment                                   |

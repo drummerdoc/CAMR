@@ -33,7 +33,7 @@
 //  the only readers; the banners print the RESOLVED selection, so the log
 //  can no longer assert a flux that never ran.
 // ---------------------------------------------------------------------
-int         ps_flux_selector();          // 0 = llf, 1 = hllc, 2 = wp (default, 2026-08-25)
+int         ps_flux_selector();          // 2 = wp, the ONLY flux (single-path 2026-08-26; llf/hllc keys Abort)
 const char* ps_flux_name();              // resolved name for banners
 int         ps_recon_selector();         // 0 = constant, 1 = MUSCL, 2 = PPM
 int         ps_alpha_limiter_minmod();   // 1 = minmod, 0 = vanleer (default)

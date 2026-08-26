@@ -96,7 +96,7 @@ struct PsPres {
     //  the acoustic fan (D7 instrument; PLAN_measurements_and_fixes.md S1 C5,
     //  REVIEW_RESPONSE.md D7).  Rides this struct for the same reason
     //  cmix_model does: it is already the by-value carrier reaching the star
-    //  builders (PS_hllc.H hllc_flux / ps_star_state) with no ParmParse in a
+    //  builders (PS_hllc.H ps_star_state / fluctuations) with no ParmParse in a
     //  device-callable function.
     //
     //    0  SHARED (default, bit-identical): both phase masses scale by the

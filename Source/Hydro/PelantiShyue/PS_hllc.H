@@ -400,7 +400,7 @@ WaveSpeeds wave_speeds(const Face& fL, const Face& fR) noexcept
 
 
 // -------------------------------------------------------------------
-//  Star-state partial masses -- SINGLE-SOURCED for hllc_flux (Godunov path)
+//  Star-state partial masses -- SINGLE-SOURCED for ps_star_state (wp path)
 //  and ps_star_state (wp fluctuation path), so the D7 instrument cannot
 //  drift between them (the four-way-copy lesson, STATUS_multiphase.md 6.1).
 //
@@ -446,158 +446,12 @@ void ps_star_masses(const Face& fK, amrex::Real S_K, amrex::Real S_M,
 }
 
 // -------------------------------------------------------------------
-//  Pelanti 2022 HLLC flux, all NVAR slots.
-//
-//  Called from PS_umeth's face loop when CAMR.ps_flux = hllc.  Takes
-//  face-state L and R (from either MUSCL reconstruction or direct
-//  cell copies), plus F_L and F_R already computed by
-//  ps_physical_flux_from_state.  Returns true on success; on any
-//  pathology (non-finite intermediates, ρ_star ≤ 0) returns false
-//  and leaves F unchanged so the caller can fall back to LLF.
-//
-//  The HLLC star-state phase-energy formula uses MIXTURE P_L / P_R
-//  with PER-PHASE density in the mass-flux denominator, matching
-//  COTT's HLLC_v (musta_df_mc.f90:1741-1746).  This is what closes
-//  the residual gap on B4-Cross-critical the ps_hlld_flux variant
-//  can't reach.
-//
-//  Auxiliary slots (UTEMP, UFS, UFA, UFX) are treated as
-//  passively-advected at S_M — F[n] = F_L[n] if S_M ≥ 0 else
-//  F_R[n] — since they don't participate in the P-S star state.
+//  hllc_flux (the Pelanti 2022 HLLC Godunov flux) was DELETED
+//  2026-08-26 with the single-path retirement (CAMR.ps_flux=hllc
+//  aborts; wp is the only interior flux).  The star construction it
+//  shared with the fluctuation form lives on in ps_star_state below;
+//  the full Godunov flux survives in git history.
 // -------------------------------------------------------------------
-AMREX_GPU_HOST_DEVICE
-AMREX_FORCE_INLINE
-bool hllc_flux(int idir,
-                const amrex::Real UL[NVAR], const amrex::Real UR[NVAR],
-                const amrex::Real FL[NVAR], const amrex::Real FR[NVAR],
-                amrex::Real F[NVAR],
-                const PsPres& pr) noexcept   // S1 presence
-{
-    using amrex::Real;
-
-    const Face fL = face_from_state(idir, UL, pr);
-    const Face fR = face_from_state(idir, UR, pr);
-    if (!fL.valid || !fR.valid) return false;
-
-    const WaveSpeeds w = wave_speeds(fL, fR);
-    if (!w.valid) return false;
-
-    // Supersonic branches: pure upwind.
-    if (w.S_L >= Real(0.0)) {
-        for (int n = 0; n < NVAR; ++n) F[n] = FL[n];
-        F[UALPHA1] = fL.alpha_1 * fL.u_n;   // α advection at cell velocity
-        return true;
-    }
-    if (w.S_R <= Real(0.0)) {
-        for (int n = 0; n < NVAR; ++n) F[n] = FR[n];
-        F[UALPHA1] = fR.alpha_1 * fR.u_n;
-        return true;
-    }
-
-    // Star-region.  Pick side based on sign of S_M.
-    const bool star_L = (w.S_M >= Real(0.0));
-    const Face& fK   = star_L ? fL : fR;
-    const amrex::Real* const UK = star_L ? UL : UR;
-    const amrex::Real* const FK = star_L ? FL : FR;
-    const Real S_K   = star_L ? w.S_L : w.S_R;
-
-    // Contraction ratio common to both phases (Pelanti 2022 eq. B.14).
-    const Real denom_r = S_K - w.S_M;
-    if (!std::isfinite(denom_r) || std::abs(denom_r) < Real(1.0e-30)) return false;
-    const Real r_K = (S_K - fK.u_n) / denom_r;
-
-    // Star-state per-phase partial masses (shared r_K by default; the
-    // ps_rk_model=1 D7 instrument redistributes, mixture mass unchanged).
-    Real m1_star, m2_star;
-    ps_star_masses(fK, S_K, w.S_M, r_K, pr.rk_model, m1_star, m2_star);
-    if (m1_star < Real(0.0) || m2_star < Real(0.0)) return false;
-    const Real rho_star = m1_star + m2_star;
-    if (rho_star <= Real(0.0)) return false;
-
-    // Per-phase mass-flux denominator q_K = ρ_k · (S_K - u_K).
-    const Real q_1 = fK.rho_1 * (S_K - fK.u_n);
-    const Real q_2 = fK.rho_2 * (S_K - fK.u_n);
-    if (std::abs(q_1) < Real(1.0e-30) || std::abs(q_2) < Real(1.0e-30)) return false;
-
-    // Per-phase specific total energy at the star state: MIXTURE P in the
-    // pressure boost, PER-PHASE ρ_k in the denominator (COTT HLLC_v, #211).
-    // (The #85 two-pressure star option was retired 2026-08-26 with
-    // CAMR.ps_pk_energy_flux — see PS_umeth.cpp.)
-    const Real Pe1 = fK.P_mix;
-    const Real Pe2 = fK.P_mix;
-    const Real E1_star = fK.E_1 + (w.S_M - fK.u_n) *
-                                  (w.S_M + Pe1 / q_1);
-    const Real E2_star = fK.E_2 + (w.S_M - fK.u_n) *
-                                  (w.S_M + Pe2 / q_2);
-    if (!std::isfinite(E1_star) || !std::isfinite(E2_star)) return false;
-
-    // Star-state mixture velocity components.  Normal → S_M.  Tangential
-    // components are advected passively (unchanged from the K side).
-    Real ux_star = fK.ux, uy_star = fK.uy, uz_star = fK.uz;
-    if      (idir == 0) ux_star = w.S_M;
-    else if (idir == 1) uy_star = w.S_M;
-    else                uz_star = w.S_M;
-
-    // Mixture star-state internal energy from per-phase mass-weighted mean.
-    const Real ke_star_spec = Real(0.5) * (ux_star*ux_star + uy_star*uy_star
-                                            + uz_star*uz_star);
-    const Real e_mix_star = ((m1_star * (E1_star - ke_star_spec))
-                            + (m2_star * (E2_star - ke_star_spec)))
-                            / rho_star;
-    const Real E_mix_star = e_mix_star + ke_star_spec;
-
-    // Build the star-state vector for the P-S 6-eq slots + mixture slots.
-    // Aux slots (UTEMP, UFS...) inherit their K-side values because they
-    // don't participate in the star-state balance.
-    amrex::Real U_star[NVAR];
-    for (int n = 0; n < NVAR; ++n) U_star[n] = UK[n];
-    U_star[URHO]    = rho_star;
-    U_star[UMX]     = rho_star * ux_star;
-#if (AMREX_SPACEDIM >= 2)
-    U_star[UMY]     = rho_star * uy_star;
-#endif
-#if (AMREX_SPACEDIM == 3)
-    U_star[UMZ]     = rho_star * uz_star;
-#endif
-    U_star[UEINT]   = rho_star * e_mix_star;
-    U_star[UEDEN]   = rho_star * E_mix_star;
-    U_star[UALPHA1] = fK.alpha_1;             // α advects with contact
-    U_star[UM1RHO1] = m1_star;
-    U_star[UM2RHO2] = m2_star;
-    U_star[UE1    ] = m1_star * E1_star;
-    U_star[UE2    ] = m2_star * E2_star;
-    // Species scale with the mixture density ratio (passive scalar carried
-    // by the star mass; UFS slot holds α ρ Y_species which for pure-CO₂
-    // simplifies to α ρ · 1 on the CO₂ index).
-    const Real rho_ratio = rho_star / fK.rho_mix;
-    for (int n = 0; n < NUM_SPECIES; ++n) {
-        U_star[UFS + n] = _finite_or(UK[UFS + n], Real(0.0)) * rho_ratio;
-    }
-    // UTEMP: passive advection at S_M is achieved via the F formula below;
-    // U_star[UTEMP] carries the K-side T unchanged.
-
-    // HLLC flux across the contact: F_K + S_K (U_star - U_K).
-    for (int n = 0; n < NVAR; ++n) {
-        F[n] = FK[n] + S_K * (U_star[n] - UK[n]);
-    }
-
-    // α_1 flux: set to zero here.  The claim in earlier comments that
-    // F[UALPHA1] = α·S_M under divergence produces the non-conservative
-    // α update is WRONG in general (task #202):
-    //     ∂α/∂t = -∂/∂x(α S_M) = -S_M ∂α/∂x  -  α ∂S_M/∂x
-    // The second term is spurious and drives α out of [0,1] near the
-    // cross-critical B4 diaphragm where ∂S_M/∂x is large.  Instead we
-    // let PS_umeth's WP-α kernel (end of file) apply an upwind
-    // fluctuation update with face-averaged u — that IS a proper
-    // non-conservative advection.  This matches the standalone
-    // ppm_1d_ps_wp driver's wave-propagation form for α_1.
-    F[UALPHA1] = Real(0.0);
-
-    // Final sanitisation.
-    for (int n = 0; n < NVAR; ++n) F[n] = _finite_or(F[n], Real(0.0));
-    return true;
-}
-
 
 // ===================================================================
 //  Wave-propagation (Berger-LeVeque) fluctuation form — task #40 (BL-1)
@@ -612,8 +466,8 @@ bool hllc_flux(int idir,
 //  flux F* = F_L + A^-ΔQ feeds the standard FluxRegister.
 //
 //  ps_star_state builds one side's HLLC star vector in NVAR layout
-//  (mirrors the star construction inside hllc_flux; kept separate so the
-//  validated Godunov-flux path is untouched).
+//  (the one star construction since the Godunov-flux path's deletion,
+//  2026-08-26).
 // ===================================================================
 AMREX_GPU_HOST_DEVICE
 AMREX_FORCE_INLINE
@@ -828,152 +682,13 @@ bool fluctuations(int idir, const amrex::Real UL[NVAR], const amrex::Real UR[NVA
 
 
 // -------------------------------------------------------------------
-//  WP-form vs divergence-form defect for the phase-energy slots.
-//
-//  The Pelanti-Shyue HLLC star state uses MIXTURE p_K in the per-phase
-//  energy formula (E_k_star = E_k + (S_M - u)·(S_M + p_mix/q_k)), which
-//  makes the m_k E_k slots NOT locally conservative:
-//      A^+ + A^-  ≠  F_R - F_L
-//  when integrated over the Riemann fan.  The standalone driver's
-//  ppm_1d_ps_wp handles this by applying the update in wave-propagation
-//  form (A^+ into R cell, A^- into L cell) rather than divergence form.
-//  CAMR uses divergence, so we need a per-face correction:
-//
-//      defect_f[UE_k] = (A^+ + A^-)_f - (F_R - F_L)_f  |slot UE_k
-//
-//  Applied to the R cell of face f (via the left face of cell i):
-//      dsdt_i[UE_k] += -defect_{i-1/2}[UE_k] / dx
-//
-//  This makes CAMR's Godunov update algebraically equivalent to the
-//  standalone's WP update for the phase-energy slots.  See task #207.
+//  wp_phase_energy_defect (the per-face WP-vs-divergence phase-energy
+//  correction, task #207) was DELETED 2026-08-26 with the split paths
+//  it corrected: wp embeds the same physics INSIDE its fluctuations
+//  (A^+ into R, A^- into L), so no divergence-form defect exists to
+//  correct.  Derivation and formula survive in git history and in
+//  PRIMER_godunov_vs_wave_propagation.md.
 // -------------------------------------------------------------------
-AMREX_GPU_HOST_DEVICE
-AMREX_FORCE_INLINE
-void wp_phase_energy_defect(int idir,
-                             const amrex::Real UL[NVAR],
-                             const amrex::Real UR[NVAR],
-                             amrex::Real& defect_UE1,
-                             amrex::Real& defect_UE2,
-                             const PsPres& pr) noexcept   // S1
-{
-    using amrex::Real;
-    defect_UE1 = Real(0.0);
-    defect_UE2 = Real(0.0);
-
-#if !defined(AMREX_USE_GPU)
-    const int fcls = wp_face_class(UL, UR, pr);   // W0 audit
-    ++face_diag::n_seen(fcls);
-#endif
-
-    const Face fL = face_from_state(idir, UL, pr);
-    const Face fR = face_from_state(idir, UR, pr);
-    if (!fL.valid || !fR.valid) {
-#if !defined(AMREX_USE_GPU)
-        ++face_diag::n_drop(fcls);                // W0: correction dropped
-#endif
-        return;
-    }
-    const WaveSpeeds w = wave_speeds(fL, fR);
-    if (!w.valid) {
-#if !defined(AMREX_USE_GPU)
-        ++face_diag::n_drop(fcls);
-#endif
-        return;
-    }
-
-    // Star-state contraction ratios.
-    const Real denom_rL = w.S_L - w.S_M;
-    const Real denom_rR = w.S_R - w.S_M;
-    if (std::abs(denom_rL) < Real(1.0e-30) ||
-        std::abs(denom_rR) < Real(1.0e-30)) {
-#if !defined(AMREX_USE_GPU)
-        ++face_diag::n_drop(fcls);
-#endif
-        return;
-    }
-    const Real r_L = (w.S_L - fL.u_n) / denom_rL;
-    const Real r_R = (w.S_R - fR.u_n) / denom_rR;
-
-    // Per-phase mass fluxes.
-    const Real q_L1 = fL.rho_1 * (w.S_L - fL.u_n);
-    const Real q_L2 = fL.rho_2 * (w.S_L - fL.u_n);
-    const Real q_R1 = fR.rho_1 * (w.S_R - fR.u_n);
-    const Real q_R2 = fR.rho_2 * (w.S_R - fR.u_n);
-    if (std::abs(q_L1) < Real(1.0e-30) || std::abs(q_L2) < Real(1.0e-30) ||
-        std::abs(q_R1) < Real(1.0e-30) || std::abs(q_R2) < Real(1.0e-30)) {
-#if !defined(AMREX_USE_GPU)
-        ++face_diag::n_drop(fcls);                // §2.4: the q-guard dropout
-#endif
-        return;
-    }
-
-    // Pelanti star-state per-phase specific total energies.
-    // Mixture P (#211), matching hllc_flux's star energy and the physical
-    // flux.  (The #85 per-phase option is retired — see PS_umeth.cpp.)
-    const Real PeL1 = fL.P_mix;
-    const Real PeL2 = fL.P_mix;
-    const Real PeR1 = fR.P_mix;
-    const Real PeR2 = fR.P_mix;
-    const Real E1_starL = fL.E_1 + (w.S_M - fL.u_n) *
-                                    (w.S_M + PeL1 / q_L1);
-    const Real E2_starL = fL.E_2 + (w.S_M - fL.u_n) *
-                                    (w.S_M + PeL2 / q_L2);
-    const Real E1_starR = fR.E_1 + (w.S_M - fR.u_n) *
-                                    (w.S_M + PeR1 / q_R1);
-    const Real E2_starR = fR.E_2 + (w.S_M - fR.u_n) *
-                                    (w.S_M + PeR2 / q_R2);
-
-    // Star-state partial masses.
-    const Real m1_starL = fL.m_1 * r_L;
-    const Real m2_starL = fL.m_2 * r_L;
-    const Real m1_starR = fR.m_1 * r_R;
-    const Real m2_starR = fR.m_2 * r_R;
-
-    // Cell-state m·E (Godunov's F_L and F_R for UE_k slot come from
-    // the physical Euler flux, computed below).
-    const Real m1E1_L = fL.m_1 * fL.E_1;
-    const Real m2E2_L = fL.m_2 * fL.E_2;
-    const Real m1E1_R = fR.m_1 * fR.E_1;
-    const Real m2E2_R = fR.m_2 * fR.E_2;
-
-    // Wave contributions W_l[UE_k].
-    const Real W1_UE1 = m1_starL * E1_starL - m1E1_L;
-    const Real W2_UE1 = m1_starR * E1_starR - m1_starL * E1_starL;
-    const Real W3_UE1 = m1E1_R - m1_starR * E1_starR;
-
-    const Real W1_UE2 = m2_starL * E2_starL - m2E2_L;
-    const Real W2_UE2 = m2_starR * E2_starR - m2_starL * E2_starL;
-    const Real W3_UE2 = m2E2_R - m2_starR * E2_starR;
-
-    // Sum s_l · W_l over ALL waves (both A^+ and A^- combined).  Equivalent
-    // to A^+ + A^- since the sign gating just partitions the sum.
-    const Real sum_sW_UE1 = w.S_L * W1_UE1 + w.S_M * W2_UE1 + w.S_R * W3_UE1;
-    const Real sum_sW_UE2 = w.S_L * W1_UE2 + w.S_M * W2_UE2 + w.S_R * W3_UE2;
-
-    // Physical Euler flux F(U_L) and F(U_R) for the UE_k slots.
-    //   F[UE_k] = m_k · E_k · u_n + α_k · P_mix · u_n
-    const Real FL_UE1 = m1E1_L * fL.u_n + fL.alpha_1 * PeL1 * fL.u_n;
-    const Real FL_UE2 = m2E2_L * fL.u_n + fL.alpha_2 * PeL2 * fL.u_n;
-    const Real FR_UE1 = m1E1_R * fR.u_n + fR.alpha_1 * PeR1 * fR.u_n;
-    const Real FR_UE2 = m2E2_R * fR.u_n + fR.alpha_2 * PeR2 * fR.u_n;
-
-    // Defect = (A^+ + A^-) - (F_R - F_L)
-    defect_UE1 = sum_sW_UE1 - (FR_UE1 - FL_UE1);
-    defect_UE2 = sum_sW_UE2 - (FR_UE2 - FL_UE2);
-
-#if !defined(AMREX_USE_GPU)
-    {   // W0 audit: applied-defect and star-energy magnitude spectra.
-        const double d = std::max(std::abs(double(defect_UE1)),
-                                  std::abs(double(defect_UE2)));
-        if (d > face_diag::max_def(fcls)) face_diag::max_def(fcls) = d;
-        const double es = std::max(
-            std::max(std::abs(double(E1_starL)), std::abs(double(E2_starL))),
-            std::max(std::abs(double(E1_starR)), std::abs(double(E2_starR))));
-        if (es > face_diag::max_estar(fcls)) face_diag::max_estar(fcls) = es;
-    }
-#endif
-}
-
 
 }  // namespace PS_HLLC
 

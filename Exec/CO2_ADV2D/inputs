@@ -4,7 +4,8 @@
 #  Uniform P and uniform diagonal velocity; a smooth periodic alpha_1
 #  field is advected.  Exact solution is a pure translation, so the L1
 #  error at t_end vs the analytic translated IC gives a clean
-#  convergence rate.  Compare split (CAMR.ps_ctu=0) vs CTU (=1).
+#  convergence rate.  (The split-vs-CTU comparison this deck was
+#  born for is history: single-path since 2026-08-26 — wp only.)
 #
 #  Sweep (single level):
 #     amr.n_cell = 32 32 ; 64 64 ; 128 128   at fixed stop_time.
@@ -48,7 +49,6 @@ CAMR.ps_recon    = 1
 CAMR.ps_do_relax = 0
 CAMR.ps_mt_tau       = 0    # no mass transfer (pre-2026-08-24 default, pinned)
 CAMR.ps_flash_tau    = 0    # no flash source  (pre-2026-08-24 default, pinned)
-CAMR.ps_ctu      = 0
 
 CAMR.v = 0
 amr.v  = 0
