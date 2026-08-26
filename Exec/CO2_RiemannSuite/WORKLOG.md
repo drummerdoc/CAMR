@@ -6681,3 +6681,402 @@ Follow-on scheduled, not executed: llf retirement (now
 consumer-free — every deck in the tree selects its flux
 explicitly) awaits the pk_ef decision (#85 pairs only with llf);
 hllc's fate awaits probe #32.
+
+====================================================================
+2026-08-25 — TBLOW-NSCBC-Δ: the plenum control.  Which NSCBC
+construction (legacy or v2) is CORRECT on the blowdown vent?
+PREDICTIONS FIRST.
+
+CONTEXT.  Probe #27 measured a 4.2% vented-mass difference between
+NSCBC legacy and v2 on TBlowdown — the BC moved the application QoI
+~25x more than the flux did — with correctness undetermined.  The
+adjudicator (PeleC/CERFACS practice): remove the boundary from the
+vent plane entirely and let a boundary-free reference decide.
+
+SETUP (1-D reduction; TBlowdown's inputs-x physics is y-uniform, so
+the RiemannSuite 1-D machinery serves, dx matched to the 2-D case at
+1/256 m, wp flux, PS defaults, closed end = SlipWall at x-lo,
+stop_time = 1.0e-3 for every run).
+  A  (v2):     domain 0..1, uniform tube state (TP 320 K, 100 bar,
+               phase-1 dominant, alpha_trace 1e-6 — TBlowdown's IC
+               shape), NSCBC at x-hi, p_amb = 1e5.
+  B  (legacy): A + ps_bc_nscbc_v2 = 0.
+  C  (ref):    domain 0..2 at 512 cells (same dx), diaphragm at
+               x = 1.0, ambient CO2 vapour (300 K, 1 bar) beyond —
+               the vent plane is an INTERIOR Riemann interface; the
+               far boundary at x = 2 is causally silent through the
+               window.
+  C320:        C with 320 K ambient (plenum-gas sensitivity).
+QoI: tube-region mass M(t) = integral of rho over x < 1 (the vented
+mass), plus tube-interior p/u profiles at t_final.
+
+PREDICTIONS (falsifiers in brackets).
+Q1 (causality): C's fields for x > 1.7 at t = 1e-3 are the ambient
+   IC unchanged — the reference is boundary-free at the vent plane.
+   [Violation -> extend the domain and re-run; nothing else valid.]
+Q2 (reduction validity): the 1-D A-vs-B vented-mass split
+   reproduces the 2-D probe's ~4% Δ.  [If the Δ collapses in 1-D,
+   the 2-D difference was multi-dimensional and this control cannot
+   adjudicate it.]
+Q3 (THE ADJUDICATION — hypothesis on record, from NSCBC-1's
+   diagnosis): v2 lands closer to the reference than legacy —
+   legacy's pack ran RYP2E on in-dome (rho,P) pairs at the
+   two-phase vent and wrote saturation-mixture e into both phase
+   slots; v2 removed that inversion.  Predict |A−C| < |B−C| on
+   M(t).  [Legacy closer -> v2 REGRESSED the application class;
+   TBLOW-NSCBC-Δ becomes a v2 defect item and the hypothesis is
+   recorded refuted.]
+Q4 (fair-test caveat, recorded up front): the reference models the
+   vent as a straight-tube contact into quiescent ambient — exactly
+   the 1-D far field BOTH NSCBC forms claim to represent, so the
+   comparison is fair; it does not test lateral jet expansion,
+   which neither form models.  Plenum-gas T is a free choice:
+   predict tube-side M(t) insensitive (C vs C320 within ~1%).
+   [Sensitivity -> report the band, adjudicate only if A/B split
+   exceeds it.]
+
+MEASURED (container, 1-D).  Setup evolved twice, both recorded:
+prob.x_diaph is a FRACTION of the x-extent (0.5, not 1.0, places
+the interface at x = 1 on the doubled domain), and the reference's
+own interior run ABORTS at t ~ 8.0e-5 s — the wp path's phase-2
+energy exits the reachable band (e_2 = 23.5 MJ/kg vs the T = 5000 K
+ceiling 22.1 MJ/kg) in the smeared contact cell between flashed
+tube fluid and ambient vapour, at every resolution tried (512/256/
+128 over 0..2).  The adjudication window is therefore [0, 80 us] —
+five snapshots — and the abort is itself a new envelope data point:
+a 100:1 two-phase pressure ratio at a resolved interior contact
+breaches the wp phase-energy partition on the HOT side (B2's class,
+far off the battery envelope; recorded as WP-CONTACT-CEIL, open).
+
+Q1 CONFIRMED, emphatically: at t = 80 us the disturbance spans
+x in [0.961, 1.043]; beyond x = 1.7 the fields are the ambient IC
+to seven digits (max|u| = 2e-7 m/s).  The reference is boundary-
+free at the vent plane by a wide margin.
+Q2 REFUTED in an instructive way: the 1-D A-vs-B split at SHIPPED
+settings is not ~4% but 100% — v2 vents NOTHING in 1-D.  Cause,
+measured: the v2 linearization bound (LIN_ETA = 0.2) trips on
+EVERY fill (120 refusals / 30 steps = 4 layers/step, nscbc_zg lin)
+and the zero-gradient fallback is a MIRROR on a uniform state.
+The bound sits at the application's own dP (~3.7e6 Pa vs a
+~3.7e6 Pa threshold for the dominant phase): 2-D TBlowdown's
+phase decomposition squeaks under it (lin = 0 there, measured),
+the 1-D IC's tips over.  A bound meant as a far-field backstop
+BINDS mid-envelope, and its trip silently converts a vent into a
+wall.  Recorded as NSCBC-3.
+Q3 — THE HYPOTHESIS IS REFUTED.  With the bound raised (probe-only
+container exe, LIN_ETA = 0.5, refusal counters ZERO, so the number
+is pure construction), vented tube mass at t = 80 us:
+    reference        2.2753   (ambient-T band 0.1% — Q4 confirmed)
+    legacy NSCBC     2.1022   ( -7.6% vs reference)
+    v2 NSCBC         1.4838   (-34.8% vs reference)
+LEGACY IS CLOSER.  v2 under-vents the flashing blowdown by a third.
+Direction is consistent with the 2-D probe (v2 vented 4.2% less
+than legacy there); the 1-D magnitude is larger.  CANDIDATE
+MECHANISM (hypothesis, not established): legacy's RYP2E ghost
+energy — the in-dome saturation-mixture lever rule NSCBC-1
+diagnosed as a defect — is accidentally PHYSICAL at a flashing
+vent: ghost fluid expanding into the dome SHOULD flash (the HEM
+limit), and the lever-rule inversion supplies exactly that; v2's
+per-phase FROZEN-COMPOSITION isentropes forbid phase change in the
+ghost, so the boundary under-vents.  If right, the correct
+construction is neither: a phase-change-aware ghost closure (the
+PeleC beta_s/S_p lesson translated to the pack), on the
+gradient-form relaxation that removes the value-jump bound
+entirely.
+Q4 CONFIRMED.  300 K vs 320 K plenum gas: 0.1% on the QoI.
+
+VERDICT (TBLOW-NSCBC-Δ resolved): on the flashing-vent class the
+legacy construction is MORE ACCURATE (-7.6%) than v2 (-34.8%, or a
+total wall at the shipped bound); NSCBC-1's v2 remains the correct
+call for ROBUSTNESS (legacy aborts A1; v2 aborts nothing) but is a
+measured accuracy REGRESSION for blowdown venting.  Neither
+construction is adequate for application vent runs; the fix
+direction is the measurement package's gradient-form + source-slot
+line (probes #30/#31), now doubly funded.  Config guidance until
+then, Marc's call: TBlowdown-class decks either accept v2's
+under-venting bias, or pin ps_bc_nscbc_v2 = 0 accepting legacy's
+abort class and dome-energy ghosts.
+
+====================================================================
+2026-08-25 — PROBE #32 (measurement package, item 6): wp-vs-hllc
+on the 2-D decks — completing the single-flux-path decision.
+PREDICTIONS FIRST.
+
+CONTEXT.  After probe #27 + remediation, hllc is the remaining
+second path: CO2_XC2D/inputs, five CO2_B4 decks, and CO2_ADV2D/
+inputs select it (task #187 added hllc for B4-class cross-critical
+fans; task #202 made the WP-alpha cell kernel run for BOTH paths,
+so the un-refluxed C-F alpha source is SHARED, not an hllc-vs-wp
+discriminator).  Decision: wp serves -> pin these decks, retire
+hllc with llf (task #34); hllc measurably earns its keep on
+contacts -> it stays as a named, documented exception.
+
+SETUP (container, PR 2-D builds; every A/B holds the deck fixed
+and overrides only CAMR.ps_flux=wp on the command line).
+  ADV2D  inputs (64x64 smooth periodic alpha advection, relax off,
+         stop 1e-3): exact solution is pure translation of the
+         analytic IC — L1(alpha) error vs spectrally-shifted IC
+         (sin-based field is band-limited, Fourier shift exact),
+         plus alpha overshoot/undershoot beyond the IC range.
+  B4     all five hllc decks (256x32, stop = the battery B4 tf
+         7.33959e-4; cf-contact/fixedbox/nearstalled/stalled at
+         max_level=1, flashtest at 0): scored like the battery —
+         y-averaged rho/u/P vs exact_B4_pr.csv — plus
+         y-UNIFORMITY (the case is 1-D-in-x; any y-structure is
+         scheme-manufactured) and [PS-GUARD] counters.
+  XC2D   inputs (128x128 diagonal cross-critical contact),
+         BOUNDED matched window (max_step=100, the README's own
+         probe scale): field diffs, the y=0.5 contact ray, and
+         anti-diagonal symmetry.
+
+PREDICTIONS (falsifiers in brackets).
+X1. Every run completes — hllc decks are historical runners; wp
+    completed B4-class in the battery and TBlowdown.  [A wp abort
+    on any deck = hllc keeps that consumer; single-path deferred
+    there.]
+X2. ADV2D: wp's limited WP-alpha transport matches or beats hllc
+    on L1(alpha) (the alpha-transport map validated wp's 2nd-order
+    smooth-alpha behaviour on this very case class); neither
+    overshoots the IC range by more than limiter-level amounts.
+    [wp materially worse on smooth alpha would be a surprise
+    against its own design history — investigate before deciding.]
+X3. B4 decks: wp rows within a few % of hllc on y-averaged
+    rho/P vs exact; the CONTACT-sensitive u column is where hllc
+    may show an edge — direction MEASURED, not predicted.  Both
+    stay y-uniform to near-roundoff on the uniform decks; the AMR
+    decks' C-F alpha behaviour is shared machinery (task #202) and
+    is compared, not predicted.
+X4. XC2D bounded window: both fluxes run; diffs localized at the
+    diagonal contact band; anti-diagonal symmetry held by both.
+X5. flux_sanit = 0 everywhere; no [PS-EOS] aborts.
+
+MEASURED (container).  The verdict is MIXED, each direction sharply
+attributed.  NOTE first: all five B4 decks and XC2D pin
+ps_do_relax = 0 / mt 0 / flash 0 — the RELAX-OFF diagnostic class,
+a configuration the acceptance path never runs; every abort below
+lives inside that class.
+
+X1 REFUTED IN BOTH DIRECTIONS — the probe's main finding.
+ (a) hllc ABORTS ITS OWN DECKS cf-contact and fixedbox (the two
+     evolving AMR contact decks): dt collapses (to 4e-12 s), then
+     the vapour phase energy exits the reachable band ~1.2 kJ/kg
+     below the T=1K floor at the contact (t = 1.85e-4 and 1.03e-4
+     of 7.34e-4).  wp completes BOTH to stop_time.  Whether these
+     decks ever completed under hllc on any earlier tree is
+     UNDETERMINED (historical debugging decks); the current-tree
+     fact stands.
+ (b) wp ABORTS XC2D AS SHIPPED (AMR max_level=1, genuinely-2D
+     diagonal contact) at COARSE STEP 22 — inside the README's own
+     40-step protocol — liquid-phase e 19.5 kJ/kg below the floor;
+     hllc completes the 40-step protocol (and survives to step 82
+     before the relax-off drift class takes it too; at 100 steps
+     BOTH fluxes die).  ISOLATED: at max_level=0 wp completes the
+     window cleanly — the failure is wp x AMR x 2-D contact
+     specifically, i.e. the un-refluxed wp-mode per-cell alpha /
+     phase-energy-defect deposits at the C-F boundary (the exact
+     gap XC2D was BUILT to measure, task #2/#218).  The y-face
+     deposits are identically zero in the 1-D-in-x B4 decks, which
+     is why wp is fine there.  NEW OPEN: WP-CF-2D.
+X2 CONFIRMED after a deck-hygiene catch: ADV2D smooth-alpha L1 vs
+   the exact translation — hllc 7.33e-4; wp AT THE DECK'S IMPLICIT
+   DEFAULTS 5.78e-3 (7.9x WORSE — the hllc decks never set
+   ps_wp_order, so a bare flux override runs 1st-order
+   fluctuations); wp at the ACCEPTANCE config (ps_wp_order=2)
+   6.80e-4 — 8% BETTER than hllc.  CONSEQUENCE: any pin-to-wp of
+   these decks must pin ps_wp_order = 2 alongside.
+X3 CONFIRMED.  Completed-pair decks: flashtest and stalled are
+   flux-IDENTICAL to four decimals on y-averaged rho/u/P vs exact;
+   nearstalled differs slightly (u column: wp 1.0303 vs hllc
+   1.0684 — wp nearer).  y-uniformity 1e-15 (roundoff) both
+   fluxes, every deck.  cf-contact/fixedbox under wp (no hllc
+   twin) score .044/.132/.054 and .039/.131/.057.
+X4 PARTIAL.  Single-level XC2D at the protocol window: scalar
+   fields transpose-symmetric to 1e-14 BOTH fluxes; the diagonal
+   alpha contact is 1 CELL wide (10-90%) under BOTH — at recon 0,
+   hllc shows NO sharpness edge over wp on this ray.  Cross-flux
+   deltas: rho/P max 6.6%/6.1% (L2 0.8%) at the contact band;
+   alpha abs max 2.1e-2, mean 3.0e-4.  (The AMR half of X4 is (b)
+   above.)
+X5 CONFIRMED.  flux_sanit / reflux / nscbc counters zero on every
+   diag-instrumented run.
+
+VERDICT (#32 gate): SINGLE PATH IS NOT ACHIEVABLE TODAY, and the
+blocker is now a named, isolated defect rather than a preference.
+wp is the robuster flux on the 1-D-in-x AMR contact decks (hllc
+aborts 2/5 of its own), equal-or-better on smooth 2-D advection at
+its acceptance order, and equally sharp on the diagonal contact
+single-level — but wp cannot run the genuinely-2-D AMR contact
+(WP-CF-2D), which is hllc's one surviving load-bearing consumer.
+Recommended disposition (Marc's call): pin cf-contact + fixedbox
+to wp (+ ps_wp_order=2) — they only run under wp now; pin ADV2D to
+wp with order 2 (measured better); XC2D KEEPS hllc as a named
+exception with a pointer to WP-CF-2D; hllc retirement (task #34's
+hllc half) blocks on WP-CF-2D's fix; llf retirement is unaffected.
+
+====================================================================
+2026-08-25 — WP-CF-2D chase, part 1: localization and the
+successful-configuration hints.  PREDICTIONS FIRST (E1-E4).
+
+LOCALIZATION (E0, from the probe-#32 failing log).  The abort fires
+DURING the Level-1 advance (second fine substep of coarse step 22),
+inside the hydro path itself — before any reflux of that step — on
+a liquid-branch state 19.5 kJ/kg below the T=1K floor at rho 519.
+So the immediately-bad state is on the FINE level, whose C-F ghost
+data is cell_cons_interp'd from coarse (per-component independent
+linear interp of alpha, m1, m2, UE1, UE2 — the classic generator of
+rho_k = m_k/alpha_k and e_k inconsistencies at a contact), and the
+run survives 21 coarse steps first — an ACCUMULATION + interpolation
+story, not a single bad operation.  Deck geometry maximizes
+exposure: n_error_buf=0 (fine box hugs the tagged contact),
+grid_eff=0.99, regrid_int=2 (regrid-fill interpolation every 2
+steps as the diagonal contact walks).
+
+HINTS FROM THE SUCCESSFUL CONFIGURATIONS.
+ (i) wp at max_level=0: clean -> C-F machinery required.
+ (ii) wp on the 1-D-in-x B4 AMR decks: clean to t_final -> y-face
+      deposits (alpha transport + phase-energy defect), active only
+      on a genuinely-2D contact, required.
+ (iii) hllc AMR: survives the protocol with the SAME interpolation
+      and the same ps_bl_reflux=0 -> the discriminator is the
+      MAGNITUDE of the un-refluxed per-cell content: wp mode
+      carries the ENTIRE non-conserved-slot update (alpha, UE1,
+      UE2) as per-cell fluctuation deposits, vs hllc's flux-form
+      UE1/UE2 plus a small defect.
+ (iv) THE BIG HINT: the machinery for exactly this class already
+      exists in-tree, default-off — the BL reflux ladder
+      (CAMR.ps_bl_reflux; capacity-form alpha co-move at >1,
+      validated for wp on inputs-cf-contact per the PS_umeth task-#5
+      comment; the =1 defect register is hllc-specific and a
+      documented no-op for wp), plus the deferred "two-sided A±dQ
+      register" for the UE1/UE2 split, deferred on 1-D-in-x
+      evidence (~1e-4) that predates any genuinely-2D measurement.
+
+EXPERIMENTS (all: XC2D as shipped + CAMR.ps_flux=wp, 40-step
+protocol, one override each).  PREDICTIONS:
+E1  ps_bl_reflux=2 (alpha co-move): the leading rescue candidate —
+    restores alpha-vs-refluxed-mass consistency at the C-F layer
+    each coarse step, cutting off the rho_k = m_k/alpha_k drift
+    before interpolation amplifies it.  Predict: survives the
+    40-step protocol.  [Still dying ~step 22 = the killer is the
+    UE1/UE2 split, not alpha-mass, and the deferred split register
+    is the real fix.]
+E2  ps_bl_reflux=1: documented no-op for wp.  Predict: aborts at
+    the same step as baseline.  [Any change indicts the gating.]
+E3  n_error_buf=2 (buffered tagging, bl_reflux=0): keeps the
+    contact off the C-F edge.  Predict: survives or extends
+    markedly — and if so, a practical mitigation independent of
+    the register work.  [No change = the drift is not localized to
+    contact-on-boundary cells.]
+E4  regrid_int=8 (bl_reflux=0): fewer regrid-fill interpolation
+    events.  Directional probe: longer survival implicates
+    regrid-fill interp; unchanged implicates the per-substep C-F
+    ghost interpolation of drifted coarse data.
+
+MEASURED (container; all runs XC2D-as-shipped + the one named
+override; abort steps are Level-1 counts, 2 per coarse step).
+E1 CONFIRMED — THE RESCUE.  ps_bl_reflux=2 (capacity-form alpha
+co-move): completes the 40-step protocol, rc=0.
+E2 CONFIRMED.  ps_bl_reflux=1: aborts at Level-1 step 43 — the
+BASELINE step, to the step.  The documented wp no-op is real.
+E3 REFUTED (as a mitigation).  n_error_buf=2: aborts at step 43
+exactly — and the initial fine-grid layout is IDENTICAL to
+baseline (the deck's tagger already spans a wide diagonal band, so
+the buffer changes nothing; the null is a null of geometry, not
+just of outcome).
+E4 REFUTED.  regrid_int=8: aborts at step 43 exactly.  Regrid-fill
+interpolation cadence is not the driver.
+The step-43 INVARIANCE across E2/E3/E4 plus the E1 rescue pins the
+mechanism: at each coarse-step reflux the conserved partial masses
+m_k are corrected while alpha is not, so rho_k = m_k/alpha_k
+drifts in the C-F coarse layer; cell_cons_interp then hands the
+inconsistent decomposition to the fine ghosts, and the fine
+advance's branch-locked EOS finds no root.  wp mode exposes it
+hardest because its ENTIRE non-conserved update is per-cell.
+
+E5 — the flip.  wp + ps_bl_reflux=2 at max_step=100 runs XC2D to
+its CONFIGURED stop_time = 2.0e-4 (56 coarse steps), fields sane
+(alpha in [1e-6,1], rho [91.2, 1006], all finite) — sailing past
+hllc's crash point.
+E6 — the separation.  hllc + ps_bl_reflux=2 still dies at Level-1
+step 82 (coarse 41), the SAME step as hllc without the co-move:
+hllc's late death is NOT the alpha-mass class — it is its own
+(relax-off drift family), untouched by this fix.
+
+VERDICT: WP-CF-2D RESOLVED — not a wp defect but a CONFIGURATION
+GAP: the fix (the flux-mode-independent capacity-form alpha
+co-move, task #36/#51 machinery) existed in-tree, default-off, and
+wp's AMR validation note even names =2 as a validated mode; XC2D
+had simply never been run in it.  With ps_bl_reflux=2, wp + AMR is
+now the MOST robust configuration on the genuinely-2-D contact
+deck — it outlives hllc there — which reopens the single-path
+disposition: hllc's last load-bearing consumer is served better by
+wp + co-move.  Disposition options for Marc: (a) pin the XC2D and
+B4 AMR decks to wp + ps_bl_reflux=2 + ps_wp_order=2 and schedule
+hllc retirement with llf's; (b) additionally flip the compiled
+ps_bl_reflux default for wp+AMR (battery-inert — the battery is
+single-level; the G-DEF question is whether =2 is the accepted
+config for AMR runs).  hllc's own step-82 relax-off death needs no
+action if hllc retires; otherwise it joins the relax-off envelope
+note.
+
+====================================================================
+2026-08-26 — WP-CF-2D remediation (Marc's decision): ps_bl_reflux
+defaults to 2 — the alpha co-move joins the C-F correctness
+contract.  PREDICTIONS FIRST.
+
+WHAT.  _cpp_parameters + generated CAMR_defaults.H flip the default
+0 -> 2 in lockstep; storage-gating and wp-AMR validation comments
+updated.  =0 remains the opt-out; =1 (defect register alone) is
+unchanged.  The fluct-reg machinery stays compiled out for
+non-PS/EB builds (the #if guard), so only USE_PS_HYDRO AMR runs
+change behaviour — which is the point.
+
+PREDICTIONS (falsifiers in brackets).
+F1. Full wp battery BIT-IDENTICAL — single-level, no reflux is
+    ever constructed.  [Any row moving means single-level code
+    reads ps_bl_reflux somewhere it shouldn't.]
+F2. XC2D + only CAMR.ps_flux=wp, new default: BIT-IDENTICAL final
+    plotfile to experiment E5 (same effective configuration by a
+    different route).  [A bitwise diff = the default and the
+    override resolve differently.]
+F3. XC2D deck-default (hllc): still dies at Level-1 step 82 — E6
+    measured the co-move does not move hllc's death.  [A different
+    step = interaction the E-series missed.]
+F4. B4 inputs-cf-contact + wp override under the new default:
+    completes to t_final; y-averaged score within ~1% of the
+    probe-#32 run (which ran =0) — the co-move acts only at the
+    C-F layer.  The B13 reflux_cap/reflux_clamp counters go LIVE
+    for the first time (the co-move block now runs by default);
+    their totals are measured, not predicted.
+F5. TBlowdown inputs-x-amr (wp-pinned deck): completes to
+    stop_time; L0 mass within ~1% of the probe-#27 AMR run (=0).
+F6. Sod GammaLaw build unaffected (guard) — compile check only.
+
+MEASURED (container).
+F1 CONFIRMED.  Full wp battery identical to the post-remediation
+baseline at every printed decimal.
+F2 CONFIRMED, bitwise.  XC2D + only CAMR.ps_flux=wp under the new
+default: final plotfile BIT-IDENTICAL to experiment E5 on Level 0
+AND Level 1 (binary cmp) — default and override resolve to the
+same run.
+F3 CONFIRMED.  Deck-default XC2D (hllc): dies at Level-1 step 82,
+E6's step exactly.
+F4 CONFIRMED — with a bonus measurement.  B4 inputs-cf-contact +
+wp: completes to t_final; y-averaged score vs exact IDENTICAL to
+four decimals to the probe-#32 run at =0 (.0440/.1321/.0540).
+The B13 counters go live for the first time and immediately earn
+their keep: reflux_clamp = 6144 (the co-move's [amin, 1-amin]
+positivity clamp works hard at the contact's C-F band edges) while
+reflux_cap = 0 (the |da| <= 0.05 rate limit NEVER engages — the
+task-#51 hardening's cap is dormant on a real contact run; the
+clamp, not the cap, is the live guard).
+F5 CONFIRMED.  TBlowdown inputs-x-amr: completes to stop_time;
+L0 mass within 1.6e-8 relative of the probe-#27 run (=0), max rel
+drho 8.4e-6 — the co-move is a no-op where the C-F layer carries
+no phase contrast, exactly as designed.  reflux_clamp = 3328,
+cap = 0, flux_sanit = 0, nscbc_zg all zero.
+F6 CONFIRMED.  Sod GammaLaw compiles (machinery behind the
+USE_PS_HYDRO guard).
+
+The default is flipped: alpha co-moves with its refluxed mass on
+every PS AMR run unless a deck opts out with ps_bl_reflux=0.

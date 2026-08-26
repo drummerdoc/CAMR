@@ -1963,9 +1963,13 @@ PS_umeth(const Box& bx,
         //    1st-order UE1/UE2 phase-split C-F fix-up (a two-sided A±ΔQ
         //    register) is deferred — low-payoff per camr_ps_bl_reflux_design.md
         //    §3e (C-F fluctuation gaps are ~1e-4, resolution-dominated).
-        //  wp + AMR is validated at ps_bl_reflux=0 (conserved reflux) and =2
-        //  (adds the capacity-form α co-move): stable, conservative, no C-F
-        //  pressure/velocity artifact (inputs-cf-contact to t_final).
+        //  wp + AMR is validated at ps_bl_reflux=2 — THE DEFAULT since
+        //  2026-08-26 (WP-CF-2D): on a genuinely-2D contact (XC2D) the
+        //  =0 mode dies at coarse step 22 (reflux corrects m_k but not α;
+        //  the C-F layer's broken ρ_k = m_k/α decomposition reaches fine
+        //  ghosts via cell_cons_interp), while =2 runs to stop_time.
+        //  1-D-in-x validation (inputs-cf-contact to t_final) held at =0
+        //  only because its y-face deposits vanish.
         amrex::ignore_unused(do_bl_fluct);
         return;
     } // ===== end BL wave-propagation interior (use_hllc==2) =====

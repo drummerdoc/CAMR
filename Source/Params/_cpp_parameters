@@ -58,10 +58,18 @@ ps_hydro                     int          0
 
 # Berger-LeVeque fluctuation-form coarse-fine reflux for the PS
 # NON-conservative terms (α transport + WP phase-energy defect).
-# 0 = off (default; only the standard conservative FluxRegister runs).
-# 1 = also run the parallel fluctuation register + reflux fix-up.
+# 0 = off (only the standard conservative FluxRegister runs).
+# 1 = also run the parallel fluctuation register (hllc defect; wp no-op).
+# 2 = DEFAULT (2026-08-26, WP-CF-2D): additionally co-move α with its
+#     refluxed mass in CAMR::reflux() — capacity form, flux-mode
+#     independent.  Reflux corrects m_k but not α, so at ps_bl_reflux<2
+#     ρ_k = m_k/α drifts in the C-F layer and cell_cons_interp hands the
+#     broken decomposition to fine ghosts (measured: wp on XC2D dies at
+#     coarse step 22 without the co-move, runs to stop_time with it;
+#     WORKLOG 2026-08-25).  α co-moving with its refluxed mass is part
+#     of the scheme's C-F correctness contract, not an option.
 # See docs/design/camr_ps_bl_reflux_design.md (task #22).
-ps_bl_reflux                 int          0
+ps_bl_reflux                 int          2
 
 # React fuel + air -> product
 do_react                     int          0

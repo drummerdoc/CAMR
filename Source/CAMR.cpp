@@ -347,7 +347,8 @@ CAMR::init_stuff(amrex::Amr& papa,
     // NUM_PS_FLUCT = 2 components (defect on UE1, UE2).  Applied in
     // reflux() to state slots UE1/UE2 via a destcomp offset.  The
     // non-flux-form α transport fix-up is handled separately (P2b).
-    // Gated so default (ps_bl_reflux=0) builds carry no extra storage.
+    // Gated: ps_bl_reflux=0 (opt-out; default is 2 since 2026-08-26)
+    // carries no extra storage.
 #if defined(USE_PS_HYDRO) && !defined(AMREX_USE_EB)
     if (ps_bl_reflux != 0) {
       fluct_reg.define(

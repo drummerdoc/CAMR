@@ -153,13 +153,72 @@ bit-identical to the A/B run, GammaLaw build clean.
 OPEN: llf split path — now CONSUMER-FREE and retirement-pending
 (every deck selects its flux explicitly); retirement waits on the
 pk_ef (#85) fate decision, since that experiment pairs only with llf.
-NSCBC-2 (probe #29 queued).  NEW: TBLOW-NSCBC-D — NSCBC v2 vs legacy
-shifts TBlowdown's vented mass 4.2% (legacy 2.579 vs v2 2.470 over
-the probe window; local p up to 16% at the front); which construction
-is correct is undetermined — adjudicate by a plenum-style control
-(boundary moved two tube-lengths downstream as reference).
+NSCBC-2 (probe #29 queued).
+TBLOW-NSCBC-D RESOLVED (2026-08-25, plenum control, WORKLOG same
+date): the boundary-free reference ADJUDICATES FOR LEGACY on the
+flashing-vent class — vented mass at t = 80 us: reference 2.2753,
+legacy -7.6%, v2 -34.8% (probe exe with the lin bound raised;
+refusal counters zero, so the number is pure construction).  The
+recorded hypothesis (v2 = the correction) is REFUTED; candidate
+mechanism: legacy's in-dome RYP2E lever-rule ghost energy is
+accidentally the HEM flash a venting ghost needs, which v2's
+frozen-composition isentropes forbid.  v2 stays correct for
+robustness (legacy aborts A1); it is a measured accuracy regression
+for blowdown venting.  Fix direction: gradient-form relaxation +
+phase-change-aware ghost closure (probes #30/#31, doubly funded).
+NEW OPEN: NSCBC-3 — v2's LIN_ETA = 0.2 linearization bound BINDS
+mid-envelope (trips on every fill of the 1-D blowdown, ~3.7e6 Pa dP
+vs ~3.7e6 Pa threshold; 2-D squeaks under) and its zero-gradient
+fallback silently converts a vent into a WALL.  NEW OPEN:
+WP-CONTACT-CEIL — the wp interior path breaches the phase-2 hot
+ceiling (e_2 23.5 vs 22.1 MJ/kg bound) in the smeared contact
+between flashed tube fluid and ambient vapour at a resolved 100:1
+interface, every resolution tried; far off the battery envelope but
+squarely in the application class.
+PROBE #32 RESOLVED (2026-08-25, wp-vs-hllc on the 2-D decks; WORKLOG
+same date): single flux path is NOT achievable today — the blocker is
+a named defect, not a preference.  Measured: hllc aborts two of its
+own five B4 decks (cf-contact, fixedbox — dt collapse then vapour-e
+floor breach) where wp completes; wp matches-or-beats hllc on smooth
+2-D alpha advection at its acceptance order (6.80e-4 vs 7.33e-4 L1;
+but 7.9x WORSE at the decks' implicit wp_order=1 — any pin-to-wp must
+pin ps_wp_order=2); both keep 1-cell contact sharpness and 1e-14
+symmetry single-level; but wp CANNOT run XC2D as shipped — it aborts
+at coarse step 22 of the 40-step protocol under AMR while hllc
+completes it, and runs clean at max_level=0.  NEW OPEN: WP-CF-2D —
+wp-mode's un-refluxed per-cell alpha/phase-energy-defect C-F deposits
+(the task #2/#218 gap, y-face terms live only on genuinely-2D
+contacts) drive the phase energy out of the band at the C-F boundary.
+hllc survives as XC2D's named consumer until WP-CF-2D is fixed; hllc
+retirement blocks on it; llf retirement is unaffected.
+  WP-CF-2D RESOLVED same day (WORKLOG 2026-08-25, E1-E6): mechanism =
+  reflux corrects m_k but not alpha at the C-F layer (rho_k = m_k/alpha
+  drifts, cell_cons_interp hands the broken decomposition to fine
+  ghosts); abort step invariant under n_error_buf and regrid_int,
+  rescued exactly by the EXISTING default-off capacity-form alpha
+  co-move (ps_bl_reflux=2, flux-mode-independent).  With it, wp runs
+  XC2D to its configured stop_time — outliving hllc (which dies at
+  coarse 41 with or without the co-move; its death is the relax-off
+  drift family).  hllc retirement is UNBLOCKED pending Marc's
+  disposition: pin XC2D/B4-AMR decks to wp + ps_bl_reflux=2 +
+  ps_wp_order=2 (and optionally make =2 the compiled default for
+  AMR runs — battery-inert, single-level).
+  REMEDIATION LANDED (2026-08-26, Marc's decision, verified F1-F6):
+  ps_bl_reflux defaults to 2 — the alpha co-move is part of the C-F
+  correctness contract.  Battery bit-identical; XC2D-wp via default
+  bitwise-equal to E5 on both levels; hllc death step unchanged;
+  cf-contact score unchanged to 4 decimals; TBlowdown AMR mass within
+  1.6e-8.  First live co-move limiter measurement (B13): the
+  positivity clamp fires (6144 / 3328 activations), the |da|<=0.05
+  rate cap NEVER does — the clamp is the working guard.  Flux pins for
+  the 2-D decks remain pending with the hllc retirement batch.  Also noted:
+the entire B4-2D/XC2D deck family runs the RELAX-OFF diagnostic class
+(all aborts live there; the acceptance path never runs it), and at
+100 steps XC2D dies under BOTH fluxes (relax-off phase-energy drift —
+the relaxation is load-bearing for admissibility).
+
 Remaining probes queued: #28 flush, #29 oracle-ghost B4, #30
-refinement sweep, #31 flashing-front, #32 wp-vs-hllc 2-D.
+refinement sweep, #31 flashing-front.
 Batch 3b is COMPLETE.
 
 ---
