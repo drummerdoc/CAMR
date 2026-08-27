@@ -7559,3 +7559,275 @@ H-E CONFIRMED.  job_info records the resolved per-face keys
 (xlo=1e7, xhi=-1.0 = inherit).
 All builds clean: PR 1-D, the four 2-D exes, and Sod GammaLaw
 (the non-PS BCfill compile path).
+
+====================================================================
+2026-08-27 — NSCBC-3 FIX, commit A of the boundary pair (Marc's
+call: "address the over-eager safety bound").  PREDICTIONS FIRST.
+
+WHAT.  The v2 pack's ONE-SHOT linearized isentropic step
+(drho_k = dP/c_k^2, refused wholesale above LIN_ETA = 0.2 — the
+refusal whose zero-gradient fallback silently turned the blowdown
+vent into a mirror, NSCBC-3) is replaced by a SUB-STEPPED
+integration of the isentrope ODE
+    d(rho_k)/dP = 1/c_k^2,    d(e_k)/dP = P_k / (rho_k^2 c_k^2),
+with (P_k, c_k) re-evaluated from the branch-locked EOS
+(REY2PCs_liquid/_vapor) after every substep for regime-Independent
+phases; a regime-slaved phase steps with the host's current (P, c),
+exactly generalizing its old slaved one-shot.  Substeps are sized
+so no substep moves any phase density by more than PACK_ETA = 0.05,
+so the linearization validity LIN_ETA used to guard is enforced
+PER SUBSTEP by construction — the value-jump wall is gone, not
+widened.  A jump needing more than PACK_NMAX = 64 substeps
+(density ratio ~22x through one ghost layer) or a substep on which
+the EOS returns junk REFUSES and falls back, counted under a NEW
+cause: [PS-GUARD] nscbc_zg pack (PS_guards.H + the CAMR_advance
+print gain the counter).  LIN_ETA is deleted with the one-shot it
+guarded (a constexpr, not a user dial — nothing to retire-key).
+DESIGN INVARIANT: when the sizing gives n = 1 substep, the
+arithmetic is BIT-FOR-BIT the old linear step (same frozen P_k,
+c_k, same drho/de expressions) — every state the old pack accepted
+is reproduced exactly; the change is strictly an extension of the
+accepted domain.  The legacy construction (v2=0) is untouched.
+
+WHY THE TUBE TRIPPED (for the record, from the #31/#29 numbers):
+near-critical liquid CO2 at 320 K / 100 bar is SOFT — rho1 c1^2
+~ 1.8e7 Pa, so the old bound refused at |dP| ~ 3.6e6 Pa, right at
+the application's own vent jump.  The bound was doing its job
+(that jump IS far outside one linear step); the fix is to
+integrate, not to raise the bound (the eta05 probe raised it and
+still under-vented — that number was linearization error plus
+frozen-composition physics; commit B addresses the latter).
+
+PREDICTIONS (falsifiers in brackets).
+SA1. Battery BIT-IDENTICAL (NSCBC off).  [Any digit = leak.]
+SA2. Every small-dP NSCBC result BIT-IDENTICAL via the n==1
+     invariant: B4-NSCBC .3809, the per-face green .1261 (both
+     faces land n==1), the #28 flush/recirculation numbers, and
+     #31's legacy row 2.1022 (v2=0 path untouched).  [Printed-digit
+     drift on any = the n==1 path is not actually the old
+     arithmetic — stop.]
+SA3. THE HEADLINE: #31 v2-shipped goes from a WALL (vented 0.0000,
+     lin=4/interval) to a VENT: zero lin/pack refusals and vented
+     mass in the 1.48 class (within ~10% of the eta05 1.4838 —
+     the nonlinear integration replaces a linearized guess, so the
+     number may move off 1.4838 in either direction; the remaining
+     deficit vs ref 2.2753 is the FROZEN-COMPOSITION physics,
+     commit B's target).  [Still ~0 vented or pack-refusals firing
+     every fill = the integration refuses where the bound did —
+     diagnose before commit B.]
+SA4. A1-under-NSCBC (the 50x far-field robustness case) still
+     completes: its huge jumps either integrate admissibly or
+     pack-refuse to the SAME counted zero-gradient as today —
+     either way NO abort.  [Abort = the extension broke the
+     robustness class that motivated v2 — stop.]
+SA5. The uniform-vapor 50-bar-mismatch diagnostic (#29) now
+     CONSTRUCTS instead of refusing (lin was 8/interval there):
+     the boundary layer moves toward the commanded 1e7 target
+     instead of silently mirroring.  Reported for the record —
+     that IS the bound's silent-wall behavior becoming visible,
+     honest physics of a mis-set target.
+
+MEASURED.  All five predictions CONFIRMED.
+SA1 CONFIRMED.  Battery bit-identical (diff empty).
+SA2 CONFIRMED.  n==1 invariant holds: B4-NSCBC .3809/.0639/.2178,
+per-face green .1261/.0635/.0493, #28 flush F_v2 late residual
+2.42e3 — every printed digit identical (recirculation covered by
+the same invariant: its boundary dP is far below one substep).
+#31 legacy row 2.1022 untouched (v2=0 path not edited).
+SA3 CONFIRMED — THE WALL IS DOWN.  #31 v2-shipped: vented mass
+0.0000 -> 1.4936 (-34.4% vs ref), ALL counters zero (no lin — the
+class is gone; no pack refusals: the 50-bar vent jump integrates
+in-bounds).  Within 0.7% of the eta05 probe's 1.4838 and slightly
+CLOSER to the reference — the linearized-raised-bound number was a
+good approximation of the true frozen-composition isentrope.  The
+remaining -34.4% is commit B's target (flash physics), exactly as
+the plenum diagnosis predicted.
+SA4 CONFIRMED.  A1-under-NSCBC completes, no abort (u rel-L2
+14.6953 for the record — the 50x far-field robustness case now
+CONSTRUCTS its huge fills instead of refusing them; it remains an
+accuracy-meaningless robustness case).
+SA5 CONFIRMED.  The uniform-vapor 50-bar-mismatch diagnostic
+constructs (0 refusals, was lin=8/interval): both boundary layers
+accelerate symmetrically toward the commanded target (u ±68 m/s,
+P -> 6.93e6) — the silent mirror is now visible, honest physics
+of the target choice.
+All builds clean.  The v2e probe-exe concept is DEAD: LIN_ETA no
+longer exists to raise; flashing_front.py's v2s row now measures
+the construction directly (red pin updated 0.0000 -> 1.4936,
+history preserved in the harness comments).
+
+====================================================================
+2026-08-27 — FLASH-AWARE GHOST CLOSURE, commit B of the boundary
+pair (Marc's call: "address the missing flash physics at the
+boundary").  PREDICTIONS FIRST.
+
+WHAT.  The v2 pack's frozen-composition limitation — its per-phase
+isentropes FORBID phase change in the ghost, which the plenum
+control diagnosed as the under-venting mechanism (legacy's in-dome
+RYP2E lever rule was accidentally the HEM flash a venting ghost
+needs) — gets the deliberate version of what legacy had by
+accident.  After the sub-stepped integration lands the phases at
+P_g (commit A machinery, untouched): if P_g < P_crit and the
+mixture's specific enthalpy at P_g lies INSIDE the saturation dome
+[h_l(P_g), h_v(P_g)], the ghost is RE-CLOSED as an equilibrium
+(HEM) saturated mixture at P_g: T = T_sat(P_g) (bisection on the
+closed-form EOS::Psat over [T_triple, T_crit]), phase states =
+EOS::co2_sat_LV saturation states (ON-BRANCH, admissible by
+construction — no (rho,P) inversion anywhere), quality x from the
+enthalpy lever, alpha/m/rho assembled exactly from x and the
+saturation densities.  Outside the dome (all suite-class ghosts,
+every superheated flush state) NOTHING changes.  Fired closures
+are counted ([PS-GUARD] nscbc_flash) so the green gate can demand
+"flash fired, refusals zero" instead of guessing.
+
+THE MEASURED FORK, declared before running: which quantity the
+re-closure conserves is a modeling choice with two defensible
+forms — variant H (mixture ENTHALPY h = e + P v; the throttling/
+HEM-vent classic) and variant E (mixture internal energy e).  Both
+are implemented for the probe; #31's boundary-free reference
+(2.2753) ADJUDICATES; ONLY the winner ships (the loser's code path
+is deleted, not left as a dial value).  Shipped dial:
+CAMR.ps_bc_nscbc_flash = 1 (default, ON — the closure is part of
+the v2 construction's physics) / 0 (opt-out = commit-A frozen
+behavior, for A/B).  Default-on is battery-safe (battery never
+runs NSCBC) and suite-green-safe (the matched-target B4 ghost
+sits at P_g ~ 1e7 > P_crit — no dome).
+
+PREDICTIONS (falsifiers in brackets).
+SB1. Battery BIT-IDENTICAL; per-face green .1261 BIT-IDENTICAL
+     (no dome at its P_g); flush/recirculation numbers unchanged
+     (superheated vapour at P_g ~ 5e6 sits ABOVE the dome:
+     h > h_v).  [Any of these moving = the dome gate leaks onto
+     states it must not touch — stop.]
+SB2. THE HEADLINE: #31 v2 moves from -34.4% toward the reference;
+     the winning variant lands INSIDE the legacy bracket (deficit
+     <= 7.6%) with zero refusals and nscbc_flash firing on the
+     vent fills.  Both variants improve on -34.4%; predict H > E
+     in accuracy (the vent ghost is a throttling state, and h-
+     conservation is the HEM-vent standard).  [Neither variant
+     improves = the flash-deficit hypothesis (the plenum's
+     candidate mechanism) is REFUTED — record it, keep the frozen
+     pack, and the remaining gap moves to the interior/relaxation
+     side of the ledger.]
+SB3. The B4 MISPULLED config (.3809, a red config, not a guarded
+     green: global p_amb=5e6 forces its liquid ghost to P_g ~
+     7.5e6, marginally above P_crit 7.377e6) predicted UNCHANGED —
+     but flagged up front as the nearest state to the dome gate;
+     if it moves, report the delta rather than treating it as a
+     failure (nothing pins that config).
+SB4. Legacy row 2.1022 unchanged (v2=0 untouched); A1-NSCBC still
+     completes.
+
+MEASURED.  SB2 IS REFUTED — and the refutation, plus the oracle
+diagnostic it forced, redirects the whole commit.
+Both variants make venting WORSE, not better:
+    frozen (commit A)   1.4936   (-34.4%)
+    flash H (enthalpy)  1.2566   (-44.8%)   [fired: 4/interval]
+    flash E (energy)    1.2538   (-44.9%)
+ORACLE DIAGNOSTIC (the reference's own near-vent states at 80us —
+measured, not theorized):
+    vent-plane P:   reference ~5.9e5 Pa (SIX bar — the vent is
+                    CHOKED, not at the 1-bar ambient);
+                    legacy 1.6e6; frozen-v2 4.1e6; flash-v2 5.5e6
+    plane rho*u:    reference ~27,000; legacy 26,500;
+                    frozen-v2 19,500; flash-v2 15,600
+MECHANISM, re-diagnosed: the deficit does NOT live in the ghost's
+thermodynamic composition.  It lives in the LINEAR two-invariant
+solve (u_g, P_g) = f(Rp, Rm) with the impedance rho*c FROZEN at
+the boundary-cell value: the physical vent is an expansion FAN
+along which rho*c collapses (the fluid flashes and softens), so
+du = -dP/(rho c) accumulates far more velocity per unit pressure
+drop than the frozen-impedance algebra allows — the boundary holds
+the plane at 41 bar where the truth reaches 6.  Re-closing the
+ghost's composition at the SAME too-high (u_g, P_g) only weakens
+the face coupling further (measured above).  The plenum's
+"candidate mechanism" was half right: flash physics IS the missing
+ingredient, but it enters through the impedance along the fan, not
+through the end-state closure.  The end-state closure (both
+variants) is DELETED.
+
+====================================================================
+2026-08-27 — COMMIT B, SECOND DESIGN: the choked-fan ghost.
+PREDICTIONS FIRST.
+
+WHAT.  For a jump too large for one pack substep, the linear
+invariant solve is replaced by a NONLINEAR EXPANSION-FAN
+integration from the boundary state toward the face's ambient
+target: march dP in the same adaptive substeps as the commit-A
+pack, and per substep (i) advance each phase along its isentrope
+(existing machinery), (ii) HEM-re-close the mixture at the current
+P when it is inside the dome (CAMR.ps_bc_nscbc_flash = 1 default,
+0 = frozen fan for A/B; the enthalpy lever — at substep scale the
+H-vs-E fork is second-order, the end-state fork is moot), (iii)
+accumulate du_out = -dP/(rho c)_mix with the CURRENT Wallis
+impedance of the CURRENT (possibly flashed) mixture, and (iv)
+TERMINATE at whichever comes first: P reaches the target (subsonic
+vent) or u_out reaches the current c_mix (CHOKED vent — the
+plateau the reference measures).  All ghost layers get the fan-end
+state.  sigma soft-relax and the R+ minmod extrapolation remain
+the small-signal machinery of the n==1 branch, which is preserved
+BIT-FOR-BIT for any jump that fits one substep — every currently
+green result (battery-adjacent suite runs, flush, recirculation,
+B4 both targets, legacy row) rides that branch.  FAN_NMAX = 256
+substeps (the 100-bar-to-choke march needs ~100); beyond it, or on
+EOS junk mid-fan, the cell refuses to the counted zero-gradient
+([PS-GUARD] nscbc_zg pack) exactly as before.
+
+PREDICTIONS (falsifiers in brackets).
+SC1. Battery BIT-IDENTICAL; B4 green .1261, B4 mispulled .3809,
+     flush 2.42e3, legacy 2.1022 all BIT-IDENTICAL (each fits one
+     substep -> n==1 branch).  [Drift = branch criterion wrong.]
+SC2. THE HEADLINE: #31 v2 vents in the legacy class or better —
+     GREEN GATE deficit <= 7.6% with zero refusals — and the
+     boundary-cell pressure drops from 41 bar toward the
+     reference's choked ~6-16 bar band.  [Deficit still >= 20% =
+     a local-information boundary cannot represent this vent;
+     record and close the line.]
+SC3. The fan TERMINATES CHOKED on the blowdown fills (Mach_out
+     reaches 1 before P reaches 1 bar), matching the reference's
+     choked plane.  [Fan runs to ambient = the choke test is
+     miswired or the mixture never flashes soft.]
+SC4. A1-under-NSCBC still completes (fan, or counted refusal —
+     no abort); flush/recirculation untouched via n==1.
+
+MEASURED (after one same-day revision, recorded above the numbers).
+FIRST FAN REFUTED ITS OWN CHOKE RULE: terminating at |u| >= frozen
+Wallis c froze the fan just under the dome edge (first flash sliver
+collapses the frozen c) — vented 1.6682 (-26.7%), boundary plane
+still ~40 bar.  REVISED to the classical critical-flow condition —
+fan ends at MAXIMAL G = rho*u (the throat), velocity accumulated
+with the path's own equilibrium slope c_path^2 = dP/drho_mix
+measured from the marched (isentrope + HEM) path itself.  Then:
+SC2 CONFIRMED, GREEN GATE PASSED:
+    reference   2.2753
+    v2 shipped  2.2474   (-1.2%)   <- was -34.4% (commit A),
+                                      -100% (the LIN_ETA wall)
+    legacy      2.1022   (-7.6%, unchanged)
+Zero refusals of any cause; nscbc_flash fires ~8-48/interval as
+the vent develops.  The boundary now beats the legacy accident by
+6x and sits inside the green gate with a margin of 6.4 points.
+SC1 CONFIRMED.  Battery bit-identical; B4 mispulled .3809, B4
+green .1261, flush late-residual 2.42e3, legacy row 2.1022 — all
+bit-identical (n==1 branch).  flash=0 A/B reproduces commit A's
+1.4936 at every digit (the opt-out is a faithful A/B).
+SC3 CONFIRMED (via the revision): termination is the G-max throat,
+not P_amb — the fan is choked on every blowdown fill, exactly the
+reference's plane condition.
+SC4 CONFIRMED.  A1-under-NSCBC completes, no abort; its score
+moves 14.70 -> 3.87 (the compression fan integrates the 50x jump
+to ambient instead of stopping at the linear midpoint — recorded;
+A1-NSCBC remains a robustness case, not an accuracy case).
+All builds clean incl. Sod GammaLaw.
+
+THE NSCBC LINE CLOSES ITS TWO OPEN DEFECTS: NSCBC-3 (the silent
+vent-to-mirror wall) is deleted with the linearized one-shot it
+guarded, and the flash physics enters where it belongs — the
+impedance along the expansion fan — taking the flashing-vent class
+from red (-34.4%/-100%) to green (-1.2%) against the boundary-free
+reference.  Legacy's last virtue (the accidental -7.6%) is now
+strictly dominated by the deliberate construction: legacy
+(ps_bc_nscbc_v2=0) is a RETIREMENT CANDIDATE (Marc's call, own
+measured batch).  Follow-up candidates recorded: per-face
+retirement decision for legacy; WP-CONTACT-CEIL still bounds the
+reference window; the fan's per-substep EOS cost on 2-D vent
+boundaries (unmeasured, expected negligible vs interior).

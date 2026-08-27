@@ -332,14 +332,20 @@ CAMR::CAMR_advance (Real time,
             amrex::Long nl_ = ps_guard::n_nscbc_zg_lin();
             amrex::Long ns_ = ps_guard::n_nscbc_zg_sup();
             amrex::Long nt_ = ps_guard::n_nscbc_zg_slots();
+            amrex::Long np_ = ps_guard::n_nscbc_zg_pack();
+            amrex::Long nf_ = ps_guard::n_nscbc_flash();
             amrex::ParallelDescriptor::ReduceLongSum(nc_);
             amrex::ParallelDescriptor::ReduceLongSum(nl_);
             amrex::ParallelDescriptor::ReduceLongSum(ns_);
             amrex::ParallelDescriptor::ReduceLongSum(nt_);
+            amrex::ParallelDescriptor::ReduceLongSum(np_);
+            amrex::ParallelDescriptor::ReduceLongSum(nf_);
             amrex::Print() << " | nscbc_zg(c=" << nc_
                            << ",lin=" << nl_
                            << ",sup=" << ns_
-                           << ",slots=" << nt_ << ")\n";
+                           << ",slots=" << nt_
+                           << ",pack=" << np_ << ")"
+                           << " nscbc_flash=" << nf_ << "\n";
             ps_guard::reset_ctop_counts();
             ps_guard::reset_counts();
             ps_guard::reset_rho_counts();

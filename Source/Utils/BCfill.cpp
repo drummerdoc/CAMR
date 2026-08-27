@@ -21,6 +21,8 @@ struct PCHypFillExtDir
   amrex::Real nscbc_sigma;
   int         nscbc_order;    // 1 or 2 — R+ extrapolation order.
   int         nscbc_v2;       // NSCBC-1: 1 = v2 construction, 0 = legacy.
+  int         nscbc_flash;    // Commit B: 1 = flash-aware re-closure (default),
+                              // 0 = frozen pack (commit-A behavior, A/B).
   // Per-face ambient pressure targets (probe #29 follow-up, 2026-08-26):
   // CAMR.ps_bc_p_amb_{x,y,z}{lo,hi}, indexed [2*idir + (0=lo,1=hi)].
   // Sentinel <= 0 means "unset — inherit prob.p_amb", so a silent deck
@@ -38,6 +40,7 @@ struct PCHypFillExtDir
                            amrex::Real nscbc_sigma_,
                            int         nscbc_order_,
                            int         nscbc_v2_,
+                           int         nscbc_flash_,
                            const amrex::GpuArray<amrex::Real, 2*AMREX_SPACEDIM>& p_amb_face_
 #ifdef USE_PS_HYDRO
                            , const PsPres& pres_
@@ -48,6 +51,7 @@ struct PCHypFillExtDir
     , nscbc_sigma(nscbc_sigma_)
     , nscbc_order(nscbc_order_)
     , nscbc_v2(nscbc_v2_)
+    , nscbc_flash(nscbc_flash_)
     , p_amb_face(p_amb_face_)
 #ifdef USE_PS_HYDRO
     , pres(pres_)
@@ -139,6 +143,7 @@ struct PCHypFillExtDir
         params.L_ref        = prob_hi[idir] - prob_lo[idir];
         params.nscbc_order  = nscbc_order;
         params.v2           = nscbc_v2;   // NSCBC-1 (0 = legacy bit-for-bit)
+        params.flash        = nscbc_flash;   // commit B (v2 pack only)
         amrex::Real s_ghost[NVAR];
         PS_NSCBC::outflow_face(s_N, s_Nm1, s_Nm2, dx[idir],
                                 idir, sgn, layer, params, s_ghost);
@@ -209,7 +214,7 @@ CAMR_bcfill_hyp(
   // the deck was silent (gerg_ext_c idiom).  Values are captured into the
   // PCHypFillExtDir functor so the device operator() can act on them
   // without touching CAMR class internals.
-  struct NscbcCfg { int use; amrex::Real sigma; int order; int v2;
+  struct NscbcCfg { int use; amrex::Real sigma; int order; int v2; int flash;
                     amrex::GpuArray<amrex::Real, 2*AMREX_SPACEDIM> pamb; };
   static const NscbcCfg nscbc_cfg = []() -> NscbcCfg {
     int u = 0;
@@ -223,6 +228,8 @@ CAMR_bcfill_hyp(
     pp.query("ps_bc_nscbc_sigma", sg);
     pp.query("ps_bc_nscbc_order", od);
     pp.query("ps_bc_nscbc_v2",    v2);
+    int fl = 1;   // commit B (2026-08-27): flash-aware re-closure default ON
+    pp.query("ps_bc_nscbc_flash", fl);
     // Per-face ambient targets (probe #29 follow-up, 2026-08-26).
     // Sentinel -1 = unset -> inherit prob.p_amb at fill time.  One
     // global p_amb cannot describe a problem whose two ends see
@@ -252,6 +259,7 @@ CAMR_bcfill_hyp(
     pp.add("ps_bc_nscbc_sigma", sg);
     pp.add("ps_bc_nscbc_order", od);
     pp.add("ps_bc_nscbc_v2",    v2);
+    pp.add("ps_bc_nscbc_flash", fl);
     // Resolved per-face targets -> job_info (gerg_ext_c idiom);
     // -1 records "inherits prob.p_amb".
     pp.add("ps_bc_p_amb_xlo", pa[0]);
@@ -264,12 +272,13 @@ CAMR_bcfill_hyp(
     pp.add("ps_bc_p_amb_zlo", pa[4]);
     pp.add("ps_bc_p_amb_zhi", pa[5]);
 #endif
-    return NscbcCfg{u, sg, od, v2, pa};
+    return NscbcCfg{u, sg, od, v2, fl, pa};
   }();
   const int         use_nscbc   = nscbc_cfg.use;
   const amrex::Real nscbc_sigma = nscbc_cfg.sigma;
   const int         nscbc_order = nscbc_cfg.order;
   const int         nscbc_v2    = nscbc_cfg.v2;
+  const int         nscbc_flash = nscbc_cfg.flash;
 
   // One-time per-run banner so runlogs record which outflow BC path
   // is actually in play.  Diagnostic-only; no performance impact.
@@ -289,7 +298,7 @@ CAMR_bcfill_hyp(
 
   amrex::GpuBndryFuncFab<PCHypFillExtDir> hyp_bndry_func(
     PCHypFillExtDir{lprobparm, use_nscbc, nscbc_sigma, nscbc_order, nscbc_v2,
-                    nscbc_cfg.pamb
+                    nscbc_flash, nscbc_cfg.pamb
 #ifdef USE_PS_HYDRO
                     , ps_presence_params()   // S2: host-side read here
 #endif

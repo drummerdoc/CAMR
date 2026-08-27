@@ -351,12 +351,28 @@ inline long& n_nscbc_zg_c()     { static long n = 0; return n; }
 inline long& n_nscbc_zg_lin()   { static long n = 0; return n; }
 inline long& n_nscbc_zg_sup()   { static long n = 0; return n; }
 inline long& n_nscbc_zg_slots() { static long n = 0; return n; }
+//  NSCBC-3 fix (2026-08-27): the sub-stepped isentropic pack refused —
+//  the jump needs more than PACK_NMAX substeps, or a phase state left
+//  the EOS validity domain mid-integration.  Replaces the old 'lin'
+//  refusal class for large jumps ('lin' itself is gone with the
+//  one-shot linearized step; the counter slot is kept so historical
+//  logs still parse, and a nonzero lin after 2026-08-27 is a bug).
+inline long& n_nscbc_zg_pack()  { static long n = 0; return n; }
+//  Commit B (2026-08-27): the flash-aware ghost closure FIRED — the
+//  ghost's post-integration mixture enthalpy fell inside the saturation
+//  dome at P_g and the ghost was re-closed as an equilibrium (HEM)
+//  saturated mixture.  A diagnostic count, NOT a fallback: firing is
+//  the closure doing its job at a flashing vent.
+inline long& n_nscbc_flash()    { static long n = 0; return n; }
 inline void  count_nscbc_zg_c()     { ++n_nscbc_zg_c(); }
 inline void  count_nscbc_zg_lin()   { ++n_nscbc_zg_lin(); }
 inline void  count_nscbc_zg_sup()   { ++n_nscbc_zg_sup(); }
 inline void  count_nscbc_zg_slots() { ++n_nscbc_zg_slots(); }
+inline void  count_nscbc_zg_pack()  { ++n_nscbc_zg_pack(); }
+inline void  count_nscbc_flash()    { ++n_nscbc_flash(); }
 inline void  reset_nscbc_counts() { n_nscbc_zg_c() = 0; n_nscbc_zg_lin() = 0;
-                                    n_nscbc_zg_sup() = 0; n_nscbc_zg_slots() = 0; }
+                                    n_nscbc_zg_sup() = 0; n_nscbc_zg_slots() = 0;
+                                    n_nscbc_zg_pack() = 0; n_nscbc_flash() = 0; }
 #else
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_nscbc_zg_c()     noexcept {}
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_nscbc_zg_lin()   noexcept {}
