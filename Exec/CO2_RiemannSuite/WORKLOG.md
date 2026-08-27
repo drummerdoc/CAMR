@@ -7979,3 +7979,249 @@ revisit only if [PS-GUARD] reflux_cap is still zero after the 2-D
 application campaigns.  (5) the TBlowdown-class interim config
 decision is MOOT — the choked fan is green and legacy is retired.
 THE LEDGER IS NOW ONE ITEM: WP-CONTACT-CEIL.
+
+====================================================================
+2026-08-27 — WP-CONTACT-CEIL: diagnosis + probes (the last open
+ledger item).  PREDICTIONS FIRST.
+
+DIAGNOSIS FROM THE ABORT RECORD (the flashing_front ref leg dies at
+t ~ 8.04e-5, step 45; the [PS-TQUERY] snapshot and the per-stage
+[PS-MASS] trend are all in the log):
+  * The dying cell (259,0,0 — three cells into the ambient side of
+    the vent contact): alpha_2 = 0.95 but m_2 = 0.375 (a vapour
+    sliver by MASS under 5% liquid by volume carrying m_1 = 50.3);
+    rho_2 = 0.39 kg/m^3, e_2 = 23.47 MJ/kg — a dilute sliver at
+    ~5000 K beside cold liquid.  THE MIXTURE IS FINE: UE1 + UE2
+    matches UEDEN to 1.4e-9 — only the SPLIT is wrong.
+  * Per-stage attribution (steps 38-44): hydro (stage A) raises
+    max|E2| by ~0.3e6/step; RELAXATION (stage C) raises it by
+    ~1.2e6/step — the PUMP IS THE MECHANICAL-ONLY RELAXATION
+    (ps_relax_mode=0, the default): equalizing P on a dilute hot
+    sliver against 100-bar liquid does adiabatic pdV work on a
+    tiny mass with NO THERMAL SINK, ratcheting e_2 every step
+    until the PR reachable band ends at T = 5000 K.  Physically a
+    0.4 kg/m^3 sliver in contact with 50 kg/m^3 of liquid would
+    thermalize instantly; mode 0 has no channel for that heat.
+MECHANISM (hypothesis to test): WP-CONTACT-CEIL is not a wp-flux
+defect — it is the MODEL GAP of mechanical-only relaxation at a
+hot two-phase contact.  The wp contact smearing seeds a warm
+sliver (~0.3e6/step); mode 0 amplifies it (~1.2e6/step); modes
+with a thermal channel should be a SINK instead.
+
+PROBES.
+CC-A: ref leg + ps_relax_mode=1 (instantaneous P+T equilibrium).
+CC-B: ref leg + ps_relax_mode=2 (P + finite-rate thermal at the
+      default ps_theta_tau).
+
+PREDICTIONS (falsifiers in brackets).
+H-CC1: CC-A survives past 80.4 us — and if the ceiling class was
+       the only obstruction, runs to its stop_time 2.5e-4.  [Still
+       aborts at the ceiling = thermal relaxation is not the sink
+       and the mechanism above is wrong — re-diagnose.]
+H-CC2: CC-A's vented mass at 80 us is within ~1% of 2.2753 — the
+       pre-abort vent physics is dominated by the resolved fan,
+       not the trace-sliver thermodynamics.  [A large shift =
+       the #31 reference itself is relax-mode-sensitive; the
+       adjudication table needs a mode-matched re-read.]
+H-CC3: In CC-A the C stage becomes a SINK: max|E2| post-relax <=
+       post-hydro at every step (the pump signature inverts).
+       [C still pumps = the mode-1 kernel skips the cell (gate)
+       and the fix needs the gate, not the mode.]
+
+MEASURED.  The mechanism is CONFIRMED and the item RESOLVES — with
+one prediction refuted in a way that upgrades the finding.
+H-CC1 CONFIRMED: mode 1 completes the reference (rc=0, runs to
+stop_time 2.5e-4; the 80.4us abort is gone).
+H-CC2 REFUTED: the vented mass moves to 1.9668 (-13.6%) — the
+reference IS relax-mode-sensitive; instantaneous T-equilibrium
+over-mixes the resolved vent.  Mode 2 at its DEFAULT theta=1e-7 is
+numerically identical to mode 1 here (dt/theta ~ 13 — a trap worth
+knowing: "mode 2 at defaults" IS instantaneous).
+H-CC3 CONFIRMED: under a thermal mode the relaxation stage stops
+pumping — max|E2| holds at ~2.7e5 J/kg (healthy vapour scale)
+instead of ratcheting to 2.3e7.
+THE MIDDLE PATH, measured (mode 2, theta = 1.0e-5 s ~ 10 dt):
+    reference: COMPLETES, vented 2.3131 at 80us (+1.7% vs the
+               mode-0 pre-abort 2.2753); max|E2| ends 1.8e5.
+    v2s fan:   COMPLETES, vented 2.1893 — deficit -5.4% vs the
+               SAME-MODE reference: the boundary GREEN GATE HOLDS
+               mode-consistently.
+    battery:   9 two-phase rows move, MOSTLY IMPROVED — B7
+               dramatically (rho .1654->.0888, u .7099->.4345,
+               P .3211->.1007), B2/B9 better, B4/B5 slightly worse
+               (u .1261->.1715, .1762->.1986); A/C rows untouched;
+               zero aborts.  (The exact references are HEM —
+               thermal equilibrium — so a thermal channel moving
+               scores toward them is expected, not suspicious.)
+
+VERDICT — WP-CONTACT-CEIL RESOLVED BY DIAGNOSIS: it was never a
+wp-flux defect.  It is the MODEL GAP of mechanical-only relaxation
+(mode 0, the compiled default) at a hot two-phase contact: the wp
+contact smearing seeds a dilute warm vapour sliver (~0.3e6
+J/kg/step) and mode-0's P-equalization adiabatically pumps it
+(~1.2e6 J/kg/step, no thermal sink) until the PR band ends.  Any
+thermal channel is a sink instead; theta = 1e-5 s removes the
+abort class while leaving the resolved physics at the mode-0
+answer (+1.7%).  NO CODE CHANGE SHIPS with this entry — the EOS
+abort was correct ("fix the data going in"), the guards did their
+job, and the remediation is a MEASURED CONFIG.
+STANDING DECISION FOR MARC (the acceptance config is his): keep
+mode 0 as the compiled default with vent/hot-contact-class runs
+pinning ps_relax_mode=2 + ps_theta_tau=1e-5 — or make the thermal
+mode the default, which is a G-DEF acceptance change requiring a
+battery re-baseline (the measured table above is the input; most
+rows improve).  Until he rules, the flashing_front harness stays
+at defaults and its ref-leg abort note is updated to cite this
+resolution.
+
+====================================================================
+2026-08-27 — CORRECTION + re-diagnosis of WP-CONTACT-CEIL's
+mechanism (found while implementing the approved default flip; the
+flip is ON HOLD pending Marc's re-decision below).
+
+THE CORRECTION.  The previous entry attributed the e_2 pump to
+"mechanical-only relaxation (ps_relax_mode=0, the default)".  THE
+MODE ATTRIBUTION WAS WRONG: the compiled default is ps_relax_mode
+= 5 — X3, the acceptance relaxation since 2026-08-17 — and X3
+carries thermal + BE-SRT mass-transfer rates whose 0-D fixed point
+is the HEM flash.  Every measured number in that entry stands
+(default-config reference aborts with the C stage pumping ~1.2e6
+J/kg/step; modes 1/2 complete; mode 2 + theta=1e-5 lands +1.7%
+with the fan green at -5.4%; the battery table) — the failing and
+probed configurations were simply mode 5 vs modes 1/2, not mode 0.
+
+THE TRUE MECHANISM (read from the X3 thermal leg, PS_relaxation.H
+~:695-760).  X3's thermal pass is COEXISTENCE-GATED (task #35):
+both phases must sit at T in (T_triple, T_crit) or the thermal leg
+is refused.  The gate is there for a MEASURED reason: ungated
+thermal equilibration walks smeared CROSS-CRITICAL contacts toward
+the dome and collapses B4's star velocity (u-err 0.13 -> 0.44 at
+theta = 1e-4 — recorded at the gate).  The runaway sliver exits
+the band on the HIGH side only (vapour T -> 5000 K > T_crit;
+liquid in-band), so the thermal leg is vetoed — the default
+ps_coexist_action=0 is a strict veto, and even the existing
+mode-4 policy override applies only when a LOW-side exit is
+present.  The P-constraint then keeps compressing the sliver with
+its heat channel vetoed: the pump.  The gate's own mode-4
+rationale already names this family ("no physical cell holds a
+46 K liquid beside a 4500 K vapour.  That is the energy split
+blowing up, and refusal to relax it is what entrenches it") — but
+its remedy covers only the both-sides-exit case, not the hi-side
+trace-sliver.
+
+WHY MODE 2 BOTH FIXED AND REGRESSED: its thermal leg is gated
+differently (finite-rate, not dome-pinned) — it drains the sliver
+(ceiling fixed) AND smears the legitimate cross-critical contacts
+(the measured B4 u .1261 -> .1715, B10 .1202 -> .1951).  The
+battery trade IS the gate.
+
+THE CORRECTED DECISION (Marc's, held):
+  (A) Original approved plan: default -> mode 2 + theta=1e-5.
+      Swaps the X3 acceptance operator (DAE-constrained, owns MT,
+      0-D-validated HEM fixed point) for the older mode-2 chain +
+      split MT source.  Measured: B2/B7/B9 improve, B4/B5/B10
+      regress slightly, hot-contact class abort-free.  Full G-DEF
+      re-baseline.
+  (B) Surgical: keep X3 the default; extend the coexist policy
+      with the measured discriminator — a HI-side-only band exit
+      where the hot phase is a TRACE BY MASS (the sliver:
+      m2/m1 = 0.0075, rho_2 = 0.39; B4/B10's protected contacts:
+      comparable masses both sides) is not a physical
+      cross-critical contact, so the thermal leg runs there.
+      PREDICTION if adopted: ceiling class fixed, battery
+      BIT-IDENTICAL (no battery case contains the sliver
+      signature), B4/B10 keep their veto, the reference completes
+      at ~the current acceptance physics; the re-baseline
+      collapses to re-pinning the flashing-front table.  The
+      X3-vs-mode-2 operator question (mode 2's better B2/B7/B9
+      scores) then becomes a separate, unhurried measured
+      campaign.
+
+MEANWHILE: inputs.satjet_demo2 is RUNNING in the container under
+the current shipped defaults (~5-6 h; the deck's own cadence).
+If its jet contact produces the sliver signature, the run will hit
+the same ceiling — which would itself be decision-relevant
+application data.
+
+====================================================================
+2026-08-27 — THE SURGICAL GATE FIX (Marc's call: option B).
+PREDICTIONS FIRST — with one candidate discriminator FALSIFIED
+BEFORE IMPLEMENTATION, by measurement:
+
+DISCRIMINATOR SELECTION.  The correction entry proposed mass-trace
+(m_hot << m_cold).  MEASURED AND REJECTED: B4/B10's own smeared
+contact edges hold trace-mass cells at min ratio 0.0013 (B4) and
+~0.0000 (B10) — BELOW the sliver's 0.0075.  Mass cannot separate
+the runaway from the cells the veto exists to protect.
+TEMPERATURE CAN, with wide margins on both sides: the hottest
+legitimate phase in the entire validated suite is B10's vapour at
+400 K = 1.32 T_crit (IC table; shocks add modestly), while the
+runaway ratchets THROUGH 2 T_crit on its way to 16 T_crit
+(5000 K).  ADOPTED: in X3's thermal-leg coexistence gate, a
+HI-side-only band exit where the supercritical phase sits above
+2*T_crit (608 K for CO2 — EOS-derived, fluid-agnostic, constexpr
+factor) runs the thermal leg; the drain then holds any sliver
+near the threshold, four decades of specific energy below the
+reachable ceiling.  Counted as a NEW named cause in the
+[PS-COEXIT-TH] family (n_exit_runaway) — visible, never silent.
+Material cross-critical contacts (<= ~1.5 T_crit) keep their veto
+untouched.
+
+PREDICTIONS (falsifiers in brackets).
+SG1. Battery BIT-IDENTICAL at bare defaults — no battery case
+     carries an in-band phase beside a partner beyond 2 T_crit.
+     [Any digit = the threshold over-reaches; raise it and re-run
+     before anything ships.]
+SG2. The flashing_front reference COMPLETES at bare defaults
+     (rc=0, to stop_time), vented mass at 80 us within ~1% of
+     2.2753 — the drain touches only runaway cells, unlike the
+     mode-2 probe (+1.7%) which re-thermalized everything.
+     [Abort = the drain is insufficient at theta=1e-7 — diagnose;
+     large QoI shift = the drain is not as local as claimed.]
+SG3. The v2s fan leg completes; deficit vs the SAME-config
+     reference stays green (predict the -1.2% class).
+SG4. n_exit_runaway fires on the reference leg (nonzero, visible);
+     zero across the battery.
+SG5. All builds clean; the pinned 2-D decks are untouched BY
+     CONSTRUCTION (the B4-2D/XC2D family runs relax-off) —
+     spot-verified bit-identical anyway (cf-contact, XC2D).
+
+MEASURED.  Four of five confirmed; SG2 confirmed on completion and
+HONESTLY MISSED on the size of the QoI shift.
+SG1 CONFIRMED.  Battery BIT-IDENTICAL at bare defaults — the
+threshold does not reach any battery state.
+SG2: the reference COMPLETES at bare defaults (rc=0, to
+stop_time); vented mass at 80 us = 2.3428 — a +3.0% shift vs the
+pre-abort 2.2753, OUTSIDE the ~1% predicted band.  Reading: the
+drained cells sit exactly at the vent plane where the QoI
+integrates, so "touches only runaway cells" understated the QoI
+coupling; the direction (more venting) is consistent with removing
+an artificially stiff hot pocket from the plane.  The old 2.2753
+was measured en route to an EOS violation; 2.3428 is the
+healthy-run number and becomes the pin.  CROSS-CHECK: the mode-2/
+theta=1e-5 probe — a completely different thermal treatment — gave
+2.3131, within 1.3% of the new default's 2.3428: two independent
+thermal channels converge on the same reference class.
+SG3 CONFIRMED.  v2s = 2.2474129... BIT-UNCHANGED from the pre-fix
+fan number (the boundary fan never manufactures the sliver — its
+HEM re-closure already drains); deficit vs the new reference =
+-4.1%, GREEN with room.
+SG4 CONFIRMED.  [PS-COEXIT-TH] runaway fires in 7 print intervals
+on the reference (the sliver crosses 2 T_crit, is drained, falls
+back to the correctly-vetoed sub-threshold hover — periodic drain
+replaces the monotone ratchet); the sub-2 T_crit hi exits remain
+refused, exactly as designed.
+SG5 CONFIRMED.  All builds clean; cf-contact and XC2D final
+plotfiles bit-identical on data (relax-off family, untouched by
+construction and by measurement).
+WP-CONTACT-CEIL IS CLOSED WITH CODE: the coexistence veto keeps
+protecting material cross-critical contacts and stops protecting
+the runaway it was never meant to shelter.  The prior entry's
+"resolved by config" guidance (mode 2 + theta=1e-5) is SUPERSEDED
+for this purpose — the acceptance operator now handles the class
+at bare defaults.  The X3-vs-mode-2 operator question (mode 2's
+better B2/B7/B9 battery scores) remains a separate, unhurried
+measured campaign if Marc wants it.  The G-DEF re-baseline that
+option A would have required COLLAPSES to: one battery
+verification (bit-identical — done) and the flashing-front re-pin
+(ref 2.3428, v2s -4.1% — done in the harness with history kept).

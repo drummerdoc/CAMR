@@ -2768,8 +2768,29 @@ inline bool ps_x3_relax_cell(V6& U, const PsPhaseAPI& eos, double dt,
             if      (xp.coexist_action == 3)        cont = true;
             else if (xp.coexist_action == 2 && !hi) cont = true;
             else if (xp.coexist_action == 4 && lo)  cont = true;
+            //  WP-CONTACT-CEIL fix (2026-08-27, measured on the flashing
+            //  reference): a HI-side-only exit whose supercritical phase
+            //  sits beyond RUNAWAY_TCR_FACTOR * T_crit is NOT a material
+            //  cross-critical contact — the hottest legitimate phase in
+            //  the validated envelope is 400 K = 1.32 T_crit (B10's IC),
+            //  while the contact-smeared sliver RATCHETS through 2 T_crit
+            //  toward the EOS band edge (16 T_crit) precisely because
+            //  standing this gate leaves it mechanical-only: the
+            //  projection compresses the trace sliver every step with its
+            //  heat channel vetoed.  (Mass/density cannot discriminate:
+            //  B4/B10's own smeared edges hold trace-mass cells BELOW the
+            //  sliver's ratio — measured, WORKLOG 2026-08-27.)  Running
+            //  the rates drains the sliver and holds it near the
+            //  threshold, four decades of specific energy below the
+            //  reachable ceiling.  Counted distinctly (exit-code bit 8 ->
+            //  [PS-COEXIT-TH] runaway).
+            constexpr double RUNAWAY_TCR_FACTOR = 2.0;
+            const bool runaway = hi && !lo &&
+                (std::max(s0.p1.T, s0.p2.T) > RUNAWAY_TCR_FACTOR * Tcr);
+            if (runaway) cont = true;
             if (xp.exit_code)
-                *xp.exit_code = (lo ? 1 : 0) | (hi ? 2 : 0) | (cont ? 4 : 0);
+                *xp.exit_code = (lo ? 1 : 0) | (hi ? 2 : 0) | (cont ? 4 : 0)
+                              | (runaway ? 8 : 0);
             if (!cont) {
                 //  AUDIT 2026-08-24 A7: action=1 is ABORT-on-band-exit
                 //  (X0-(i): a liquid-vapour model holding a "vapour" in the

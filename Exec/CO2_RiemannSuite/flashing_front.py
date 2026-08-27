@@ -11,9 +11,15 @@ Riemann interface.
 
 Legs
   ref   boundary-free reference: domain 0..2, N=512, diaphragm at
-        x=1, ambient CO2 vapour (300 K / 1 bar) beyond.  ABORTS at
-        t ~ 8.04e-5 (WP-CONTACT-CEIL, open ledger item) — the abort
-        is EXPECTED and the scoring window [0, 80 us] ends first.
+        x=1, ambient CO2 vapour (300 K / 1 bar) beyond.  COMPLETES
+        at bare defaults since the 2026-08-27 WP-CONTACT-CEIL fix
+        (the X3 coexistence gate's runaway clause: a hi-side-only
+        band exit beyond 2*T_crit runs the thermal leg, so the
+        contact sliver drains instead of ratcheting to the EOS
+        band edge).  An ABORT on this leg is now an ALARM, not an
+        expectation.  Historical: pre-fix the leg aborted at
+        t ~ 8.04e-5 and pinned 2.2753 (measured en route to the
+        EOS violation); the healthy-run pin is 2.3428.
   leg   HISTORICAL (2026-08-27): the legacy construction was retired
         (a set ps_bc_nscbc_v2 key aborts); its 2.1022 (-7.6%) pin is
         kept in the table for provenance, no longer run.
@@ -31,8 +37,9 @@ RED baseline history:
   2026-08-27 (NSCBC-3 fixed — sub-stepped pack, LIN_ETA deleted):
     v2s 1.4936 (-34.4%), zero refusals (= today's flash=0 A/B).
   2026-08-27 (choked-fan ghost + HEM along the fan — commit B):
-    v2s 2.2474 (-1.2%) — GREEN: inside the legacy bracket with 6.4
-    points to spare, zero refusals, flash firing on vent fills.
+    v2s 2.2474 (-1.2% vs the pre-abort ref) — GREEN.
+  2026-08-27 (WP-CONTACT-CEIL gate fix — the reference completes):
+    ref 2.3428 (healthy-run pin) | v2s 2.2474 unchanged (-4.1%).
 The green gate (deficit <= 7.6%, zero refusals, no RYP2E dome
 inversion) is MET by the shipped construction; this harness now
 guards it as a regression pin.
@@ -49,7 +56,7 @@ OUT  = os.environ.get('FLASH_OUT', './flash_red_runs')
 os.makedirs(OUT, exist_ok=True)
 
 T_SCORE = 8.0e-5           # scoring time (the reference dies just past it)
-RED = {'ref': 2.2753, 'leg': 2.1022, 'v2e': 1.4838, 'v2s': 2.2474}
+RED = {'ref': 2.3428, 'leg': 2.1022, 'v2e': 1.4838, 'v2s': 2.2474}
 
 COMMON = ['inputs', 'CAMR.cfl=0.25', 'prob.alpha_trace=1.0e-6',
           'prob.u_L=0', 'prob.u_R=0', 'stop_time=2.5e-4',
@@ -121,7 +128,8 @@ def main():
         note = ''
         if tag == 'ref':
             ref_v = q['vented']
-            note = 'abort past 80us EXPECTED (WP-CONTACT-CEIL)' if rc != 0 else 'ran past the ceiling?!'
+            note = ('' if rc == 0 else
+                    'ABORTED — ALARM: the reference completes since the 2026-08-27 gate fix')
         vs = ('%+8.1f%%' % (100.0 * (q['vented'] - ref_v) / ref_v)) if (ref_v and tag != 'ref') else '-'
         print('%-5s %10.3e %12.4f %10.4f %9s   %s' % (tag, q['t'], q['vented'], RED[tag], vs, note))
     print('\nGREEN gate: deficit <= 7.6%% with zero nscbc_zg lin refusals (grep the leg logs).')

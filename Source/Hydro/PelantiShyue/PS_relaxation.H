@@ -152,6 +152,10 @@ struct PsPresDiag {
     long   n_exit_lo = 0, n_exit_hi = 0, n_exit_both = 0;
     long   n_exit_continued = 0;   // exit, but ps_coexist_action let it run
     long   n_exit_refused   = 0;   // exit, thermal leg skipped (legacy response)
+    //  WP-CONTACT-CEIL fix (2026-08-27): hi-side-only exit with the
+    //  supercritical phase beyond 2*T_crit — the runaway-sliver class;
+    //  the thermal leg RUNS for these (subset of n_exit_continued).
+    long   n_exit_runaway   = 0;
     void reset() { *this = PsPresDiag{}; }
 };
 
@@ -746,6 +750,17 @@ ps_canonical_relax_cell(int i, int j, int k,
             //  cross-critical material contact, and the supercritical veto does
             //  not apply to it.
             else if (cxa == 4 && lo_side)  run_thermal = true;
+            //  WP-CONTACT-CEIL fix (2026-08-27), mirrored from the X3
+            //  gate so [PS-COEXIT-TH] semantics stay comparable across
+            //  modes: a hi-side-only exit whose supercritical phase is
+            //  beyond 2*T_crit is the runaway-sliver class, not a
+            //  material cross-critical contact — run the thermal leg.
+            bool runaway_th = false;
+            if (hi_side && !lo_side &&
+                std::max(q1.T, q2.T) > 2.0 * Tcr) {
+                runaway_th = true;
+                run_thermal = true;
+            }
             //  C2 (X2): the thermal leg's band exit, named and counted --
             //  previously a silent skip.  Counting only; the response above
             //  is unchanged.  Reported per sweep as [PS-COEXIT-TH].
@@ -756,6 +771,7 @@ ps_canonical_relax_cell(int i, int j, int k,
                 else if (hi_side)       ++pd.n_exit_hi;
                 if (run_thermal) ++pd.n_exit_continued;
                 else             ++pd.n_exit_refused;
+                if (runaway_th)  ++pd.n_exit_runaway;
             }
         }
         if (run_thermal) {
@@ -966,6 +982,7 @@ ps_x3_grid_relax_cell(int i, int j, int k,
         else if (hi)  ++pd.n_exit_hi;
         if (cont) ++pd.n_exit_continued;
         else      ++pd.n_exit_refused;
+        if ((exit_code & 8) != 0) ++pd.n_exit_runaway;   // WP-CONTACT-CEIL
     }
 
     //  The kernel writes Uv only past its entry gates, and everything it
@@ -2706,6 +2723,7 @@ ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
             << " both=" << pd.n_exit_both
             << " | continued=" << pd.n_exit_continued
             << " refused=" << pd.n_exit_refused
+            << " runaway=" << pd.n_exit_runaway
             << "   (response per CAMR.ps_coexist_action = "
             << ps_coexist_action() << ")\n";
     }
