@@ -7831,3 +7831,64 @@ measured batch).  Follow-up candidates recorded: per-face
 retirement decision for legacy; WP-CONTACT-CEIL still bounds the
 reference window; the fan's per-substep EOS cost on 2-D vent
 boundaries (unmeasured, expected negligible vs interior).
+
+====================================================================
+2026-08-27 — LEGACY NSCBC RETIREMENT (Marc's call, immediately
+after the choked-fan green).  PREDICTIONS FIRST.
+
+WHAT.  The legacy ghost construction (_outflow_face_legacy — the
+linearized mixture entropy invariant + RYP2E (rho,P) inversion,
+NSCBC's original form) is DELETED, and CAMR.ps_bc_nscbc_v2 is
+retired the ps_ctu way: a SET key — either value — aborts with the
+retirement message before any hydro.  The dispatcher collapses to
+the v2 construction unconditionally; Params::v2 and the BCfill
+plumbing go with it.  The interface documentation moves to the
+dispatcher.  flashing_front.py's 'leg' row becomes a HISTORICAL
+pin (2.1022, kept in the table for provenance, no longer run —
+running it would abort, correctly).
+
+WHY (the full measured dossier, all on record):
+  * NSCBC-1: legacy's reversed-flow branch is a positive-feedback
+    pump — ABORTS A1 (Mach ~15 jet by step 160); v2 aborts nothing.
+  * #28 LEGACY-FLUSH: legacy never absorbs outgoing acoustics
+    (R ~ 1.15 — WORSE than a zero-gradient copy) and sleeps on
+    inflow-directed faces (measured asymmetry).
+  * #31: legacy's one virtue — the accidental HEM flash of its
+    in-dome lever rule (-7.6%) — is STRICTLY DOMINATED by the
+    deliberate choked-fan closure (-1.2%).
+  Nothing legacy does is any longer the best available answer to
+  anything; keeping it would be keeping a measured-worse path with
+  a measured abort class.  LEGACY-FLUSH closes with the code.
+
+PREDICTIONS (falsifiers in brackets).
+R1. Battery BIT-IDENTICAL (NSCBC off).  [Any digit = leak.]
+R2. Every v2 result BIT-IDENTICAL — the dispatcher becomes
+    unconditional but the v2 path is untouched: B4-NSCBC .3809,
+    per-face green .1261, #31 v2s 2.2474, flush late-residual
+    2.42e3.  [Any printed digit = the deletion touched v2.]
+R3. Retired-key probes: CAMR.ps_bc_nscbc_v2=0 ABORTS and =1 ALSO
+    aborts (the KEY is retired, not a value), each before hydro.
+    [A silent run = the abort is unreachable.]
+R4. All builds clean (PR 1-D, four 2-D exes, Sod GammaLaw — the
+    non-PS BCfill path).
+R5. #31 table: ref and v2s rows unchanged; leg row reported as
+    historical without running.
+
+MEASURED.  All five predictions CONFIRMED.
+R1 CONFIRMED.  Battery bit-identical (diff empty).
+R2 CONFIRMED.  Every v2 result bit-identical at every printed
+digit: B4-NSCBC .3809/.0639/.2178, per-face green .1261/.0635/
+.0493, #31 v2s 2.2474 (-1.2%), flush late-residual 2.42e3.
+R3 CONFIRMED.  ps_bc_nscbc_v2=0 ABORTS and =1 ALSO aborts, each
+before any hydro, each naming the retirement.
+R4 CONFIRMED.  All builds clean: PR 1-D, the four 2-D exes, Sod
+GammaLaw (non-PS BCfill path).
+R5 CONFIRMED.  flashing_front.py: ref and v2s rows unchanged; leg
+and v2e rows report as HISTORICAL pins without running.
+LEGACY-FLUSH closes with the code.  The NSCBC line now has ONE
+construction — v2 + choked fan + HEM flash — with one A/B dial
+(ps_bc_nscbc_flash), per-face targets, green on the suite class
+(matched targets == bcnormal every digit), green on the flashing
+vent (-1.2% vs the boundary-free reference), and every historical
+alternative either deleted-with-abort (legacy, LIN_ETA, the
+end-state closure) or pinned as history in the harness.

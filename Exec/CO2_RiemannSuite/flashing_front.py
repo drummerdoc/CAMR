@@ -14,7 +14,9 @@ Legs
         x=1, ambient CO2 vapour (300 K / 1 bar) beyond.  ABORTS at
         t ~ 8.04e-5 (WP-CONTACT-CEIL, open ledger item) — the abort
         is EXPECTED and the scoring window [0, 80 us] ends first.
-  leg   tube 0..1, N=256 (same dx), NSCBC LEGACY at x-hi, p_amb=1e5.
+  leg   HISTORICAL (2026-08-27): the legacy construction was retired
+        (a set ps_bc_nscbc_v2 key aborts); its 2.1022 (-7.6%) pin is
+        kept in the table for provenance, no longer run.
   v2s   tube, NSCBC v2 as SHIPPED (choked-fan ghost, HEM along the
         fan).  GREEN since 2026-08-27: vents 2.2474 (-1.2% vs the
         reference).  CAMR.ps_bc_nscbc_flash=0 reproduces the
@@ -65,7 +67,7 @@ LEGS = {
                 'prob.phase_L=1', 'prob.T_L=320', 'prob.p_L=1.0e7', 'prob.x_qual_L=0.0',
                 'prob.phase_R=0', 'prob.T_R=300', 'prob.p_R=1.0e5', 'prob.x_qual_R=1.0',
                 'CAMR.lo_bc=SlipWall', 'CAMR.hi_bc=Inflow', 'prob.p_amb=1.0e5']),
-  'leg': (1.0, TUBE + ['CAMR.ps_bc_nscbc_v2=0']),
+  'leg': (1.0, TUBE + ['CAMR.ps_bc_nscbc_v2=0']),   # historical; not run
   'v2s': (1.0, TUBE),
   'v2e': (1.0, TUBE),
 }
@@ -103,9 +105,13 @@ def main():
     ref_v = None
     for tag in ('ref', 'leg', 'v2s', 'v2e'):
         exe = EXE
+        if tag == 'leg':
+            print('%-5s %10s %12s %10.4f %9s   HISTORICAL (legacy retired 2026-08-27; key aborts)'
+                  % (tag, '-', '-', RED[tag], '-'))
+            continue
         if tag == 'v2e':
             if not V2E:
-                print('%-5s %10s %12s %10.4f %9s   SKIPPED (set FLASH_V2E_EXE to the LIN_ETA=0.5 probe exe)'
+                print('%-5s %10s %12s %10.4f %9s   HISTORICAL (LIN_ETA deleted 2026-08-27)'
                       % (tag, '-', '-', RED[tag], '-'))
                 continue
             exe = V2E
