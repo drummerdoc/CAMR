@@ -25,19 +25,15 @@ CAMR::construct_hydro_source (const MultiFab& S,
             amrex::Print() << "... Computing MOL-based hydro advance" << std::endl;
 #ifdef USE_PS_HYDRO
         } else if (ps_hydro != 0) {
-            // Pelanti-Shyue path: report the actual PS flux (CAMR.ps_flux) and
-            // the reconstruction order named by what it is (piecewise-
-            // constant / -linear / -parabolic).  "Godunov-based" (non-PS
-            // branch below) is the generic single-step-unsplit driver label
-            // and does NOT mean a Godunov flux; for PS runs name the real flux.
-            //  AUDIT C.4: resolved selections via the single-read accessors.
-            const int  l_pr    = ps_recon_selector();
-            const char* l_recon = (l_pr == 2) ? "piecewise-parabolic (PPM)"
-                                : (l_pr == 1) ? "piecewise-linear (MUSCL/PLM)"
-                                              : "piecewise-constant";
+            // Pelanti-Shyue path: report the actual PS flux (CAMR.ps_flux).
+            // "Godunov-based" (non-PS branch below) is the generic
+            // single-step-unsplit driver label and does NOT mean a Godunov
+            // flux; for PS runs name the real flux.  (Reconstruction retired
+            // 2026-08-27 with ps_recon — the wp interior works from raw cell
+            // averages, 2nd order via the BL-2 correction fluxes.)
+            //  AUDIT C.4: resolved selection via the single-read accessor.
             amrex::Print() << "... Computing PS unsplit hydro advance (flux="
-                           << ps_flux_name() << ", recon=" << l_recon << ")"
-                           << std::endl;
+                           << ps_flux_name() << ")" << std::endl;
 #endif  // USE_PS_HYDRO (accessors live in PS_umeth.cpp; non-PS builds
         //                 cannot run the PS path, so the branch is elided)
         } else {

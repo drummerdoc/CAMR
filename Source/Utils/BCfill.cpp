@@ -232,8 +232,14 @@ CAMR_bcfill_hyp(
                    "characteristic construction (choked fan + HEM "
                    "flash) is the only form.  Remove the key.");
     }
-    int fl = 1;   // commit B (2026-08-27): flash-aware re-closure default ON
+    int fl = 1;   // 2026-08-27: flash-aware choked fan default ON (0 = frozen A/B)
     pp.query("ps_bc_nscbc_flash", fl);
+    if (fl != 0 && fl != 1) {
+      amrex::Abort("CAMR.ps_bc_nscbc_flash accepts 0 (frozen A/B) or 1 "
+                   "(choked fan + HEM, default).  The probe-only value 2 "
+                   "(end-state energy-lever variant) was refuted and "
+                   "deleted 2026-08-27.");
+    }
     // Per-face ambient targets (probe #29 follow-up, 2026-08-26).
     // Sentinel -1 = unset -> inherit prob.p_amb at fill time.  One
     // global p_amb cannot describe a problem whose two ends see

@@ -47,7 +47,6 @@ CAMR.do_mol = 0
 CAMR.ppm_type = 1
 
 CAMR.ps_hydro = 1
-CAMR.ps_recon = 0
 #  PROBE #27 (2026-08-25): pinned EXPLICITLY to the acceptance flux.
 #  These decks historically ran the compiled default (llf); the measured
 #  llf-vs-wp A/B on this case (WORKLOG 2026-08-25) put wp within 0.17%%

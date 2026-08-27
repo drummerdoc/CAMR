@@ -32,7 +32,7 @@
 #include "PS_presence.H"
 #include "PS_guards.H"
 
-using amrex::Real;   // matches PS_ctoprim.H / PS_hllc.H / PS_reconstruction.H
+using amrex::Real;   // matches PS_ctoprim.H / PS_hllc.H
 
 // ---------------------------------------------------------------------
 //  Finite-or-fallback: keeps a single bad cell from poisoning the whole

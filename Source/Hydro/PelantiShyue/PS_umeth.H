@@ -26,7 +26,7 @@
 
 // ---------------------------------------------------------------------
 //  Single-read accessors for the solver-selection dials (AUDIT 2026-08-24
-//  C.4).  CAMR.ps_flux / ps_recon / ps_alpha_limiter each used to be read
+//  C.4).  CAMR.ps_flux used to be read (ps_recon / ps_alpha_limiter retired 2026-08-27)
 //  at 2-3 independent ParmParse sites (one live in PS_umeth, banner copies
 //  in CAMR_advance / CAMR_construct_hydro_source, a dead CAMR:: registry
 //  static) with hand-matched defaults.  These host-side accessors are now
@@ -35,8 +35,6 @@
 // ---------------------------------------------------------------------
 int         ps_flux_selector();          // 2 = wp, the ONLY flux (single-path 2026-08-26; llf/hllc keys Abort)
 const char* ps_flux_name();              // resolved name for banners
-int         ps_recon_selector();         // 0 = constant, 1 = MUSCL, 2 = PPM
-int         ps_alpha_limiter_minmod();   // 1 = minmod, 0 = vanleer (default)
 
 void PS_umeth(
     const amrex::Box& bx,

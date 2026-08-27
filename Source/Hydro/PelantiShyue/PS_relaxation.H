@@ -1768,7 +1768,8 @@ inline amrex::Real ps_temp_floor()
 //  ps_resync_mixture_mass  —  enforce URHO == UM1RHO1 + UM2RHO2.
 //
 //  The P-S state stores mixture mass TWICE and nothing kept the two
-//  copies consistent.  PS_reconstruction.H documents the assumption
+//  copies consistent.  (PS_reconstruction.H, deleted 2026-08-27 with
+//  the ps_recon retirement, documented the assumption
 //  ("the slight inconsistency ... e.g. URHO =? UM1RHO1 + UM2RHO2 is
 //  smaller than the MUSCL truncation error"): each conservative slot is
 //  reconstructed independently, so the face states do not satisfy the

@@ -40,24 +40,14 @@ CAMR::advance(
         amrex::Print() << "Doing MOL Advance" << std::endl;
 #ifdef USE_PS_HYDRO
     } else if (ps_hydro != 0) {
-        // Pelanti-Shyue 6-equation branch.  "flux" is the Riemann/fluctuation
-        // solver (CAMR.ps_flux: wp / hllc / llf); "recon" is the face-state
-        // RECONSTRUCTION order, named by what it actually is —
-        //   ps_recon=0 -> piecewise-constant
-        //   ps_recon=1 -> piecewise-linear (MUSCL/PLM)
-        //   ps_recon=2 -> piecewise-parabolic (PPM)
-        // (Historically CAMR labelled piecewise-constant "Godunov"; that
-        // conflated the reconstruction stage with the overall method, so it is
-        // named by order here.  A wp run legitimately uses piecewise-constant
-        // base states and gets 2nd order from the limited BL correction flux.)
-        //  AUDIT C.4: report the RESOLVED selections through the single-read
-        //  accessors, so the banner can never assert a flux that didn't run.
-        const int  l_pr    = ps_recon_selector();
-        const char* l_recon = (l_pr == 2) ? "piecewise-parabolic (PPM)"
-                            : (l_pr == 1) ? "piecewise-linear (MUSCL/PLM)"
-                                          : "piecewise-constant";
+        // Pelanti-Shyue 6-equation branch.  Single-path: wp is the only
+        // flux, and reconstruction retired with the split paths
+        // (2026-08-27) — the wp interior works from raw cell averages,
+        // 2nd order via the BL-2 correction fluxes.
+        //  AUDIT C.4: report the RESOLVED flux through the single-read
+        //  accessor, so the banner can never assert a flux that didn't run.
         amrex::Print() << "Doing PS Advance (flux=" << ps_flux_name()
-                       << ", recon=" << l_recon << ")" << std::endl;
+                       << ")" << std::endl;
 #endif  // USE_PS_HYDRO
     } else {
         amrex::Print() << "Doing Godunov Advance" << std::endl;

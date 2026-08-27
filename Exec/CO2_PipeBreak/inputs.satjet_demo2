@@ -43,7 +43,6 @@ CAMR.ppm_type = 1
 CAMR.ps_hydro    = 1
 CAMR.ps_flux     = wp
 CAMR.ps_wp_order = 2
-CAMR.ps_recon    = 0
 CAMR.ps_bc_use_nscbc = 0
 CAMR.ps_wp_transverse = 0   # OFF (#60): the BL-3b acoustic transverse coupling (=2) is
                             # UNSTABLE at fine resolution (drives alpha1->1 pure-liquid

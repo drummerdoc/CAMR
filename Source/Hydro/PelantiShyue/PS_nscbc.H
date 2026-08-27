@@ -83,9 +83,8 @@ struct Params {
     // (default; HEM saturated re-closure when the ghost's mixture
     // enthalpy at P_g falls inside the dome), 0 = OFF (frozen-
     // composition pack, the commit-A behavior, kept for A/B).
-    // PROBE-ONLY value 2 = internal-energy-lever variant of the same
-    // closure (the measured fork; superseded by the choked-fan form —
-    // the end-state closure it varied was deleted the same day).
+    // (The probe-only value 2 — the refuted end-state energy-lever
+    // variant — no longer parses: BCfill aborts on anything but 0/1.)
     int         flash   = 1;
     PsPres      pres{};                              // S2 presence params (by value)
     amrex::Real L_ref   = amrex::Real(1.0);          // m, domain length (unused

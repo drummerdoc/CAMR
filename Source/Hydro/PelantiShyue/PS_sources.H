@@ -36,7 +36,7 @@
 #include <cmath>
 
 // -----------------------------------------------------------------
-//  Cached dial reads (one-shot ParmParse, matching the ps_recon /
+//  Cached dial reads (one-shot ParmParse, matching the ps_flux /
 //  ps_do_relax pattern used elsewhere in the PS solver).
 // -----------------------------------------------------------------
 struct PsSourceDials {

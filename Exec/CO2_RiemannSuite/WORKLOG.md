@@ -7892,3 +7892,90 @@ construction — v2 + choked fan + HEM flash — with one A/B dial
 vent (-1.2% vs the boundary-free reference), and every historical
 alternative either deleted-with-abort (legacy, LIN_ETA, the
 end-state closure) or pinned as history in the harness.
+
+====================================================================
+2026-08-27 — LEDGER HOUSEKEEPING BATCH (Marc: "handle the remaining
+tasks on the ledger"; ps_recon full-retirement scope confirmed by
+Marc).  PREDICTIONS FIRST.
+
+WHAT.
+(1) ps_recon RETIRED.  Reconstruction served the deleted split
+    paths; wp deliberately works from raw cell averages, and since
+    the single-path deletion the dial's only consumers were two
+    banners.  Accessors, banner prints, and PS_reconstruction.H
+    (fully orphaned) are deleted; a set key aborts (retired-key
+    idiom); the key is scrubbed from every deck IN PLACE on Marc's
+    machine (sed on the line — local edits survive), ~40 files
+    including the CO2_PipeBreak family, whose "ps_recon MUST be 0
+    for wp inlet injection" comments were split-path-era facts and
+    are updated.  The battery harness drops CAMR.ps_recon=1 from
+    its override set — measured inert (the banner said "ps_recon
+    ignored" for wp since BL-1b).
+(2) ps_alpha_limiter RETIRED the same way (its WP-alpha transport
+    kernel died with the split path; zero deck occurrences).
+(3) ps_bc_nscbc_flash RESTRICTED to {0,1}: the probe-only value 2
+    (the refuted end-state energy-lever variant) no longer parses —
+    any other value aborts.
+(4) reflux rate cap (|d(alpha)| <= 0.05): retirement DECLINED, item
+    CLOSED.  It is a counted guard (B13), not a silent dial; it was
+    load-bearing once (task #51, an observed dt-collapse crash) and
+    costs nothing visible.  Policy: revisit only if [PS-GUARD]
+    reflux_cap stays zero through the 2-D application campaigns.
+(5) TBlowdown-class interim config decision CLOSED AS MOOT: the
+    choice it posed (accept v2 under-venting vs pin legacy) died
+    when the choked fan went green and legacy was retired.
+(6) Fan EOS cost on a 2-D vent boundary: MEASURED (probe below).
+
+PREDICTIONS (falsifiers in brackets).
+HK1. Battery BIT-IDENTICAL with the scrubbed harness (wp never
+     read ps_recon).  [Any digit = the dial was not inert and the
+     retirement is wrong — stop and restore.]
+HK2. Pinned-deck spot (one B4 deck + XC2D, scrubbed decks):
+     final plotfiles BIT-IDENTICAL on data vs the single-path
+     verification runs.  [Drift = same as HK1.]
+HK3. Abort probes: ps_recon=0, ps_recon=1, ps_alpha_limiter=
+     vanleer, ps_bc_nscbc_flash=2 all abort before hydro;
+     ps_bc_nscbc_flash=0 and =1 still run.  [Silent run = abort
+     unreachable.]
+HK4. All builds clean (PS_reconstruction.H deletion leaves no
+     dangling include; Make.package updated).
+HK5. Fan cost: NSCBC (fan, flash=1) vs NSCBC (flash=0) vs bcnormal
+     on 2-D TBlowdown (256x32, fixed step count): wall-clock per
+     step within a few % across the three — boundary work is
+     negligible against the interior.  [>10% = record the number
+     and open a perf item; the fan stays (correctness first).]
+
+MEASURED.  All five predictions CONFIRMED — plus one mid-batch
+scope addition from Marc: the CO2_PipeBreak deck family is PRUNED —
+21 of 22 inputs decks deleted (superseded rungs, perf scratch
+copies, the completed convergence study, zoom diagnostics, and the
+legacy-path Phase-0 default `inputs`); the sole survivor is
+inputs.satjet_demo2 (SHOWCASE pass 2 — already pinned to
+wp / ps_wp_order=2 / ps_bl_reflux=2; its ps_recon line scrubbed).
+The findings docs, analysis scripts, and PNGs stay as the study
+record (compare_satjet_convergence.py now references deleted conv
+decks — kept as an archived recipe; the configs live in the
+FINDINGS docs and git history).  The folder has no bare `inputs`
+now; `cp inputs.satjet_demo2 inputs` recreates a default.
+HK1 CONFIRMED.  Battery bit-identical with the scrubbed harness —
+the ps_recon override the battery carried since Phase 4c-β3 was
+measurably inert, as the wp banner always claimed.
+HK2 CONFIRMED.  cf-contact and XC2D re-run bit-identical on data
+(job_info only) vs the single-path verification runs.
+HK3 CONFIRMED.  ps_recon=0, ps_recon=1, ps_alpha_limiter=vanleer,
+ps_bc_nscbc_flash=2 all abort before hydro; flash=0/1 run; the
+banners now print flux only ("Doing PS Advance (flux=wp)").
+HK4 CONFIRMED.  All builds clean; PS_reconstruction.H deleted with
+its Make.package entry; no dangling references (stale comments
+swept in PS_umeth/PS_umeth.H/PS_hllc/PS_relaxation/PS_wavespeed/
+PS_sources/gen_convergence).
+HK5 CONFIRMED.  2-D TBlowdown 256x32, 60 fixed steps: fan 60.5 s
+vs bcnormal 59.8 s — +1.2%, NEGLIGIBLE.  (The frozen leg's 43.1 s
+is not a boundary-cost signal: its walled vent leaves the interior
+in cheaper EOS states.)  No perf item.
+CLOSED WITHOUT CODE: (4) the reflux rate cap stays — a counted
+guard for an observed-once failure shape is not an inert dial;
+revisit only if [PS-GUARD] reflux_cap is still zero after the 2-D
+application campaigns.  (5) the TBlowdown-class interim config
+decision is MOOT — the choked fan is green and legacy is retired.
+THE LEDGER IS NOW ONE ITEM: WP-CONTACT-CEIL.

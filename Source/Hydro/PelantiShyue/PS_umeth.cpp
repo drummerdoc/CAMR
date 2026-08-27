@@ -39,7 +39,6 @@
 #include "PS_guards.H"      // single-source phase-pressure sanity (G3)
 #include "PS_ctoprim.H"
 #include "PS_wavespeed.H"
-#include "PS_reconstruction.H"
 
 #include <AMReX_ParmParse.H>
 
@@ -49,7 +48,7 @@ using namespace amrex;
 //  _from_state variants of the flux and wave-speed helpers, taking a
 //  local NVAR array of the conservative state and deriving the
 //  extended primitives inline.  Used by the MUSCL reconstruction path
-//  (CAMR.ps_recon = 1), where the reconstructed face states are not
+//  (the deleted MUSCL path), where the reconstructed face states were not
 //  cell-centred and so cannot be read from the q Array4.
 //
 //  This is essentially PS_ctoprim's ps_augment_primitives, unrolled
@@ -761,32 +760,12 @@ const char* ps_flux_name()
     return (ps_flux_selector() == 2) ? "wp" : "invalid";
 }
 
-int ps_recon_selector()
-{
-    static const int v = []() -> int {
-        int r = 0;
-        amrex::ParmParse pp("CAMR");
-        pp.query("ps_recon", r);
-        pp.add("ps_recon", r);   // B5/C.6: resolved value -> job_info
-        return r;
-    }();
-    return v;
-}
-
-int ps_alpha_limiter_minmod()
-{
-    static const int v = []() -> int {
-        std::string s = "vanleer";
-        amrex::ParmParse pp("CAMR");
-        pp.query("ps_alpha_limiter", s);
-        const int m = (s == "minmod") ? 1 : 0;
-        // B5/C.6: resolved canonical name -> job_info (any string other than
-        // "minmod" resolves to vanleer; record what actually ran).
-        pp.add("ps_alpha_limiter", std::string(m ? "minmod" : "vanleer"));
-        return m;
-    }();
-    return v;
-}
+//  ps_recon_selector and ps_alpha_limiter_minmod were DELETED
+//  2026-08-27 with their dials (ledger housekeeping, Marc's scope
+//  call): reconstruction and the WP-alpha transport limiter both
+//  served the split paths deleted 2026-08-26; since then the dials
+//  were banner/job_info-only.  Set keys abort in PS_umeth() below
+//  (retired-key idiom); PS_reconstruction.H went with them.
 
 
 void
@@ -823,31 +802,34 @@ PS_umeth(const Box& bx,
 {
     BL_PROFILE("PS_umeth()");
 
-    // Phase 4c-β3: runtime reconstruction dispatch (named by RECONSTRUCTION
-    // order, not by method — "Godunov" is avoided as it conflated the
-    // piecewise-constant reconstruction with the overall scheme).
-    //   CAMR.ps_recon = 0  →  piecewise-constant face states (first order;
-    //                         for wp this is the base, made 2nd order by the
-    //                         limited BL correction flux)
-    //   CAMR.ps_recon = 1  →  piecewise-linear (MUSCL slope-limited PLM,
-    //                         minmod) on conservative slots with contact-jump
-    //                         fallback.  See PS_reconstruction.H.
-    //   CAMR.ps_recon = 2  →  piecewise-parabolic (PPM, Colella-Woodward, van Leer) on
-    //                         PRIMITIVE slots, faithful to the standalone
-    //                         ppm_1d_ps_wp.cpp (no contact guard; relies
-    //                         on monotonisation + positivity clip).
-    //
-    // CAMR::ps_recon is a protected static member (matches ps_hydro,
-    // do_mol, etc.) so it can't be read directly from this free
-    // function.  We instead query ParmParse once and cache the result
-    // in a function-local static.  Under USE_OMP=FALSE + MPI-only
-    // this is race-free.
-    // SINGLE-PATH NOTE (2026-08-26): reconstruction served the deleted
-    // split paths; wp deliberately works from raw cell averages (see
-    // ps_wp_face).  The read is kept so the resolved value still lands
-    // in job_info and the CAMR_advance banner; the dial is INERT here.
-    // Follow-up retirement candidate alongside ps_alpha_limiter.
-    amrex::ignore_unused(ps_recon_selector());   // single read (AUDIT C.4)
+    //  CAMR.ps_recon and CAMR.ps_alpha_limiter RETIRED 2026-08-27
+    //  (ledger housekeeping; Marc confirmed the full-scrub scope).
+    //  Reconstruction and the WP-alpha transport limiter served the
+    //  split paths deleted 2026-08-26 — wp deliberately works from raw
+    //  cell averages (see ps_wp_face) and carries its own van Leer
+    //  limiter in the BL-2 correction (ps_wp_unlimited is its
+    //  diagnostic bypass).  Set keys abort rather than silently
+    //  no-oping (retired-key idiom); the keys were scrubbed from every
+    //  deck in the same commit.
+    static const bool s_recon_retired = []() {
+        amrex::ParmParse pp("CAMR");
+        if (pp.contains("ps_recon")) {
+            amrex::Abort("CAMR.ps_recon is retired (2026-08-27): "
+                         "reconstruction left with the llf/hllc split "
+                         "paths; the wp interior works from raw cell "
+                         "averages (2nd order via BL-2 correction "
+                         "fluxes, CAMR.ps_wp_order=2).  Remove the key.");
+        }
+        if (pp.contains("ps_alpha_limiter")) {
+            amrex::Abort("CAMR.ps_alpha_limiter is retired (2026-08-27): "
+                         "the split-path WP-alpha transport kernel it "
+                         "served was deleted 2026-08-26; wp's BL-2 "
+                         "correction carries its own van Leer limiter.  "
+                         "Remove the key.");
+        }
+        return true;
+    }();
+    amrex::ignore_unused(s_recon_retired);
 
     // SINGLE-PATH (2026-08-26): ps_flux_selector() returns 2 (wp) or
     // Aborts — llf/hllc were deleted.  The read is kept (a) as the
@@ -899,14 +881,6 @@ PS_umeth(const Box& bx,
     // it fills flx (recovered F* on the conserved slots) + a per-cell
     // deposit for the non-conservative slots {α, UE1, UE2}, then
     // returns.  BL-1b; see docs/design/camr_ps_bl_wp_design.md §9.
-
-    // CAMR.ps_alpha_limiter serviced the split-path WP-α transport
-    // kernel, deleted 2026-08-26 with the split paths.  The read is kept
-    // so the resolved value still lands in job_info; the dial is INERT
-    // on the wp path (wp's BL-2 correction carries its own van Leer
-    // limiter, bypassed only by the ps_wp_unlimited diagnostic).
-    // Follow-up retirement candidate alongside ps_recon.
-    amrex::ignore_unused(ps_alpha_limiter_minmod());   // single read (AUDIT C.4)
 
     // BL-2: wave-propagation order for ps_flux=wp.
     //   CAMR.ps_wp_order = 1 (default) → 1st-order fluctuations (BL-1).
@@ -1093,7 +1067,7 @@ PS_umeth(const Box& bx,
     //  Self-contained A±ΔQ fluctuation step ported from the standalone
     //  ppm_1d_ps_wp.cpp (task #40).  Fills flx (recovered F* on conserved
     //  slots) and a per-cell deposit for the non-conservative slots
-    //  {UALPHA1, UE1, UE2}, then RETURNS.  Independent of CAMR.ps_recon
+    //  {UALPHA1, UE1, UE2}, then RETURNS.  Works from raw cell averages
     //  (see ps_wp_face for why reconstruction is not used).  2nd-order
     //  accuracy is BL-2's limited correction fluxes.
     //  use_hllc == 2 is guaranteed by ps_flux_selector() (aborts

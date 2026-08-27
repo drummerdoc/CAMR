@@ -107,7 +107,7 @@ Face face_from_state(int idir, const amrex::Real U[NVAR],
 
     // Volume fraction with a floor to keep per-phase densities finite.
     // Task #210: value MUST equal the alpha_floor used elsewhere in
-    // the PS pipeline — PS_ctoprim.H, PS_reconstruction.H, and
+    // the PS pipeline — PS_ctoprim.H and
     // ps_max_wave_speed in PS_umeth.cpp all use 1e-6, and standalone
     // ppm_1d_ps_wp.cpp defaults PS_ALPHA_FLOOR to 1e-6 in
     // ps_state_from_cons.  Non-uniform floors produce a state-

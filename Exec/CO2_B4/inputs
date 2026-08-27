@@ -48,7 +48,6 @@ CAMR.ppm_type = 1
 # driver's first-order default, override on the command line with
 # CAMR.ps_recon=0.
 CAMR.ps_hydro = 1
-CAMR.ps_recon = 1
 
 # PS-NSCBC currently supports only ONE ambient P per case (see prob.H
 # NOTE).  For B4 with different L and R initial-state pressures, the

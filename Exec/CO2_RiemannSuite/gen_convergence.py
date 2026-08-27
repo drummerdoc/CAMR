@@ -6,7 +6,7 @@ A1-A6, B1-B10, C1-C3) at N = 128, 256, 512.
 Per-case physics config is inherited verbatim from full_suite.py (case_cfg):
   * vapor A/C            -> mechanical relax, MT off
   * two-phase B          -> isochoric P + finite thermal relax (mode 2) + finite MT
-Numerics matched to the suite: wp flux, 2nd-order (ps_wp_order=2, ps_recon=1),
+Numerics matched to the suite: wp flux, 2nd-order (ps_wp_order=2),
 cfl=0.25, do_mol=0.  The current CAMR build (with the #88 metastable guard) is used.
 
 RUN ON THE HOST (build the 1D exe first):
@@ -46,7 +46,7 @@ def run_case(name, N):
         return 'skip', existing, 0.0
     ov = {'amr.n_cell': N, 'geometry.prob_lo': 0.0, 'geometry.prob_hi': 1.0,
           'prob.x_diaph': 0.5, 'prob.alpha_trace': 1.0e-6, 'prob.p_amb': 5.0e6,
-          'CAMR.ps_flux': 'wp', 'CAMR.ps_wp_order': 2, 'CAMR.ps_recon': 1,
+          'CAMR.ps_flux': 'wp', 'CAMR.ps_wp_order': 2,
           'CAMR.cfl': 0.25, 'CAMR.do_mol': 0, 'CAMR.ps_do_relax': 1,
           'stop_time': tf, 'max_step': 2000000}
     cc, _, _ = F.case_cfg(name); ov.update(cc)          # per-case relax mode + MT

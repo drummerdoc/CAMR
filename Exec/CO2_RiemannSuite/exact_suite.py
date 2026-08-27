@@ -83,7 +83,7 @@ def run(case, flux, pref):
     ov={'amr.n_cell':N,'geometry.prob_lo':0.0,'geometry.prob_hi':1.0,
         'prob.x_diaph':0.5,'prob.alpha_trace':0.0,'prob.p_amb':5.0e6,
         'CAMR.cfl':0.25,'CAMR.do_mol':0,'stop_time':tf,
-        'CAMR.ps_flux':flux,'CAMR.ps_wp_order':2,'CAMR.ps_recon':1}
+        'CAMR.ps_flux':flux,'CAMR.ps_wp_order':2}
     #  PROBE MODE (S4, 2026-08-17): PROBE_OV="k=v,k=v" appends overrides
     #  (applied last, so they always win).  Default off.
     #  THETA-DEFAULTS (2026-08-24) + BATCH 3a: the acceptance configuration
