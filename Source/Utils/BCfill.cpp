@@ -21,6 +21,11 @@ struct PCHypFillExtDir
   amrex::Real nscbc_sigma;
   int         nscbc_order;    // 1 or 2 — R+ extrapolation order.
   int         nscbc_v2;       // NSCBC-1: 1 = v2 construction, 0 = legacy.
+  // Per-face ambient pressure targets (probe #29 follow-up, 2026-08-26):
+  // CAMR.ps_bc_p_amb_{x,y,z}{lo,hi}, indexed [2*idir + (0=lo,1=hi)].
+  // Sentinel <= 0 means "unset — inherit prob.p_amb", so a silent deck
+  // is bit-identical to the pre-dial behavior by construction.
+  amrex::GpuArray<amrex::Real, 2*AMREX_SPACEDIM> p_amb_face;
 #ifdef USE_PS_HYDRO
   PsPres      pres;           // S2: presence params, captured HOST-side at
                               // functor construction (§12.2 rule 1 — never
@@ -32,7 +37,8 @@ struct PCHypFillExtDir
                            int         use_nscbc_,
                            amrex::Real nscbc_sigma_,
                            int         nscbc_order_,
-                           int         nscbc_v2_
+                           int         nscbc_v2_,
+                           const amrex::GpuArray<amrex::Real, 2*AMREX_SPACEDIM>& p_amb_face_
 #ifdef USE_PS_HYDRO
                            , const PsPres& pres_
 #endif
@@ -42,6 +48,7 @@ struct PCHypFillExtDir
     , nscbc_sigma(nscbc_sigma_)
     , nscbc_order(nscbc_order_)
     , nscbc_v2(nscbc_v2_)
+    , p_amb_face(p_amb_face_)
 #ifdef USE_PS_HYDRO
     , pres(pres_)
 #endif
@@ -120,7 +127,14 @@ struct PCHypFillExtDir
         }
         PS_NSCBC::Params params;
         params.pres = pres;   // S2 (functor member, host-captured POD)
-        params.P_amb        = lprobparm->p_amb;
+        // Per-face ambient target (2026-08-26): an explicitly-set face
+        // dial wins; the sentinel (<= 0) inherits the global prob.p_amb.
+        // Assigned per-call, so a future localized source (e.g. an EB
+        // inlet with its own ambient) slots in at its own call site.
+        {
+          const amrex::Real pf = p_amb_face[2*idir + ((sgn > 0) ? 0 : 1)];
+          params.P_amb = (pf > amrex::Real(0.0)) ? pf : lprobparm->p_amb;
+        }
         params.sigma        = nscbc_sigma;
         params.L_ref        = prob_hi[idir] - prob_lo[idir];
         params.nscbc_order  = nscbc_order;
@@ -195,7 +209,8 @@ CAMR_bcfill_hyp(
   // the deck was silent (gerg_ext_c idiom).  Values are captured into the
   // PCHypFillExtDir functor so the device operator() can act on them
   // without touching CAMR class internals.
-  struct NscbcCfg { int use; amrex::Real sigma; int order; int v2; };
+  struct NscbcCfg { int use; amrex::Real sigma; int order; int v2;
+                    amrex::GpuArray<amrex::Real, 2*AMREX_SPACEDIM> pamb; };
   static const NscbcCfg nscbc_cfg = []() -> NscbcCfg {
     int u = 0;
     amrex::Real sg = amrex::Real(0.25);
@@ -208,6 +223,23 @@ CAMR_bcfill_hyp(
     pp.query("ps_bc_nscbc_sigma", sg);
     pp.query("ps_bc_nscbc_order", od);
     pp.query("ps_bc_nscbc_v2",    v2);
+    // Per-face ambient targets (probe #29 follow-up, 2026-08-26).
+    // Sentinel -1 = unset -> inherit prob.p_amb at fill time.  One
+    // global p_amb cannot describe a problem whose two ends see
+    // different far fields (B4: 100 bar left / 50 bar right — the
+    // measured NSCBC-2 category error).
+    amrex::GpuArray<amrex::Real, 2*AMREX_SPACEDIM> pa;
+    for (int f = 0; f < 2*AMREX_SPACEDIM; ++f) pa[f] = amrex::Real(-1.0);
+    pp.query("ps_bc_p_amb_xlo", pa[0]);
+    pp.query("ps_bc_p_amb_xhi", pa[1]);
+#if (AMREX_SPACEDIM >= 2)
+    pp.query("ps_bc_p_amb_ylo", pa[2]);
+    pp.query("ps_bc_p_amb_yhi", pa[3]);
+#endif
+#if (AMREX_SPACEDIM == 3)
+    pp.query("ps_bc_p_amb_zlo", pa[4]);
+    pp.query("ps_bc_p_amb_zhi", pa[5]);
+#endif
 #ifndef USE_PS_HYDRO
     u = 0;   // safety: NSCBC is a no-op without PS_HYDRO.
 #endif
@@ -220,7 +252,19 @@ CAMR_bcfill_hyp(
     pp.add("ps_bc_nscbc_sigma", sg);
     pp.add("ps_bc_nscbc_order", od);
     pp.add("ps_bc_nscbc_v2",    v2);
-    return NscbcCfg{u, sg, od, v2};
+    // Resolved per-face targets -> job_info (gerg_ext_c idiom);
+    // -1 records "inherits prob.p_amb".
+    pp.add("ps_bc_p_amb_xlo", pa[0]);
+    pp.add("ps_bc_p_amb_xhi", pa[1]);
+#if (AMREX_SPACEDIM >= 2)
+    pp.add("ps_bc_p_amb_ylo", pa[2]);
+    pp.add("ps_bc_p_amb_yhi", pa[3]);
+#endif
+#if (AMREX_SPACEDIM == 3)
+    pp.add("ps_bc_p_amb_zlo", pa[4]);
+    pp.add("ps_bc_p_amb_zhi", pa[5]);
+#endif
+    return NscbcCfg{u, sg, od, v2, pa};
   }();
   const int         use_nscbc   = nscbc_cfg.use;
   const amrex::Real nscbc_sigma = nscbc_cfg.sigma;
@@ -244,7 +288,8 @@ CAMR_bcfill_hyp(
   }
 
   amrex::GpuBndryFuncFab<PCHypFillExtDir> hyp_bndry_func(
-    PCHypFillExtDir{lprobparm, use_nscbc, nscbc_sigma, nscbc_order, nscbc_v2
+    PCHypFillExtDir{lprobparm, use_nscbc, nscbc_sigma, nscbc_order, nscbc_v2,
+                    nscbc_cfg.pamb
 #ifdef USE_PS_HYDRO
                     , ps_presence_params()   // S2: host-side read here
 #endif

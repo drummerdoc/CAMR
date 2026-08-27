@@ -7234,3 +7234,328 @@ Follow-up retirement candidates left OPEN (out of this boundary):
 ps_recon and ps_alpha_limiter are now functionally inert on the PS
 path (reads kept for job_info); the fluct-reg =1 register is a
 documented historical no-op kept as the task-#22 P2 landing pad.
+
+====================================================================
+2026-08-26 — NSCBC PROBES #28–#31 (measurement package, items 2–5).
+PREDICTIONS FIRST.  NOTE ON PROVENANCE: the detailed probe specs
+were lost to a session-context compaction; the definitions below
+are reconstructed from the ledger one-liners ("#28 flush, #29
+oracle-ghost B4, #30 refinement sweep, #31 flashing-front") and the
+fix-direction sentence they fund (gradient-form relaxation +
+phase-change-aware ghost closure).  Marc vetoes anything that
+mismatches the original intent.
+
+SHARED CONTEXT (measured, this session, before any probe run):
+  * B4 at N=64 under bcnormal keeps its waves CONTAINED: at tf the
+    x-hi boundary cells are the IC to machine precision and the
+    x-lo cells have drifted 4e-5 relative (rarefaction foot).  So
+    frozen-IC ghosts are the ORACLE to ~1e-4 — no exact-Riemann
+    sampler needed.
+  * bcnormal's PS default is INTERIOR-COPY (ps_bc_copy_interior=1,
+    task #206) — the .1261 baseline is zero-gradient, not a
+    Dirichlet oracle.
+  * The NSCBC soft-relax term (sigma=0.25 default) pulls the
+    incoming invariant toward ONE global prob.p_amb.  The harness
+    sets p_amb=5.0e6 — equal to B4's RIGHT pressure and 50 bar
+    BELOW its LEFT.  A standing candidate injector at x-lo.
+  * QoI recipe for the flashing class re-verified against the
+    stored plenum plotfiles: vented mass M(0)−M(t) at t=80us
+    reproduces 2.2753 / 2.1022 / 1.4838 (ref / legacy / v2-eta05)
+    to every recorded digit.
+
+--------------------------------------------------------------------
+PROBE #29 — oracle-ghost B4.  DECIDES NSCBC-2 (u-err .3809 NSCBC
+vs .1261 bcnormal: where does the excess come from?).
+
+LEGS (N=64, wp defaults, B4-Cross-critical, exact-suite scoring):
+  L1  bcnormal interior-copy        (reproduce .1261)
+  L2  NSCBC v2, shipped defaults    (reproduce .3809; counters by cause)
+  L3  NSCBC v2, sigma = 0           (relaxation pull OFF)
+  L4  NSCBC legacy (v2=0)           (is the excess v2-specific?)
+  L5  ORACLE: frozen-IC ghosts      (probe-only exe: bcnormal fills
+      the prob L/R IC state per side, interior-copy disabled — the
+      exact ghost while waves stay contained)
+
+PREDICTIONS (falsifiers in brackets).
+P1. L5 ≈ L1 within a few % on all three metrics — interior-copy is
+    already oracle-grade on a wave-contained case.  [L5 << L1 =
+    interior-copy was costing accuracy we never credited; the
+    bcnormal baseline itself becomes an item.]
+P2. THE DECISION.  Hypothesis on record: the excess is the sigma
+    relaxation target — a 50-bar pull toward p_amb at the untouched
+    x-lo boundary from t=0.  Predict L3 recovers to within ~20% of
+    L1 (.13–.16 class), reclassifying NSCBC-2 as a TARGET-CHOICE
+    artifact (one global p_amb for two unequal boundaries), not a
+    characteristic-branch defect.  [L3 stays ≥ ~.3 = the injector
+    is the characteristic construction itself; NSCBC-2 stays a
+    formulation defect and the gradient-form line inherits it.]
+P3. L4 within ~15% of L2 — the sigma term is shared, so legacy
+    carries the same class of excess.  [L4 ≈ L1 = the excess is
+    v2-specific after all; NSCBC-1's construction regressed B4.]
+
+--------------------------------------------------------------------
+PROBE #30 — B4-NSCBC refinement sweep.  DECIDES gradient-form.
+
+LEGS: N = 64 / 128 / 256 / 512, each under (a) bcnormal and
+(b) NSCBC v2 shipped; (c) NSCBC sigma=0 added at every N if #29's
+L3 moves materially.  QoI: rel-L2 u (and rho, P) vs exact;
+EXCESS(N) = err_nscbc(N) − err_bc(N).
+
+PREDICTIONS.
+P4. err_bc(N) converges ~1st order (the interior scheme's rate on
+    this discontinuous case).  [No convergence = harness defect.]
+P5. THE DECISION.  Hypothesis on record (from the plenum
+    diagnosis): the NSCBC EXCESS does NOT converge away — the
+    value-jump linearization and the sigma target inject at a
+    resolution-independent amplitude.  Predict EXCESS(512) >
+    0.5 * EXCESS(64) (i.e. not even halved over 8x refinement).
+    This FUNDS gradient-form relaxation (one-sided gradients
+    replace value jumps; the bound and the injection both scale
+    with dx).  [EXCESS falls ~1/N = the formulation is consistent
+    and gradient-form is an optimization, not a fix — the funding
+    argument collapses to NSCBC-3's bound removal only.]
+
+--------------------------------------------------------------------
+PROBE #28 — NSCBC flush / recirculation.
+
+SETUP F (flush): 1-D, domain 0..1, N=256, uniform CO2 vapour
+(phase 0, T=300 K, P=5.0e6 = p_amb exactly, so the sigma pull is
+ZERO on the rest state), velocity step u_L=+1.0 / u_R=0 at
+x_diaph=0.5.  The step splits into two counter-propagating acoustic
+waves (amplitude rho*c*du/2 ~ 1.5e4 Pa << the LIN_ETA threshold —
+deliberately mid-envelope-safe); after both exit, the exact state
+is UNIFORM (u=0.5, P=P0).  QoI: reflection coefficient R =
+max|P−P0|_domain at t = 2 transits, normalized by the incident
+amplitude.  LEGS: bcnormal interior-copy / NSCBC v2 sigma=0.25 /
+NSCBC v2 sigma=0 / NSCBC legacy.
+
+SETUP R (recirculation): same state, uniform u = −0.5 everywhere
+(sustained INFLOW through the x-hi "outflow", outflow at x-lo);
+uniform advection of an identical state is an exact steady
+solution.  QoI: max deviation from the IC at t=4e-3 + counters +
+completion.
+
+PREDICTIONS.
+P6. Flush: both NSCBC legs beat interior-copy on R, and sigma=0 is
+    the best (pure non-reflecting is the construction's design
+    point); predict R_nscbc < 0.1 with R_zg several times larger.
+    [R_nscbc >= R_zg = NSCBC adds no flush value on its home turf —
+    a headline defect.]
+P7. Recirculation: all legs COMPLETE with the uniform state held to
+    ~1e-5 relative; v2's counted fallbacks may fire (recorded by
+    cause) but nothing aborts.  [Abort or state drift = a new
+    ledger item: transient inflow at an NSCBC outflow is unsafe —
+    directly application-relevant (vent re-entry).]
+
+--------------------------------------------------------------------
+PROBE #31 — flashing-front RED baseline.
+
+PURPOSE: freeze the plenum-control flashing-vent measurement as a
+REPRODUCIBLE scored red baseline on the post-deletion single-path
+executable, so the gradient-form + phase-change-source fix has a
+fixed target.  Harness: flashing_front.py (new, committed) — runs
+the four legs and prints the vented-mass table.
+
+LEGS (from the recovered D-series configs, dx = 1/256 m, wp
+defaults, cfl 0.25):
+  R-ref   boundary-free reference: 0..2, N=512, diaph at x=1,
+          tube (TP 320K/100bar, phase 1, xq 0) vs ambient vapour
+          (300K/1bar, phase 0, xq 1); window [0, 80us] (the run
+          aborts at ~80.4us — WP-CONTACT-CEIL, expected and open).
+  R-leg   tube 0..1, N=256, NSCBC legacy at x-hi, p_amb=1e5.
+  R-v2s   tube, NSCBC v2 SHIPPED (LIN_ETA=0.2).
+  R-v2e   tube, NSCBC v2 with LIN_ETA=0.5 (probe-only exe,
+          PS_nscbc.H saved/restored, shipped tree untouched —
+          the construction's number with the bound out of the way).
+
+PREDICTIONS.
+P8. All four legs reproduce the recorded numbers exactly (the
+    deletion is measured wp-bit-identical and never touched
+    PS_nscbc.H): vented mass at 80us = ref 2.2753 / leg 2.1022 /
+    v2e 1.4838 / v2s ~0.00 (NSCBC-3 mirror, ~4 lin refusals/step).
+    [Any drift = the single-path deletion touched the application
+    class after all — stop and diagnose before anything else.]
+P9. RED STANDS: |v2e − ref| = 34.8%, |v2s − ref| ~ 100%.  GREEN
+    criterion proposed for the future fix: vented mass within the
+    legacy bracket (deficit <= 7.6%) with ZERO lin refusals and no
+    dome-side RYP2E inversion.
+
+MEASURED (#29).  Scores (u rel-L2; rho/P move with it):
+    L1  bcnormal interior-copy        .1261  (reproduced)
+    L2  NSCBC v2 shipped              .3809  (reproduced; ALL counters 0)
+    L3  NSCBC v2 sigma=0              .4392  (WORSE than L2)
+    L4  NSCBC legacy                  .3809  (== L2 to the 4th decimal)
+    L2b NSCBC v2, p_amb=1.0e7         .1261  == L1 AT EVERY PRINTED DIGIT
+LOCALIZATION (L2-vs-L1 profile diff): the whole excess lives at the
+x-lo LIQUID boundary — u ~ -4 m/s spurious suction, dP ~ -2.1e6 Pa,
+propagated into the fan; the x-hi side is clean to 2e-11.
+MECHANISM, three-way pinned: Rm_target = -P_amb/(rho c) encodes the
+far field (u_amb=0, P=P_amb) UNCONDITIONALLY — sigma is only an
+extra restoring term on top.  The harness's single global
+p_amb=5.0e6 equals B4's RIGHT pressure and sits 50 bar under its
+LEFT, so the liquid boundary is COMMANDED to the wrong far field
+(the suction).  sigma=0 removes the restoring term but keeps the
+wrong base target -> worse (L3) — P2's falsifier as WRITTEN fired,
+but for the wrong reason; L2b resolves it: with the target matched
+to the boundary's own far field the construction equals
+interior-copy at every printed digit.  The vapor x-hi's apparent
+immunity in L2b is NSCBC-3 at work: a uniform-vapor diagnostic with
+a deliberate 50-bar mismatch shows lin=8/interval refusals -> the
+zero-gradient fallback ~ interior copy (accidentally benign here).
+P1/L5 (oracle) CLOSED BY BOUND, not by run: measured containment
+(boundary-cell drift <= 4e-5 rel at tf) bounds the frozen-IC-ghost
+vs interior-copy difference below 1e-3 on the .12-scale QoI — the
+probe-exe leg would measure nothing.
+P3 refuted in the detail: legacy == v2 on B4 (both boundaries
+single-phase; the pack is branch-identical there).
+VERDICT — NSCBC-2 RESOLVED, not a defect: the .3809 was the
+far-field target doing exactly what it declares at a boundary that
+is NOT ambient — a harness/config category error (one global p_amb
+for two unequal far fields), not a construction error.  Follow-up
+DESIGN item (not a defect): per-face p_amb, or a "far field = this
+face's IC" mode for suite-class cases.
+
+MEASURED (#30).  u rel-L2 vs exact:
+      N     bc(bcnormal)   ns5(NSCBC p_amb=5e6)   ns10(p_amb=1e7)
+      64        .1261            .3809                 .1261
+     128        .0907            .3738                 .0907
+     256        .0641            .3701                 .0641
+     512        .0446            .3683                 .0446
+P4 CONFIRMED (rate ~ 0.5 in L2 on this discontinuous case — the
+prediction said "1st order"; half-order is the honest measured rate
+and the point stands: bc CONVERGES).
+P5 numerically CONFIRMED — EXCESS(512)/EXCESS(64) = .3237/.2548 =
+1.27, not merely > 0.5: the mispulled-NSCBC error is a
+resolution-INDEPENDENT O(1) injection and ns5 saturates at ~.368.
+BUT the inference behind P5 is CORRECTED by #29's mechanism: the
+excess is the wrong TARGET, which gradient-form would not touch —
+ns10 (matched target) equals bc at EVERY N and EVERY printed digit,
+so the construction has NO resolution-dependent defect left to fix
+on this class.  DECISION: gradient-form is NOT funded by the
+B4/NSCBC-2 class (that class resolves by target correctness).  Its
+funding is now: NSCBC-3 (the value-jump lin bound it removes) and
+the flash-closure class (#31).  The ledger's "doubly funded" is
+corrected accordingly.
+
+MEASURED (#28).  Flush (incident acoustic amplitude 1.49e4 Pa;
+residual max|P-P0| after the waves exit, t=6e-3):
+    bcnormal interior-copy   1.49e4   R ~ 1.00  (traps the acoustics
+                                      indefinitely; mean flow kept at
+                                      the exact u=0.5)
+    NSCBC v2, sigma=0.25     2.42e3   R ~ 0.16
+    NSCBC v2, sigma=0        1.03e1   R ~ 7e-4  (near-perfect absorption)
+    NSCBC legacy             1.71e4   R ~ 1.15  (WORSE than interior-copy)
+P6 CONFIRMED for v2 (sigma=0 is the construction's design point,
+measured three orders below zero-gradient) and REFUTED for legacy:
+LEGACY NEVER ABSORBS — its residual exceeds the incident wave, and
+it is measured ASYMMETRIC (acts only on outflow-directed faces,
+sleeps on inflow-directed ones: x-lo held u=1.0 untouched for two
+transit times).  New ledger finding LEGACY-FLUSH.  Mean-flow
+tradeoff measured: after the acoustics leave, both v2 legs relax
+u -> u_amb = 0 (the exact infinite-domain value is 0.5) — the
+declared far field again, correct on a true ambient vent, the #29
+category error on suite-class cases.
+Recirculation (uniform u = -0.5, sustained inflow at the x-hi
+"outflow"): interior-copy holds the exact uniform state to machine
+zero; v2 decelerates the inflow smoothly toward its target
+(boundary u -0.5 -> -0.214, dP 8.5e3 Pa), STABLE, all counters
+zero, no abort; legacy same on the outflow-directed side only.
+P7 CONFIRMED where it matters: transient/sustained inflow at an
+NSCBC outflow is SAFE (no abort class) — vent re-entry will not
+kill an application run; the state deviation is the ambient target
+by construction, not an instability.
+
+MEASURED (#31).  flashing_front.py (committed this session) on the
+post-deletion single-path executable; v2e leg via a LIN_ETA=0.5
+probe-only exe (PS_nscbc.H md5-verified restored, shipped tree
+untouched, shipped exe rebuilt and battery-row-verified .1261):
+    ref   t=8.037e-5   vented 2.2753    (abort past 80us — WP-CONTACT-CEIL, unchanged)
+    leg   t=8.222e-5   vented 2.1022    ( -7.6%)
+    v2s   t=8.229e-5   vented 0.0000    (-100.0%; lin=4/interval — NSCBC-3's wall)
+    v2e   t=8.054e-5   vented 1.4838    (-34.8%; counters zero — pure construction)
+P8 CONFIRMED at every recorded digit — the single-path deletion did
+not move the application class.  P9 STANDS: the red is pinned and
+reproducible (EXE=... [FLASH_V2E_EXE=probe] python3
+flashing_front.py); GREEN gate for the future fix: deficit <= 7.6%
+with zero lin refusals and no dome-side RYP2E inversion.
+
+PACKAGE VERDICT (#28-#31 complete).  NSCBC-2 RESOLVED (target
+category error; construction oracle-grade with a matched target).
+NSCBC-3 reconfirmed in two more places (vapor-side refusals in
+#29's diagnostic; the v2s wall in #31) — still THE open NSCBC
+defect; its fix (gradient-form linearization, no value-jump bound)
+plus the phase-change-aware ghost closure (the -34.8% -> -7.6%-or-
+better gap) are now the NSCBC line's entire remaining scope.
+LEGACY-FLUSH opened: legacy never absorbs outgoing acoustics
+(R>=1) and sleeps on inflow-directed faces — legacy's only
+remaining virtue is the accidental HEM flash of its dome-energy
+inversion (#31's -7.6%), which the phase-change closure would
+supersede; after that lands, legacy (ps_bc_nscbc_v2=0) is a
+retirement candidate.  Config guidance now measured, not guessed:
+suite-class runs use bcnormal or NSCBC with a matched p_amb
+(identical results, every digit); application vents use v2
+(robust, safe on re-entry, sigma=0 for clean acoustics) accepting
+the under-venting red until the closure lands.
+
+====================================================================
+2026-08-26 — PER-FACE NSCBC AMBIENT TARGETS (Marc's call, the #29
+follow-up design item).  PREDICTIONS FIRST.
+
+WHAT.  New dials CAMR.ps_bc_p_amb_{x,y,z}{lo,hi} — the far-field
+pressure target PER DOMAIN FACE.  Default (key unset, sentinel -1)
+inherits the existing global prob.p_amb, so every current deck is
+untouched by construction.  The value lands in PS_NSCBC::Params
+P_amb at fill time, so BOTH constructions (v2 and legacy) honor it
+— the target choice and the ghost construction stay orthogonal, as
+#29 measured they are.  This makes suite-class problems (different
+far fields at the two ends — B4's 100 bar left / 50 bar right)
+correctly configurable under NSCBC for the first time, and gives
+the upcoming NSCBC-3 / flash-closure work an honest-green suite
+regression guard.
+
+DESIGN NOTE, NO ACTION (Marc, same date): EB boundary conditions
+could one day provide LOCALIZED INLETS on embedded geometry, each
+needing its own p_amb.  Nothing is built for that now; noted that
+the shape already accommodates it — params.P_amb is assigned
+per-call at fill time, so a future EB-inlet source supplies its own
+value at its own call site rather than fighting a global.
+
+PREDICTIONS (falsifiers in brackets).
+H-A. Full wp battery BIT-IDENTICAL (NSCBC off; the bcnormal path in
+     BCfill.cpp is not touched).  [Any digit = the edit leaked.]
+H-B. With NO new keys set, every current NSCBC result reproduces at
+     every printed digit: B4-under-NSCBC u = .3809, and the #31
+     table's shipped-exe rows (ref 2.2753 / leg 2.1022 / v2s
+     0.0000).  [Drift = the fallback plumbing changed behavior.]
+H-C. B4 with ps_bc_p_amb_xlo=1.0e7 (x-hi inheriting 5.0e6) scores
+     .1261 / .0635 / .0493 at every printed digit — the honest
+     green, both faces told the truth.  Mechanism differs from
+     #29's L2b at x-hi (matched construction, vs the lin bound
+     refusing a lied-to face): digits predicted equal, bits not
+     claimed.  [Printed-digit drift = a matched-target construction
+     injects after all — stop and diagnose.]
+H-D. N=256 spot with the per-face config: u = .0641 (the sweep's
+     matched-target value).  [Else same as H-C.]
+H-E. job_info records all resolved per-face keys (-1 = inherit),
+     gerg_ext_c idiom.
+
+MEASURED.  All five predictions CONFIRMED.
+H-A CONFIRMED.  Full 20-case wp battery bit-identical to the
+post-deletion baseline (diff empty at every printed decimal).
+H-B CONFIRMED.  Keys unset: B4-under-NSCBC reproduces .3809/.0639/
+.2178 at every digit; flashing_front shipped rows reproduce
+ref 2.2753 / leg 2.1022 / v2s 0.0000 exactly.  (v2e row unchanged
+BY ARGUMENT — the sentinel default inherits prob.p_amb upstream of
+LIN_ETA — not re-run: the existing probe exe predates this edit
+and mixing builds would prove nothing.)
+H-C CONFIRMED.  ps_bc_p_amb_xlo=1.0e7 with x-hi inheriting:
+.1261 / .0635 / .0493 at every printed digit — the honest-green
+NSCBC suite configuration exists.  This is the regression guard
+for the NSCBC-3 / flash-closure work: THE SUITE GREEN MUST NOT
+MOVE.
+H-D CONFIRMED.  N=256 per-face: u = .0641 (the sweep's
+matched-target value).
+H-E CONFIRMED.  job_info records the resolved per-face keys
+(xlo=1e7, xhi=-1.0 = inherit).
+All builds clean: PR 1-D, the four 2-D exes, and Sod GammaLaw
+(the non-PS BCfill compile path).
