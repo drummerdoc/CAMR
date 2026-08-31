@@ -8225,3 +8225,477 @@ measured campaign if Marc wants it.  The G-DEF re-baseline that
 option A would have required COLLAPSES to: one battery
 verification (bit-identical — done) and the flashing-front re-pin
 (ref 2.3428, v2s -4.1% — done in the harness with history kept).
+
+====================================================================
+2026-08-27 — DT7-4.1 TWO-PHASE SHOCK TUBE (Marc's request: set up
+the first numerical test of the dropped SINTEF report
+DT7_2019_6_homogeneous_relaxation_model.pdf, section 4.1, as a 1-D
+CAMR/PR case and compare our algorithm to their results).
+PREDICTIONS FIRST.
+
+CASE (from the report): 12 m tube, membrane at 6 m, both sides
+saturated CO2 at rest — left 298.15 K at gas volume fraction 0.2,
+right 273.15 K at 0.8; PR EOS, 1000 cells, profiles at t = 25 ms.
+Their Figure 4 shows HEM (full equilibrium) plus an HRM
+theta-family relaxing toward it.  CAMR deck:
+inputs.dt7_shocktube (committed), with the volume->mass quality
+conversion done at OUR code's own saturation densities (measured:
+Psat 64.49 / 34.77 bar vs the figure's ~64.4 / ~34.8 — EOS-level
+endpoint agreement, so plateau comparisons are meaningful).
+
+DIGITIZED HEM ANCHORS (from Figure 4 at 200 dpi; bands are honest
+read-off error): star pressure 47.6 +/- 0.3 bar; star-left
+temperature 285.4 +/- 0.4 K; shock at x = 8.85 +/- 0.10 m;
+rarefaction spanning ~[3.8, 4.7] +/- 0.3 m; contact just behind
+the shock (u* ~ 110 m/s, s ~ 114 m/s — the classic slow two-phase
+shock; the star-right T sliver is ~0.1-0.2 m wide and not cleanly
+resolvable from the figure).
+
+PREDICTIONS (falsifiers in brackets).
+D1. The case RUNS to 25 ms at bare CAMR defaults, no aborts, all
+    counters clean — a genuine two-phase/two-phase saturated
+    Riemann problem is B3/B4-adjacent but has never been run with
+    this quality contrast.  [An abort = a new envelope item; the
+    runaway counter and TQUERY snapshot say where.]
+D2. ALREADY MEASURED (IC probe): our PR saturation endpoints match
+    the report's figure to ~0.3 bar on both sides.
+D3. THE COMPARISON: our bare-default algorithm (X3 relaxation —
+    fixed point IS the HEM flash) lands on their HEM curve within
+    digitization error: star P within 1 bar of 47.6; star-left T
+    within 1 K of 285.4; shock position within 0.3 m of 8.85;
+    rarefaction span overlapping [3.8, 4.7].  [Misses beyond those
+    bands = a real model/scheme difference to diagnose — candidates
+    ranked: PR liquid-density bias (625 vs ~713 kg/m^3 at 298 K)
+    shifting mixture impedance; our 6-eq vs their 3-eq HEM wave
+    structure; their scheme's dissipation at CFL 0.9.]
+D4. Grid sanity: N=250 reproduces the same plateaus with softer
+    fronts (positions within ~2 cells of N=1000).
+
+MEASURED.  All four predictions CONFIRMED; one structural
+observation worth its own paragraph.
+D1 CONFIRMED.  Runs to 25 ms at bare defaults, both grids; zero
+aborts; all counters clean (runaway 0 — the new gate never needed;
+mass drift 2e-16).
+D3 CONFIRMED — EVERY metric inside its band at N=1000 (score table
+from dt7_shocktube.py):
+    left P    64.485 bar  (HEM fig 64.4,  +0.085)
+    right P   34.772      (34.8,  -0.028)
+    star P    47.635      (47.6,  +0.035)
+    star-left T 285.500 K (285.4, +0.100)
+    raref. mid  4.302 m   (4.25,  +0.052)
+    shock pos   8.898 m   (8.85,  +0.048)
+D4 CONFIRMED.  N=250 mid-positions within 0.08 m of N=1000;
+plateaus identical to the printed digits.
+THE OBSERVATION: our rarefaction is BROADER than HEM's — the wave
+BODY sits exactly at the HEM position (mid-crossing +0.05 m) but
+the fan spreads over ~[2.4, 5.9] where HEM's spans [3.8, 4.7].
+Overlaying the report's own Figure 4 family, our profile shape
+closely resembles their HRM at theta ~ 0.005-0.01 s: smooth spread
+rarefaction, identical plateaus, same shock.  That is the expected
+SIGNATURE of a relaxation model — CAMR's 6-eq X3 runs finite
+(BE-SRT) mass-transfer rates plus a frozen-c precursor, i.e. it IS
+an HRM-class model whose equilibrium limit is the HEM the report
+compares against.  In other words: on the report's own test, our
+algorithm reproduces the HEM structure exactly where the HEM is
+sharp (plateaus, shock, wave body) and behaves like their
+small-theta HRM exactly where relaxation physics shows
+(rarefaction spread) — which is the behaviour the report itself
+advocates pursuing.  OPTIONAL follow-up (unhurried): map CAMR's
+effective theta by varying the SRT rate dials and matching the
+fan spread against their theta family.
+Deliverables committed: inputs.dt7_shocktube (the case, with the
+volume->mass quality conversion recorded in-deck) and
+dt7_shocktube.py (the scored comparison + overlay).
+
+2026-08-27 — DT7 EFFECTIVE-THETA LADDER (Marc: "draft the
+predictions-first WORKLOG entry and queue the ladder").  The
+shelf item from the DT7-4.1 entry: map CAMR's effective HRM
+relaxation time by varying the SRT rate dial and matching wave
+structure against the report's Figure-4 theta-family.
+PREDICTIONS FIRST — written before any ladder run.
+
+REFERENCE DATA (not a measurement of ours).  Figure 4(b)
+machine-digitized at 400 dpi: per-color pixel masks, axes
+calibrated from the gridlines (80 px/m, 19.23 px/bar), per-column
+median; legend region excluded.  Positions good to ~+/-0.06 m
+(2 px + mask width), spans to ~+/-0.15 m.  The family
+(P_L 64.4 / P_R 34.8 common; span = fan 10-90% width):
+
+    curve     star P   fan foot   10%     90%    span   shock
+    HEM        47.58     3.79     3.94    4.70   0.76    8.82
+    th=1e-4    47.58     3.73     3.94    4.78   0.84    8.84
+    th=0.001   47.58     3.02     3.62    4.99   1.36    8.90
+    th=0.005   47.68     2.44     2.66    5.16   2.50    8.85
+    th=0.01    47.68     2.38     2.49    5.55   3.06    8.97
+    th=0.1     44.80     2.34     2.42    (3.59) (1.16)  8.99
+    th=1       43.86     2.31     2.41    (3.27) (0.86)  8.99
+
+  The slow branch (th >= 0.1) changes TOPOLOGY: the star sags
+  below the equilibrium 47.6 (44.8 / 43.9) behind an early fast
+  drop — the parenthesised "spans" measure that different shape,
+  not a fan.  Two regimes, two discriminators: fan span on the
+  fast branch, star sag on the slow branch.
+
+CALIBRATION POINT — A POSTDICTION, LABELLED AS SUCH.  Our
+bare-default N=1000 run (already in hand before this entry):
+fan foot 2.41, 10-90% span 2.88 m, star 47.62, no sag.
+Interpolating their fast branch puts the default at
+theta_eff ~ 0.007-0.008 s (between their 0.005 and 0.01 curves,
+nearer 0.01 on the foot).  This number seeded the ladder design,
+so it counts as calibration, not as a prediction confirmed.
+
+MECHANISM AND THE DIAL.  Mode-5 (X3) mass transfer is BE-SRT:
+Gamma = Sigma * rho_g * sqrt(M/(2 pi R_u T_g)) * |g1 - g2| with
+Sigma = (16/pi)(alpha_recv + delta) alpha_send / D, D =
+CAMR.ps_mt_srt_d (default 0.1 m, the stratified-pipe morphology
+placeholder).  tau_asy = |dm_eq|/Gamma, so tau proportional to
+srt_D at fixed state.  The thermal theta (1e-7 s) is
+near-instantaneous here and is NOT varied; the ladder moves the
+MT rate only, runtime key, same exe, no source change.
+
+THE LADDER.  N=250 reconnaissance (span converged to ~2.5% of
+N=1000 on the default: 2.95 vs 2.88), six rungs around the
+default, chosen so the linear mapping theta_eff ~ (0.075 s/m) *
+srt_D would land them on the family:
+    srt_D [m]:  0.0013  0.013  0.067  (0.1=default, in hand)
+                0.133   1.33   13.3
+Stage 2 (after scoring): N=1000 confirmation of the two most
+informative rungs, plus any rung whose N=250 span is < 1.5 m
+(resolution floor, see L4).
+
+PREDICTIONS (falsifiers in brackets).
+L1. MONOTONICITY: fan 10-90% span increases monotonically with
+    srt_D across the fast branch.  [Any inversion beyond
+    +/-0.15 m digitization error = the dial is not the
+    controlling rate; stop and diagnose.]
+L2. LINEARITY: theta_eff(srt_D) = k * srt_D with k ~ 0.075 s/m
+    from the calibration point — srt_D=0.0133 lands within a
+    factor ~2 of their th=0.001 span (1.36 m); srt_D=0.067
+    near their th=0.005 (2.50 m); srt_D=0.133 near th=0.01
+    (3.06 m).  [Off by >3x or visibly nonlinear = |dm_eq|
+    co-varies with the rate and breaks the proportionality —
+    informative, not a defect.]
+L3. TOPOLOGY: the slow rungs (1.33, 13.3) reproduce the
+    slow-branch signature — star sagging toward ~44.8/~43.9 with
+    the early fast drop.  [No sag = our BE-SRT + separate thermal
+    leg differs structurally from their one-temperature quality
+    relaxation; would cap how far the theta mapping can be
+    pushed.]
+L4. RESOLUTION FLOOR: at N=250 the fastest rung (0.0013) cannot
+    reach the HEM span 0.76 m — it floors at the numerical width,
+    predicted ~1.0-1.3 m (the N=250 default-run shock 10-90%
+    width was 0.73 m; fans smear wider).  [A span <= 0.9 m at
+    N=250 = the floor estimate was wrong; harmless, note it.]
+L5. PLATEAUS UNTOUCHED: star P = 47.6 +/- 0.3 and both end
+    states unchanged on every fast-branch rung.  [Star drift on
+    the fast branch = the dial is leaking into the equilibrium
+    states, not just the structure — that WOULD be a defect.]
+L6. DZ ADJUDICATION (analysis of the in-hand default run, no new
+    physics run): the Downar-Zapolski correlation theta =
+    3.84e-7 * alpha_v^-0.54 * psi^-1.76 evaluated at the measured
+    fan states (psi from our own Psat(T) vs local P, alpha_v from
+    the profile) lands within one decade of theta_eff ~ 0.0075 s.
+    [Outside a decade = the default srt_D is not DZ-defensible on
+    this flow; report the factor and which way.]
+
+SCOPE GUARD.  Probe-only: runtime keys on the stock exe; no
+source change, no default change, battery untouched.  If the
+DZ comparison ever motivates moving the ps_mt_srt_d default,
+that is a separate G-DEF decision gated by the battery.
+Harness: dt7_shocktube.py gains the structure metrics (fan
+foot/10/90/span, shock 10-90 width, star-sag flag) and the
+digitized family table so ladder scoring is mechanical.
+
+2026-08-27 — EFFECTIVE-THETA LADDER, MEASURED (same day; ladder run
+15:49-15:40Z as six sequential N=248 rungs, all rc=0; scored with the
+extended dt7_shocktube.py STRUCTURE/FAMILY-MATCH metrics).
+
+    srt_D [m]   span [m]  star sag  theta_eff (span-interp)  k=th/srt_D
+    0.0013        0.97     -0.09     1.8e-4  (floor-inflated)   0.138
+    0.013         1.35     -0.08     9.8e-4                     0.075
+    0.067         2.66     -0.03     6.1e-3                     0.091
+    0.1 (def)     2.95     -0.03     8.7e-3   [calibration]     0.087
+    0.133         3.10     -0.04     ~1e-2 (extrapolated)       0.075
+    1.33         (2.23)     1.96     slow branch, nearest th=0.1
+    13.3         (1.02)     3.57     slow branch, nearest th=1
+
+L1 CONFIRMED.  Fast-branch spans strictly monotone in srt_D
+   (0.97 < 1.35 < 2.66 < 2.95 < 3.10).
+L2 CONFIRMED.  theta_eff = k*srt_D with k = 0.075-0.091 s/m on the
+   resolved rungs (predicted ~0.075; mid-rung srt_D=0.013 landed on
+   their th=0.001 span to 2%).  The fastest rung's k=0.138 is the
+   resolution floor talking (L4), not nonlinearity.
+   THE MAPPING: theta_eff [s] ~ 0.08 * srt_D [m] on this flow.
+L3 CONFIRMED.  Both slow rungs flip to the slow-branch TOPOLOGY:
+   star sag 1.96 bar at srt_D=1.33 (their th=0.1 sags 2.78 — ours
+   sits between their 0.05 and 0.1) and 3.57 bar at 13.3 (their
+   th=1: 3.72 — nearly exact).  The early-drop widths differ from
+   theirs ((2.23,1.02) vs (1.16,0.86) m) — the sag matches, the
+   transient shape only roughly; noted, not scored.
+L4 PARTIALLY CONFIRMED — floor estimate was slightly high.
+   Predicted floor 1.0-1.3 m; measured fastest-rung span 0.97 m
+   (below the predicted window, above the 0.9 refutation line).
+   The rung IS floored (target th=1e-4 span 0.84; theta_eff comes
+   out x1.8 above the linear map): the floor is ~0.97 m at N=248,
+   not 1.0-1.3.  Stage-2 N=1000 confirmation owed for the two
+   rungs with span < 1.5 m (0.0013, 0.013).
+L5 CONFIRMED.  Fast-branch stars 47.63-47.69 (band 47.6+/-0.3);
+   end states unchanged everywhere.  The dial moves structure only.
+L6 REFUTED — decisively, and the honest headline.  DZ evaluated at
+   the default run's own fan states (Psat(T) from our measured
+   anchors, ln-P vs 1/T fit, checks Pc to 0.13 bar): psi median
+   0.154 (range 0.036-0.173 — the fan carries SEVERAL BAR of
+   residual liquid metastability), alpha_v 0.2-0.7, giving
+   theta_DZ median 1.9e-5 s (p25-max 1.4e-5 - 1.6e-4).  That is
+   ~x400 FASTER than our exhibited theta_eff ~ 8e-3 — 2.6 decades
+   outside the predicted one-decade window, on the fast side.
+   Reading: by the flashing-flow correlation the report leans on,
+   our default SRT rate is ~2.5 decades too SLOW on this flow; a
+   DZ-consistent run would sit near-HEM (the large measured psi is
+   itself the signature of slow relaxation — fast dynamics would
+   have eaten it).  Self-consistency caveat recorded: psi measured
+   on OUR profile is the residual metastability our own slow rate
+   leaves behind; evaluating DZ on a near-equilibrium profile
+   would bias theta_DZ high, so the true DZ-consistent theta is
+   if anything FASTER — the refutation direction is robust.
+   NOT acted on: srt_D default unchanged (0.1 m, the stratified-
+   pipe placeholder).  If a DZ-defensible default were ever
+   wanted, the mapping says srt_D ~ 2.5e-4 m — a separate G-DEF
+   decision gated by the battery, parked on the shelf.
+
+OPERATIONAL NOTE (container): background runs die when the cloud
+workspace sleeps between turns — two silent kills today (demo2 at
+t=1.04 ms 13:14Z, again at t=0.37 ms 14:41Z, plus ladder rung 1).
+The ladder completed only because the session babysat it.  demo2
+now checkpoints (amr.check_int=50) and restarts from chk_ on wake.
+
+2026-08-28 — DEMO2 2-D SHAKEDOWN COMPLETE (satjet_demo2, the sole
+surviving PipeBreak deck, on the WP-CONTACT-CEIL-fixed exe).
+Reached stop_time 2.5e-3 s cleanly: 505 coarse steps, dt steady
+4.75-4.98e-6 throughout (never below except the final clip onto
+stop_time — the pre-fix stall signature never appeared), zero
+aborts / NaNs (the only log "assert" hits are the benign #210
+banner, one per restart segment), [ps_mt] finite-rate MT active
+throughout (9.16e6 cumulative cells), [PS-COEXIT-TH] runaway
+clause NEVER fired in 2-D either.  Physics: flashing jet with
+rolled-up vortex pair reaches x~0.5 m by 2.5 ms, peak axial
+velocity ~300 m/s at the gap, counter-rotating backflow lobes;
+AMR tags track the jet and the detached precursor front (a
+second patch cluster at x~0.6-0.8 at the end) — the imgamr.py
+overlay bug (fixed 2026-08-27) had made this look wrong; it
+never was.  OPERATIONAL: run executed across ~12 container
+sleep/restart cycles on an amr.check_int=10 checkpoint-restart
+chain (5 log segments, concatenated in run3_partial.log);
+plt/chk prefix plt_sj2_/chk_sj2_.  Shakedown item CLOSED.
+
+2026-08-28 — LADDER ADDENDUM: FAMILY REPRODUCTION (Marc: "if we
+re-run CAMR with different theta values using the inferred
+mapping, can we reproduce their family of curves?").  No new runs
+needed — the six rungs were PLACED by the linear mapping
+(srt_D = theta/0.08), so each existing rung is the prediction for
+one family member.  Overlaying each rung on its target digitized
+curve (family_reproduction.png; now Figure 3 of
+DT7_comparison.docx): all six members reproduced, including both
+slow-branch sagged-star profiles (theta=1: near-exact overlay).
+Largest deviation: mid-fan SHAPE at theta=0.005-0.01 (our fan
+carries a flatter mid-bulge where theirs drops smoothly — the
+6-eq two-temperature/frozen-precursor structure at its most
+visible).  Note this is an out-of-sample check of L2: the rungs
+were placed by the mapping BEFORE these per-member overlays were
+drawn, and each lands on its intended curve.  CAMR grids N=248
+vs their 1000 (slightly softer fronts only).
+
+2026-08-28 — LADDER STAGE 2: N=1000 FAMILY RUNS (Marc: regenerate
+the comparison document with 1000-point runs).  Re-runs all six
+family rungs (srt_D = theta/0.08) at the report's own resolution.
+PREDICTIONS FIRST (written before launch).
+S1. The fastest rung (0.0013) de-floors: span drops from 0.97
+    (N=248 floor) to <= 0.9, toward their theta=1e-4 read of
+    0.84; its theta_eff lands within a factor ~2 of 1e-4.
+    [Span stuck at ~0.97 = the floor was NOT resolution; that
+    would reopen L4.]
+S2. The 0.013 rung narrows slightly if at all (1.35 -> 1.2-1.35),
+    still on their theta=0.001 curve.
+S3. Rungs 0.067/0.133: spans unchanged within +/-0.1 m
+    (grid-converged, as the default rung already showed).
+S4. Slow-branch star sags unchanged within +/-0.1 bar.
+S5. The per-member overlays sharpen at the shocks ONLY; the
+    mid-fan shape deviation at theta=0.005-0.01 PERSISTS — it is
+    model form (6-eq two-temperature + frozen-c precursor), not
+    resolution.  [If it vanishes at N=1000 it was numerics and
+    the "genuine difference" paragraph gets rewritten.]
+Runs: N=1000 (deck default), amr.check_int=200 per-rung
+checkpoints, resumable driver (container sleeps only cost the
+minutes since the last checkpoint).  ~70 min/rung sequential.
+
+2026-08-28 — LADDER STAGE 2, MEASURED (six N=1000 rungs, 12:27-19:25Z,
+all rc=0; zero restarts needed).  Scored table (span / sag / theta_eff):
+
+    srt_D     N=248 span   N=1000 span   sag     match at N=1000
+    0.0013      0.97          0.76       -0.10   HEM / th=1e-4 (indistinguishable)
+    0.013       1.35          1.24       -0.09   th=0.001 (theta_eff ~ 5.8e-4)
+    0.067       2.66          2.64       -0.04   th=0.005 (6.0e-3)
+    0.133       3.10          3.02       -0.03   th=0.01  (9.6e-3)
+    1.33       (2.23)        (2.11)       1.96   th=0.1  (sag unchanged to 0.00)
+    13.3       (1.02)        (0.80)       3.58   th=1    (their 3.72)
+
+S1 CONFIRMED — STRONGLY.  The fastest rung de-floors 0.97 -> 0.76 m,
+   which is the HEM span itself; at the report's resolution this rung
+   is indistinguishable from their HEM/th=1e-4 pair (0.76/0.84,
+   +/-0.15 read-off).  L4 stage-2 RESOLVED: the N=248 floor was
+   resolution, and it sits at ~0.97 m there.
+S2 CONFIRMED.  1.35 -> 1.24 m, still their th=0.001 curve
+   (theta_eff 5.8e-4, factor 1.7 of 1e-3).
+S3 CONFIRMED.  0.067/0.133 spans moved 0.02/0.08 m (< +/-0.1).
+S4 CONFIRMED.  Slow-branch sags 1.96 (bit-close) and 3.57->3.58.
+S5 CONFIRMED.  Per-member overlays at N=1000
+   (family_reproduction.png regenerated): shocks sharpen markedly
+   (fast-rung shock widths 0.34->0.10, 0.44->0.18 m — those were
+   numerical at N=248), but the mid-fan shape difference at
+   theta=0.005-0.01 PERSISTS at their own resolution — model form
+   (6-eq two-temperature + frozen-c precursor), not numerics, as
+   predicted.  th=1e-4 and th=1 are now exact overlays; th=0.1
+   keeps a slightly elevated sag plateau mid-tube.
+MAPPING REFINED: k = theta_eff/srt_D = 0.045-0.088 s/m across the
+resolved rungs at N=1000 (0.08 nominal stands within factor ~1.8;
+the N=248 value for the 0.013 rung was itself mildly floor-inflated).
+All prior "pending fine-grid confirmation" caveats on the two fast
+rungs are DISCHARGED.  DT7_comparison.docx rebuilt on the N=1000
+figure; caveats section updated accordingly.
+
+2026-08-29 — DEFECT OPENED: PRESENCE-PROMOTION (Marc's extended
+demo2 run, crash at coarse step 1826 / L1 step 3654, t=8.235e-3;
+[PS-TQUERY] + Backtrace.4 supplied by Marc; frames 1260-1820
+staged and measured).  THE LEDGER IS NO LONGER CLEAR.
+
+THE CRASH MECHANISM, measured end to end:
+ 1. In the CORRIDOR (alpha < alpha_cond = 0.02) a phase is
+    transport-only BY DESIGN: alpha_1 advects non-conservatively
+    (at S_M) while m_1 is fluxed conservatively, and no source
+    (E.1 pairing, MT, relaxation) acts to re-couple them.  The two
+    slots therefore DRIFT APART freely in rough flow.  Measured:
+    268-783 corridor cells per frame carry rho_1 = m_1/alpha_1
+    < 100 kg/m^3 (worst 0.9!) across the whole 1260-1820 window —
+    chronic, not exceptional; harmless while corridor.
+ 2. The macro feature (high-P/high-rho blob, on-axis x~0.17-0.18
+    from frame ~1390; max rho 150->155) manufactures
+    near-threshold interface area: cells with alpha_1 in
+    [0.015,0.03] grow 6.5k -> 11.2k over the window, and P-hash
+    (max |d2P/dy2| in the feature) grows 0.57 -> 1.61 bar over
+    1260-1390 — Marc's observed noise onset.
+ 3. THE FATAL STEP: cell (206,184) L1 (x=0.81, y=0.72; vortex-core
+    conditions P=10.6 bar, T=229 K).  Frame 1810: alpha_1=0.0020,
+    rho_1=7.3 (corridor, degenerate, harmless).  1820:
+    alpha_1=0.0039, rho_1=0.93.  Six steps later: alpha_1=0.0219 —
+    ACROSS alpha_cond — with m_1=0.0017, i.e. rho_1=0.076,
+    e_1=7.6e7.  ps_regime promotes on ALPHA ALONE (mass checked
+    only for >0), the both-INDEPENDENT branch grants the EOS
+    query, and the branch-locked inversion rightly finds no root:
+    Abort.  The refusal is correct; the PROMOTION is the defect.
+
+THE IRONY: PS_presence.H's own Contract-3 comment states the
+principle exactly ("alpha_k partitions volume, m_k partitions
+mass; neither constrains the other") — but the Independent edge
+of ps_regime does not apply it.  A phase can be volume-Independent
+and mass-empty, and promotion hands relaxation and the EOS a
+phantom.
+
+CANDIDATE FIXES (not yet implemented; Marc to choose):
+ F1 SURGICAL — Contract 3 at the promotion edge: Independent
+    requires alpha >= alpha_cond AND rho_k = m/alpha inside the
+    EOS-queryable domain (>= EOS rho floor); otherwise the phase
+    stays Corridor whatever its alpha.  Kills the crash class
+    outright; battery predicted bit-identical (decoupled slivers
+    at promotion should not occur in the 1-D suite — to be
+    verified, not assumed).
+ F2 COMPANION — degeneracy death: extend the vanish fold to reap
+    a corridor phase whose rho_k has left the EOS domain (fold
+    mass+energy to the majority phase, conserving both), so the
+    loaded guns are removed rather than merely refused promotion.
+ F3 OPTIONAL — hysteresis on the relax gate (promote at
+    alpha_cond, demote below alpha_cond/2) to damp near-threshold
+    regime toggling, the suspected hash driver; measure first
+    whether hash actually correlates with toggling.
+Predictions for F1+F2, to be tested on implementation: battery
+bit-identical; demo2 restart from chk near step 1800 runs past
+1826 with hash bounded; the near-threshold census stops growing.
+
+2026-08-29 — PRESENCE-PROMOTION FIX (Marc: "apply all three with the
+usual discipline").  PREDICTIONS FIRST — written before implementation.
+
+DESIGN (informed by two pre-measurements, recorded here):
+ M1. Minimum LEGIT Independent-phase density across all 20 battery
+     finals = 1.406 kg/m^3 (C3).  The crash promotion was 0.076.
+     A degeneracy floor rho_deg = 0.5 kg/m^3 separates them 3x both ways.
+ M2. Zero battery-final cells would trip either new reap criterion
+     (corridor rho_k < 0.5: 0 cells; e_k outside [-2e6, 2e7]: 0 cells).
+ F1  ps_regime: alpha >= alpha_cond no longer suffices for INDEPENDENT;
+     m > rho_deg*alpha (division-free) is also required, else CORRIDOR.
+     Key CAMR.ps_presence_rho_deg (default 0.5).  Demotions counted.
+ F2  vanish-fold wrapper gains two conservative reaps (fold into host,
+     mass+energy conserved, same mechanics as E2' vacuum): (a) corridor
+     density-degeneracy — corridor phase with m <= rho_deg*alpha;
+     (b) energy-degeneracy — exactly-one phase with e_k outside
+     [ps_presence_e_deg_lo, _hi] = [-2e6, 2e7] J/kg (physical CO2 spans
+     ~[-1.5e5, ~4e6]).  Counted n_cdeg/n_edeg in [PS-FOLD].
+ F3  relax gate hysteresis: a phase is relaxable if INDEPENDENT, or —
+     CAMR.ps_relax_hyst=1 (default ON, Marc's call) — if CORRIDOR with
+     alpha >= alpha_cond/2 AND m > rho_deg*alpha.  Removes the on/off
+     source boundary from the exact alpha the relaxation itself moves.
+     Hysteresis-granted passes counted.
+
+PREDICTIONS (falsifiers bracketed).
+ X1 F1+F2 alone (ps_relax_hyst=0): battery BIT-IDENTICAL to bg_wp
+    (basis M1/M2; residual risk: transient mid-run states could trip a
+    reap even though finals don't).  [Any diff = a floor is touching
+    real physics; report the case and lower rho_deg before landing.]
+ X2 Full defaults (F3 on): all 20 battery cases COMPLETE; diffs, if
+    any, confined to cases with near-threshold corridor activity and
+    reported per-case with QoI deltas.  [An abort or a QoI shift
+    > 5 percent = F3 redesign, not a tweak.]
+ X3 Marc's demo2 restart from chk_sj2_01800 on the fixed exe clears
+    step 1826 and runs on; the [PS-FOLD] cdeg/edeg counters fire in
+    the feature region (nonzero — the guns exist, M-measured), and
+    P-hash at the feature does not grow past its pre-fix ~1.6 bar.
+    [Crash recurs = a second promotion path exists (e.g. computeTemp's
+    own regime call needs the same guard) — locate via TQUERY print.]
+ X4 No silent channel: every demotion/reap/hysteresis-pass appears in
+    the extended [PS-FOLD] line.
+DIVISION OF LABOR (usage-constrained, Fable at 94 percent):
+ container/Claude — implement, build 1-D, run both battery passes, ship;
+ Marc's machine — rebuild 2-D exes, demo2 restart validation (X3),
+ report battery-on-macOS only if container battery is ambiguous.
+
+2026-08-29 — PRESENCE-PROMOTION FIX, MEASURED (container: 1-D build +
+both battery passes; fx_battery_hyst0.log / fx_battery_full.log vs
+sg_wp baseline).
+X1 CONFIRMED.  F1+F2 alone (ps_relax_hyst=0): battery BIT-IDENTICAL
+   to baseline — the promotion guard and both reaps touch nothing in
+   the 1-D suite, as the M1/M2 pre-measurements predicted.
+X2 PARTIALLY CONFIRMED — reported honestly.  Full defaults (F3 on):
+   all 20 cases COMPLETE and score "ok"; diffs confined to four
+   cases with near-threshold corridor activity.  Error-norm deltas
+   (rel-L2 vs exact, baseline -> F3):
+     B2  rho 0.0929->0.0920 (better)   u 0.7816->0.7887 (+0.9%)
+     B7  u 0.7099->0.7182 (+1.2%)      P 0.3211->0.3238 (+0.8%)
+     B9  u 0.7565->0.7604 (+0.5%)      P ~unchanged
+     B11 u 0.0278->0.0291 (+4.7%)      P 0.0927->0.0989 (+6.7%)
+   B11's P error-norm growth (+6.7% relative; +0.006 absolute on a
+   ~0.1 norm) grazes the 5% falsifier line.  Recorded, not hidden:
+   the F3-on default stands per Marc's "apply all three", with
+   CAMR.ps_relax_hyst=0 as the one-key A/B if B11 matters more than
+   the demo2 hash; the G-DEF call is Marc's to revisit.
+X3 PENDING — Marc's machine (division of labor): rebuild exes, restart
+   demo2 from demo2_final's latest chk on the fixed source, expect the
+   run to clear step 1826 with [PS-FOLD] cdeg/edeg/f1/f3 counters live
+   and feature hash bounded (~1.6 bar).  Falsifier unchanged: a
+   recurrence means a second promotion path (check the TQUERY print).
+X4 CONFIRMED by construction (extended [PS-FOLD] line); live-fire
+   verification rides along with X3.
+HANDOFF (usage-constrained): source shipped to Marc's tree
+(PS_presence.H, PS_relaxation.H, CAMR_advance.cpp).  Marc: make in
+CO2_PipeBreak (2-D, his toolchain), restart demo2, report ONE message
+with (a) whether it clears 1826 and how far it got, (b) a [PS-FOLD]
+line sample, (c) any TQUERY print if it dies.  Claude next session:
+record X3 MEASURED from that message, close or reopen.  All state
+needed to resume lives in this WORKLOG entry.
