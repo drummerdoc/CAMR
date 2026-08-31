@@ -40,7 +40,7 @@ def field(L,var):
         full[jl:jh+1,il:ih+1]=vals[vi]
     return full,nx,ny,boxes
 fig,ax=plt.subplots(2,1,figsize=(9,6))
-for a,(v,ti,cm) in zip(ax,[('alpha_1','vapor/void fraction α₁ (dark = flashing two-phase)','viridis'),('x_velocity','axial velocity u_x [m/s]','magma')]):
+for a,(v,ti,cm) in zip(ax,[('alpha_1','liquid fraction α₁ (phase 1 = liquid branch; jet head is mostly flashed vapor)','viridis'),('x_velocity','axial velocity u_x [m/s]','magma')]):
     f0,nx0,ny0,_=field(0,v); im=a.imshow(f0,origin='lower',aspect='auto',cmap=cm,extent=[PLO[0],PHI[0],PLO[1],PHI[1]]); fig.colorbar(im,ax=a,fraction=0.025)
     # overlay level-1 boxes
     try:
