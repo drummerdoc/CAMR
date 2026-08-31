@@ -270,7 +270,8 @@ ps_wp_face(int idir, int i, int j, int k, int iL, int jL, int kL,
     ps_physical_flux_from_state(idir, UR, FR, l_pres);
 
     PS_HLLC::Fluctuations flu;
-    const bool ok = PS_HLLC::fluctuations(idir, UL, UR, flu, l_pres);
+    const bool ok = PS_HLLC::fluctuations(idir, UL, UR, flu, l_pres,
+                                          i, j, k);   // face loc, 0a diag
 
     Real Am[NVAR], Ap[NVAR], flx_loc[NVAR];
     if (ok) {

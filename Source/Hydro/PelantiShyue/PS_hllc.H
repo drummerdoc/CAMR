@@ -554,6 +554,15 @@ inline double& max_estar(int c) { static double v[3] = {0,0,0}; return v[c]; }
 inline long&   n_fl_seen(int c) { static long n[3] = {0,0,0};   return n[c]; }
 inline long&   n_fl_fail(int c) { static long n[3] = {0,0,0};   return n[c]; }
 inline double& max_incmis(int c){ static double v[3] = {0,0,0}; return v[c]; }
+//  Location of max_incmis -- (i,j,k,idir) of the face holding each class max
+//  (work item 0a, HANDOFF_shock_phase_compression.md Part 3; FINDINGS A.5/B.4:
+//  a maximum with no location cannot be attributed).  Same name-the-cell
+//  pattern as V7/V8 in PS_validate.H.  Index is the face's high-side cell
+//  (i,j,k) as ps_wp_face sees it; -9999 = nothing recorded.
+inline int& mis_i(int c)  { static int v[3] = {-9999,-9999,-9999}; return v[c]; }
+inline int& mis_j(int c)  { static int v[3] = {-9999,-9999,-9999}; return v[c]; }
+inline int& mis_k(int c)  { static int v[3] = {-9999,-9999,-9999}; return v[c]; }
+inline int& mis_dir(int c){ static int v[3] = {-1,-1,-1}; return v[c]; }
 //  Refusal cause (PsFlCause), NOT keyed by face class -- the class attribution
 //  is already known from n_fl_fail, and a 10 x 3 table is unreadable.
 inline long& n_fl_cause(int c) { static long n[PS_FL_NCAUSE] = {0}; return n[c]; }
@@ -571,6 +580,7 @@ inline void reset() {
     for (int c = 0; c < 3; ++c) {
         n_seen(c) = 0; n_drop(c) = 0; max_def(c) = 0.0; max_estar(c) = 0.0;
         n_fl_seen(c) = 0; n_fl_fail(c) = 0; max_incmis(c) = 0.0;
+        mis_i(c) = -9999; mis_j(c) = -9999; mis_k(c) = -9999; mis_dir(c) = -1;
     }
     for (int c = 0; c < PS_FL_NCAUSE; ++c) n_fl_cause(c) = 0;
     n_fl_side(0) = 0; n_fl_side(1) = 0;
@@ -611,8 +621,10 @@ struct Fluctuations {
 AMREX_GPU_HOST_DEVICE
 AMREX_FORCE_INLINE
 bool fluctuations(int idir, const amrex::Real UL[NVAR], const amrex::Real UR[NVAR],
-                  Fluctuations& f, const PsPres& pr) noexcept   // S1
-{
+                  Fluctuations& f, const PsPres& pr,
+                  int fi = -9999, int fj = -9999, int fk = -9999) noexcept   // S1
+{                            // fi/fj/fk: face location, diagnostics only (0a)
+    amrex::ignore_unused(fi, fj, fk);
     using amrex::Real;
     f.valid = false;
     for (int n = 0; n < NVAR; ++n) { f.Am[n] = Real(0.0); f.Ap[n] = Real(0.0); }
@@ -672,8 +684,13 @@ bool fluctuations(int idir, const amrex::Real UL[NVAR], const amrex::Real UR[NVA
         const double misP = std::abs(double(f.Ap[UE1]) + double(f.Ap[UE2])
                                      - double(f.Ap[UEDEN]));
         const double mis = std::max(misM, misP);
-        if (mis > face_diag::max_incmis(fcls_fl))
+        if (mis > face_diag::max_incmis(fcls_fl)) {
             face_diag::max_incmis(fcls_fl) = mis;
+            face_diag::mis_i(fcls_fl)   = fi;   // 0a: name the face
+            face_diag::mis_j(fcls_fl)   = fj;
+            face_diag::mis_k(fcls_fl)   = fk;
+            face_diag::mis_dir(fcls_fl) = idir;
+        }
     }
 #endif
     f.valid = true;

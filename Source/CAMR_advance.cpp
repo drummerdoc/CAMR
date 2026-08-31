@@ -361,6 +361,7 @@ CAMR::CAMR_advance (Real time,
                         amrex::Long fs = PS_HLLC::face_diag::n_fl_seen(c);
                         amrex::Long ff = PS_HLLC::face_diag::n_fl_fail(c);
                         amrex::Real fm = PS_HLLC::face_diag::max_incmis(c);
+                        const amrex::Real fm_loc = fm;   // pre-reduce (0a)
                         amrex::ParallelDescriptor::ReduceLongSum(ns);
                         amrex::ParallelDescriptor::ReduceLongSum(nd);
                         amrex::ParallelDescriptor::ReduceRealMax(md);
@@ -368,11 +369,34 @@ CAMR::CAMR_advance (Real time,
                         amrex::ParallelDescriptor::ReduceLongSum(fs);
                         amrex::ParallelDescriptor::ReduceLongSum(ff);
                         amrex::ParallelDescriptor::ReduceRealMax(fm);
+                        //  0a: name the face holding the class max (FINDINGS
+                        //  A.5/B.4 -- a magnitude with no location cannot be
+                        //  attributed).  MAXLOC by hand: the lowest rank whose
+                        //  local max equals the global max broadcasts its
+                        //  recorded (i,j,k,idir).
+                        int mloc[4] = { PS_HLLC::face_diag::mis_i(c),
+                                        PS_HLLC::face_diag::mis_j(c),
+                                        PS_HLLC::face_diag::mis_k(c),
+                                        PS_HLLC::face_diag::mis_dir(c) };
+                        if (fm > 0.0) {
+                            const int np_ = amrex::ParallelDescriptor::NProcs();
+                            int owner = (fm_loc == fm)
+                                ? amrex::ParallelDescriptor::MyProc() : np_;
+                            amrex::ParallelDescriptor::ReduceIntMin(owner);
+                            if (owner < np_ && np_ > 1) {
+                                amrex::ParallelDescriptor::Bcast(mloc, 4, owner);
+                            }
+                        }
                         amrex::Print() << " | " << cn[c]
                                        << " def:" << ns << "/" << nd
                                        << " maxdef=" << md << " maxE*=" << me
                                        << " fl:" << fs << "/" << ff
                                        << " incmis=" << fm;
+                        if (fm > 0.0) {
+                            amrex::Print() << "@(" << mloc[0] << "," << mloc[1]
+                                           << "," << mloc[2] << ",d" << mloc[3]
+                                           << ")";
+                        }
                     }
                     amrex::Print() << "\n";
                     //  Refusal-cause breakdown for the wp fluctuation path.
@@ -622,6 +646,15 @@ CAMR::CAMR_advance (Real time,
     }
 
     // Sync up state after old sources and hydro source.
+    //  Work item 0b (HANDOFF_shock_phase_compression.md Part 3): validator
+    //  sample point in the blind window -- the raw post-hydro state, BEFORE
+    //  ps_apply_floor / the resyncs run inside clean_state.  Every other diag
+    //  point (A/A2/B/C/D) is downstream of the floor (Part 2.6, last bullet),
+    //  so this is the only window where the state computeTemp later aborts on
+    //  actually exists.  Diagnostic only; reads the state, changes nothing.
+#ifdef USE_PS_HYDRO
+    diag_mass(S_new, "H post-hydro (pre-floor)");
+#endif
     clean_state(S_new, false);   // intermediate: skip the UTEMP diagnostic sweep
 
 
