@@ -56,6 +56,15 @@ struct PsPres {
     amrex::Real alpha_vanish = amrex::Real(1.0e-8);
     amrex::Real alpha_cond   = amrex::Real(2.0e-2);   // re-derived 2026-08-15
     amrex::Real alpha_birth  = amrex::Real(4.0e-2);   // = 2*alpha_cond
+    //  PRESENCE-PROMOTION fix (WORKLOG 2026-08-29): density-degeneracy
+    //  floor for INDEPENDENT promotion and for the fold's corridor reap.
+    //  Measured: min legit Independent rho_k over battery finals = 1.406
+    //  (C3); the demo2-crash promotion carried 0.076.  0.5 splits them.
+    amrex::Real rho_deg      = amrex::Real(0.5);      // [kg/m^3]
+    //  Energy-degeneracy band for the fold's e-reap [J/kg]; physical CO2
+    //  spans ~[-1.5e5, ~4e6] on this EOS's scale.  The crash carried 7.6e7.
+    amrex::Real e_deg_lo     = amrex::Real(-2.0e6);
+    amrex::Real e_deg_hi     = amrex::Real( 2.0e7);
     //  The legacy (enabled == 0) path is DELETED.  Presence semantics are
     //  the only semantics: alpha free in [0,1] so ABSENT is reachable, phase
     //  states formed by checked construction, branch-locked queries only for
@@ -141,12 +150,35 @@ amrex::Real ps_cmix2(amrex::Real Y1, amrex::Real Y2,
 // is the instrument that reports it.
 enum class PsRegime : int { Absent = 0, Corridor = 1, Independent = 2 };
 
+//  F1 demotion counter (PRESENCE-PROMOTION fix): evaluations in which a
+//  volume-Independent phase was refused promotion for density
+//  degeneracy.  ps_regime is called from gates, quotients and
+//  validators, so this counts EVALUATIONS, not distinct cells — nonzero
+//  means the guard is live; the magnitude is not a cell census.
+#if !defined(AMREX_USE_GPU)
+inline long& ps_pres_f1_demote() { static long n = 0; return n; }
+#endif
+
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
 PsRegime ps_regime(amrex::Real alpha, amrex::Real m, const PsPres& pr) noexcept
 {
     if (!(alpha > pr.alpha_vanish) || !(m > amrex::Real(0.0)))
         return PsRegime::Absent;
     if (alpha < pr.alpha_cond) return PsRegime::Corridor;
+    //  PRESENCE-PROMOTION fix (WORKLOG 2026-08-29; demo2 crash step 1826):
+    //  alpha partitions volume, m partitions mass — neither constrains the
+    //  other (Contract 3 below), and in the corridor the two advect on
+    //  different discrete paths, so a phase can arrive here
+    //  volume-Independent and mass-empty (measured: alpha=0.0219,
+    //  rho_k=0.076 — promoted, EOS-queried, no root, abort).  INDEPENDENT
+    //  therefore also requires a non-degenerate density quotient.
+    //  Division-free.
+    if (!(m > pr.rho_deg * alpha)) {
+#if !defined(AMREX_USE_GPU)
+        ++ps_pres_f1_demote();
+#endif
+        return PsRegime::Corridor;
+    }
     return PsRegime::Independent;
 }
 
@@ -197,7 +229,10 @@ inline const PsPres& ps_presence_params()
         pp.query("ps_alpha_cond",       v.alpha_cond);
         pp.query("ps_alpha_birth",      v.alpha_birth);
         pp.query("ps_rk_model",         v.rk_model);
-        pp.query("ps_presence_vanish",  v.alpha_vanish);   // unified with the
+        pp.query("ps_presence_vanish",  v.alpha_vanish);
+        pp.query("ps_presence_rho_deg", v.rho_deg);
+        pp.query("ps_presence_e_deg_lo", v.e_deg_lo);
+        pp.query("ps_presence_e_deg_hi", v.e_deg_hi);   // unified with the
         // fold's CAMR.ps_alpha_vanish at S3 (that key currently means
         // "fold threshold, 0 = fold off"; this one is the presence
         // classifier's death edge and must stay > 0).

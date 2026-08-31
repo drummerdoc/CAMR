@@ -288,13 +288,59 @@ ps_make_camr_eos_api()
 //  distinction #88 could not make (FINDINGS_hem_limit.md addendum 2,
 //  guard-on throttles / guard-off over-develops).
 // -----------------------------------------------------------------
+//  F3 hysteresis counter (PRESENCE-PROMOTION fix, WORKLOG 2026-08-29):
+//  gate passes granted via the hysteresis band rather than full
+//  both-INDEPENDENT.  Counts gate EVALUATIONS.
+#if !defined(AMREX_USE_GPU)
+inline long& ps_pres_f3_hyst() { static long n = 0; return n; }
+#endif
+
+//  Cached CAMR.ps_relax_hyst (default 1, PRESENCE-PROMOTION F3): when on,
+//  a phase in the UPPER corridor (alpha >= alpha_cond/2) with a
+//  non-degenerate density quotient still counts as relaxable, so the
+//  source on/off boundary no longer coincides with the exact alpha the
+//  relaxation itself moves — the suspected driver of the near-threshold
+//  regime-toggle hash in Marc's extended demo2 run.  0 = strict
+//  both-INDEPENDENT (the pre-2026-08-29 gate, for A/B).
+inline int ps_relax_hyst()
+{
+    static const int v = []() -> int {
+        int val = 1;
+        amrex::ParmParse pp("CAMR");
+        pp.query("ps_relax_hyst", val);
+        if (val != 0 && val != 1) {
+            amrex::Abort("CAMR.ps_relax_hyst must be 0 or 1");
+        }
+        return val;
+    }();
+    return v;
+}
+
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
 bool ps_presence_relax_gate(amrex::Real a1, amrex::Real m1, amrex::Real m2,
                             const PsPres& pr) noexcept
 {
     const amrex::Real a2 = amrex::Real(1.0) - a1;
-    return ps_regime(a1, m1, pr) == PsRegime::Independent
-        && ps_regime(a2, m2, pr) == PsRegime::Independent;
+    const bool i1 = ps_regime(a1, m1, pr) == PsRegime::Independent;
+    const bool i2 = ps_regime(a2, m2, pr) == PsRegime::Independent;
+    if (i1 && i2) return true;
+#if !defined(AMREX_USE_GPU)
+    if (ps_relax_hyst() != 0) {
+        //  Hysteresis band: upper-corridor, density-non-degenerate phases
+        //  keep relaxing.  Both phases must qualify (Independent or band).
+        auto band = [&pr](amrex::Real a, amrex::Real m) noexcept {
+            return a >= amrex::Real(0.5) * pr.alpha_cond
+                && m > pr.rho_deg * a;
+        };
+        const bool q1 = i1 || band(a1, m1);
+        const bool q2 = i2 || band(a2, m2);
+        if (q1 && q2 && (band(a1, m1) || band(a2, m2))) {
+            ++ps_pres_f3_hyst();
+            return true;
+        }
+    }
+#endif
+    return false;
 }
 
 // -----------------------------------------------------------------
@@ -2310,7 +2356,9 @@ ps_apply_floor(amrex::MultiFab& S_new, int nghost = 0)
 #if !defined(AMREX_USE_GPU)
 struct PsFoldAudit {
     long   n_vanish = 0, n_tfloor = 0, n_vacuum = 0;
+    long   n_cdeg = 0, n_edeg = 0;    // PRESENCE-PROMOTION F2 reaps
     double m_vanish = 0.0, m_tfloor = 0.0, m_vacuum = 0.0;   // |phase mass folded|
+    double m_cdeg = 0.0, m_edeg = 0.0;
     void reset() { *this = PsFoldAudit{}; }
 };
 inline PsFoldAudit& ps_fold_audit() { static PsFoldAudit a; return a; }
@@ -2510,6 +2558,60 @@ ps_apply_vanish_fold(amrex::MultiFab& S_new, int nghost = 0)
                     Uv[0] = 1.0;
                 }
                 wrote = true;
+            }
+            //  PRESENCE-PROMOTION F2 (WORKLOG 2026-08-29): two further
+            //  conservative reaps, same mechanics as the vacuum fold.
+            //  (a) CORRIDOR DENSITY DEGENERACY: a corridor phase whose
+            //  rho_k = m/alpha has fallen below rho_deg owns volume the
+            //  mass cannot fill — the alpha/m advective decoupling the
+            //  corridor permits by design.  Left alone it is the loaded
+            //  gun that killed Marc's demo2 run at step 1826 the moment
+            //  alpha grew across alpha_cond.  Reap it while it is still
+            //  small.  Division-free; corridor-only, so it can never
+            //  touch a legit Independent phase (measured min 1.406).
+            {
+                const double a1c = Uv[0];
+                const double cnd = double(prS3.alpha_cond);
+                const double rdg = double(prS3.rho_deg);
+                const bool cd1 = (a1c > 0.0) && (a1c < cnd)
+                              && (Uv[1] > 0.0) && (Uv[1] <= rdg * a1c);
+                const bool cd2 = ((1.0 - a1c) > 0.0) && ((1.0 - a1c) < cnd)
+                              && (Uv[2] > 0.0) && (Uv[2] <= rdg * (1.0 - a1c));
+                if (cd1 != cd2) {
+#if !defined(AMREX_USE_GPU)
+                    ++ps_fold_audit().n_cdeg;
+                    ps_fold_audit().m_cdeg += cd1 ? Uv[1] : Uv[2];
+#endif
+                    if (cd1) { Uv[2] += Uv[1]; Uv[5] += Uv[4];
+                               Uv[1] = 0.0;    Uv[4] = 0.0;  Uv[0] = 0.0; }
+                    else     { Uv[1] += Uv[2]; Uv[4] += Uv[5];
+                               Uv[2] = 0.0;    Uv[5] = 0.0;  Uv[0] = 1.0; }
+                    wrote = true;
+                }
+            }
+            //  (b) ENERGY DEGENERACY: exactly one phase whose specific
+            //  energy e_k = E_k/m_k sits outside [e_deg_lo, e_deg_hi]
+            //  (physical CO2 spans ~[-1.5e5, ~4e6]; the crash carried
+            //  +7.6e7).  Catches the decoupling's energy face, which no
+            //  density test sees.  Division-free comparisons.
+            {
+                const double elo = double(prS3.e_deg_lo);
+                const double ehi = double(prS3.e_deg_hi);
+                const bool ed1 = (Uv[1] > 0.0) &&
+                    (Uv[4] < elo * Uv[1] || Uv[4] > ehi * Uv[1]);
+                const bool ed2 = (Uv[2] > 0.0) &&
+                    (Uv[5] < elo * Uv[2] || Uv[5] > ehi * Uv[2]);
+                if (ed1 != ed2) {
+#if !defined(AMREX_USE_GPU)
+                    ++ps_fold_audit().n_edeg;
+                    ps_fold_audit().m_edeg += ed1 ? Uv[1] : Uv[2];
+#endif
+                    if (ed1) { Uv[2] += Uv[1]; Uv[5] += Uv[4];
+                               Uv[1] = 0.0;    Uv[4] = 0.0;  Uv[0] = 0.0; }
+                    else     { Uv[1] += Uv[2]; Uv[4] += Uv[5];
+                               Uv[2] = 0.0;    Uv[5] = 0.0;  Uv[0] = 1.0; }
+                    wrote = true;
+                }
             }
             if (wrote) {
                 U(i, j, k, UALPHA1) = amrex::Real(Uv[0]);

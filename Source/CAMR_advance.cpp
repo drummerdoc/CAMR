@@ -428,19 +428,34 @@ CAMR::CAMR_advance (Real time,
                 PsFoldAudit& fa = ps_fold_audit();
                 long nv = fa.n_vanish, nt = fa.n_tfloor, nx = fa.n_vacuum;
                 amrex::Real mv = fa.m_vanish, mt = fa.m_tfloor, mx = fa.m_vacuum;
+                long nc = fa.n_cdeg, ne = fa.n_edeg;
+                amrex::Real mc = fa.m_cdeg, me = fa.m_edeg;
+                long nf1 = ps_pres_f1_demote(), nf3 = ps_pres_f3_hyst();
                 amrex::ParallelDescriptor::ReduceLongSum(nv);
                 amrex::ParallelDescriptor::ReduceLongSum(nt);
                 amrex::ParallelDescriptor::ReduceLongSum(nx);
+                amrex::ParallelDescriptor::ReduceLongSum(nc);
+                amrex::ParallelDescriptor::ReduceLongSum(ne);
+                amrex::ParallelDescriptor::ReduceLongSum(nf1);
+                amrex::ParallelDescriptor::ReduceLongSum(nf3);
                 amrex::ParallelDescriptor::ReduceRealSum(mv);
                 amrex::ParallelDescriptor::ReduceRealSum(mt);
                 amrex::ParallelDescriptor::ReduceRealSum(mx);
-                if (nv + nt + nx > 0) {
+                amrex::ParallelDescriptor::ReduceRealSum(mc);
+                amrex::ParallelDescriptor::ReduceRealSum(me);
+                if (nv + nt + nx + nc + ne + nf1 + nf3 > 0) {
                     amrex::Print() << "[PS-FOLD] L" << level << " step "
                                    << parent->levelSteps(level) << " " << label
                                    << ": vanish n=" << nv << " m=" << mv
                                    << " | tfloor n=" << nt << " m=" << mt
-                                   << " | vacuum n=" << nx << " m=" << mx << "\n";
+                                   << " | vacuum n=" << nx << " m=" << mx
+                                   << " | cdeg n=" << nc << " m=" << mc
+                                   << " | edeg n=" << ne << " m=" << me
+                                   << " | f1_demote_ev=" << nf1
+                                   << " | f3_hyst_ev=" << nf3 << "\n";
                 }
+                ps_pres_f1_demote() = 0;
+                ps_pres_f3_hyst()   = 0;
                 fa.reset();
             }
         }
