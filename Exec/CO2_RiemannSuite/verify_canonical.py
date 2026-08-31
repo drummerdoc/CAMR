@@ -17,7 +17,8 @@ Checks:
      Doubles as a STALE-BINARY detector: an old binary silently maps
      mode 4 -> mode 0 and lands at ~0.84 instead.
   4. reproject liveness — production config (mode 2, tau=1e-4) run with
-     ps_src_p_reproject=0 vs 1 must DIFFER (0.88 vs 0.77 u-err on B9);
+     ps_src_p_reproject=0 vs 1 must DIFFER (0.845 vs 0.774 u-err on B9;
+     re-baselined 2026-08-31, see the note at the check);
      identical results mean the PS_sources.H change is not in the binary.
   5. presence gates (S1/S2) — NOTE CAMR.ps_presence is no longer read
      (PsPres::enabled is hard-coded 1; T1-b 2026-08-17), so the flag in
@@ -213,9 +214,20 @@ for rp in (0, 1):
 # ctop_sub == ctop_host_floor == 0, i.e. provably untouched by that change.
 # What the check is FOR is unchanged: rp=0 and rp=1 must differ (the third
 # assertion), which is the actual liveness test.
-check('rp=0 reproduces legacy (~0.865)', abs(res[0] - 0.865) < 0.02,
+# RE-BASELINED 2026-08-31: 0.865/0.797 -> 0.845/0.774.  Both legs moved down by
+# ~0.021 TOGETHER at the presence-promotion commit (ee1ea87: the rho_deg gate on
+# INDEPENDENT promotion and the fold's cdeg/edeg corridor reap).  That is a real
+# behaviour change and there is no bit-identical fallback to hold -- the legacy
+# ps_presence==0 path is deleted -- so a moved reference is the expected outcome,
+# not a failure.  Evidence it is the promotion work and not a regression: the
+# shift is common-mode (rp=0 -0.020, rp=1 -0.023), the direction is toward LOWER
+# error on both, the separation is preserved (delta 0.071 vs 0.068 before), and
+# the frozen A/C battery reproduces its recorded per-case tuples EXACTLY at mean
+# 0.0350 with C1 exact -- so the hyperbolic core is provably untouched.
+# What the check is FOR is unchanged: rp=0 and rp=1 must differ (third assertion).
+check('rp=0 reproduces legacy (~0.845)', abs(res[0] - 0.845) < 0.02,
       f'got {res[0]:.3f}')
-check('rp=1 improves (~0.797)', abs(res[1] - 0.797) < 0.02, f'got {res[1]:.3f}')
+check('rp=1 improves (~0.774)', abs(res[1] - 0.774) < 0.02, f'got {res[1]:.3f}')
 check('rp=0 vs rp=1 differ (change is live)', abs(res[0] - res[1]) > 0.05,
       f'delta={abs(res[0]-res[1]):.3f}')
 
