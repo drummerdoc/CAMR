@@ -72,6 +72,27 @@ CASES = [
  ('C1-Identity',   ('TP',400,30,0,V,50),   ('TP',400,30,0,V,50),    1.145450e-3),
  ('C2-Acoustic-limit',('TP',400,30.05,0,V,0),('TP',400,30.00,0,V,0),1.336864e-3),
  ('C3-Strong-shock-V',('TP',500,30,0,V,500),('TP',500,1,0,V,0),     4.769659e-4),
+#  B12 (2026-08-31): the case the suite was MISSING.  Every strong-compression
+#  case above is single-phase (A*, C3), saturated vapour (B6) or PURE LIQUID
+#  (B8: TP x=0, alpha_1 = 1.0 in all 64 cells); every genuinely two-phase case
+#  (B3, B5, B11) is a contact at u = 0.  So NO case ran a strong compression
+#  wave into a cell holding a small but real liquid fraction -- the exact
+#  configuration that failed in 2-D at demo2 step 3669, after 3669 steps,
+#  instead of in seconds here.  See Exec/CO2_PipeBreak/FINDINGS_demo2_step3669.md
+#  and HANDOFF_shock_phase_compression.md Part 4.
+#
+#  x_qual = 0.9214 is MEASURED, not derived: at 270 K the EOS gives
+#  rho_l = 936.41, rho_v = 88.28, Psat = 3.19e6 Pa, and this quality
+#  initialises alpha_1 = 0.007978 -- the upper corridor, below alpha_cond =
+#  2e-2, matching where the demo2 cell sat entering its shock (7.5e-3).
+#  Mechanical/thermal relaxation and MT are therefore gated off by presence
+#  automatically, so the case isolates the hydro without needing a flag.
+#  u = +/-100 gives P2/P1 = 1.82 and drives rho_1 to 1464 kg/m3: unambiguously
+#  wrong, but still inside EOS::rho_max() ~ 1617, so the case asserts exactly
+#  ONE thing.  (+/-150 and +/-200 reach rho_1 = 1772 / 2090, past PR's pole at
+#  M/b = 1650, which would mix in a second defect.)
+ ('B12-TwoPhase-Wall-Reflection',('TX',270,0,0.9214,V,+100),
+                                 ('TX',270,0,0.9214,V,-100),1.0e-3),
 ]
 CD = {c[0]: c for c in CASES}
 
@@ -85,7 +106,7 @@ CD = {c[0]: c for c in CASES}
 TWO_PHASE = {'B1-Comp-L-expand','B2-Evap-wave','B3-Sat-LV-contact','B4-Cross-critical',
              'B5-Both-2P','B6-Sat-V-shock','B7-Rupture-Sonic','B8-Wall-Reflection',
              'B9-Deep-Expansion','B10-Cross-critical-hot',
-             'B11-Subcrit-contact-dT'}
+             'B11-Subcrit-contact-dT','B12-TwoPhase-Wall-Reflection'}
 MT_TAU = 1.0e-4
 def case_cfg(name):
     """-> (camr_overrides dict, standalone env dict, standalone extra flags).

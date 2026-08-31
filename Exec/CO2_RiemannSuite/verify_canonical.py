@@ -56,6 +56,21 @@ def check(name, ok, detail=''):
 #  a false FAIL in a gate is worse than a missing check, because it trains
 #  the reader to ignore the verdict line.  Every entry here is a
 #  re-baseline item in STATUS 7.8.
+#  KNOWN-FAIL (2026-08-31): a check that fails because of a DIAGNOSED, UNFIXED
+#  defect in the code -- not because its reference is stale.  Distinct from
+#  stale_check, whose failure "says nothing about the binary"; a known-fail says
+#  a great deal about it.  It does not count toward the verdict (a permanent
+#  FAIL trains the reader to ignore the verdict line) but it is NOT inert: the
+#  caller also asserts that the defect is present with its documented magnitude,
+#  so a fix flips it loudly instead of passing unnoticed.
+def known_fail(name, ok, detail, why, on_pass):
+    if ok:
+        print(f"  [KNOWN-FAIL -> NOW PASSES] {name}  ({detail})")
+        print(f"          {on_pass}")
+    else:
+        print(f"  [KNOWN-FAIL] {name}  ({detail})")
+        print(f"          reason: {why}")
+
 def stale_check(name, detail, why):
     print(f"  [STALE] {name}  ({detail})")
     print(f"          reason: {why}")
@@ -326,6 +341,74 @@ else:
 
 # ---------------------------------------------------------------- verdict
 print()
+# ---------------------------------------------------------------- check 8
+#  B12 two-phase wall reflection — the per-phase compression bound.
+#
+#  WHY THIS CHECK EXISTS.  ps_star_state carries alpha unchanged through the
+#  acoustic waves (U_star[UALPHA1] = fK.alpha_1) while ps_star_masses scales
+#  BOTH partial masses by the one mixture contraction r_K, so
+#  rho_k* = rho_k * r_K for BOTH phases: the scheme imposes equal volumetric
+#  strain on a liquid and a vapour whose bulk moduli differ by ~45x here.
+#
+#  THE METRIC needs no sound speed, so it is a plotfile check and requires no
+#  solver change:
+#      R = (rho_1/rho_1^0 - 1) / (rho_2/rho_2^0 - 1)     at the shocked plateau
+#  At mechanical equilibrium R = (rho_2 c_2^2)/(rho_1 c_1^2).  DERIVATION of the
+#  0.25 gate WITHOUT any c: at this state rho_1/rho_2 = 10.6, so even in the
+#  false limit c_1 == c_2 the bulk-modulus ratio is 10.6 and R <= 0.094.  With a
+#  realistic c_1 ~ 416 m/s, R ~ 0.02.  The gate at 0.25 therefore sits 2.7x above
+#  an already-conservative bound and 4x below the measured value.  Margin is
+#  deliberate: a gate that fires on a legitimate case is worse than one that
+#  fires late.  This is a TEST acceptance, not a solver threshold.
+print('== 8. B12 two-phase wall reflection: per-phase compression bound ==')
+B12 = 'B12-TwoPhase-Wall-Reflection'
+_pref = 'vcb12_'
+run_case(B12, {'CAMR.ps_relax_mode': 0, 'CAMR.ps_mt_tau': 0,
+               'CAMR.ps_flash_tau': 0.0}, _pref)
+_g = [q for q in glob.glob(_pref + '*') if os.path.isdir(q) and '.old' not in q]
+if not _g:
+    check('B12 ran (plotfile written)', False, 'no plotfile — did the run abort?')
+else:
+    _p  = max(_g, key=os.path.getmtime)
+    _a1 = R.rd1d(_p, 'alpha_1');      _m1  = R.rd1d(_p, 'alpha1_rho1')
+    _rh = R.rd1d(_p, 'density');      _P   = R.rd1d(_p, 'pressure')
+    _r1 = _m1 / _a1
+    _r2 = (_rh - _m1) / (1.0 - _a1)
+    _k  = int(np.argmax(_P))          # shocked plateau
+    _e  = 0                           # far field, undisturbed at t_end
+    _c1 = _r1[_k] / _r1[_e] - 1.0     # liquid relative compression
+    _c2 = _r2[_k] / _r2[_e] - 1.0     # vapour relative compression
+    _da = float(np.max(np.abs(_a1 - _a1[_e])))
+    _sym = float(np.max(np.abs(_P - _P[::-1])))
+    if _c2 <= 1.0e-6:
+        check('B12 developed a compression wave', False,
+              f'vapour compression {_c2:.2e} — shock did not form')
+    else:
+        _R = _c1 / _c2
+        print(f'         P2/P1={_P[_k]/_P[_e]:.2f}  rho_1: {_r1[_e]:.1f}->{_r1[_k]:.1f}'
+              f'  rho_2: {_r2[_e]:.2f}->{_r2[_k]:.2f}  R={_R:.4f}')
+        print(f'         alpha_1 invariance max|alpha_1-alpha_1^0| = {_da:.2e}'
+              f'   (0 => alpha is frozen through the acoustic waves)')
+        #  Reference-free invariants that must hold whatever the scheme does.
+        check('B12 far field undisturbed at t_end',
+              abs(_P[0] - _P[-1]) < 1e-6 * _P[0], f'|dP|={abs(_P[0]-_P[-1]):.2e}')
+        check('B12 reflection symmetry (task #47)', _sym < 1e-6 * _P[_k],
+              f'max asym={_sym:.2e}')
+        #  The acceptance.  KNOWN-FAIL until the star state is fixed.
+        known_fail('B12 liquid compresses less than vapour (R <= 0.25)',
+                   _R <= 0.25, f'R={_R:.4f}',
+                   'ps_star_state gives both phases the mixture contraction r_K '
+                   '(alpha frozen + m_k*r_K => rho_k*r_K for both k). Diagnosed in '
+                   'FINDINGS_demo2_step3669.md B.1; fix is work item 2 of '
+                   'HANDOFF_shock_phase_compression.md.',
+                   'The star-state fix has landed. Promote this to check() and '
+                   'retire the characterization assertion below.')
+        #  Characterization tripwire: keeps the verdict line meaningful.  Passes
+        #  either when the defect is present at its documented magnitude OR when
+        #  it is fixed.  An unexplained value in between is a real FAIL.
+        check('B12 is either fixed (R<=0.25) or shows the documented defect (R~1.00)',
+              (_R <= 0.25) or (0.90 <= _R <= 1.10), f'R={_R:.4f}')
+
 if FAILS:
     print(f'VERDICT: FAIL ({len(FAILS)} check(s)): ' + '; '.join(FAILS))
     sys.exit(1)
