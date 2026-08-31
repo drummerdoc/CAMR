@@ -304,8 +304,54 @@ record.
 
 # Part 4 — Work item 1 (do second): the missing test case, B12
 
-**This is the highest-value item and the only one that protects the next case
-as well as this one.**
+**STATUS 2026-08-31: LANDED (`d94d120`). It fails exactly as specified.**
+Read this section for what was measured and why the acceptance changed; the
+work now starts at item 2. **This is the highest-value item and the only one
+that protects the next case as well as this one.**
+
+## 4.0 As built, and as measured
+
+```
+('B12-TwoPhase-Wall-Reflection',('TX',270,0,0.9214,V,+100),
+                                ('TX',270,0,0.9214,V,-100),1.0e-3),
+```
+
+`x_qual = 0.9214` was **measured, not derived** — scanned against the
+initialised α₁. At 270 K the EOS gives ρ_l = 936.41, ρ_v = 88.28,
+Psat = 3.19e6 Pa, and that quality lands **α₁ = 0.007978**: the upper corridor,
+below α_cond, matching where the demo2 cell sat entering its shock. Relaxation
+and MT are gated off by presence automatically, so no flag is needed to isolate
+the hydro. `u = ±100` keeps ρ₁ = 1464 inside `EOS::rho_max()` ≈ 1617 so the case
+asserts one thing; ±150 and ±200 reach 1772 / 2090, past PR's pole.
+
+Measured on the 2026-08-31 build:
+
+```
+P2/P1 = 1.82    rho_1: 936.4 -> 1463.4    rho_2: 88.28 -> 137.96
+R = 1.0000                       (gate 0.25; physics ~0.02)
+max|alpha_1 - alpha_1^0| = 0.00e+00
+```
+
+Both phases compress by the same ratio to five significant figures, and α₁ is
+**bit-identical** in the far field and the shocked plateau. That last number is
+the mechanism itself: `U_star[UALPHA1] = fK.alpha_1` combined with
+`m_k* = m_k·r_K`.
+
+**The acceptance changed from §4.3 as written.** V9's form
+`|Δρ_k|/ρ_k ≤ 2·|ΔP|/(ρ_k c_k²)` needs `c_k`, which is not in the plotfile, so
+it would have forced a solver change *before the test could exist*. The ratio
+form below needs no sound speed and is a pure plotfile check. **Item 1 required
+no solver change at all**, and V9-in-the-solver is now optional follow-up rather
+than a prerequisite.
+
+A new `known_fail()` reporter sits alongside `stale_check()`: a stale check's
+failure "says nothing about the binary", a known-fail says a great deal. It
+stays out of the verdict line, but a companion `check()` asserts the defect is
+present at its documented magnitude — so a fix flips it loudly, and an
+unexplained value in between is a real failure. B12 also asserts, reference-free,
+that the far field is undisturbed at t_end and that the solution is
+reflection-symmetric (1.58e-08) — task #47 on a two-phase state, which nothing
+previously covered.
 
 ## 4.1 Why it is missing
 
@@ -363,6 +409,12 @@ B12 cannot be gated against an analytic reference. It does not need one. The
 defect is detectable by a realizability invariant, which is the class §5 of
 that note already privileges:
 
+> **SUPERSEDED — see §4.0.** What shipped is the sound-speed-free ratio form:
+> `R = (ρ₁/ρ₁⁰ − 1)/(ρ₂/ρ₂⁰ − 1) ≤ 0.25` at the shocked plateau, derived from
+> ρ₁/ρ₂ = 10.6 (so R ≤ 0.094 even in the false limit c₁ = c₂). The form below
+> is kept because it is the right shape for a *solver-side* V9 if one is ever
+> wanted; it is not what gates B12.
+>
 > **V9 — acoustic compression bound.** Across one step, for each phase k,
 > `|Δρ_k| / ρ_k` must not exceed `|ΔP| / (ρ_k c_k²)` by more than a factor of 2.
 
@@ -505,10 +557,10 @@ regress against (Part 1.3).
         |
   ITEM 0   instruments        ~1 h    gate: "H" stage reports what A/B/C/D cannot
         |
-  ITEM 1   B12 + V9           ~half day   gate: B12 FAILS at ~17x, annotated
+  ITEM 1   B12                DONE (d94d120): R = 1.0000 vs gate 0.25, KNOWN-FAIL
         |
   ITEM 2   star state         the hard one   gate: frozen 0.0350, C1 0.000,
-        |                                    B4 0.4%, B12 flips to PASS
+        |                                    B4 0.4%, B12 R -> ~0.02
         |
   ITEM 3   corridor closure   large blast radius   gate: verify_canonical,
                                                    2-D pair, explain every delta
@@ -561,6 +613,13 @@ Existing runs on disk, all from the current code:
 
 # Part 8 — Traps, collected
 
+0. **Session setup: THREE folders must be connected**, not one — `CAMR`,
+    `amrex` (the build needs `AMREX_HOME=../../../amrex`, which resolves only
+    when amrex is mounted as `~/mnt/amrex`), and `co2-eos-cfd` (the gate's exact
+    references live in `$CO2_STANDALONE/suite/profiles/*.csv`). With only CAMR
+    connected the build dies at `Make.rules` and the gate dies at check 1.
+    Object files from a previous session are unusable — their `.d` files carry
+    that session's mount path — so expect one clean build.
 1. **Flag prefixes.** `CAMR.` or it silently does nothing. Check `job_info`.
 2. **`ps_face_diag` needs `ps_diag_mass`.** Alone it prints nothing.
 3. **`ps_rk_model=1` is broken.** Do not test with it until item 2.
@@ -577,7 +636,18 @@ Existing runs on disk, all from the current code:
     `demo2_final/chk_sj2_03650`. Both are still named as live instructions in
     older documents; every occurrence found is marked `[STALE 2026-08-31]` in
     place.
-10. **Don't widen `e_deg_*`, add an e-floor, or clamp e₁ on promotion.** That
+10. **A retired key can silently kill the whole gate.** `e754bbf` made
+    `CAMR.ps_recon` a retired key that ABORTS and scrubbed it from four files,
+    missing seven — including both standing gates. `run_camr()` sends stdout and
+    stderr to `DEVNULL`, so every battery run from 2026-08-27 to 2026-08-31
+    aborted at startup, wrote only `plt_00000`, and was scored as t=0 data
+    against the t_end analytic: A/C mean 0.5194 instead of 0.0350, with a
+    velocity rel-L2 of exactly **1.000** on every case starting from rest.
+    Fixed in `0d6789f`. **An exact 1.000 rel-L2 means an absent field, not bad
+    physics** — check for it before concluding anything. The same commit
+    restricted `ps_bc_nscbc_flash` to 0/1; the decks have not been swept for a
+    stale value 2.
+11. **Don't widen `e_deg_*`, add an e-floor, or clamp e₁ on promotion.** That
     is `HANDOFF_ps_state_wellposedness.md` Part 0 verbatim: a guard on a
     consequence, 80 steps downstream of the cause.
 
