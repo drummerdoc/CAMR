@@ -1,9 +1,9 @@
 # HANDOFF: shock-driven phase-state corruption — cold-start brief
 
 **Written 2026-08-31 for a successor agent starting with no context.**
-Repo `/Users/marcusd/src/CAMR`, branch `co2-eos`, HEAD `8208a43`
-(clean; the tree was committed as seven topical commits on 2026-08-31 —
-`66e25e7..8208a43`. `origin/development` is the default branch; do not commit
+Repo `/Users/marcusd/src/CAMR`, branch `co2-eos`, tree **clean** — committed
+as a series of topical commits on 2026-08-31 beginning at `66e25e7`
+(`git log --oneline 66e25e7~1..` shows the set). `origin/development` is the default branch; do not commit
 there).
 Companion 1-D standalone: `/Users/marcusd/src/SINTEF/co2-eos-cfd`.
 Marc Day, SINTEF Energy Research. AMReX compressible multiphase CFD,
@@ -107,8 +107,8 @@ at the point of use. This list is the index.**
 
 ## 1.4 Repository state — already clean, keep it that way
 
-**Done 2026-08-31: the tree is committed.** `66e25e7..8208a43`, seven topical
-commits on `co2-eos`:
+**Done 2026-08-31: the tree is committed.** Seven topical commits on
+`co2-eos`, starting at `66e25e7`:
 
 | | |
 |:--|:--|
@@ -118,7 +118,7 @@ commits on `co2-eos`:
 | `45a8560` | PipeBreak: `alpha_1` axis label correction; `TINY_PROFILE` off |
 | `5198689` | RiemannSuite: DT7 shocktube harness |
 | `9f17e9b` | docs: WORKLOG through 2026-08-30; PS model note |
-| `8208a43` | docs: this diagnosis, this handoff, the stale-instruction sweep |
+| *(tip)* | docs: this diagnosis, this handoff, the stale-instruction sweep |
 
 Deliberately left untracked: the DT7 figures, digitized curves, comparison
 `.docx` and paper PDF; `demo2_final/crash_frames.tar.gz` (59 MB, regenerable
@@ -501,7 +501,7 @@ regress against (Part 1.3).
 # Part 7 — Sequencing, and the gates for each stage
 
 ```
-  tree is clean at 8208a43 -- commit as you go, explicit paths only
+  tree is CLEAN (66e25e7 series) -- commit as you go, explicit paths only
         |
   ITEM 0   instruments        ~1 h    gate: "H" stage reports what A/B/C/D cannot
         |
@@ -571,7 +571,7 @@ Existing runs on disk, all from the current code:
 6. **No legacy digit-identical regression exists.** Results will move.
 7. **Stale binaries.** Four incidents on record. Check the exe timestamp.
 8. **`git add -A` will try to stage 5 GB.** `demo2_final/` is run output.
-    Stage explicit paths. (The tree itself is clean as of `8208a43`.)
+    Stage explicit paths. (The tree itself is clean at the `66e25e7` series tip.)
 9. **`run_ac_suite.py` was retired for cause and removed** — `exact_suite.py`
     is the acceptance harness. Likewise `chk_sj2_pr_00550` is gone; use
     `demo2_final/chk_sj2_03650`. Both are still named as live instructions in
@@ -605,5 +605,5 @@ Existing runs on disk, all from the current code:
 > decide design points; write `[DECIDE]` items into the note rather than
 > choosing for me.
 >
-> The tree is clean at `8208a43`; commit as you go, and stage explicit paths
+> The tree is clean; commit as you go, and stage explicit paths
 > — `demo2_final/` is 5 GB of run output.
