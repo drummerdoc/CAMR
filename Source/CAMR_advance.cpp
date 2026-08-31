@@ -399,6 +399,21 @@ CAMR::CAMR_advance (Real time,
                         }
                     }
                     amrex::Print() << "\n";
+                    //  Relaxed-alpha fallback count (DESIGN_ps_star_relaxed.md
+                    //  s5): faces where the relaxed star construction fell
+                    //  back to the B.14 form.  Predicted zero on the 1-D
+                    //  suite; persistent nonzero in production is a finding.
+                    {
+                        amrex::Long nrf = PS_HLLC::face_diag::n_relax_fb();
+                        amrex::ParallelDescriptor::ReduceLongSum(nrf);
+                        if (nrf > 0) {
+                            amrex::Print() << "[PS-RELAXFB] L" << level
+                                           << " step "
+                                           << parent->levelSteps(level) << " "
+                                           << label << ": B.14 fallbacks = "
+                                           << nrf << "\n";
+                        }
+                    }
                     //  Refusal-cause breakdown for the wp fluctuation path.
                     //  Printed only when something actually refused, so a clean
                     //  interval costs one comparison and no output.

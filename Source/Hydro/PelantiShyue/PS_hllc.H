@@ -84,7 +84,7 @@ struct Face {
     amrex::Real P_mix;           // α₁ P₁ + α₂ P₂ (P-S 2014 eq. 5)
     amrex::Real c_frozen;        // Wallis frozen mixture c
     amrex::Real c_1, c_2;        // per-phase c (guarded); read only by the
-                                 // ps_rk_model=1 instrument (D7)
+                                 // relaxed-alpha star closure
     bool        valid;
 };
 
@@ -257,7 +257,7 @@ Face face_from_state(int idir, const amrex::Real U[NVAR],
     f.P_mix = f.alpha_1 * f.P_1 + f.alpha_2 * f.P_2;
     if (!std::isfinite(c1) || c1 <= Real(0.0)) c1 = Real(1.0);
     if (!std::isfinite(c2) || c2 <= Real(0.0)) c2 = Real(1.0);
-    f.c_1 = c1;                  // guarded per-phase speeds, for ps_rk_model=1
+    f.c_1 = c1;                  // guarded per-phase speeds (relaxed-alpha closure)
     f.c_2 = c2;
 
     // Wallis frozen mixture sound speed:  c² = Y₁ c₁² + Y₂ c₂²
@@ -400,50 +400,34 @@ WaveSpeeds wave_speeds(const Face& fL, const Face& fR) noexcept
 
 
 // -------------------------------------------------------------------
-//  Star-state partial masses -- SINGLE-SOURCED for ps_star_state (wp path)
-//  and ps_star_state (wp fluctuation path), so the D7 instrument cannot
-//  drift between them (the four-way-copy lesson, STATUS_multiphase.md 6.1).
-//
-//  rk_model == 0 (default): m_k* = m_k r_K, both phases scale by the shared
-//  contraction r_K (Pelanti 2022 B.14) -- bit-identical to the historical
-//  expression.
-//  rk_model == 1 (D7 INSTRUMENT, not a design): each phase gets its own
-//  acoustic ratio r_k from S_{K,k} = u + sgn(S_K - u) c_k, then both are
-//  renormalised by one factor so m_1 r_1' + m_2 r_2' = (m_1 + m_2) r_K
-//  EXACTLY: the mixture mass keeps the HLLC Rankine-Hugoniot contraction
-//  and only the partition of the compression between phases moves.  Any
-//  degeneracy (non-finite, non-positive ratio, vanishing denominator)
-//  falls back to the shared form.  The per-phase energy fluxes (q_k) are
-//  deliberately NOT touched: the dial isolates the mass-partition question.
+//  Star-state partial masses -- SINGLE-SOURCED (four-way-copy lesson,
+//  STATUS_multiphase.md 6.1).  m_k* = m_k r_K for BOTH phases: this is
+//  the per-phase mass Rankine-Hugoniot jump across a single acoustic
+//  discontinuity in a one-velocity model, m_k*(S_K - S_M) = m_k(S_K - u),
+//  and is FORCED whatever the alpha/energy partition does.  The retired
+//  ps_rk_model=1 dial (D7) violated exactly this and is gone
+//  (DESIGN_ps_star_relaxed.md s2; the key now aborts, PS_presence.H).
+//  The relaxed-alpha construction moves ALPHA and the ENERGY SPLIT
+//  instead -- see ps_star_state below.
 // -------------------------------------------------------------------
 AMREX_GPU_HOST_DEVICE
 AMREX_FORCE_INLINE
-void ps_star_masses(const Face& fK, amrex::Real S_K, amrex::Real S_M,
-                    amrex::Real r_K, int rk_model,
+void ps_star_masses(const Face& fK, amrex::Real r_K,
                     amrex::Real& m1s, amrex::Real& m2s) noexcept
 {
     using amrex::Real;
     m1s = fK.m_1 * r_K;
     m2s = fK.m_2 * r_K;
-    if (rk_model != 1) return;
-    const Real sgn = (S_K >= fK.u_n) ? Real(1.0) : Real(-1.0);
-    const Real Sk1 = fK.u_n + sgn * fK.c_1;
-    const Real Sk2 = fK.u_n + sgn * fK.c_2;
-    const Real d1  = Sk1 - S_M;
-    const Real d2  = Sk2 - S_M;
-    if (!std::isfinite(d1) || !std::isfinite(d2) ||
-        std::abs(d1) < Real(1.0e-30) || std::abs(d2) < Real(1.0e-30)) return;
-    const Real r1 = (Sk1 - fK.u_n) / d1;
-    const Real r2 = (Sk2 - fK.u_n) / d2;
-    if (!std::isfinite(r1) || !std::isfinite(r2) ||
-        r1 <= Real(0.0) || r2 <= Real(0.0)) return;
-    const Real mr = fK.m_1 * r1 + fK.m_2 * r2;
-    if (!(mr > Real(0.0)) || !std::isfinite(mr)) return;
-    const Real scale = (fK.m_1 + fK.m_2) * r_K / mr;
-    if (!std::isfinite(scale)) return;
-    m1s = fK.m_1 * r1 * scale;
-    m2s = fK.m_2 * r2 * scale;
 }
+
+#if !defined(AMREX_USE_GPU)
+//  Relaxed-alpha fallback counter (host-only; the star builder below is
+//  device-callable, so the counter lives here and is a no-op on GPU).
+//  Counts faces where the relaxed construction fell back to the B.14
+//  form (degenerate closure / Newton failure / alpha* out of (0,1)).
+//  Reported and reset with the W0 face audit in CAMR_advance.cpp.
+namespace face_diag { inline long& n_relax_fb() { static long n = 0; return n; } }
+#endif
 
 // -------------------------------------------------------------------
 //  hllc_flux (the Pelanti 2022 HLLC Godunov flux) was DELETED
@@ -475,7 +459,7 @@ bool ps_star_state(int idir, const Face& fK, const amrex::Real UK[NVAR],
                    amrex::Real S_K, amrex::Real S_M,
                    amrex::Real U_star[NVAR],
                    int* cause = nullptr,   // W0 refusal-cause audit
-                   int rk_model = 0) noexcept   // D7 instrument (default shared)
+                   int star_relaxed = 0) noexcept  // DESIGN_ps_star_relaxed.md
 {
     using amrex::Real;
     //  Every early return names itself.  `cause` is optional so the signature
@@ -486,7 +470,7 @@ bool ps_star_state(int idir, const Face& fK, const amrex::Real UK[NVAR],
         PS_ST_REFUSE(PS_FL_ST_DENOM);
     const Real r_K = (S_K - fK.u_n) / denom;
     Real m1s, m2s;
-    ps_star_masses(fK, S_K, S_M, r_K, rk_model, m1s, m2s);
+    ps_star_masses(fK, r_K, m1s, m2s);
     if (m1s < Real(0.0) || m2s < Real(0.0)) PS_ST_REFUSE(PS_FL_ST_MASSNEG);
     const Real rhos = m1s + m2s;
     if (rhos <= Real(0.0)) PS_ST_REFUSE(PS_FL_ST_RHO);
@@ -496,8 +480,93 @@ bool ps_star_state(int idir, const Face& fK, const amrex::Real UK[NVAR],
         PS_ST_REFUSE(PS_FL_ST_Q);
     const Real Pe1 = fK.P_mix;   // #211 mixture-P (the #85 option is retired)
     const Real Pe2 = fK.P_mix;
-    const Real E1s = fK.E_1 + (S_M - fK.u_n) * (S_M + Pe1 / q1);
-    const Real E2s = fK.E_2 + (S_M - fK.u_n) * (S_M + Pe2 / q2);
+
+    //  Star alpha and per-phase energies.  Two constructions
+    //  (DESIGN_ps_star_relaxed.md; TEMPORARY selector, [DECIDE-6]):
+    //
+    //  B.14 (star_relaxed == 0): alpha frozen, E_k* = E_k +
+    //  (S_M-u)(S_M + P/q_k).  The work term is exactly P * dv_k for the
+    //  equal-strain volume change dv_k = (1/rho_k)(1 - 1/r_K).
+    //
+    //  RELAXED-ALPHA (star_relaxed == 1): behind the wave the phases sit at
+    //  mechanical equilibrium at a common pressure rise dP; each phase takes
+    //  the strain its own bulk modulus B_k = rho_k c_k^2 admits:
+    //      s_k = dP/B_k,  rho_k* = rho_k(1+s_k),  alpha_k* = alpha_k r_K/(1+s_k)
+    //  with dP the unique root of the volume closure
+    //      f(dP) = alpha_1 r_K/(1+dP/B1) + alpha_2 r_K/(1+dP/B2) - 1 = 0
+    //  (f monotone decreasing; closed-form Wood-weighted seed; THREE Newton
+    //  steps, a fixed count -- no convergence threshold exists to tune).  The
+    //  energy split pays each phase P dV for ITS OWN volume change,
+    //      E_k* = E_k + (S_M-u) S_M + P_mix s_k / (rho_k (1+s_k)),
+    //  and the volume closure makes  sum m_k* E_k*  equal the B.14 mixture
+    //  sum EXACTLY -- so every conserved-slot star component (URHO, momenta,
+    //  UEDEN, UEINT, partial masses, species) is unchanged between the two
+    //  constructions; only UALPHA1/UE1/UE2 waves move.  Equal bulk moduli
+    //  (every single-phase cell, and c-slaved corridor faces with equal
+    //  rho_k) reduce algebraically to B.14.  Degeneracy falls back to B.14
+    //  for that face and is counted (n_relax_fb), never clamped.  Exact
+    //  alpha in {0,1} skips the solve: B.14 is already exact there and the
+    //  presence design needs those values preserved bit-exactly.
+    //  B.14 values computed unconditionally, in the exact expression shape
+    //  the pre-selector code used (characterize.py bit-identity at
+    //  star_relaxed=0 depends on the compiler contracting this identically);
+    //  the relaxed construction overwrites them on success.
+    Real a1s = fK.alpha_1;
+    Real E1s = fK.E_1 + (S_M - fK.u_n) * (S_M + Pe1 / q1);
+    Real E2s = fK.E_2 + (S_M - fK.u_n) * (S_M + Pe2 / q2);
+    bool relaxed_done = false;
+    if (star_relaxed == 1 &&
+        fK.alpha_1 > Real(0.0) && fK.alpha_1 < Real(1.0)) {
+        const Real B1 = fK.rho_1 * fK.c_1 * fK.c_1;
+        const Real B2 = fK.rho_2 * fK.c_2 * fK.c_2;
+        if (std::isfinite(B1) && B1 > Real(1.0e-30) &&
+            std::isfinite(B2) && B2 > Real(1.0e-30)) {
+            const Real sumc = fK.alpha_1 / B1 + fK.alpha_2 / B2;   // Wood
+            Real dP = (sumc > Real(1.0e-30))
+                    ? (Real(1.0) - Real(1.0) / r_K) / sumc : Real(0.0);
+            bool ok_r = std::isfinite(dP);
+            for (int it = 0; ok_r && it < 3; ++it) {
+                const Real t1 = Real(1.0) + dP / B1;
+                const Real t2 = Real(1.0) + dP / B2;
+                if (!(t1 > Real(1.0e-30)) || !(t2 > Real(1.0e-30))) {
+                    ok_r = false; break;
+                }
+                const Real fv = fK.alpha_1 * r_K / t1
+                              + fK.alpha_2 * r_K / t2 - Real(1.0);
+                const Real fd = -(fK.alpha_1 * r_K / (B1 * t1 * t1)
+                                + fK.alpha_2 * r_K / (B2 * t2 * t2));
+                if (!std::isfinite(fv) || !(std::abs(fd) > Real(1.0e-30))) {
+                    ok_r = false; break;
+                }
+                dP -= fv / fd;
+                if (!std::isfinite(dP)) { ok_r = false; break; }
+            }
+            if (ok_r) {
+                const Real t1 = Real(1.0) + dP / B1;
+                const Real t2 = Real(1.0) + dP / B2;
+                const Real a1r = fK.alpha_1 * r_K / t1;
+                if (t1 > Real(1.0e-30) && t2 > Real(1.0e-30) &&
+                    a1r > Real(0.0) && a1r < Real(1.0)) {
+                    const Real E1r = fK.E_1 + (S_M - fK.u_n) * S_M
+                                   + Pe1 * (dP / B1) / (fK.rho_1 * t1);
+                    const Real E2r = fK.E_2 + (S_M - fK.u_n) * S_M
+                                   + Pe2 * (dP / B2) / (fK.rho_2 * t2);
+                    if (std::isfinite(E1r) && std::isfinite(E2r) &&
+                        std::isfinite(a1r)) {
+                        a1s = a1r; E1s = E1r; E2s = E2r;
+                        relaxed_done = true;
+                    }
+                }
+            }
+        }
+    }
+#if !defined(AMREX_USE_GPU)
+    if (!relaxed_done && star_relaxed == 1 &&
+        fK.alpha_1 > Real(0.0) && fK.alpha_1 < Real(1.0)) {
+        ++face_diag::n_relax_fb();   // fell back to B.14, counted
+    }
+#endif
+    amrex::ignore_unused(relaxed_done);
     if (!std::isfinite(E1s) || !std::isfinite(E2s)) PS_ST_REFUSE(PS_FL_ST_ESTAR);
 #undef PS_ST_REFUSE
 
@@ -519,7 +588,8 @@ bool ps_star_state(int idir, const Face& fK, const amrex::Real UK[NVAR],
 #endif
     U_star[UEINT]   = rhos * e_mix_s;
     U_star[UEDEN]   = rhos * (e_mix_s + ke);   // = m1s·E1s + m2s·E2s
-    U_star[UALPHA1] = fK.alpha_1;              // α advected at the contact
+    U_star[UALPHA1] = a1s;   // B.14: = fK.alpha_1 (contact-only); relaxed:
+                             // alpha jumps across the acoustic waves too
     U_star[UM1RHO1] = m1s;
     U_star[UM2RHO2] = m2s;
     U_star[UE1]     = m1s * E1s;
@@ -584,6 +654,7 @@ inline void reset() {
     }
     for (int c = 0; c < PS_FL_NCAUSE; ++c) n_fl_cause(c) = 0;
     n_fl_side(0) = 0; n_fl_side(1) = 0;
+    n_relax_fb() = 0;
     max_w21_mass() = 0.0; max_w21_energy() = 0.0;
 }
 }
@@ -651,10 +722,10 @@ bool fluctuations(int idir, const amrex::Real UL[NVAR], const amrex::Real UR[NVA
     Real UsL[NVAR], UsR[NVAR];
     int stc = PS_FL_OK;
     if (!ps_star_state(idir, fL, UL, w.S_L, w.S_M, UsL, &stc,
-                       pr.rk_model)) {
+                       pr.star_relaxed)) {
         PS_W0_FL_FAIL(stc); PS_W0_FL_SIDE(0); return false; }
     if (!ps_star_state(idir, fR, UR, w.S_R, w.S_M, UsR, &stc,
-                       pr.rk_model)) {
+                       pr.star_relaxed)) {
         PS_W0_FL_FAIL(stc); PS_W0_FL_SIDE(1); return false; }
 #undef PS_W0_FL_FAIL
 #undef PS_W0_FL_SIDE

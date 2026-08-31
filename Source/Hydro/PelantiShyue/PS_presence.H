@@ -101,28 +101,34 @@ struct PsPres {
     //         mixture in equilibrium; as an S_L/S_R estimate it is narrower
     //         than the frozen speed, so if the fan stops bounding the true
     //         waves this is where it shows.
-    //  CAMR.ps_rk_model -- HOW THE STAR-STATE PARTIAL MASSES CONTRACT through
-    //  the acoustic fan (D7 instrument; PLAN_measurements_and_fixes.md S1 C5,
-    //  REVIEW_RESPONSE.md D7).  Rides this struct for the same reason
-    //  cmix_model does: it is already the by-value carrier reaching the star
-    //  builders (PS_hllc.H ps_star_state / fluctuations) with no ParmParse in a
-    //  device-callable function.
+    //  CAMR.ps_star_relaxed -- WHICH STAR-STATE CONSTRUCTION the acoustic fan
+    //  uses (DESIGN_ps_star_relaxed.md, approved 2026-08-31).  Rides this
+    //  struct for the same reason cmix_model does: it is already the by-value
+    //  carrier reaching the star builders (PS_hllc.H ps_star_state /
+    //  fluctuations) with no ParmParse in a device-callable function.
     //
-    //    0  SHARED (default, bit-identical): both phase masses scale by the
-    //         one ratio r_K = (S_K - u)/(S_K - S_M) (Pelanti 2022 B.14).
-    //         Encodes "acoustic compression does not change composition" --
-    //         true for a dispersed mixture, questionable at a contact where
-    //         the acoustic wave lives in one phase only.
-    //    1  PER-PHASE (instrument, NOT a design): each phase contracts by its
-    //         own acoustic ratio r_k built from S_{K,k} = u -/+ c_k, then both
-    //         are renormalised by a common factor so that
-    //         m_1 r_1' + m_2 r_2' = (m_1+m_2) r_K exactly -- the MIXTURE mass
-    //         keeps the HLLC Rankine-Hugoniot contraction, conservation is
-    //         untouched, and only the PARTITION of the compression between
-    //         the phases moves.  The per-phase energy fluxes (q_k path) are
-    //         deliberately unchanged so the dial isolates the mass-partition
-    //         question.  Any degeneracy falls back to SHARED.
-    int         rk_model     = 0;
+    //    0  B.14 (default during the validation campaign, bit-identical):
+    //         alpha frozen across the acoustic waves, both phase masses scale
+    //         by the one ratio r_K (Pelanti 2022 B.14) -- so BOTH phases take
+    //         the mixture volumetric strain (FINDINGS_demo2_step3669.md B.1).
+    //    1  RELAXED-ALPHA: the mechanically-relaxed intermediate.  Masses
+    //         keep m_k r_K (forced by the per-phase mass jump); alpha jumps
+    //         across the acoustic waves so each phase carries the strain its
+    //         own bulk modulus admits (one scalar Wood-weighted closure); the
+    //         energy split pays each phase P dV for ITS volume change, with
+    //         the mixture-energy RH preserved exactly.  Degeneracy falls back
+    //         to the B.14 form per face (counted, never clamped).
+    //  TEMPORARY A/B selector ([DECIDE-6]): default flips to 1 at acceptance
+    //  (1-D gates + demo2 chk_sj2_03550 restart), then the selector and the
+    //  B.14 branch are DELETED -- the rk_model lesson, applied.
+    //
+    //  CAMR.ps_rk_model (the D7 per-phase-contraction dial) is RETIRED
+    //  2026-08-31 and ABORTS if present: it moved the quantity conservation
+    //  pins (the masses) and froze the one that must move (alpha), was inert
+    //  on corridor faces (slaved c), and broke the UEDEN flux/fluctuation
+    //  consistency on Independent faces (energyid 8.4e-6 -> 0.1108 in 2-D,
+    //  4.5e-14 -> 0.697 on 1-D B5).  DESIGN_ps_star_relaxed.md s2.
+    int         star_relaxed = 0;
 };
 
 //  Single-sourced mixture sound speed SQUARED.  One definition for all three
@@ -228,7 +234,14 @@ inline const PsPres& ps_presence_params()
         //  CAMR.ps_presence deliberately NOT read: the legacy path is gone.
         pp.query("ps_alpha_cond",       v.alpha_cond);
         pp.query("ps_alpha_birth",      v.alpha_birth);
-        pp.query("ps_rk_model",         v.rk_model);
+        pp.query("ps_star_relaxed",     v.star_relaxed);
+        if (pp.contains("ps_rk_model")) {
+            amrex::Abort("CAMR.ps_rk_model is RETIRED (2026-08-31).  The D7 "
+                "dial changed the mass partition without the matching energy "
+                "partition and was inert on corridor faces; "
+                "CAMR.ps_star_relaxed (DESIGN_ps_star_relaxed.md) supersedes "
+                "it.  Remove the key from this deck.");
+        }
         pp.query("ps_presence_vanish",  v.alpha_vanish);
         pp.query("ps_presence_rho_deg", v.rho_deg);
         pp.query("ps_presence_e_deg_lo", v.e_deg_lo);
