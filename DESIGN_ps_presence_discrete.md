@@ -46,7 +46,7 @@ pole-adjacent EOS evaluations per step at t = 2.6 ms — cannot exist.
 
 | constant | value | derivation / provenance |
 |:--|:--|:--|
-| **α_cond** | **1e-2** | Conditioning bound, handoff §4.5: ρ_k = m_k/α_k inherits relative error η/α_k; measured η_max = 5.2e-4 per step; accuracy target ε = 5 % ⇒ α_cond = η_max/ε = 1.04e-2. Replaces SIX competing cuts (5e-3 ×3, 1e-3, 1e-2, 2e-2) and `ALPHA_SLAVE_THR`. Acceptance includes an **insensitivity sweep** over [4.2e-3, 2e-2]: solution changes must stay below scheme error, else the design is falsified. |
+| **α_cond** | **1e-2** | Conditioning bound, handoff §4.5: ρ_k = m_k/α_k inherits relative error η/α_k; measured η_max = 5.2e-4 per step; accuracy target ε = 5 % ⇒ α_cond = η_max/ε = 1.04e-2. Replaces SIX competing cuts (5e-3 ×3, 1e-3, 1e-2, 2e-2) and `ALPHA_SLAVE_THR`. Acceptance includes an **insensitivity sweep** over [4.2e-3, 2e-2]: solution changes must stay below scheme error, else the design is falsified. **[SUPERSEDED 2026-08-15: the sweep ran and PASSED, and α_cond was re-derived from the 2-D production η_max = 9.6e-4 to the live value 2e-2. `PS_presence.H`'s header carries the current derivation — trust it over this row.]** |
 | **α_vanish** | **1e-8** | The standalone's validated death threshold (`PS_ALPHA_VANISH`; COTT author: "without it the run would crash"; called every RK stage in `clamp_cons6`). A phase this small carries no recoverable information at any accuracy target (η_median/α = 2.1e4 relative error). |
 | **α_birth** | **2e-2 = 2·α_cond** | Flash-nucleation seed level. Must sit far enough above α_cond that one step of η-scale erosion cannot demote a newborn phase (hysteresis: birth at 2·α_cond, independence lost only below α_cond, death only below α_vanish — no flip-flop channel exists). The factor 2 is the weakest point of the note: it is the smallest integer factor giving O(1) separation, and it coincides with the flash source's existing `alpha_seed_target = 0.02` — but it is a chosen factor, not a derived one. Acceptance includes a factor sweep (1.5, 2, 4); sensitivity above scheme error falsifies it. |
 
@@ -191,7 +191,7 @@ mtime — four stale-binary incidents), frozen suite, HEM spot-check
    velocity ~0.4 %. NOTE: bit-identity is NOT the gate from S3 onward — the
    IC change (exact zeros vs 1e-6 seeds) legitimately perturbs results at
    the trace-weight level; any change beyond that must be explained.
-2. **Pipe-break reproducer** (`chk_sj2_pr_00550`, ~10 steps,
+2. **Pipe-break reproducer** (`chk_sj2_pr_00550` — **[STALE 2026-08-31: gone; use `demo2_final/chk_sj2_03650`]** — ~10 steps,
    `ps_diag_mass=1`): pole-adjacent evaluation counter **15 000/step → 0**;
    `max(m1+m2)` ~149.5; dt holds. The headline root-cause measurement.
 3. **HEM limit** (`hem_limit.py`, HEM_MODE=4, flash on, margin 0): B4 flat
@@ -347,7 +347,8 @@ per-species conservation and Y_i ∈ [0,1], which slot directly into
 
 ## 14. S0 production baseline (2026-08-08, measured on the pipe-break reproducer)
 
-`validate_baseline.log` (chk_sj2_pr_00550 + 10 steps, `CAMR.ps_validate=1`):
+`validate_baseline.log` (chk_sj2_pr_00550 + 10 steps, `CAMR.ps_validate=1`)
+— **[historical; that checkpoint is no longer on disk as of 2026-08-31]**:
 
 - **rho_domain: bulk = 0, trace = 52** (L2, persisting through the reaction
   stages; 4 on L0). All out-of-domain phase states live in the trace bucket —

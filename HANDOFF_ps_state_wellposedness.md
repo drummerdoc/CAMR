@@ -4,6 +4,13 @@
 diagnosis and no fix.** Its purpose is to stop the next session repeating that
 day. Read Part 0 before doing anything.
 
+> **STATUS 2026-08-31 — HISTORICAL. Read `HANDOFF_shock_phase_compression.md`
+> (repo root) FIRST.** The ground rules in §0 remain binding. The task list and
+> some gate commands below are superseded; every stale instruction found so far
+> is corrected in place and marked `[STALE 2026-08-31]`, and the full list is in
+> Part 1.3 of the new handoff. Do not follow an uncorrected action item here
+> without checking it against that file.
+
 ---
 
 # Part 0 — Prime directive
@@ -319,8 +326,10 @@ python3 characterize.py record BASELINE
 
 Build layout: 1-D suite needs `DIM=1 USE_MPI=FALSE` (the GNUmakefile defaults to
 `DIM=2`). Pipe-break: build in `Exec/CO2_PipeBreak`, run from `PR/` as
-`../CAMR2d...ex`. Fast 2-D reproducer: restart `chk_sj2_pr_00550`, ~10 steps,
-`CAMR.ps_diag_mass=1`.
+`../CAMR2d...ex`. Fast 2-D reproducer: **[STALE 2026-08-31 — `chk_sj2_pr_00550`
+is no longer on disk.** Use `Exec/CO2_PipeBreak/demo2_final/chk_sj2_03650`, 19
+steps, `CAMR.ps_validate=1 CAMR.ps_diag_mass=1 CAMR.ps_face_diag=1` — note the
+`CAMR.` prefix is mandatory and a bare flag is silently ignored.]
 
 ## 6.4 First task for the new thread
 

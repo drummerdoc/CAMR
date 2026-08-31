@@ -155,7 +155,9 @@ Every backend exposes its domain (Part 4). `rho_k` is clamped into it *before*
 the branch-locked call. PR's pole stops being reachable.
 
 ## Step 4 — verify on the failing case
-Reproducer is cheap: `chk_sj2_pr_00550`, ~10 steps, `CAMR.ps_diag_mass=1`.
+Reproducer is cheap: **[STALE 2026-08-31 — `chk_sj2_pr_00550` is gone.** Use
+`Exec/CO2_PipeBreak/demo2_final/chk_sj2_03650`, 19 steps,
+`CAMR.ps_diag_mass=1`.]
 
 - **Necessary:** `max(m1+m2)` stays ~149.5 and `max|E1|` ~2.4e5 through
   level-2 step 2230, and dt holds.

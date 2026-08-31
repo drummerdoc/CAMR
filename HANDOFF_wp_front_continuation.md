@@ -1,6 +1,13 @@
 # HANDOFF: CAMR presence/extinction/WP-front work — continuation brief
 # Written 2026-08-10 by the Fable session for a successor agent (Opus).
 
+> **STATUS 2026-08-31 — HISTORICAL. Read `HANDOFF_shock_phase_compression.md`
+> (repo root) FIRST.** The ground rules in §0 remain binding. The task list and
+> some gate commands below are superseded; every stale instruction found so far
+> is corrected in place and marked `[STALE 2026-08-31]`, and the full list is in
+> Part 1.3 of the new handoff. Do not follow an uncorrected action item here
+> without checking it against that file.
+
 Marc Day (SINTEF Energy Research).  Repo: /Users/marcusd/src/CAMR
 (branch co2-eos), companion 1-D standalone /Users/marcusd/src/SINTEF/
 co2-eos-cfd.  AMReX-based compressible multiphase CFD, Pelanti–Shyue
@@ -126,12 +133,27 @@ production pair).
 - Full gate: CO2_STANDALONE=/Users/marcusd/src/SINTEF/co2-eos-cfd
   python3 verify_canonical.py   — 27 checks; the B9 zero-trace check is
   an annotated KNOWN-FAIL until W2 lands.
-- Legacy regression (MUST be digit-identical after every change):
-  EXE=./CAMR1d.llvm.TPROF.PS.PR.ex python3 run_ac_suite.py
+- [STALE 2026-08-31] The former "legacy regression (MUST be digit-identical)"
+  named `run_ac_suite.py`.  That script is RETIRED and REMOVED: it replayed
+  each stored reference's `job_info` -- including `CAMR.ps_flux` -- onto the
+  command line, so it silently recreated the configuration the references were
+  minted under and was structurally incapable of seeing a change to the
+  defaults (STATUS_multiphase.md 5.5).  The legacy `ps_presence == 0` path it
+  guarded has ALSO been deleted (PS_presence.H: "CAMR.ps_presence is no longer
+  read"), so NO bit-identical regression exists any more.
+  Acceptance harness is now:
+      CO2_STANDALONE=/Users/marcusd/src/SINTEF/co2-eos-cfd python3 exact_suite.py
+  Results WILL move after a change; the obligation is to explain the movement,
+  not to avoid it.
 - B9-stiff reproducer (the target): replay the vz_B9c_ config —
   B9-Deep-Expansion ICs, n_cell=64, ps_relax_mode=4, theta/mt/flash tau
   1e-7, ps_presence=1, prob.alpha_trace=0, ps_validate=1, ps_face_diag=1.
   Exact overrides: see verify_canonical.py check 6, or run_case in it.
+- [STALE 2026-08-31] Any reference below to the 2-D reproducer
+  `chk_sj2_pr_00550` is dead -- that checkpoint is no longer on disk.  The
+  live 2-D reproducers are `Exec/CO2_PipeBreak/demo2_final/chk_sj2_03650`
+  (19 steps to a reproducible abort) and `chk_sj2_03550` (the shock passage,
+  55 steps).  See HANDOFF_shock_phase_compression.md Part 6.
 - 2-D testbed (~1 min on Marc's 8 cores): Exec/CO2_PipeBreak,
   inputs.satjet_demo2 + amr.n_cell="128 64" amr.max_level=2
   stop_time=6.0e-4 prob.alpha_trace=0 CAMR.ps_presence=1
@@ -188,6 +210,8 @@ production pair).
     it: obey §0 ground rules exactly, read the §1 documents in order,
     then §3 — present the W0 measurement table from
     DESIGN_ps_wp_front.md §7 and my W2 options, wait for my decision,
-    and implement with the §4 gates.  Legacy must stay digit-identical
-    (run_ac_suite after every change).  Start by proposing the §5
-    commit split for my approval.
+    and implement with the §4 gates.  [STALE 2026-08-31: there is no
+    digit-identical legacy regression any more -- run_ac_suite.py is
+    retired and removed, and the ps_presence==0 path is deleted.  Use
+    exact_suite.py + verify_canonical.py and explain every moved
+    number.]  Start by proposing the §5 commit split for my approval.
