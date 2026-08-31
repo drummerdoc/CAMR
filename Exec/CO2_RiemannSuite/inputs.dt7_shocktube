@@ -1,0 +1,75 @@
+# =====================================================================
+#  DT7-4.1 two-phase CO2 shock tube  (SINTEF report DT7_2019_6,
+#  "The homogeneous relaxation model", section 4.1; Munkejord &
+#  Deng-like).  Set up 2026-08-27 (Marc's request) as a 1-D CAMR /
+#  PR-EOS comparison case against the report's Figure 4.
+#
+#  12 m tube, membrane at x = 6 m, both sides SATURATED CO2 at rest:
+#    left   T = 298.15 K, gas VOLUME fraction 0.2
+#    right  T = 273.15 K, gas VOLUME fraction 0.8
+#  Report: PR EOS (vdW mixing; pure CO2 here), 1000 cells, CFL 0.9,
+#  extrapolation BCs, profiles at t = 25 ms.
+#
+#  CAMR mapping:
+#    * prob.phase = 3 (saturated at T, quality = vapour MASS fraction).
+#      Volume->mass conversion at OUR PR saturation densities
+#      (measured from the code's own co2_sat_LV, 2026-08-27):
+#        298.15 K: rho_l = 625.279, rho_v = 247.095, Psat = 64.49 bar
+#                  alpha_g = 0.2  ->  x_qual = 0.089911
+#        273.15 K: rho_l = 911.409, rho_v =  97.784, Psat = 34.77 bar
+#                  alpha_g = 0.8  ->  x_qual = 0.300287
+#      (Report figure endpoints ~64.4 / ~34.8 bar: EOS-level agreement.)
+#    * "simple extrapolation" BCs = our Inflow-typed bcnormal
+#      interior-copy default; no wave reaches a boundary by 25 ms.
+#    * CFL 0.25 = our acceptance value (the report's 0.9 is a scheme
+#      constant, not physics; profiles at fixed t are insensitive).
+#    * Relaxation: bare CAMR defaults (X3 -- its fixed point is the
+#      HEM flash), so the natural comparison target is the report's
+#      HEM curve.  Run dt7_shocktube.py for the scored comparison.
+# =====================================================================
+
+amrex.fpe_trap_invalid = 0
+
+max_step  = 100000
+stop_time = 0.025
+
+geometry.is_periodic = 0 0 0
+geometry.coord_sys   = 0
+geometry.prob_lo     = 0.0
+geometry.prob_hi     = 12.0
+amr.n_cell           = 1000
+
+prob.x_diaph  = 0.5          # FRACTION of x-extent -> membrane at 6 m
+prob.phase_L  = 3
+prob.T_L      = 298.15
+prob.u_L      = 0.0
+prob.x_qual_L = 0.089911
+prob.phase_R  = 3
+prob.T_R      = 273.15
+prob.u_R      = 0.0
+prob.x_qual_R = 0.300287
+prob.alpha_trace = 0.0
+
+CAMR.lo_bc = Inflow SlipWall SlipWall
+CAMR.hi_bc = Inflow SlipWall SlipWall
+
+CAMR.ps_hydro    = 1
+CAMR.ps_flux     = wp
+CAMR.ps_wp_order = 2
+CAMR.cfl         = 0.25
+CAMR.do_mol      = 0
+CAMR.fixed_dt    = 0
+CAMR.allow_negative_energy = 1
+CAMR.ppm_type    = 1
+CAMR.ps_bc_use_nscbc = 0
+CAMR.redistribution_type = StateRedist
+
+amr.max_level = 0
+amr.plot_int  = -1
+amr.plot_per  = 0.025
+amr.plot_file = dt7_plt_
+amr.derive_plot_vars = x_velocity pressure
+
+CAMR.v = 0
+amr.v  = 0
+CAMR.sum_interval = -1
