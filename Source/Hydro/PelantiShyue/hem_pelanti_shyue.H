@@ -2068,7 +2068,10 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
     //  how the two silently drift: change the dm_eq settings and the
     //  contraction ratio starts measuring against a different target while
     //  still reporting a number.  Single-sourced 2026-08-11.
-    auto eq_solver_params = [nest_pr, target_mode, h_w, upd_hoisted]
+    //  (nest_pr is static const and therefore not capturable — clang
+    //  rejects it in a capture list, [basic.def.odr]; the lambda reads
+    //  the static directly, gcc and clang both accept that.)
+    auto eq_solver_params = [target_mode, h_w, upd_hoisted]
                            (PsMassTransferParams& mt_o,
                             PsPressureRelaxParams& pr_o) {
         mt_o.dome_gate = false;                    // gate enforced upstream
