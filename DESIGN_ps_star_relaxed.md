@@ -240,11 +240,24 @@ Measured this session, in order:
   rho_1 1281, e_1 -2.45e5, E_1 -2.21e5 while accelerated to 224 m/s,
   across steps 3576-3586; aborts at 3587 on (249,96) with the exact
   demo2 fingerprint. Both defects, zero AMR.
-- **MT: discriminators in flight.** D2_noMT (full AMR, `ps_mt_tau=1e3`)
-  and D3 (L0-only + MT off) split the remaining suspects {MT in
-  neighbouring Independent cells} vs {oblique 2-D passage + corridor
-  history}. This section gets their result before implementation
-  starts.
+- **MT is eliminated.** D2_noMT (full AMR, `ps_mt_tau=1e3` — job_info
+  shows the override took) reproduces the shock-passage corruption at
+  L1 (490,202) essentially digit-for-digit against ReRun4's B.1 table:
+  steps 3584-3587 give P/P0 = 1.173/1.703/2.557/3.316 vs ReRun4's
+  1.171/1.699/2.550/3.314, rho_1 ratios 1.075/1.245/1.442/1.538 vs
+  1.074/1.244/1.441/1.537, e_1 bottoming at -2.4953e5 vs -2.493e5,
+  while E_1(total) falls -1.016e5 -> -2.099e5 under compression and
+  acceleration 100 -> 281 m/s. Mass transfer contributes nothing
+  measurable to the damage window.
+- **Conclusion of the discriminator series:** kinetic repartition
+  (1-D probe), AMR (D1), and MT (D2) are each individually eliminated.
+  What remains is the 2-D hydro update itself acting on a corridor
+  phase with accumulated history — the equal-strain star state applied
+  along an oblique, genuinely two-dimensional passage (sequential
+  per-direction fluctuation deposits through states no operator
+  repairs), which is precisely the surface §3 rebuilds. A D3
+  (L0-only + MT off, ~6 min) is available as belt-and-braces but adds
+  no independent elimination.
 
 Consequently (per §5.3, unchanged): **B12 flipping to PASS is necessary,
 not sufficient; the demo2 restart from `chk_sj2_03550` (55 steps,
@@ -253,8 +266,9 @@ acceptance.** Required outcome: rho_1 at the tracked cells stays within
 a few percent of its pre-shock value through the passage, AND e_1 stops
 collapsing toward -2.2e5. If rho_1 heals and e_1 still collapses, §B.2
 has a second mechanism that survives the star-state fix — report that,
-do not declare item 2 done (and D3's answer will say where to look
-next).
+do not declare item 2 done — the residual would point at the
+per-direction deposit sequencing itself, the one surface the
+discriminators could not isolate.
 
 ## 7. Gates (all from §5.3, with sharpened expectations)
 
