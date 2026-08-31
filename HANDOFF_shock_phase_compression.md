@@ -644,9 +644,37 @@ Existing runs on disk, all from the current code:
     against the t_end analytic: A/C mean 0.5194 instead of 0.0350, with a
     velocity rel-L2 of exactly **1.000** on every case starting from rest.
     Fixed in `0d6789f`. **An exact 1.000 rel-L2 means an absent field, not bad
-    physics** — check for it before concluding anything. The same commit
-    restricted `ps_bc_nscbc_flash` to 0/1; the decks have not been swept for a
-    stale value 2.
+    physics** — check for it before concluding anything.
+
+    **Swept 2026-08-31.** Eight keys abort merely by being PRESENT
+    (`pp.contains`, value irrelevant): `ps_recon`, `ps_alpha_limiter`,
+    `ps_pk_energy_flux`, `ps_ctu`, `ps_bc_nscbc_v2`, `ps_alpha_vanish`, and
+    `eos_table`+`eos_mlp` / `eos_table_auto`+`eos_mlp_auto` in combination.
+    Every deck and script was checked against that list. **Every TRACKED deck
+    is clean** — the repo was never broken by this. What was broken: the four
+    **gitignored local run directories**
+    `Exec/CO2_PipeBreak/{PR,PRTab,GERG,GERGTab}/` (`.gitignore:76`) each hold a
+    working copy of `inputs.satjet_demo2` setting `CAMR.ps_recon = 0` **and**
+    `CAMR.ps_alpha_vanish = 1.0e-8`, so the four-backend comparison —
+    which `FINDINGS_four_backend_comparison.md` runs from those very
+    directories — aborted at startup on Marc's machine since 2026-08-26/27.
+    `e754bbf` scrubbed the tracked deck; the untracked copies are invisible to
+    any repo-wide sweep, which is exactly why they survived. Both keys were
+    removed from those working copies on 2026-08-31 (behaviour-neutral:
+    `ps_recon` was banner-only, and `ps_alpha_vanish` is documented at its abort
+    site as "retired and was already inert", with `ps_presence_vanish` carrying
+    the same 1e-8 default). **A fresh clone is unaffected and gets no copy of
+    those directories at all** — so a successor reproducing the four-backend
+    comparison must create them and must not resurrect an old deck. Remaining
+    mentions
+    (`CO2_B4/inputs`, `inputs.decomp`, `measure_ripple.py`,
+    `flashing_front.py`) are comments or entries marked "not run".
+    `ps_bc_nscbc_flash` has **no setter anywhere** and was already verified at
+    `WORKLOG.md:7937` — it was never a problem.
+
+    **The class matters more than the instances.** `pp.contains` aborts are
+    invisible until something runs, and harnesses that swallow stderr make them
+    invisible even then. Re-run this sweep after any retirement commit.
 11. **Don't widen `e_deg_*`, add an e-floor, or clamp e₁ on promotion.** That
     is `HANDOFF_ps_state_wellposedness.md` Part 0 verbatim: a guard on a
     consequence, 80 steps downstream of the cause.
