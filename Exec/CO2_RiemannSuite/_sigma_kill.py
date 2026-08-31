@@ -20,8 +20,7 @@ def run_case(short):
     ov={'amr.n_cell':64,'geometry.prob_lo':0.0,'geometry.prob_hi':1.0,
         'prob.x_diaph':0.5,'prob.alpha_trace':0.0,'prob.p_amb':5.0e6,
         'CAMR.cfl':0.25,'CAMR.do_mol':0,'stop_time':tf,
-        'CAMR.ps_flux':'wp','CAMR.ps_wp_order':2,'CAMR.ps_recon':1,
-        'CAMR.ps_do_relax':1,'CAMR.ps_relax_mode':4,
+        'CAMR.ps_flux':'wp','CAMR.ps_wp_order':2,'CAMR.ps_do_relax':1,'CAMR.ps_relax_mode':4,
         'CAMR.ps_theta_tau':1e-7,'CAMR.ps_mt_tau':1e-7,
         'CAMR.ps_flash_tau':1e-7,'CAMR.ps_flash_ev_diag':1}
     if short in Y4CASES:

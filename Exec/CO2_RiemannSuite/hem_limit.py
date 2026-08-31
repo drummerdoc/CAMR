@@ -37,8 +37,7 @@ def run_camr(name, tau, pref):
     c = F.CD[name]; tf = c[3]
     ov = {'amr.n_cell':N,'geometry.prob_lo':0.0,'geometry.prob_hi':1.0,
           'prob.x_diaph':0.5,'prob.alpha_trace':1.0e-6,'prob.p_amb':5.0e6,
-          'CAMR.ps_flux':'wp','CAMR.ps_wp_order':2,'CAMR.ps_recon':1,
-          'CAMR.cfl':0.25,'CAMR.do_mol':0,'CAMR.ps_do_relax':1,
+          'CAMR.ps_flux':'wp','CAMR.ps_wp_order':2,'CAMR.cfl':0.25,'CAMR.do_mol':0,'CAMR.ps_do_relax':1,
           # HEM-limit configuration: both relaxation times -> tau; mode from
           # HEM_MODE (2 = legacy iso-P Picard, 4 = canonical chain).
           'CAMR.ps_relax_mode':MODE,'CAMR.ps_theta_tau':tau,'CAMR.ps_mt_tau':tau,

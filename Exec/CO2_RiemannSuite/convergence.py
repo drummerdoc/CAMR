@@ -32,7 +32,7 @@ CASES = {
              stop=7.818949e-4),
 }
 COMMON = ['CAMR.cfl=0.25','CAMR.do_mol=0','CAMR.ps_do_relax=1','CAMR.ps_flux=wp',
-          'CAMR.ps_mt_tau=0','CAMR.ps_recon=1','CAMR.ps_wp_order=2',
+          'CAMR.ps_mt_tau=0','CAMR.ps_wp_order=2',
           'geometry.prob_lo=0.0','geometry.prob_hi=1.0','max_step=200000']
 
 def rd1d(p, var):
