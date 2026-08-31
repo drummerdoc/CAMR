@@ -337,6 +337,30 @@ Both phases compress by the same ratio to five significant figures, and α₁ is
 the mechanism itself: `U_star[UALPHA1] = fK.alpha_1` combined with
 `m_k* = m_k·r_K`.
 
+### 4.0a B12 gates §B.1 ONLY — measured, not assumed
+
+The diagnosis found **two independent defects**. B12 covers the first and
+**demonstrably does not reproduce the second.** Measured on B12, 2026-08-31:
+
+```
+                        far field        shocked plateau
+  rho_1                    936.41                1463.43     ratio 1.5628
+  e_1 (internal)      -1.16913e+05           -1.13231e+05    DELTA +3.68e+03
+  available work  ~ P*drho/rho^2                             = +3.50e+03 J/kg
+```
+
+The liquid **gains** internal energy under compression, right sign, agreeing
+with the available work to 5 %. The energy partition is sound here; only the
+density partition is wrong.
+
+Contrast demo2 at the same kind of event (ReRun4, L1 cell (490,202)):
+e₁ goes −1.066e5 → −2.493e5, a **loss** of 1.4e5 J/kg against ~2.0e3 available
+— opposite sign, ~70× the magnitude.
+
+**Consequence for item 2: fixing the star state will flip B12 to PASS and may
+leave the demo2 abort alive.** B12 passing is necessary, not sufficient. See
+§5.3 for the revised acceptance and §5.4 for the open question.
+
 **The acceptance changed from §4.3 as written.** V9's form
 `|Δρ_k|/ρ_k ≤ 2·|ΔP|/(ρ_k c_k²)` needs `c_k`, which is not in the plotfile, so
 it would have forced a solver change *before the test could exist*. The ratio
@@ -501,7 +525,15 @@ The hyperbolic core is the one part of this code measured to beat the reference
 - C1-Identity must stay exactly 0.000 (uniform-state preservation — the
   genuine test of the interface condition).
 - B4 wave-propagation star velocity ~0.4 % (8.95 vs analytic 8.99).
-- B12 must flip from FAIL to PASS. That is the point of the item.
+- B12 must flip from FAIL to PASS (R from 1.0000 toward ~0.02). Necessary,
+  **not sufficient** — see §4.0a.
+- **A demo2 restart is part of the acceptance, not a follow-up.** Restart
+  `demo2_final/chk_sj2_03550`, `max_step=3605`, `plot_int=1`, full diagnostics
+  (≈50 min, 6 ranks). Required outcome: ρ₁ at (245,101) stays within a few
+  percent of 879 through the shock instead of reaching 1280, **and** e₁ stops
+  collapsing to −2.2e5. If ρ₁ is fixed but e₁ still collapses, §B.2 is
+  untouched and the abort will recur — report that rather than declaring
+  item 2 done. `ReRun4/` is the matched baseline.
 - `[PS-W21]` residuals must return to round-off. `PS_hllc.H:565` states the
   criterion: *"They must read at round-off; anything larger falsifies the
   derivation."* **Note it currently reads mass 0.91–1.0, energy 1.0 in the
@@ -510,6 +542,30 @@ The hyperbolic core is the one part of this code measured to beat the reference
   it: these are maxima over ~50 000 faces and a relative residual saturates at
   1 whenever the mixture correction is ≈0 while a phase correction is not, so a
   single degenerate face can attain it. The distribution is not instrumented.
+
+## 5.4 [DECIDE] How is §B.2 to be reproduced at all?
+
+§B.2 — the liquid losing total specific energy while compressed *and*
+accelerated — appears in 2-D and **not** in the clean 1-D symmetric collision.
+What differs, and none of it is settled:
+
+- AMR coarse-fine interpolation and reflux (the failing cell is covered by L1);
+- the transverse terms (`ps_wp_transverse = 0` in production, but the 2-D wave
+  is oblique and B12's is normal);
+- the velocity change: 101 → 282 m/s in demo2 versus 100 → 0 here, so the
+  kinetic-energy repartition between phases is an order of magnitude larger;
+- mass transfer active in neighbouring INDEPENDENT cells, absent in B12;
+- accumulated corridor history — demo2's cell had been advecting corridor mass
+  for ~160 steps before the shock; B12's is one clean event.
+
+**The decision for Marc:** if the mechanism is AMR or transverse, no 1-D case
+can ever catch it and the reproducer must be 2-D — which means the fast gate
+cannot cover §B.2 and item 2's acceptance rests on the 50-minute restart. If it
+is the kinetic repartition, a 1-D "B13" with an asymmetric velocity pair (say
++250/0 rather than ±100, so |u| changes a lot across the shock) might reproduce
+it in seconds. **Measure before designing**: the cheapest discriminator is to
+re-run B12 with an asymmetric velocity pair and see whether e₁ turns over.
+That is one 30-second run, and it should be done BEFORE any item-2 code.
 
 ---
 
@@ -559,8 +615,11 @@ regress against (Part 1.3).
         |
   ITEM 1   B12                DONE (d94d120): R = 1.0000 vs gate 0.25, KNOWN-FAIL
         |
+  5.4      is B.2 reproducible in 1-D?   ONE 30-s run, before item 2
+        |
   ITEM 2   star state         the hard one   gate: frozen 0.0350, C1 0.000,
-        |                                    B4 0.4%, B12 R -> ~0.02
+        |                                    B4 0.4%, B12 R -> ~0.02,
+        |                                    AND a demo2 chk_sj2_03550 restart
         |
   ITEM 3   corridor closure   large blast radius   gate: verify_canonical,
                                                    2-D pair, explain every delta
@@ -683,25 +742,64 @@ Existing runs on disk, all from the current code:
 
 # Part 9 — Opening prompt for the new session
 
+Copy-paste this verbatim.
+
 > I am working on CAMR, an AMReX-based compressible multiphase CFD code
 > implementing the Pelanti-Shyue six-equation model for CO2 pipeline
-> depressurization. Branch `co2-eos`. There is a companion standalone research
-> code at `/Users/marcusd/src/SINTEF/co2-eos-cfd`.
+> depressurization. Repo `/Users/marcusd/src/CAMR`, branch `co2-eos`. There is a
+> companion 1-D standalone at `/Users/marcusd/src/SINTEF/co2-eos-cfd`.
 >
-> Read `HANDOFF_shock_phase_compression.md` at the repo root and follow it:
-> Part 0 gives the reading order, Part 1 the binding ground rules **and the
-> three inherited instructions that have gone stale**, Part 2 the diagnosed
-> failure with its evidence. Then work items 0, 1, 2, 3 in that order, with the
-> gates in Part 6.
+> **Session setup first.** This work needs THREE folders connected, not one:
+> `CAMR`, `amrex` (the build resolves `AMREX_HOME=../../../amrex` only when
+> amrex is mounted alongside CAMR), and `co2-eos-cfd` (the gate's exact
+> references live in `$CO2_STANDALONE/suite/profiles/`). Tell me if any is
+> missing before you start. Object files from an earlier session are unusable —
+> their dependency files carry that session's paths — so expect one clean build.
 >
-> Do not start item 2 or 3 until item 1 exists and FAILS as specified — a test
-> that cannot see a defect we have already measured is worthless.
+> Read `HANDOFF_shock_phase_compression.md` at the repo root and follow it.
+> Part 0 gives the reading order; Part 1 the binding ground rules **and the
+> inherited instructions that have gone stale — do not follow an uncorrected
+> action item in the older handoffs without checking Part 1.3 first**; Part 2
+> the diagnosed failure with its evidence.
 >
-> Before any code, propose: (i) the B12 initial state with the α₁ you computed
-> and the pressure ratio you expect, and (ii) for item 2, the derivation of the
-> per-phase energy star state, written as a design note, for my sign-off. I
-> decide design points; write `[DECIDE]` items into the note rather than
+> State of play: items 0 and 1 of the plan are done. The 1-D battery has a new
+> case B12 that fails on purpose, and `verify_canonical.py` reports ALL CHECKS
+> PASS with B12 as an annotated KNOWN-FAIL. Your first action is to reproduce
+> that baseline — build, then
+> `CO2_STANDALONE=<amrex-sibling>/co2-eos-cfd python3 verify_canonical.py` —
+> and tell me what you get. If check 1 does not give A/C mean 0.0350 with
+> C1-Identity exactly 0.000, stop and diagnose that before anything else; a
+> velocity rel-L2 of exactly 1.000 means an absent field, not bad physics.
+>
+> Then, in this order:
+>
+> 1. **§5.4 first, and it is one 30-second run.** B12 reproduces defect §B.1
+>    (both phases compressed by the mixture ratio) but demonstrably NOT §B.2
+>    (the liquid losing total specific energy under compression) — see §4.0a for
+>    the measurement. Before any design work, re-run B12 with an asymmetric
+>    velocity pair (e.g. +250/0 instead of ±100) and report whether e₁ turns
+>    over. That decides whether §B.2 is reachable from the fast 1-D gate at all,
+>    and therefore what item 2's acceptance can be.
+> 2. **Item 0**, the two diagnostic-only instrument fixes in Part 3 (~1 h):
+>    a location for `face_diag::max_incmis`, and a validator sample point in the
+>    blind window between hydro exit and `ps_apply_floor`.
+> 3. **Item 2**, the star-state derivation (Part 5). **Write the derivation into
+>    a design note and bring it to me before you write any code.** The existing
+>    `ps_rk_model=1` dial is proof of why: it changes the mass partition without
+>    deriving the matching energy partition and makes things four orders of
+>    magnitude worse. Its acceptance now includes a demo2 restart from
+>    `chk_sj2_03550`, not just the 1-D suite — B12 passing is necessary, not
+>    sufficient.
+>
+> Ground rules I care about, from Part 1: no new solver guard, clamp, floor or
+> threshold without a derivation and my agreement (a pass/fail number in a TEST
+> is fine — see 1.2); prevent bad states at creation rather than repairing them
+> downstream; measure solution quality, not survival; determine which code is
+> live before editing it; check the executable timestamp after every build; and
+> validate on the 1-D suite (seconds) before the 2-D pipe-break (~50 min).
+> I decide design points — write `[DECIDE]` items into the note rather than
 > choosing for me.
 >
-> The tree is clean; commit as you go, and stage explicit paths
-> — `demo2_final/` is 5 GB of run output.
+> The tree is clean; commit as you go, and stage explicit paths — `demo2_final/`
+> is 5 GB of run output and `git add -A` will try to take it.
+
