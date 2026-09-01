@@ -1,0 +1,291 @@
+# DESIGN: corridor closure and checked promotion (work item 3, option "a")
+
+**2026-09-01.  Status: FOR REVIEW — no code.**
+Answers `HANDOFF_shock_phase_compression.md` Part 6.  Decision points are
+marked **[DECIDE]** and collected in §8.  Baseline for every statement:
+`co2-eos` at `191c1c9` (item 2 relaxed-alpha star state ACCEPTED and
+single-path; per-face NSCBC landed; verify_canonical ALL CHECKS PASS,
+B12 hard-gated at R = 0.0097).
+
+This is NOT a new design.  `DESIGN_ps_presence_discrete.md` §1/§4 already
+promised the corridor a closure ("intensives from the host closure",
+"transport-only") and the code implements only half of it.  This note
+finishes the agreed design; where the finishing exposes a genuine choice
+the design left open, that choice is a [DECIDE], not a fait accompli.
+
+---
+
+## 1. The gap, from the live code
+
+What a CORRIDOR phase supplies to the hydro today (`PS_hllc.H::
+face_from_state`, the live constructor), against what design §1 promised:
+
+| quantity | promised (§1/§4) | live | consumed by |
+|:--|:--|:--|:--|
+| P_k | host's | **host's** (S1, `:227-243`) | P_mix, wave_speeds |
+| c_k | host's | **host's** (S1) | B_k in star partition, c_frozen |
+| rho_k | "from the host closure" | **m_k/alpha_k**, G1 low-clamp only (`:163-167`) | q_k (B.14 work term), B_k = rho_k c_k^2 (relaxed partition), Y_1 = alpha_1 rho_1/rho_mix -> c_frozen -> S_L/S_R -> flux and dt |
+| e_k, E_k | "from the host closure" | **UE_k/m_k** (`:186-196`) | E_k* -> the UE_k wave deposits (fluctuation route, `PS_umeth.cpp` Pass 3) |
+| relaxation / MT / flash | denied | denied (`PS_relaxation.H:324-325, 1290-1291`; `PS_sources.H:191-192`) | — |
+| ps_apply_floor | (not addressed) | **applied, no regime test** (`PS_relaxation.H:2250`, `for ph=1,2`) | the only thermodynamic operator a corridor phase receives is a guard |
+
+Two structural facts to keep straight:
+
+- **Y_1 today is exact.**  With rho_1 = m_1/alpha_1 unclamped,
+  alpha_1 rho_1 = m_1 identically, so Y_1 = m_1/rho_mix is the true mass
+  fraction whatever the quotient's conditioning.  Any closure that
+  replaces rho_1 in that product replaces an exact quantity with a
+  modeled one.  (G1's low clamp can break the identity today, but only
+  at rho < EOS::rho_min.)
+- **The quotient is noisy, not always noise.**  Its relative error is
+  eta/alpha (eta_max = 9.6e-4, `PS_presence.H` header): ~5 % at
+  alpha_cond, ~12 % at demo2's 8e-3, unbounded toward alpha_vanish.
+  B12's corridor liquid (clean init) carries rho_1 = 936.41 exactly.
+  The corridor spans three decades of alpha and the quotient's quality
+  spans "fine" to "garbage" across it.
+
+## 2. What item 2 changed about item 3 — and a trap
+
+The relaxed-alpha star state made the corridor's compression partition
+depend on B_k = rho_k c_k^2.  On a corridor face today c is slaved
+(c_1 = c_2 = c_host) but rho is not, so **B_1/B_2 = rho_1/rho_2**: the
+partition currently works BECAUSE the corridor quotient carries real
+phase-density information (B12: rho_1/rho_2 = 10.6, R measured 0.0097).
+
+**The trap: the literal reading of 3a — "slave corridor rho_k to the
+host everywhere consumed" — sets B_1 = B_2 on corridor faces, the
+relaxed partition degenerates algebraically to B.14 equal strain
+(DESIGN_ps_star_relaxed.md §3, equal-compressibility limit), and B12
+regresses to R = 1.  Item 3 as written would undo item 2 on exactly the
+faces item 2 was built for.**  Any accepted 3a construction must keep
+B_1 != B_2 with the right ratio on corridor faces.  The B12 hard gate
+catches this loudly (it is the reason the gate exists), but the design
+should never walk into it.
+
+An open measurement rides on this: with slaved c the §3 limit predicts
+R ~ rho_2/rho_1 ~ 0.094 on B12, while the measured value is 0.0097 —
+the note's own "true liquid c" estimate.  Before 3a is coded, item M2
+below settles which faces produce the plateau and why the measured R is
+10x under the slaved-c prediction.  Verify, do not assume.
+
+## 3. 3a — the corridor face closure: three candidate constructions
+
+The corridor phase needs face-level (rho_k, e_k) that are (i) well-posed
+at any alpha in the corridor, (ii) phase-true enough to keep the strain
+partition and the UE_k deposits physical, (iii) local and GPU-clean,
+(iv) free of new constants (rule 1).
+
+**(a) Host-state closure** — rho_k := rho_host, e_k := e_host (what
+ABSENT already gets as a placeholder).
+  + trivial, local, no EOS work;
+  − destroys phase identity: B_1 = B_2 (the §2 trap — B12 regresses);
+    the liquid's UE deposits priced at vapor compressibility;
+    Y_1 becomes alpha_1 rho_host/rho_mix, no longer the true mass
+    fraction.  **Rejected as the primary path** — kept as the ABSENT
+    placeholder it already is.
+
+**(b) Equilibrium-branch closure** — the corridor phase is DEFINED to be
+in mechanical and thermal equilibrium with its host:
+  rho_k := rho_k^EOS(P_mix, T_host) on phase k's branch,
+  e_k := e_k^EOS(P_mix, T_host).
+  + fully well-posed at ANY corridor alpha (no quotient anywhere);
+    phase-true B_k; this is the closure the corridor was denied stated
+    as a definition — the exact analogue of what instantaneous
+    relaxation would deliver, computed instead of integrated;
+    consistent with the already-slaved P_k, c_k (c_k should then come
+    from the same branch query, closing [DECIDE-4] of item 2 with the
+    "true liquid c" it deferred);
+  − one branch-locked EOS query per corridor face — the design's words
+    "no branch-locked EOS query" (§1) must be re-read: what §1 forbids
+    is the query AT THE QUOTIENT (m_k/alpha_k, UE_k/m_k), i.e. at an
+    undefined state.  A query at (P_mix, T_host) is at a defined,
+    host-anchored point.  The prohibition's motivation (pole-adjacent
+    evaluations, wrong-branch garbage) does not apply — but the letter
+    of the design changes, so this is [DECIDE-1], not an interpretation
+    I get to make;
+  − cost: measured in M1 below before acceptance (PR branch solves are
+    the expensive part; ~74 % of faces at L0 qualify).
+  Failure containment: a query with no root on the branch at
+  (P_mix, T_host) — deep in the dome, or past the spinodal — returns
+  no state; the face falls back to (a) for that face and is COUNTED
+  (`face_diag`, new cause `corr_close`), never clamped.  Predicted
+  zero on the 1-D suite; persistent 2-D counts are a finding.
+
+**(c) Neighbor-ghost closure** — the `ps_two_fluid_flux` lift the
+presence design §4 sketched: isentropic extrapolation of the SAME
+phase's state from the face's other side (if Independent there) to the
+local P_mix; host fallback otherwise.
+  + no EOS query; phase-true where a same-phase neighbor exists;
+    the historical construction (deleted T1-c, recoverable from
+    `98249fb^`);
+  − pair-level: face_from_state is single-sided, so the slaving moves
+    into fluctuations() and the two sides of one face stop being
+    independent constructions (order-of-evaluation and C-F symmetry
+    hazards); at the 2-D shock the corridor cell's neighbors are
+    routinely ALSO corridor (the 74 %), so the fallback dominates
+    exactly where it matters; the reference state is still a quotient,
+    one cell over.
+  Kept as the fallback refinement if (b)'s dome-edge fallback rate is
+  material; not recommended as primary.
+
+**Recommendation: (b)**, with (a) as its counted per-face fallback and
+the ABSENT placeholder unchanged.  [DECIDE-1]
+
+### 3.1 Per-consumer application of the closure — this is where the
+blast radius is decided
+
+The closure need not be applied uniformly.  Per consumer ([DECIDE-2],
+one row at a time):
+
+| consumer | proposal | rationale |
+|:--|:--|:--|
+| B_k in the star partition | closure rho_k (and its branch c_k) | phase-true compressibility; keeps B12 honest (§2) |
+| E_k*, q_k (UE_k wave deposits) | closure e_k, rho_k | severs the §B.2 accumulation channel: deposits priced on a defined state, not on accumulated UE_k noise |
+| Y_1 -> c_frozen -> S_L/S_R, dt | **keep m_1/rho_mix (exact)** | Y_1 is conserved-mass bookkeeping, not thermodynamics; replacing an exact quantity with a modeled one widens the change for no physical gain; c_frozen's corridor sensitivity is second-order (Y_1 <= alpha_cond rho_1/rho_mix) |
+| mass fluxes / conserved slots | untouched | conserved slots advect m_k, UE_k as ever; the closure is a WAVE-CONSTRUCTION device, mass and energy conservation are structurally unaffected |
+| star alpha_k*, m_k* | untouched | m_k* = m_k r_K is forced (per-phase mass RH); alpha* comes from the partition already |
+
+With the Y_1 row kept exact, dt and S_L/S_R move only through P_mix
+(unchanged) and c_frozen's Y-weights (unchanged) — the §6.1 "global
+perturbation" of the handoff shrinks to the two rows that carry the
+defect.  That is deliberate: **the smallest change that completes the
+closure, not the largest one the words permit.**  If Marc wants the
+full-uniform slaving instead (design §4's letter), that is [DECIDE-2]'s
+alternative and the B12/battery gates will price it.
+
+### 3.2 What 3a does NOT do
+
+No change to: single-phase cells (no corridor phase exists), both-
+Independent faces (closure never invoked), the star construction's
+algebra (it receives better inputs, same formulas), wave speeds beyond
+the (unchanged) Y/c_frozen row, conserved-slot advection, reflux,
+`ps_apply_floor` (3c below), relaxation gating.
+
+## 4. 3b — promotion as a checked construction
+
+Today crossing alpha_cond is a pure reclassification: `ps_regime` starts
+answering Independent and four operators switch on, on whatever
+(m_k, UE_k) the corridor accumulated.  `rho_deg` (2026-08-29) checks the
+mass quotient; **nothing checks energy** — e_1 = -2.2e5 promotes freely
+(the step-3669 route: healed density, corrupt energy, 60-step drift to
+the branch edge).  The design's own principle: "birth states are defined
+at creation."  Flash birth defines its state; birth by accumulation
+defines nothing.
+
+Options ([DECIDE-3]):
+
+**(A) Checked promotion (validate-and-refuse).**  Promotion additionally
+requires the energy quotient to define a state the phase's branch can
+answer: e_k in the EOS-reachable band at rho_k = m_k/alpha_k (the
+existing reachability predicate ps_validate already owns — NOT a new
+threshold; the branch's own domain is the bound).  Refusal leaves the
+phase Corridor (counted, [PS-FOLD]-style).  No state is constructed.
+  + smallest possible change; pure prevention; symmetric with rho_deg;
+  − corrupt-energy mass can sit corridor-trapped indefinitely (it also
+    does that today, minus the abort); the accumulated UE_k error is
+    never repaired, only quarantined.
+
+**(B) Constructed promotion.**  At the crossing, the phase's UE_k is SET
+from the closure it lived under: UE_k := m_k (e_k^closure + ke), the
+difference booked against the host's UE (conservative by construction,
+counted and signed in the fold-audit style).  alpha_k, m_k untouched.
+  + finishes the corridor contract: a phase that was defined by the host
+    closure enters independence IN that state — birth by accumulation
+    finally defines its state; the §B.2 residue is repaired at the one
+    place repair is legitimate (a state-construction event), not
+    downstream;
+  − moves conserved phase energy at a threshold crossing (an operator
+    firing at alpha_cond — rule-1 adjacent, though it adds no constant
+    and is conservative); the host pays/receives the correction, which
+    on a 74 %-corridor field could be a visible energy rearrangement —
+    must be measured (M3), not assumed small.
+
+**(C) A + B staged: land (A) first** — it is cell-local, tiny blast
+radius, directly closes the abort channel, and its refusal counter
+MEASURES how much corrupt-energy promotion actually happens post-item-2
+— **then decide (B) on that number.**  If the counter is zero in demo2
+production, (B) is unnecessary machinery.  Recommended.
+
+Note what item 2 already changed: the demo2 continuation (3605 -> 3720)
+showed checkpoint-inherited corrupt cells HEALING under the fixed star
+state.  (A)'s counter is the instrument that says whether 3b-(B) has any
+remaining job.
+
+## 5. 3c — ps_apply_floor's regime blindness (small, separable)
+
+`ps_apply_floor` runs `for ph = 1..2` with no regime test: the corridor
+phase's only thermodynamic operator is a floor, and the floor's clamp on
+e_k is invisible to the closure (which ignores UE_k at faces under 3a).
+Under 3a+3b the floor's corridor action is pure state mutation with no
+face-level consumer — it can only manufacture drift between the stored
+UE_k and everything else.  Proposal: gate the floor's PER-PHASE leg on
+Independent (mixture legs untouched), with the H-stage validator
+(item 0b) confirming no reachable-state regression on the 1-D suite and
+the 19-step reproducer.  [DECIDE-5]  (Rule-1 note: this REMOVES guard
+action from a regime, adds none.)
+
+## 6. Measurements before code (rule 7) — the M-series
+
+- **M1 (cost, 1-D + 19-step 2-D):** count corridor faces per step and
+  time one branch query at (P_mix, T_host); multiply.  Kill (b) on cost
+  only with the number in hand.
+- **M2 (B12 R anatomy, 30 s):** per-face log of B_1/B_2 and regime on
+  B12's plateau faces — explains the 0.094-predicted / 0.0097-measured
+  gap of §2 and pins which faces set R.  Uses the 0a location machinery.
+- **M3 (promotion census, 19-step 2-D restart `chk_sj2_03650`):**
+  host-side count of corridor->Independent crossings per step, with the
+  would-be (A) refusal count and the would-be (B) energy correction
+  magnitude, all diagnostic-only.  Sizes 3b before it is built.
+- **M4 (closure error field, 19-step 2-D):** for corridor cells, the
+  distribution of rho_k^quot / rho_k^closure(P_mix, T_host) and the
+  e-quotient equivalent — measures how wrong the current corridor
+  states actually are in production, and whether [PS-W21]'s saturated
+  residuals sit on corridor faces (the 0a face locations answer this
+  directly).
+
+M1/M2 are runnable here (1-D, seconds); M3/M4 are the 16-min 2-D
+reproducer — I will ask before running them (rule 6).
+
+## 7. Gates (all standing gates apply; the item-specific ones)
+
+- `characterize.py record PRE_ITEM3` before ANY code.
+- PS_FROZEN A/C mean **exactly 0.0350**, C1 **exactly 0.000** (single-
+  phase cells never see a corridor closure; algebraic no-op there).
+- **B12 R stays ~0.0097 and MUST NOT regress toward 1** — the §2 trap
+  gate.  Any movement is explained against M2's anatomy.
+- B two-phase battery + `exact_suite.py` + `verify_canonical.py`:
+  every delta explained, per-case.  Blast radius under §3.1 is confined
+  to corridor-face wave construction; predicted movement: B12 (R via
+  true-c B_k), B2/B7/B9 corridor episodes; A/C exactly zero.
+- 2-D: restart `chk_sj2_03550 -> 3605` vs `ReRun4` and the item-2
+  FIX1 baseline; then `chk_sj2_03650` 19-step reproducer with full
+  diagnostics; promotion/refusal/fallback counters all reported.
+  Solution-quality criteria as in item 2 §6 (rho_1 tracking, e_1 no
+  collapse), not survival.
+- `[PS-W21]`: M4 says whether the pre-existing saturation moves; any
+  improvement is recorded, none is claimed in advance.
+
+## 8. [DECIDE] — Marc's calls, collected
+
+1. **The closure source** (§3): equilibrium-branch (b) as primary with
+   counted host fallback [recommended]; vs host-state (a) uniform; vs
+   neighbor-ghost (c).  Accepting (b) explicitly amends the presence
+   design's "no branch-locked EOS query" to "no query at the quotient;
+   the closure query at (P_mix, T_host) is the definition".
+2. **Application surface** (§3.1): per-consumer table as proposed
+   (B_k + energy deposits slaved; Y_1/c_frozen/dt row kept exact)
+   [recommended]; vs uniform slaving of every consumer.
+3. **Promotion** (§4): staged (C) — checked-refusal (A) first, counter
+   decides whether constructed promotion (B) is built [recommended];
+   vs (A) alone as final; vs (B) immediately.
+4. **Corridor c_k** (§3(b)): take c from the same closure query,
+   closing item 2's [DECIDE-4] with the true phase c [recommended,
+   contingent on 1(b)]; vs keep host-slaved c.
+5. **Floor gating** (§5): gate ps_apply_floor's per-phase leg on
+   Independent [recommended]; vs leave as-is this item.
+6. **Sequencing**: M-series -> 3b(A) -> 3a -> 3c -> (3b(B) if M3/(A)
+   numbers demand) [recommended]; vs handoff Part-6 order (3a first).
+   Rationale: 3b(A) is cell-local and closes the abort channel while
+   3a's global face change is still being measured against gates.
+
+Nothing in §3-§5 is coded until these are answered.
