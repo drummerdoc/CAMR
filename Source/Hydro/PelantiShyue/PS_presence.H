@@ -101,34 +101,16 @@ struct PsPres {
     //         mixture in equilibrium; as an S_L/S_R estimate it is narrower
     //         than the frozen speed, so if the fan stops bounding the true
     //         waves this is where it shows.
-    //  CAMR.ps_star_relaxed -- WHICH STAR-STATE CONSTRUCTION the acoustic fan
-    //  uses (DESIGN_ps_star_relaxed.md, approved 2026-08-31).  Rides this
-    //  struct for the same reason cmix_model does: it is already the by-value
-    //  carrier reaching the star builders (PS_hllc.H ps_star_state /
-    //  fluctuations) with no ParmParse in a device-callable function.
-    //
-    //    0  B.14 (default during the validation campaign, bit-identical):
-    //         alpha frozen across the acoustic waves, both phase masses scale
-    //         by the one ratio r_K (Pelanti 2022 B.14) -- so BOTH phases take
-    //         the mixture volumetric strain (FINDINGS_demo2_step3669.md B.1).
-    //    1  RELAXED-ALPHA: the mechanically-relaxed intermediate.  Masses
-    //         keep m_k r_K (forced by the per-phase mass jump); alpha jumps
-    //         across the acoustic waves so each phase carries the strain its
-    //         own bulk modulus admits (one scalar Wood-weighted closure); the
-    //         energy split pays each phase P dV for ITS volume change, with
-    //         the mixture-energy RH preserved exactly.  Degeneracy falls back
-    //         to the B.14 form per face (counted, never clamped).
-    //  TEMPORARY A/B selector ([DECIDE-6]): default flips to 1 at acceptance
-    //  (1-D gates + demo2 chk_sj2_03550 restart), then the selector and the
-    //  B.14 branch are DELETED -- the rk_model lesson, applied.
-    //
-    //  CAMR.ps_rk_model (the D7 per-phase-contraction dial) is RETIRED
-    //  2026-08-31 and ABORTS if present: it moved the quantity conservation
-    //  pins (the masses) and froze the one that must move (alpha), was inert
-    //  on corridor faces (slaved c), and broke the UEDEN flux/fluctuation
-    //  consistency on Independent faces (energyid 8.4e-6 -> 0.1108 in 2-D,
-    //  4.5e-14 -> 0.697 on 1-D B5).  DESIGN_ps_star_relaxed.md s2.
-    int         star_relaxed = 0;
+    //  The star state is the RELAXED-ALPHA construction, single-path since
+    //  acceptance 2026-08-31 (DESIGN_ps_star_relaxed.md; 1-D campaign + demo2
+    //  chk_sj2_03550 -> 3605 -> 3720, clearing the step-3669 abort by 51
+    //  steps with zero fallbacks and zero EOS refusals).  The B.14
+    //  equal-strain form survives only as the per-face degeneracy fallback
+    //  inside ps_star_state ([PS-RELAXFB]-counted) and as the exact
+    //  alpha in {0,1} single-phase path, where the two are algebraically
+    //  identical.  The campaign selector CAMR.ps_star_relaxed is deleted:
+    //  =0 aborts (that branch no longer exists), =1 is accepted and inert
+    //  (existing command lines keep working).
 };
 
 //  Single-sourced mixture sound speed SQUARED.  One definition for all three
@@ -234,7 +216,17 @@ inline const PsPres& ps_presence_params()
         //  CAMR.ps_presence deliberately NOT read: the legacy path is gone.
         pp.query("ps_alpha_cond",       v.alpha_cond);
         pp.query("ps_alpha_birth",      v.alpha_birth);
-        pp.query("ps_star_relaxed",     v.star_relaxed);
+        {   // deleted campaign selector (see note above)
+            int sr = 1;
+            pp.query("ps_star_relaxed", sr);
+            if (sr == 0) {
+                amrex::Abort("CAMR.ps_star_relaxed=0 requests the DELETED "
+                    "B.14 star-state branch (selector retired at acceptance "
+                    "2026-08-31, DESIGN_ps_star_relaxed.md [DECIDE-6]).  "
+                    "The relaxed-alpha construction is the only path; "
+                    "remove the key.");
+            }
+        }
         if (pp.contains("ps_rk_model")) {
             amrex::Abort("CAMR.ps_rk_model is RETIRED (2026-08-31).  The D7 "
                 "dial changed the mass partition without the matching energy "

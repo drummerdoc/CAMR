@@ -458,8 +458,7 @@ AMREX_FORCE_INLINE
 bool ps_star_state(int idir, const Face& fK, const amrex::Real UK[NVAR],
                    amrex::Real S_K, amrex::Real S_M,
                    amrex::Real U_star[NVAR],
-                   int* cause = nullptr,   // W0 refusal-cause audit
-                   int star_relaxed = 0) noexcept  // DESIGN_ps_star_relaxed.md
+                   int* cause = nullptr) noexcept  // W0 refusal-cause audit
 {
     using amrex::Real;
     //  Every early return names itself.  `cause` is optional so the signature
@@ -481,14 +480,10 @@ bool ps_star_state(int idir, const Face& fK, const amrex::Real UK[NVAR],
     const Real Pe1 = fK.P_mix;   // #211 mixture-P (the #85 option is retired)
     const Real Pe2 = fK.P_mix;
 
-    //  Star alpha and per-phase energies.  Two constructions
-    //  (DESIGN_ps_star_relaxed.md; TEMPORARY selector, [DECIDE-6]):
-    //
-    //  B.14 (star_relaxed == 0): alpha frozen, E_k* = E_k +
-    //  (S_M-u)(S_M + P/q_k).  The work term is exactly P * dv_k for the
-    //  equal-strain volume change dv_k = (1/rho_k)(1 - 1/r_K).
-    //
-    //  RELAXED-ALPHA (star_relaxed == 1): behind the wave the phases sit at
+    //  Star alpha and per-phase energies: the RELAXED-ALPHA construction
+    //  (DESIGN_ps_star_relaxed.md; single path since acceptance 2026-08-31,
+    //  [DECIDE-6] -- the campaign selector is deleted).  Behind the wave the
+    //  phases sit at
     //  mechanical equilibrium at a common pressure rise dP; each phase takes
     //  the strain its own bulk modulus B_k = rho_k c_k^2 admits:
     //      s_k = dP/B_k,  rho_k* = rho_k(1+s_k),  alpha_k* = alpha_k r_K/(1+s_k)
@@ -503,20 +498,20 @@ bool ps_star_state(int idir, const Face& fK, const amrex::Real UK[NVAR],
     //  UEDEN, UEINT, partial masses, species) is unchanged between the two
     //  constructions; only UALPHA1/UE1/UE2 waves move.  Equal bulk moduli
     //  (every single-phase cell, and c-slaved corridor faces with equal
-    //  rho_k) reduce algebraically to B.14.  Degeneracy falls back to B.14
-    //  for that face and is counted (n_relax_fb), never clamped.  Exact
-    //  alpha in {0,1} skips the solve: B.14 is already exact there and the
-    //  presence design needs those values preserved bit-exactly.
-    //  B.14 values computed unconditionally, in the exact expression shape
-    //  the pre-selector code used (characterize.py bit-identity at
-    //  star_relaxed=0 depends on the compiler contracting this identically);
-    //  the relaxed construction overwrites them on success.
+    //  rho_k) reduce algebraically to B.14.  Degeneracy falls back to the
+    //  B.14 equal-strain form for that face and is counted (n_relax_fb),
+    //  never clamped -- measured ZERO fallbacks across the 1-D suite and
+    //  225 steps of 2-D production.  Exact alpha in {0,1} skips the solve:
+    //  the forms are algebraically identical there and the presence design
+    //  needs those values preserved bit-exactly.
+    //  B.14 equal-strain values first: the degeneracy fallback and the
+    //  exact single-phase (alpha in {0,1}) path; the relaxed construction
+    //  overwrites them on success.
     Real a1s = fK.alpha_1;
     Real E1s = fK.E_1 + (S_M - fK.u_n) * (S_M + Pe1 / q1);
     Real E2s = fK.E_2 + (S_M - fK.u_n) * (S_M + Pe2 / q2);
     bool relaxed_done = false;
-    if (star_relaxed == 1 &&
-        fK.alpha_1 > Real(0.0) && fK.alpha_1 < Real(1.0)) {
+    if (fK.alpha_1 > Real(0.0) && fK.alpha_1 < Real(1.0)) {
         const Real B1 = fK.rho_1 * fK.c_1 * fK.c_1;
         const Real B2 = fK.rho_2 * fK.c_2 * fK.c_2;
         if (std::isfinite(B1) && B1 > Real(1.0e-30) &&
@@ -561,7 +556,7 @@ bool ps_star_state(int idir, const Face& fK, const amrex::Real UK[NVAR],
         }
     }
 #if !defined(AMREX_USE_GPU)
-    if (!relaxed_done && star_relaxed == 1 &&
+    if (!relaxed_done &&
         fK.alpha_1 > Real(0.0) && fK.alpha_1 < Real(1.0)) {
         ++face_diag::n_relax_fb();   // fell back to B.14, counted
     }
@@ -721,11 +716,9 @@ bool fluctuations(int idir, const amrex::Real UL[NVAR], const amrex::Real UR[NVA
 
     Real UsL[NVAR], UsR[NVAR];
     int stc = PS_FL_OK;
-    if (!ps_star_state(idir, fL, UL, w.S_L, w.S_M, UsL, &stc,
-                       pr.star_relaxed)) {
+    if (!ps_star_state(idir, fL, UL, w.S_L, w.S_M, UsL, &stc)) {
         PS_W0_FL_FAIL(stc); PS_W0_FL_SIDE(0); return false; }
-    if (!ps_star_state(idir, fR, UR, w.S_R, w.S_M, UsR, &stc,
-                       pr.star_relaxed)) {
+    if (!ps_star_state(idir, fR, UR, w.S_R, w.S_M, UsR, &stc)) {
         PS_W0_FL_FAIL(stc); PS_W0_FL_SIDE(1); return false; }
 #undef PS_W0_FL_FAIL
 #undef PS_W0_FL_SIDE

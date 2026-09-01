@@ -394,20 +394,14 @@ else:
               abs(_P[0] - _P[-1]) < 1e-6 * _P[0], f'|dP|={abs(_P[0]-_P[-1]):.2e}')
         check('B12 reflection symmetry (task #47)', _sym < 1e-6 * _P[_k],
               f'max asym={_sym:.2e}')
-        #  The acceptance.  KNOWN-FAIL until the star state is fixed.
-        known_fail('B12 liquid compresses less than vapour (R <= 0.25)',
-                   _R <= 0.25, f'R={_R:.4f}',
-                   'ps_star_state gives both phases the mixture contraction r_K '
-                   '(alpha frozen + m_k*r_K => rho_k*r_K for both k). Diagnosed in '
-                   'FINDINGS_demo2_step3669.md B.1; fix is work item 2 of '
-                   'HANDOFF_shock_phase_compression.md.',
-                   'The star-state fix has landed. Promote this to check() and '
-                   'retire the characterization assertion below.')
-        #  Characterization tripwire: keeps the verdict line meaningful.  Passes
-        #  either when the defect is present at its documented magnitude OR when
-        #  it is fixed.  An unexplained value in between is a real FAIL.
-        check('B12 is either fixed (R<=0.25) or shows the documented defect (R~1.00)',
-              (_R <= 0.25) or (0.90 <= _R <= 1.10), f'R={_R:.4f}')
+        #  The acceptance.  PROMOTED from KNOWN-FAIL 2026-08-31: the
+        #  relaxed-alpha star state (DESIGN_ps_star_relaxed.md) landed and is
+        #  the single path; measured R = 0.0097 at promotion (was 1.0000; the
+        #  characterization tripwire that held the verdict line meaningful
+        #  during the KNOWN-FAIL era is retired with it).  A failure here is
+        #  a REGRESSION of the star-state partition.
+        check('B12 liquid compresses less than vapour (R <= 0.25)',
+              _R <= 0.25, f'R={_R:.4f}')
 
 if FAILS:
     print(f'VERDICT: FAIL ({len(FAILS)} check(s)): ' + '; '.join(FAILS))
