@@ -1,10 +1,25 @@
 # DESIGN: the relaxed-alpha star state (work item 2, option "d")
 
-**2026-08-31. Status: FOR REVIEW — no solver code implements this.**
-Answers `HANDOFF_shock_phase_compression.md` Part 5. Decision points are
-marked **[DECIDE]** and collected in §8; nothing below them is started
-until Marc signs off. Every measured number is from this session unless
-cited elsewhere.
+**2026-08-31. Status: ACCEPTED AND IMPLEMENTED — single path.**
+All six §8 [DECIDE] items approved by Marc 2026-08-31 as recommended.
+Implementation `bd9e3b4` (selector `CAMR.ps_star_relaxed`, default 0);
+acceptance `0796a14` (selector deleted, relaxed-alpha the only path, B12
+promoted to a hard check).  Acceptance evidence, 2026-08-31/09-01:
+the full 1-D campaign at =1 (A/C mean 0.0350, C1 exact, B4 0.126 flat,
+B12 R 1.0000 → 0.0097, B5 energyid 6.1e-14 with zero fallbacks); the
+demo2 restart `chk_sj2_03550 → 3605` (FIX1_star_relaxed: ρ₁ +4.9% vs
++54%, e₁ no collapse, E₁ rises under compression+acceleration, α₁ moves
+with the right sign); and the continuation `3605 → 3720`, clearing the
+original step-3669 abort by 51 steps with zero [PS-RELAXFB] fallbacks,
+zero EOS refusals, and the checkpoint-inherited corrupt cells healing to
+normal liquid states.  §B.2's 2-D-only mechanism did not survive the
+fix on this window — no second mechanism surfaced.  The residual open
+item is the pre-existing [PS-W21] baseline saturation (§7), now
+locatable via the 0a face audit.
+
+Answers `HANDOFF_shock_phase_compression.md` Part 5. Decision points
+were marked **[DECIDE]** and are collected in §8. Every measured number
+is from this session unless cited elsewhere.
 
 Companion evidence, all landed today: item 0 instruments (`d357ff5`);
 `_b54_probe.py` (§5.4 measurement); the D1_L0only discriminator run;
