@@ -8699,3 +8699,23 @@ with (a) whether it clears 1826 and how far it got, (b) a [PS-FOLD]
 line sample, (c) any TQUERY print if it dies.  Claude next session:
 record X3 MEASURED from that message, close or reopen.  All state
 needed to resume lives in this WORKLOG entry.
+
+2026-09-01 — PER-FACE NSCBC ENABLE (Marc: demo2 xhi + ylo/yhi reflect;
+the global switch cannot be used there because it would also replace the
+x-lo rupture plane, which lives in bcnormal — reservoir gap + slip wall).
+New keys CAMR.ps_bc_nscbc_{x,y,z}{lo,hi}; sentinel -1 = unset -> inherit
+CAMR.ps_bc_use_nscbc, so silent decks are bit-identical by construction.
+Resolved per-face values force-added to job_info; banner prints the
+per-face map.  Modeled on PeleC's nscbc branch (Marc's pointer: face
+selection resolved per face, not per run).  Adopted two of its fill
+lessons INSIDE the NSCBC branch only (legacy bcnormal path is
+byte-untouched, so no existing result moves): tangential stencil indices
+clamped into domain+FAB (a corner ghost's unclamped column reads ghost
+cells mid-launch), and normal stencil depth clamped to the FAB
+(corner-protocol strip FABs can hold < 3 interior cells).
+MEASURED (A1-Sod-strong, N=64, fresh 2026-09-01 build):
+  xlo=1,xhi=1            == use_nscbc=1      BIT-IDENTICAL
+  use=1 + xlo=0,xhi=0    == all-off default  BIT-IDENTICAL
+  use=1 + xlo=0 (xhi inherits 1): differs from both, face-selective
+verify_canonical at defaults: ALL CHECKS PASS, digit-identical to the
+2026-09-01 morning baseline (A/C 0.0350, C1 exact, B12 R=0.0097).

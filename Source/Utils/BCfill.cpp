@@ -17,7 +17,14 @@ struct PCHypFillExtDir
   // of the functor (see CAMR_bcfill_hyp below) so they're accessible
   // from the device operator() without touching CAMR's protected
   // static members from a free function.
-  int         use_nscbc;
+  // Per-face NSCBC enable (2026-09-01): CAMR.ps_bc_nscbc_{x,y,z}{lo,hi},
+  // indexed [2*idir + (0=lo,1=hi)].  Resolved HOST-side in CAMR_bcfill_hyp;
+  // sentinel -1 = "unset -- inherit the global CAMR.ps_bc_use_nscbc", so a
+  // silent deck is bit-identical to the single-switch behavior by
+  // construction.  Needed because bcnormal owns problem-specific faces
+  // (e.g. the demo2 x-lo rupture plane: reservoir gap + slip wall) that
+  // the global switch replaces wholesale.
+  amrex::GpuArray<int, 2*AMREX_SPACEDIM> use_nscbc_face;
   amrex::Real nscbc_sigma;
   int         nscbc_order;    // 1 or 2 — R+ extrapolation order.
   int         nscbc_flash;    // 1 = flash-aware choked fan (default),
@@ -35,7 +42,7 @@ struct PCHypFillExtDir
 
   AMREX_GPU_HOST
   explicit PCHypFillExtDir(const ProbParmDevice* d_prob_parm,
-                           int         use_nscbc_,
+                           const amrex::GpuArray<int, 2*AMREX_SPACEDIM>& use_nscbc_face_,
                            amrex::Real nscbc_sigma_,
                            int         nscbc_order_,
                            int         nscbc_flash_,
@@ -45,7 +52,7 @@ struct PCHypFillExtDir
 #endif
                            )
     : lprobparm(d_prob_parm)
-    , use_nscbc(use_nscbc_)
+    , use_nscbc_face(use_nscbc_face_)
     , nscbc_sigma(nscbc_sigma_)
     , nscbc_order(nscbc_order_)
     , nscbc_flash(nscbc_flash_)
@@ -113,14 +120,43 @@ struct PCHypFillExtDir
       };
 
 #ifdef USE_PS_HYDRO
-      if (use_nscbc != 0
+      if (use_nscbc_face[2*idir + ((sgn > 0) ? 0 : 1)] != 0
           && (sgn > 0 ? (domlo[idir] + 2 <= domhi[idir])
                       : (domhi[idir] - 2 >= domlo[idir]))) {
         // ---- PS-NSCBC characteristic-invariant path -----------------
+        // Tangential indices clamped into the domain and the FAB, and the
+        // normal stencil depth clamped to what the FAB holds (PeleC nscbc
+        // branch lessons, 2026-09-01).  A corner ghost's own tangential
+        // index is outside the domain, so the unclamped stencil column
+        // reads ghost cells another thread of the same launch may be
+        // writing; and corner-protocol strip FABs can carry fewer than
+        // three interior cells in the normal direction.  Clamped, the fill
+        // is a pure function of valid interior data.  The legacy bcnormal
+        // path below is left untouched so no existing result moves.
+        const amrex::Dim3 flo3 = amrex::lbound(dest);
+        const amrex::Dim3 fhi3 = amrex::ubound(dest);
+        const int fab_lo[3] = {flo3.x, flo3.y, flo3.z};
+        const int fab_hi[3] = {fhi3.x, fhi3.y, fhi3.z};
+        amrex::IntVect base_v(AMREX_D_DECL(iv[0], iv[1], iv[2]));
+        for (int d = 0; d < AMREX_SPACEDIM; ++d) {
+          if (d != idir) {
+            base_v[d] = amrex::min<int>(
+              amrex::max<int>(base_v[d], amrex::max<int>(domlo[d], fab_lo[d])),
+              amrex::min<int>(domhi[d], fab_hi[d]));
+          }
+        }
+        const int depth_fab = (sgn > 0) ? (fab_hi[idir] - N_pos + 1)
+                                        : (N_pos - fab_lo[idir] + 1);
+        const int n_stencil = amrex::min<int>(3, depth_fab);
+        auto stencil_ivc = [&] (int step) {
+          amrex::IntVect r = base_v;
+          r[idir] = N_pos + sgn * amrex::min<int>(step, n_stencil - 1);
+          return r;
+        };
         amrex::Real s_N[NVAR], s_Nm1[NVAR], s_Nm2[NVAR];
-        const amrex::IntVect ivN   = stencil_iv(0);
-        const amrex::IntVect ivNm1 = stencil_iv(1);
-        const amrex::IntVect ivNm2 = stencil_iv(2);
+        const amrex::IntVect ivN   = stencil_ivc(0);
+        const amrex::IntVect ivNm1 = stencil_ivc(1);
+        const amrex::IntVect ivNm2 = stencil_ivc(2);
         for (int n = 0; n < NVAR; n++) {
           s_N  [n] = dest(ivN,   n);
           s_Nm1[n] = dest(ivNm1, n);
@@ -211,7 +247,8 @@ CAMR_bcfill_hyp(
   // PCHypFillExtDir functor so the device operator() can act on them
   // without touching CAMR class internals.
   struct NscbcCfg { int use; amrex::Real sigma; int order; int flash;
-                    amrex::GpuArray<amrex::Real, 2*AMREX_SPACEDIM> pamb; };
+                    amrex::GpuArray<amrex::Real, 2*AMREX_SPACEDIM> pamb;
+                    amrex::GpuArray<int, 2*AMREX_SPACEDIM> uface; };
   static const NscbcCfg nscbc_cfg = []() -> NscbcCfg {
     int u = 0;
     amrex::Real sg = amrex::Real(0.25);
@@ -257,9 +294,38 @@ CAMR_bcfill_hyp(
     pp.query("ps_bc_p_amb_zlo", pa[4]);
     pp.query("ps_bc_p_amb_zhi", pa[5]);
 #endif
+    // Per-face NSCBC enable (2026-09-01).  Sentinel -1 = unset -> inherit
+    // the global CAMR.ps_bc_use_nscbc, so a silent deck is bit-identical
+    // to the single-switch behavior by construction.  Modeled on PeleC's
+    // nscbc branch, where face selection is likewise resolved per face,
+    // not per run.
+    amrex::GpuArray<int, 2*AMREX_SPACEDIM> uf;
+    for (int f = 0; f < 2*AMREX_SPACEDIM; ++f) { uf[f] = -1; }
+    pp.query("ps_bc_nscbc_xlo", uf[0]);
+    pp.query("ps_bc_nscbc_xhi", uf[1]);
+#if (AMREX_SPACEDIM >= 2)
+    pp.query("ps_bc_nscbc_ylo", uf[2]);
+    pp.query("ps_bc_nscbc_yhi", uf[3]);
+#endif
+#if (AMREX_SPACEDIM == 3)
+    pp.query("ps_bc_nscbc_zlo", uf[4]);
+    pp.query("ps_bc_nscbc_zhi", uf[5]);
+#endif
+    for (int f = 0; f < 2*AMREX_SPACEDIM; ++f) {
+      if (uf[f] != -1 && uf[f] != 0 && uf[f] != 1) {
+        amrex::Abort("CAMR.ps_bc_nscbc_{x,y,z}{lo,hi}: accepts 0, 1, or "
+                     "unset (unset inherits CAMR.ps_bc_use_nscbc).");
+      }
+    }
 #ifndef USE_PS_HYDRO
     u = 0;   // safety: NSCBC is a no-op without PS_HYDRO.
 #endif
+    for (int f = 0; f < 2*AMREX_SPACEDIM; ++f) {
+      if (uf[f] == -1) { uf[f] = u; }
+#ifndef USE_PS_HYDRO
+      uf[f] = 0;   // same safety as u above.
+#endif
+    }
     if (od != 1 && od != 2) {
       amrex::Print() << "  CAMR bcfill: unknown ps_bc_nscbc_order="
                      << od << ", forcing to 2.\n";
@@ -269,6 +335,17 @@ CAMR_bcfill_hyp(
     pp.add("ps_bc_nscbc_sigma", sg);
     pp.add("ps_bc_nscbc_order", od);
     pp.add("ps_bc_nscbc_flash", fl);
+    // Resolved per-face NSCBC enables -> job_info (0/1, after inheritance).
+    pp.add("ps_bc_nscbc_xlo", uf[0]);
+    pp.add("ps_bc_nscbc_xhi", uf[1]);
+#if (AMREX_SPACEDIM >= 2)
+    pp.add("ps_bc_nscbc_ylo", uf[2]);
+    pp.add("ps_bc_nscbc_yhi", uf[3]);
+#endif
+#if (AMREX_SPACEDIM == 3)
+    pp.add("ps_bc_nscbc_zlo", uf[4]);
+    pp.add("ps_bc_nscbc_zhi", uf[5]);
+#endif
     // Resolved per-face targets -> job_info (gerg_ext_c idiom);
     // -1 records "inherits prob.p_amb".
     pp.add("ps_bc_p_amb_xlo", pa[0]);
@@ -281,9 +358,8 @@ CAMR_bcfill_hyp(
     pp.add("ps_bc_p_amb_zlo", pa[4]);
     pp.add("ps_bc_p_amb_zhi", pa[5]);
 #endif
-    return NscbcCfg{u, sg, od, fl, pa};
+    return NscbcCfg{u, sg, od, fl, pa, uf};
   }();
-  const int         use_nscbc   = nscbc_cfg.use;
   const amrex::Real nscbc_sigma = nscbc_cfg.sigma;
   const int         nscbc_order = nscbc_cfg.order;
   const int         nscbc_flash = nscbc_cfg.flash;
@@ -293,11 +369,15 @@ CAMR_bcfill_hyp(
   {
     static bool banner_shown = false;
     if (!banner_shown) {
+      static const char* fnm[6] = {"xlo","xhi","ylo","yhi","zlo","zhi"};
       amrex::Print()
-          << "  CAMR bcfill: outflow (Inflow-flagged) BC = "
-          << (use_nscbc != 0
-                  ? "PS-NSCBC (BCfill.cpp characteristic-invariant)"
-                  : "bcnormal (prob.H linearised Riemann invariant)")
+          << "  CAMR bcfill: outflow (Inflow-flagged) BC per face"
+             " (1 = PS-NSCBC characteristic-invariant, 0 = bcnormal"
+             " linearised Riemann invariant):";
+      for (int f = 0; f < 2*AMREX_SPACEDIM; ++f) {
+        amrex::Print() << ' ' << fnm[f] << '=' << nscbc_cfg.uface[f];
+      }
+      amrex::Print()
           << ",  σ = " << nscbc_sigma
           << ",  R+ order = " << nscbc_order << "\n";
       banner_shown = true;
@@ -305,7 +385,7 @@ CAMR_bcfill_hyp(
   }
 
   amrex::GpuBndryFuncFab<PCHypFillExtDir> hyp_bndry_func(
-    PCHypFillExtDir{lprobparm, use_nscbc, nscbc_sigma, nscbc_order,
+    PCHypFillExtDir{lprobparm, nscbc_cfg.uface, nscbc_sigma, nscbc_order,
                     nscbc_flash, nscbc_cfg.pamb
 #ifdef USE_PS_HYDRO
                     , ps_presence_params()   // S2: host-side read here
