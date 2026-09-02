@@ -2207,6 +2207,8 @@ ps_apply_floor(amrex::MultiFab& S_new, int nghost = 0)
     const Real tfloor = ps_temp_floor();
     if (pfloor <= Real(0.0) && tfloor <= Real(0.0)) return;
     constexpr Real alpha_floor = Real(1.0e-6);
+    //  3c: presence params for the per-phase Independent gate (host read once).
+    const PsPres l_floor_pr = ps_presence_params();
 
     for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
         const amrex::Box bx = mfi.growntilebox(nghost);
@@ -2251,6 +2253,15 @@ ps_apply_floor(amrex::MultiFab& S_new, int nghost = 0)
                 const Real mk  = (ph == 1) ? m1 : m2;
                 const Real alk = (ph == 1) ? alpha1 : (Real(1.0) - alpha1);
                 const int  ue  = (ph == 1) ? UE1 : UE2;
+                //  3c: skip the per-phase floor for a non-Independent phase —
+                //  it is host-slaved, never branch-queried, so flooring its
+                //  e_k only manufactures UE_k drift (design §5).  The mixture
+                //  UEDEN/UEINT reset below is unaffected (still fires if the
+                //  OTHER, Independent, phase was floored).
+                if (l_floor_pr.floor_indep != 0 &&
+                    ps_regime(alk, mk, l_floor_pr) != PsRegime::Independent) {
+                    continue;
+                }
                 const Real rhok = mk / alk;
                 const Real ek   = U(i,j,k, ue) / mk - kesp;   // phase internal e
 

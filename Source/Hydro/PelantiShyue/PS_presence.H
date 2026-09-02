@@ -78,6 +78,13 @@ struct PsPres {
     //  phase whose e_k is unreachable on its branch is kept Corridor.  Retire
     //  to single-path at acceptance like the other campaign selectors.
     int         promote_checked = 0;
+    //  3c (DESIGN_ps_corridor_closure.md 5): gate ps_apply_floor's PER-PHASE
+    //  leg on Independent.  A corridor phase is host-slaved and its e_k is
+    //  never branch-queried, so flooring it only manufactures UE_k drift with
+    //  no face-level consumer.  0 = off (default, bit-identical); 1 = the
+    //  floor's per-phase leg skips non-Independent phases (mixture legs
+    //  untouched).
+    int         floor_indep     = 0;
 
     //  A NUMERICS dial riding the presence params struct because that struct is
     //  already the by-value carrier reaching all three live c_mix sites
@@ -242,6 +249,7 @@ inline const PsPres& ps_presence_params()
         pp.query("ps_presence_vanish",  v.alpha_vanish);
         pp.query("ps_presence_rho_deg", v.rho_deg);
         pp.query("ps_promote_checked", v.promote_checked);
+        pp.query("ps_floor_indep",     v.floor_indep);
         pp.query("ps_presence_e_deg_lo", v.e_deg_lo);
         pp.query("ps_presence_e_deg_hi", v.e_deg_hi);   // unified with the
         // fold's CAMR.ps_alpha_vanish at S3 (that key currently means

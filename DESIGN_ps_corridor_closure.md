@@ -423,3 +423,54 @@ ideal-gas extrapolation (the §3(b)-i property).  3b's checked promotion
 needs exactly this EOS-domain-reachability test, so it lands now and is
 committed; the flawed continuous-closure plumbing is reverted, leaving
 no dial in the live path (the ps_rk_model lesson).
+
+---
+
+## 10. IMPLEMENTED 2026-09-02 — [DECIDE-7] option (a): 3b + 3c landed
+
+Marc chose (a): drop the continuous face-closure, put item 3's weight on
+checked promotion (3b) and floor regime-gating (3c).
+
+**3b — checked promotion (`114e5ea`).**  `PS_promote.H::ps_regime_reach`
+demotes a would-be-Independent phase to Corridor when its e_k has no root
+on its own branch (`EOS::REY2PTS_phase_try`; the branch e-domain is the
+bound, no new constant).  Applied as an extra condition on the EXISTING
+`Independent -> branch query, else host-slave` guard at every hydro/temp
+site that issues an aborting branch-locked EOS query: `face_from_state`,
+`ps_max_wave_speed`, `ps_wp_face` (PS_umeth), `ps_mixture_pressure`
+(ctoprim), and `computeTemp` (the documented step-3669 abort site).
+Gated `CAMR.ps_promote_checked` (default 0).  MEASURED: all 21 1-D cases
+bit-identical gate off vs on — no legitimate 1-D promotion is
+unreachable, so the check evaluates across all five sites and never
+demotes, which validates the plumbing (a mis-wired site would demote a
+good phase and break bit-identity).
+
+**3c — floor regime-gating (`this commit`).**  `ps_apply_floor`'s
+per-phase leg skips a non-Independent phase (design §5): a corridor phase
+is host-slaved and never branch-queried, so flooring its e_k only
+manufactures UE_k drift.  Mixture UEDEN/UEINT reset is unaffected.  Gated
+`CAMR.ps_floor_indep` (default 0).  The 1-D suite leaves both floors at 0
+(`ps_apply_floor` early-returns), so 3c is inert there; demo2 sets
+`ps_pres_floor=1e5`, `ps_temp_floor=216.6`, so its effect is a 2-D-only
+measurement.
+
+**Scope kept honest.**  Operator gates (relaxation/MT/flash, PS_relaxation
+324/1290, PS_sources 191/396) and the diagnostic face classifier
+(PS_hllc ps_face_class) still use the cheap `ps_regime` — they do not
+issue the hydro/temp branch query that aborts, so they are consistency
+follow-up, not part of the abort channel.  Tracked, not silently skipped.
+
+**Acceptance (unchanged from §5.3 / §7): the 2-D reproducer.**  1-D can
+only show bit-identity (necessary), never benefit — no 1-D case carries a
+corrupt-energy promotion or an active floor.  The real gates:
+- restart `demo2_final/chk_sj2_03650` (19 steps) with
+  `CAMR.ps_promote_checked=1 CAMR.ps_floor_indep=1`, full diagnostics:
+  the run must clear the step-3669 abort, and `n_promote_refuse` /
+  the floor-skip counts report how often each fired (sizes whether 3b(B)
+  constructed promotion is ever needed — the note's open question);
+- restart `chk_sj2_03550 -> 3605` vs `ReRun4`: solution-quality criteria
+  (rho_1 tracking, e_1 no collapse) must not regress from the item-2
+  FIX1 baseline — 3b/3c are prevention, they must not move the healthy
+  path.
+Both are the ~16-50 min 6-rank runs; to be launched with Marc's go-ahead
+(ground rule 6), after the 2-D exe is rebuilt and its timestamp checked.
