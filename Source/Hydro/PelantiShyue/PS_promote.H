@@ -39,8 +39,19 @@
 //  W0 face audit.  Nonzero in 2-D is the instrument that sizes 3b(B); ZERO
 //  on the whole 1-D suite is the acceptance (no legitimate promotion is
 //  unreachable there, so gate ON must be bit-identical to gate OFF).
+//  Item-3 diagnostic counters (host-only, ground rule 9), in their OWN
+//  namespace to avoid colliding with PS_HLLC::face_diag.  Reported and reset
+//  in CAMR_advance.cpp's ps_face_diag block.
+//    n_promote_refuse : would-be-Independent phases demoted to Corridor for
+//                       energy-unreachability (3b).  Sizes 3b(B).
+//    n_floor_skip     : per-phase floor legs skipped on a non-Independent
+//                       phase (3c).
 #if !defined(AMREX_USE_GPU)
-namespace face_diag { inline long& n_promote_refuse() { static long n = 0; return n; } }
+namespace ps_promote_diag {
+    inline long& n_promote_refuse() { static long n = 0; return n; }
+    inline long& n_floor_skip()     { static long n = 0; return n; }
+    inline void  reset() { n_promote_refuse() = 0; n_floor_skip() = 0; }
+}
 #endif
 
 //  Demote an Independent classification to Corridor iff its (rho,e) has no
@@ -60,7 +71,7 @@ PsRegime ps_regime_reach(PsRegime rg, amrex::Real rho, amrex::Real e,
     if (EOS::REY2PTS_phase_try(rho, e, Yq, br, Pq, Tq, Sq))
         return PsRegime::Independent;
 #if !defined(AMREX_USE_GPU)
-    ++face_diag::n_promote_refuse();
+    ++ps_promote_diag::n_promote_refuse();
 #endif
     return PsRegime::Corridor;
 }

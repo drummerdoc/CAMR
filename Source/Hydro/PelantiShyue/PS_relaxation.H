@@ -40,6 +40,7 @@
 #include "EOS.H"
 #include "hem_pelanti_shyue.H"
 #include "PS_presence.H"   // S3: fold threshold single-sourcing
+#include "PS_promote.H"    // 3c: floor-skip counter (ps_promote_diag)
 #include <AMReX_Array4.H>
 #include <AMReX_GpuQualifiers.H>
 #include <AMReX_Print.H>
@@ -2260,6 +2261,9 @@ ps_apply_floor(amrex::MultiFab& S_new, int nghost = 0)
                 //  OTHER, Independent, phase was floored).
                 if (l_floor_pr.floor_indep != 0 &&
                     ps_regime(alk, mk, l_floor_pr) != PsRegime::Independent) {
+#if !defined(AMREX_USE_GPU)
+                    ++ps_promote_diag::n_floor_skip();
+#endif
                     continue;
                 }
                 const Real rhok = mk / alk;

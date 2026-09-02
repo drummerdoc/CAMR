@@ -414,6 +414,24 @@ CAMR::CAMR_advance (Real time,
                                            << nrf << "\n";
                         }
                     }
+                    //  Item-3 (3b/3c) counters: checked-promotion refusals and
+                    //  floor legs skipped on non-Independent phases.  Printed
+                    //  only when nonzero; n_promote_refuse sizes 3b(B).
+                    {
+                        amrex::Long npr = ps_promote_diag::n_promote_refuse();
+                        amrex::Long nfs = ps_promote_diag::n_floor_skip();
+                        amrex::ParallelDescriptor::ReduceLongSum(npr);
+                        amrex::ParallelDescriptor::ReduceLongSum(nfs);
+                        if (npr > 0 || nfs > 0) {
+                            amrex::Print() << "[PS-PROMOTE] L" << level
+                                           << " step "
+                                           << parent->levelSteps(level) << " "
+                                           << label
+                                           << ": promote_refuse = " << npr
+                                           << "  floor_skip = " << nfs << "\n";
+                        }
+                        ps_promote_diag::reset();
+                    }
                     //  Refusal-cause breakdown for the wp fluctuation path.
                     //  Printed only when something actually refused, so a clean
                     //  interval costs one comparison and no output.
