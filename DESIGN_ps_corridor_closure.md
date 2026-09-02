@@ -111,6 +111,53 @@ in mechanical and thermal equilibrium with its host:
   (`face_diag`, new cause `corr_close`), never clamped.  Predicted
   zero on the 1-D suite; persistent 2-D counts are a finding.
 
+  **(b)-i  Why this is not the original disease (Marc's review
+  question, answered 2026-09-01).**  The failure this project began
+  with — EOS queries on nonphysical states — had three ingredients,
+  and the closure query inverts each:
+
+  1. *Input provenance.*  The old queries were made at states built
+     from the corridor phase's OWN degenerate data: rho_k = m_k/alpha_k
+     and e_k = UE_k/m_k, relative error eta/alpha, unbounded toward
+     alpha_vanish (the audit's rho_1 = 1643.8 at alpha_1 = 1.85e-5,
+     99.6 % of the PR pole, was noise interpreted as a state).  The
+     closure query contains NO corridor data: P_mix is host-dominated
+     (corridor P_k is already slaved) and T_host is the host's branch
+     temperature at the host's own well-conditioned (rho, e), with
+     alpha_host >= 1 - alpha_cond.  The corridor phase's m, alpha, UE
+     never enter the query point, so there is nothing in it to be
+     wrong.
+  2. *Query direction and detectability.*  Old: inverse branch-locked
+     (rho, e) -> P at points outside the branch's domain, where PR
+     does not refuse but EXTRAPOLATES — plausible garbage that G3
+     could not catch because it was self-consistent with its garbage
+     input.  New: forward (P, T) -> (rho, e) root selection at a
+     bounded physical point; the failure mode is "no root on this
+     branch" — a structural refusal that announces itself and routes
+     to the counted fallback.  The old pattern's defining property was
+     failure indistinguishable from success; here failure is a
+     detected event.
+  3. *Blast radius of the answer.*  The old garbage became
+     load-bearing mixture state (P_1 -> P_mix -> S_L/S_R -> dt).  The
+     closure's answer sets only the corridor phase's face intensives —
+     B_k and the pricing of its m_k-bounded deposits — while P_mix and
+     Y_1 stay anchored to host/conserved data (the §3.1 table enforces
+     this).
+
+  Stated honestly: for a corridor liquid in a depressurizing vapor
+  host, (P_mix, T_host) often sits below the liquid's saturation
+  pressure and the returned root is the METASTABLE (superheated-
+  liquid) root — which is physically the right object for a corridor
+  liquid mist, carried cleanly by PR up to the spinodal, where the
+  counted fallback fires.  A metastable root at a defined point is
+  categorically different from a pole-adjacent evaluation at a noise
+  quotient.  Genealogy: this is G5 COMPLETED, not contradicted — G5
+  slaved P, T, c on the argument that no independent state exists to
+  go wrong, but left rho_k, e_k as the quotients that argument
+  condemned; the closure query gives them values consistent with the
+  P and T already slaved, using the EOS to evaluate a definition
+  rather than to interpret noise.
+
 **(c) Neighbor-ghost closure** — the `ps_two_fluid_flux` lift the
 presence design §4 sketched: isentropic extrapolation of the SAME
 phase's state from the face's other side (if Independent there) to the
