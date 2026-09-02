@@ -30,6 +30,7 @@
 #include "IndexDefines.H"
 #include "EOS.H"
 #include "PS_presence.H"
+#include "PS_promote.H"    // 3b: checked promotion
 #include "PS_guards.H"
 
 using amrex::Real;   // matches PS_ctoprim.H / PS_hllc.H
@@ -125,11 +126,11 @@ ps_phase_speeds_from_state(const Real U[NVAR], const PsPres& pr) noexcept
     const bool host_is_1 = (alpha_1 >= alpha_2);
     if (host_is_1) {
         EOS::REY2PCs_liquid(rho_1, e1, Y, P1, c1);
-        if (rg2 == PsRegime::Independent) { EOS::REY2PCs_vapor(rho_2, e2, Y, P2, c2); }
+        if (ps_regime_reach(rg2, rho_2, e2, /*liquid=*/false, pr) == PsRegime::Independent) { EOS::REY2PCs_vapor(rho_2, e2, Y, P2, c2); }
         else                              { P2 = P1; c2 = c1; }
     } else {
         EOS::REY2PCs_vapor(rho_2, e2, Y, P2, c2);
-        if (rg1 == PsRegime::Independent) { EOS::REY2PCs_liquid(rho_1, e1, Y, P1, c1); }
+        if (ps_regime_reach(rg1, rho_1, e1, /*liquid=*/true, pr) == PsRegime::Independent) { EOS::REY2PCs_liquid(rho_1, e1, Y, P1, c1); }
         else                              { P1 = P2; c1 = c2; }
     }
     // SINGLE-SOURCE floor (see PS_guards.H) -- was a fourth copy.

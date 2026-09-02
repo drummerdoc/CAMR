@@ -33,6 +33,7 @@
 #include "IndexDefines.H"
 #include "PS_guards.H"      // single-source phase-pressure sanity (G3)
 #include "PS_presence.H"    // S2: presence-discrete regimes
+#include "PS_promote.H"     // 3b: checked promotion
 #include <AMReX_Array4.H>
 #include <AMReX_GpuQualifiers.H>
 
@@ -303,10 +304,10 @@ ps_mixture_pressure_from_cons(const amrex::Real U[NVAR], amrex::Real P_stock,
     for (int n = 1; n < NUM_SPECIES; ++n) Y[n] = Real(0.0);
     Real P1, P2;
     const Real P_ss = ps_guard::sanitize_stock_pressure(P_stock);
-    if (q1.exists && rg1 == PsRegime::Independent) { EOS::REY2P_liquid(rho1, e1, Y, P1);
+    if (q1.exists && ps_regime_reach(rg1, rho1, e1, /*liquid=*/true, pr) == PsRegime::Independent) { EOS::REY2P_liquid(rho1, e1, Y, P1);
                                         ps_guard::sanitize_phase_pressure(P1, P_ss); }
     else                              { P1 = P_ss; }
-    if (rg2 == PsRegime::Independent) { EOS::REY2P_vapor(rho2, e2, Y, P2);
+    if (ps_regime_reach(rg2, rho2, e2, /*liquid=*/false, pr) == PsRegime::Independent) { EOS::REY2P_vapor(rho2, e2, Y, P2);
                                         ps_guard::sanitize_phase_pressure(P2, P_ss); }
     else                              { P2 = P_ss; }
     return a1 * P1 + a2 * P2;   // exact alpha: ABSENT contributes 0

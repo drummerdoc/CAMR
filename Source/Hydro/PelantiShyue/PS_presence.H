@@ -73,6 +73,11 @@ struct PsPres {
     //  correct.  This field stays 1 and is retained only until the remaining
     //  forks are removed; `CAMR.ps_presence` is no longer read.
     int         enabled      = 1;
+    //  CHECKED PROMOTION (PS_promote.H, DESIGN_ps_corridor_closure.md 3b).
+    //  0 = off (default, bit-identical baseline); 1 = a would-be-Independent
+    //  phase whose e_k is unreachable on its branch is kept Corridor.  Retire
+    //  to single-path at acceptance like the other campaign selectors.
+    int         promote_checked = 0;
 
     //  A NUMERICS dial riding the presence params struct because that struct is
     //  already the by-value carrier reaching all three live c_mix sites
@@ -236,6 +241,7 @@ inline const PsPres& ps_presence_params()
         }
         pp.query("ps_presence_vanish",  v.alpha_vanish);
         pp.query("ps_presence_rho_deg", v.rho_deg);
+        pp.query("ps_promote_checked", v.promote_checked);
         pp.query("ps_presence_e_deg_lo", v.e_deg_lo);
         pp.query("ps_presence_e_deg_hi", v.e_deg_hi);   // unified with the
         // fold's CAMR.ps_alpha_vanish at S3 (that key currently means

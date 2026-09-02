@@ -36,6 +36,7 @@
 #include "EOS.H"
 #include "PS_hllc.H"
 #include "PS_presence.H"   // S1 presence params (threaded, no defaults)        // Task #187: Pelanti 2022 HLLC flux
+#include "PS_promote.H"   // 3b: checked promotion (energy reachability)
 #include "PS_guards.H"      // single-source phase-pressure sanity (G3)
 #include "PS_ctoprim.H"
 #include "PS_wavespeed.H"
@@ -156,14 +157,14 @@ ps_physical_flux_from_state(int idir, const Real U[NVAR], Real F[NVAR],
     if (host_is_1) {
         EOS::REY2P_liquid(rho_1, e1, Y, P1);
         P1 = ps_guard::sanitize_stock_pressure(P1);      // host: floor only
-        if (q2.exists && rg2 == PsRegime::Independent) {
+        if (q2.exists && ps_regime_reach(rg2, rho_2, e2, /*liquid=*/false, pr) == PsRegime::Independent) {
             EOS::REY2P_vapor(rho_2, e2, Y, P2);
             ps_guard::sanitize_phase_pressure(P2, P1);
         } else { P2 = P1; }
     } else {
         EOS::REY2P_vapor(rho_2, e2, Y, P2);
         P2 = ps_guard::sanitize_stock_pressure(P2);
-        if (q1.exists && rg1 == PsRegime::Independent) {
+        if (q1.exists && ps_regime_reach(rg1, rho_1, e1, /*liquid=*/true, pr) == PsRegime::Independent) {
             EOS::REY2P_liquid(rho_1, e1, Y, P1);
             ps_guard::sanitize_phase_pressure(P1, P2);
         } else { P1 = P2; }

@@ -24,6 +24,7 @@
 #include "PS_relaxation.H"   // ps_resync_phase_energy / ps_apply_floor (#84)
 #include "PS_guards.H"
 #include "PS_wavespeed.H"      // ps_guard counters (clean_state repairs)
+#include "PS_promote.H"       // 3b: checked promotion (ps_regime_reach)
 #endif
 
 bool CAMR::signalStopJob = false;
@@ -1599,8 +1600,16 @@ CAMR::computeTemp(amrex::MultiFab& S, int ng)
            //                         the cell IS single-phase Euler and
            //                         (rho_mix, e_mix) IS the survivor's own
            //                         state, so that call is well posed.
-           const PsRegime rg1 = ps_regime(a1, m1, l_pr);
-           const PsRegime rg2 = ps_regime(a2, m2, l_pr);
+           PsRegime rg1 = ps_regime(a1, m1, l_pr);
+           PsRegime rg2 = ps_regime(a2, m2, l_pr);
+           //  3b checked promotion: an energy-unreachable would-be-Independent
+           //  phase is demoted to Corridor so the both-INDEPENDENT branch
+           //  below (the aborting REY2PTS_phase T query) is NOT taken on it —
+           //  the step-3669 abort channel, prevented at classification.
+           rg1 = ps_regime_reach(rg1, m1 / a1,
+                     Sarr(i,j,k,UE1) / m1 - ke, /*liquid=*/true,  l_pr);
+           rg2 = ps_regime_reach(rg2, m2 / a2,
+                     Sarr(i,j,k,UE2) / m2 - ke, /*liquid=*/false, l_pr);
 #if defined(USE_PR_EOS) && !defined(AMREX_USE_GPU)
            //  STEP-1 PROBE (2026-08-12).  DIAGNOSTIC ONLY -- it changes no
            //  value and no control flow: it asks the NON-ABORTING entry first,

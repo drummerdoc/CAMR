@@ -53,6 +53,7 @@
 #include "EOS.H"
 #include "PS_guards.H"      // G1/G3 -- THIS is the live wp face state, see below
 #include "PS_presence.H"   // S1: presence-discrete regimes (CAMR.ps_presence)
+#include "PS_promote.H"    // 3b: checked promotion (energy reachability)
 #include <AMReX_GpuQualifiers.H>
 #include <cmath>
 
@@ -221,7 +222,8 @@ Face face_from_state(int idir, const amrex::Real U[NVAR],
     const bool host_is_1 = (f.alpha_1 >= f.alpha_2);
     if (host_is_1) {
         EOS::REY2PCs_liquid(f.rho_1, f.e_1, Y, f.P_1, c1);
-        if (rg2 == PsRegime::Independent) {
+        if (ps_regime_reach(rg2, f.rho_2, f.e_2, /*liquid=*/false, pr)
+                == PsRegime::Independent) {
             EOS::REY2PCs_vapor(f.rho_2, f.e_2, Y, f.P_2, c2);
         } else {
             f.P_2 = f.P_1; c2 = c1;
@@ -229,7 +231,8 @@ Face face_from_state(int idir, const amrex::Real U[NVAR],
         }
     } else {
         EOS::REY2PCs_vapor(f.rho_2, f.e_2, Y, f.P_2, c2);
-        if (rg1 == PsRegime::Independent) {
+        if (ps_regime_reach(rg1, f.rho_1, f.e_1, /*liquid=*/true, pr)
+                == PsRegime::Independent) {
             EOS::REY2PCs_liquid(f.rho_1, f.e_1, Y, f.P_1, c1);
         } else {
             f.P_1 = f.P_2; c1 = c2;
