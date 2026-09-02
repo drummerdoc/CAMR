@@ -161,11 +161,15 @@ ps_augment_primitives(int i, int j, int k,
     // by DEFINITION (transport-only corridor, design §1).
     if (host_is_1) {
         EOS::REY2P_liquid(rho1, e1, Y, P1);
-        if (rg2 == PsRegime::Independent) { EOS::REY2P_vapor(rho2, e2, Y, P2); }
+        //  3b: minority vapor branch query gated on energy reachability.
+        if (ps_regime_reach(rg2, rho2, e2, /*liquid=*/false, pr) == PsRegime::Independent) { EOS::REY2P_vapor(rho2, e2, Y, P2); }
         else                              { P2 = P1; }
     } else {
         EOS::REY2P_vapor(rho2, e2, Y, P2);
-        if (rg1 == PsRegime::Independent) { EOS::REY2P_liquid(rho1, e1, Y, P1); }
+        //  3b: minority liquid branch query gated on energy reachability
+        //  (the ps_augment_primitives copy missed in the first 3b pass —
+        //  the demo2 branch-edge minority-liquid abort site).
+        if (ps_regime_reach(rg1, rho1, e1, /*liquid=*/true, pr) == PsRegime::Independent) { EOS::REY2P_liquid(rho1, e1, Y, P1); }
         else                              { P1 = P2; }
     }
 
