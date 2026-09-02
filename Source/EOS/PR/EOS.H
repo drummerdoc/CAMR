@@ -710,6 +710,61 @@ namespace EOS {
       E = s.e;
   }
 
+  //  CHECKED phase-selected (T, P) -> (rho, e, c) with a has_root flag.
+  //  Corridor closure (DESIGN_ps_corridor_closure.md 3a, and 3(b)-i):
+  //  a corridor phase's face intensives are DEFINED by ITS OWN branch at
+  //  the host-anchored (P_mix, T_host).  Unlike PYT2RE_{liquid,vapor},
+  //  which silently substitute an ideal-gas metastable extrapolation when
+  //  the requested phase has no real PR root at (T,P), this REPORTS
+  //  has_root=false so the caller falls back to the host state and COUNTS
+  //  the face.  That detectable no-root REFUSAL -- not a believed number --
+  //  is exactly what distinguishes this forward (P,T)->(rho,e) query from
+  //  the original inverse (rho,e)->P queries on undefined quotient states.
+  //  A real root inside the spinodal (c <= 0) is likewise not a usable
+  //  mechanical state and reports has_root=false (same refusal path).
+  //  Mirrors hem::state_from_T_P_metastable's root logic; adds no constant.
+  AMREX_GPU_HOST_DEVICE
+  AMREX_FORCE_INLINE
+  void PYT2REc_phase_checked(amrex::Real P, amrex::Real T, bool want_liquid,
+                             amrex::Real& R, amrex::Real& E, amrex::Real& C,
+                             bool& has_root)
+  {
+      const hem::PRFluid f = co2_fluid();
+      amrex::Real a, dadT, d2adT2, b;
+      hem::pureParams2(f.pr, T, a, dadT, d2adT2, b);
+      const amrex::Real A = a * P / (hem::R_gas * hem::R_gas * T * T);
+      const amrex::Real B = b * P / (hem::R_gas * T);
+      amrex::Real roots[3];
+      const int nroots = hem::solveCubicRoots(A, B, roots);
+      const hem::Phase3 ph = want_liquid ? hem::Phase3::Liquid
+                                         : hem::Phase3::Vapor;
+      hem::State s;
+      if (nroots == 3) {
+          //  Both phases have real roots below their spinodals.
+          s = hem::state_from_T_P(f, T, P, ph);
+      } else {
+          //  One real root: does it belong to the requested phase?
+          const amrex::Real v_single = roots[0] * hem::R_gas * T / P;
+          const bool single_is_liquid =
+              (v_single < amrex::Real(0.5) * (b + hem::R_gas * T / P));
+          if (single_is_liquid != want_liquid) {
+              //  Requested phase is past its spinodal at (T,P): no root.
+              has_root = false;
+              R = E = C = amrex::Real(0.0);
+              return;
+          }
+          s = hem::state_from_T_v(f, T, v_single, ph);
+      }
+      if (!(s.c > amrex::Real(0.0)) || !std::isfinite(s.rho)
+          || !(s.rho > amrex::Real(0.0)) || !std::isfinite(s.e)) {
+          has_root = false;
+          R = E = C = amrex::Real(0.0);
+          return;
+      }
+      has_root = true;
+      R = s.rho; E = s.e; C = s.c;
+  }
+
   AMREX_GPU_HOST_DEVICE
   AMREX_FORCE_INLINE
   void PYT2R(amrex::Real P, amrex::Real* /*Y*/, amrex::Real T, amrex::Real& R)

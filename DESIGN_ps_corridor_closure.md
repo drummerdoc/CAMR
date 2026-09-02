@@ -336,3 +336,90 @@ reproducer — I will ask before running them (rule 6).
    3a's global face change is still being measured against gates.
 
 Nothing in §3-§5 is coded until these are answered.
+
+---
+
+## 9. MEASURED 2026-09-02 — the (P_mix, T_host) closure is refuted; a
+##    thermal-state fork the note glossed [DECIDE-7, blocking]
+
+I built the closure (checked EOS primitive `EOS::PYT2REc_phase_checked`,
+gated `CAMR.ps_corr_close`, per §3.1) and measured it on B12 before any
+2-D run.  **It regresses B12 hard**, and the reason is a physics point
+§3 stated too loosely.
+
+```
+  B12, ps_corr_close:      R        P2/P1   rho_1 (far -> plateau)
+  OFF (item-2 baseline)    0.0097   1.83    936.4 -> 941.5     <- correct
+  ON, query (P_mix,T_host) -0.793   1.77    936.4 -> 471.5     liquid DECOMPRESSES
+  ON, query (P_mix,T_own)   0.581   1.69    936.4 -> 1281.8    liquid OVER-compresses
+```
+
+**Diagnosis.**  The closure queries the corridor LIQUID branch at a
+thermal state.  §3(b) wrote that state as (P_mix, T_host) — mechanical
+AND thermal equilibrium with the host.  But this model retains THERMAL
+NON-EQUILIBRIUM (T_1 != T_2; finite-rate thermal relaxation is the
+`ps_relax_mode=2` production closure, LITERATURE 7).  Dragging the
+corridor liquid to the hot vapor host's temperature collapses its
+density (936 -> 471).  The design's own words — DESIGN_ps_presence_
+discrete §1, "intensives from the host closure" — over-reach on
+temperature: mechanical relaxation is instantaneous in this model,
+thermal relaxation is NOT.  Sharing P with the host is right; sharing T
+is wrong.
+
+**The deeper problem: a corridor phase has no clean thermal anchor.**
+The two obvious choices are both wrong on B12, differently:
+- T_host asserts instantaneous thermal equilibrium the model rejects;
+- T_own reads the phase's own temperature from the SAME quotient the
+  closure exists to avoid (circular; clean on B12's fresh init, corrupt
+  on demo2's accumulated history).
+
+**And B12 cannot referee this.**  B12 is clean-init: its corridor liquid
+quotient rho_1 = 936.4 is EXACT, so the item-2 relaxed-alpha star state
+already produces R = 0.0097 from it.  The closure's premise — "the
+quotient is unreliable" — is FALSE on B12 and TRUE only on demo2's
+160-step accumulation.  So the fast 1-D gate can show the closure's
+HARM (it replaces good data with modeled data) but is structurally
+incapable of showing its BENEFIT (no corrupt quotient to repair).  This
+is the §4.0a lesson again, one level up: the defect item 3 targets lives
+in 2-D accumulation, and item 2 already heals the clean-quotient case.
+
+**Consequence for the plan.**  A blind continuous face-closure that
+re-derives rho_k/e_k from an EOS query at a modeled thermal state is not
+supportable: on clean quotients it is strictly worse than doing nothing,
+and it has no defensible thermal anchor.  Two paths remain, both for
+Marc:
+
+**[DECIDE-7] The corridor thermal state.**
+  (a) **Abandon continuous 3a face-closure.**  Keep item 2's star state
+      for corridor faces (it already partitions strain correctly from
+      whatever rho_k it is given) and move item 3's whole weight to 3b
+      (checked promotion) + 3c (floor gating) — PREVENTION at the
+      promotion event and removal of the one guard acting on corridors,
+      rather than continuous re-manufacture of corridor intensives.
+      This is the smallest, safest reading and needs no thermal anchor.
+      **Recommended.**
+  (b) **Isentropic closure (option c revisited).**  Share P AND entropy
+      with the host-adjacent SAME-phase state: query (P_mix, s) along
+      the present-side phase-k isentrope (the ps_two_fluid_flux ghost
+      construction).  Preserves thermal non-equilibrium (s carried, not
+      T slaved), no host-T assumption — but it is the pair-level
+      neighbor-ghost closure with the §3(c) hazards, and on a 74%-
+      corridor 2-D shock the same-phase neighbor is usually also
+      corridor, so its reference is a quotient one cell over.  Larger,
+      and still not clearly better than (a).
+  (c) **Corruption-gated closure.**  Apply the closure ONLY where the
+      quotient is measurably corrupt (rho_k outside the branch's
+      rho-domain, or e_k unreachable) — i.e. exactly the demo2 cells,
+      never the clean B12 ones.  But "measurably corrupt" is a new
+      threshold in the solver: rule-1 territory, needs its own
+      derivation and Marc's agreement, and is precisely the kind of
+      repair-downstream the prime directive resists.  Documented for
+      completeness; not recommended.
+
+**What is kept from this work regardless of the decision:**
+`EOS::PYT2REc_phase_checked` — the phase-selected (P,T)->(rho,e,c) query
+that REPORTS no-root (past-spinodal) instead of silently substituting an
+ideal-gas extrapolation (the §3(b)-i property).  3b's checked promotion
+needs exactly this EOS-domain-reachability test, so it lands now and is
+committed; the flawed continuous-closure plumbing is reverted, leaving
+no dial in the live path (the ps_rk_model lesson).
