@@ -474,3 +474,44 @@ corrupt-energy promotion or an active floor.  The real gates:
   path.
 Both are the ~16-50 min 6-rank runs; to be launched with Marc's go-ahead
 (ground rule 6), after the 2-D exe is rebuilt and its timestamp checked.
+
+---
+
+## 11. Run A (2026-09-02) — a missed 3b site, and what chk_sj2_03650 can test
+
+Run A (restart `chk_sj2_03650`, `ps_promote_checked=1`) aborted in the
+hydro advance on a branch-locked LIQUID query at rho = 454.6, e = -2.19e5
+(5528 J/kg below the branch's coldest reachable) — the demo2 branch-edge
+minority-liquid fingerprint (FINDINGS: rho drifting to ~469 near the
+reachable edge, alpha_1 ~ 0.026, just above alpha_cond so classified
+Independent).
+
+**Cause: fixed-in-N-of-M-copies.**  The first 3b pass converted FOUR of
+the FIVE host-dispatch functions (face_from_state, ps_max_wave_speed,
+ps_wp_face, ps_mixture_pressure) but missed `ps_augment_primitives`
+(PS_ctoprim.H, called live from CAMR_construct_hydro_source.cpp:207),
+whose minority branch queries still used the raw `ps_regime`.  This is
+exactly the failure mode GUARD_INVENTORY's meta-lesson names.  Fixed
+`f951169`; 1-D 21/21 still bit-identical.  The umeth LLF-fallback queries
+are `#if CAMR_PS_DIAG` (compiled out of production) — not a live site.
+
+**A structural limit of 3b, and what checkpoint tests it.**  Checked
+promotion demotes a corrupt MINORITY phase to Corridor and slaves it to
+the healthy majority host.  It cannot help a corrupt MAJORITY phase:
+there is no healthy host to slave to, and the host query is
+(correctly) unconditional — a phase at alpha >= 1/2 is asserted to have a
+state.  `chk_sj2_03650` is a POST-shock checkpoint written by OLD code
+(pre-item-2): it is "60 steps too late ... quiet drift to the branch
+edge" (Part 7), so its corrupt cells are already baked into the initial
+data and, if any have grown the corrupt phase to majority, are unhealable
+from there by EITHER item.  So:
+- if Run A now clears (the fingerprint cell was minority, demoted), good;
+- if it aborts again on a MINORITY query, that is another missed copy —
+  read Backtrace.0 for the function and convert it;
+- if it aborts on a HOST (majority) query, that is old-code inherited
+  corruption chk_sj2_03650 cannot un-bake, NOT an item-3 gap.  Do not
+  guard the host query: slaving a corrupt majority to the minority is
+  repair-downstream of a state that should never have been created
+  (prime directive).  The proper item-2+3 test is then **Run B**
+  (`chk_sj2_03550`, PRE-shock), where item 2 prevents the
+  over-compression so the corrupt majority never forms.
