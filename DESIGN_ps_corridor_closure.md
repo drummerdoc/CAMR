@@ -564,9 +564,29 @@ worse.
 - 3b: ACCEPTED behaviour — closes the abort channel (item3_A1), inert
   and non-regressing on the healthy path (item3_B).  Recommend default-on
   after this evidence.  [DECIDE-8]
-- 3c: works as designed, stable, but moves the plume solution ~5-8% with
-  no reference to adjudicate.  Recommend keeping default-OFF pending a
-  conservation-budget check (is the un-masked corridor energy physical,
-  or was the floor hiding garbage).  [DECIDE-9]
+- 3c: works as designed, stable; moves the plume solution ~5-8% with no
+  analytic reference.  [DECIDE-9] RESOLVED by the conservation-budget
+  diagnostic (below): the un-masked energy is PHYSICAL, not garbage.
 - Both remain gated; nothing is forced.  The selectors are retired to
   single-path only on Marc's acceptance, per the ps_star_relaxed pattern.
+
+**3c conservation-budget diagnostic (CAMR.ps_floor_budget), MEASURED
+2026-09-03, restart chk_sj2_03650 -> 3669.**  For every corridor floor
+leg 3c skips, the phase's own-branch (rho_k,e_k) is tested for a root
+(REY2PTS_phase_try) and the pressure-floor energy it would have
+manufactured is tallied.  Result, per step, every level:
+  L0: skip reachable 60k-110k, UNreachable 60-140  (unreach ~0.10-0.13%)
+  L1: skip reachable ~18.5k,   UNreachable 1        (unreach ~0.005%)
+  e_manufacture_avoided ~4e5 J/step (L0), STEADY (not diverging);
+  min_skip_e mostly -3e5..-5e5 J/kg (cold but REACHABLE), one -1.8e6
+  outlier at step 3661 (isolated, run stayed stable).
+**~99.9% of the floor legs 3c skips carry a PHYSICALLY REACHABLE state.**
+So the floor was manufacturing energy on physical low-pressure corridor
+states (whose host-slaved P_k the floor's pressure target does not even
+feed) -- spurious, non-conservative injection.  3c removing it is the
+more correct, more conservative choice; the ~5-8% plume change is that
+spurious energy leaving, not physics lost.  The <=0.13% unreachable
+remainder is the inherited-corrupt population: bounded, flat (not
+growing), host-slaved and harmless, and caught by 3b at promotion
+(item3_A1 promote_refuse decayed to 0 by step 3684).  **Recommendation:
+3c default-on ([DECIDE-9] -> accept), parallel to 3b.**

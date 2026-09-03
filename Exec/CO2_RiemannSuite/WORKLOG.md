@@ -8742,3 +8742,13 @@ host-dispatch site missed in the first 3b pass, ps_augment_primitives
   FIX1_star_relaxed (2026-08-31, ps_star_relaxed=1) is.
 DECIDE-8 3b default-on (recommended).  DECIDE-9 3c default-off pending a
 conservation-budget check (recommended).  Both stay gated.
+
+2026-09-03 — 3c CONSERVATION-BUDGET DIAGNOSTIC (CAMR.ps_floor_budget),
+restart chk_sj2_03650 -> 3669, floor_indep=1 floor_budget=1.  Of the
+corridor floor legs 3c skips: ~99.9% carry a PHYSICALLY REACHABLE
+own-branch state (L0 reach 60k-110k vs unreach 60-140 ~0.1%; L1 unreach
+=1 ~0.005%).  e_manufacture_avoided ~4e5 J/step L0, steady.  => the floor
+was masking physical low-P corridor states (whose host-slaved P_k it does
+not even feed); 3c removes spurious non-conservative energy, not physics.
+Unreachable remainder is the bounded, flat, host-slaved inherited-corrupt
+population that 3b handles.  DECIDE-9 -> 3c default-on recommended.
