@@ -2263,6 +2263,27 @@ ps_apply_floor(amrex::MultiFab& S_new, int nghost = 0)
                     ps_regime(alk, mk, l_floor_pr) != PsRegime::Independent) {
 #if !defined(AMREX_USE_GPU)
                     ++ps_promote_diag::n_floor_skip();
+                    if (l_floor_pr.floor_budget != 0) {
+                        //  3c conservation-budget probe (diagnostic only).
+                        const Real rhod = mk / alk;
+                        const Real ekd  = U(i,j,k, ue) / mk - kesp;
+                        const hem::Phase3 brd = (ph == 1) ? hem::Phase3::Liquid
+                                                          : hem::Phase3::Vapor;
+                        Real Pb, Tb, Sb;
+                        if (EOS::REY2PTS_phase_try(rhod, ekd, Y, brd, Pb, Tb, Sb))
+                            ++ps_promote_diag::n_floor_reach();
+                        else
+                            ++ps_promote_diag::n_floor_unreach();
+                        //  Energy the pressure floor would have manufactured.
+                        if (pfloor > Real(0.0)) {
+                            Real e_pf; EOS::RYP2E(rhod, Y, pfloor, e_pf);
+                            if (std::isfinite(e_pf) && ekd < e_pf)
+                                ps_promote_diag::floor_e_avoided() +=
+                                    mk * (e_pf - ekd);
+                        }
+                        if (ekd < ps_promote_diag::floor_min_e())
+                            ps_promote_diag::floor_min_e() = ekd;
+                    }
 #endif
                     continue;
                 }

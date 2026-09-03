@@ -430,6 +430,33 @@ CAMR::CAMR_advance (Real time,
                                            << ": promote_refuse = " << npr
                                            << "  floor_skip = " << nfs << "\n";
                         }
+                        //  3c conservation-budget report (CAMR.ps_floor_budget):
+                        //  of the floor legs 3c skipped, how many carried a
+                        //  reachable vs unreachable own-branch state, the total
+                        //  pressure-floor energy 3c did NOT manufacture, and the
+                        //  most-negative skipped e_k.  If skips are overwhelmingly
+                        //  REACHABLE the floor was masking physical low-P states
+                        //  (3c is sound); many UNREACHABLE => the floor was hiding
+                        //  garbage the corridor is accumulating (a finding).
+                        {
+                            amrex::Long nre = ps_promote_diag::n_floor_reach();
+                            amrex::Long nun = ps_promote_diag::n_floor_unreach();
+                            amrex::Real eav = ps_promote_diag::floor_e_avoided();
+                            amrex::Real emn = ps_promote_diag::floor_min_e();
+                            amrex::ParallelDescriptor::ReduceLongSum(nre);
+                            amrex::ParallelDescriptor::ReduceLongSum(nun);
+                            amrex::ParallelDescriptor::ReduceRealSum(eav);
+                            amrex::ParallelDescriptor::ReduceRealMin(emn);
+                            if (nre > 0 || nun > 0) {
+                                amrex::Print() << "[PS-FLOORBUDGET] L" << level
+                                    << " step " << parent->levelSteps(level)
+                                    << " " << label
+                                    << ": skip reachable = " << nre
+                                    << "  unreachable = " << nun
+                                    << "  e_manufacture_avoided = " << eav
+                                    << " J  min_skip_e = " << emn << " J/kg\n";
+                            }
+                        }
                         ps_promote_diag::reset();
                     }
                     //  Refusal-cause breakdown for the wp fluctuation path.

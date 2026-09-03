@@ -74,10 +74,24 @@ struct PsPres {
     //  forks are removed; `CAMR.ps_presence` is no longer read.
     int         enabled      = 1;
     //  CHECKED PROMOTION (PS_promote.H, DESIGN_ps_corridor_closure.md 3b).
-    //  0 = off (default, bit-identical baseline); 1 = a would-be-Independent
-    //  phase whose e_k is unreachable on its branch is kept Corridor.  Retire
-    //  to single-path at acceptance like the other campaign selectors.
-    int         promote_checked = 0;
+    //  DEFAULT-ON since acceptance 2026-09-03 ([DECIDE-8], Marc): it closes
+    //  the step-3669 abort channel (item3_A1: chk_sj2_03650 -> 3700, the
+    //  inherited-corrupt cells quarantined Corridor and healing by step
+    //  3684) and is provably inert on the healthy path (item3_B:
+    //  promote_refuse=0, 21/21 1-D cases bit-identical).  1 = on (default);
+    //  0 = A/B opt-out (kept, not aborting, so a matched off-baseline can be
+    //  produced; it disables an abort-prevention fix, so use it only for
+    //  measurement).
+    int         promote_checked = 1;
+    //  3c CONSERVATION-BUDGET DIAGNOSTIC (DESIGN_ps_corridor_closure.md 12,
+    //  [DECIDE-9]): for each corridor phase whose floor leg 3c skips, test
+    //  whether its (rho_k,e_k) is REACHABLE on its own branch and how much
+    //  energy the pressure floor WOULD have manufactured.  Answers "is the
+    //  un-masked corridor energy physical, or was the floor hiding garbage".
+    //  0 = off (default; the per-skip EOS test is expensive on the ~74%
+    //  corridor field); 1 = measure + report [PS-FLOORBUDGET].  Diagnostic
+    //  only: no value or control-flow change.
+    int         floor_budget    = 0;
     //  3c (DESIGN_ps_corridor_closure.md 5): gate ps_apply_floor's PER-PHASE
     //  leg on Independent.  A corridor phase is host-slaved and its e_k is
     //  never branch-queried, so flooring it only manufactures UE_k drift with
@@ -250,6 +264,7 @@ inline const PsPres& ps_presence_params()
         pp.query("ps_presence_rho_deg", v.rho_deg);
         pp.query("ps_promote_checked", v.promote_checked);
         pp.query("ps_floor_indep",     v.floor_indep);
+        pp.query("ps_floor_budget",    v.floor_budget);
         pp.query("ps_presence_e_deg_lo", v.e_deg_lo);
         pp.query("ps_presence_e_deg_hi", v.e_deg_hi);   // unified with the
         // fold's CAMR.ps_alpha_vanish at S3 (that key currently means

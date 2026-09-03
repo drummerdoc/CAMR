@@ -50,7 +50,19 @@
 namespace ps_promote_diag {
     inline long& n_promote_refuse() { static long n = 0; return n; }
     inline long& n_floor_skip()     { static long n = 0; return n; }
-    inline void  reset() { n_promote_refuse() = 0; n_floor_skip() = 0; }
+    //  3c conservation-budget accumulators (CAMR.ps_floor_budget): of the
+    //  corridor phases whose floor leg 3c skips, how many carry a REACHABLE
+    //  vs UNREACHABLE own-branch state; the total pressure-floor energy 3c
+    //  refrained from manufacturing; and the most-negative skipped e_k.
+    inline long&   n_floor_reach()   { static long n = 0; return n; }
+    inline long&   n_floor_unreach() { static long n = 0; return n; }
+    inline double& floor_e_avoided() { static double x = 0.0; return x; }
+    inline double& floor_min_e()     { static double x = 0.0; return x; }
+    inline void  reset() {
+        n_promote_refuse() = 0; n_floor_skip() = 0;
+        n_floor_reach() = 0; n_floor_unreach() = 0;
+        floor_e_avoided() = 0.0; floor_min_e() = 0.0;
+    }
 }
 #endif
 
