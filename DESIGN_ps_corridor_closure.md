@@ -515,3 +515,58 @@ from there by EITHER item.  So:
   (prime directive).  The proper item-2+3 test is then **Run B**
   (`chk_sj2_03550`, PRE-shock), where item 2 prevents the
   over-compression so the corrupt majority never forms.
+
+---
+
+## 12. ACCEPTANCE MEASURED 2026-09-03 — item 3 (3b+3c) on the 2-D reproducer
+
+Both restarts run with `CAMR.ps_promote_checked=1 CAMR.ps_floor_indep=1`,
+full diagnostics.  Tooling: `fcompare`/`fextract` built from the amrex
+tree; the item-2-only baseline is `FIX1_star_relaxed` (ps_star_relaxed=1,
+no promote/floor flags, 2026-08-31).  NOTE `ReRun4` is dated 2026-08-30 —
+PRE-item-2 — so it is the OLD-defect baseline, NOT a valid item-2
+reference; use FIX1.
+
+**Run A / item3_A1 — abort channel, restart chk_sj2_03650 (post-shock,
+old-code corruption baked in).**  The first attempt aborted in the hydro
+advance (backtrace: construct_hydro_source ParallelFor lambda ->
+ps_augment_primitives, the 5th host-dispatch site, unconverted in the
+first 3b pass; fixed f951169).  On the rebuilt exe: **CLEARED the
+step-3669 abort, ran to 3700** (31 steps past) with zero NO-ROOT.
+`promote_refuse` fires actively — L0 ~235/step at 3651, holds ~200-280
+through the abort window, then DECAYS to 0 by step 3684: the inherited-
+corrupt cells are quarantined Corridor (host-slaved, not branch-queried)
+and heal within ~33 steps.  A smaller second wave (35->175, steps
+3693-3699) from the evolving plume is handled without abort.
+**Conclusion: 3b(A) validate-and-refuse is SUFFICIENT — the abort channel
+is closed and cells heal, so 3b(B) constructed promotion is NOT needed.**
+
+**Run B / item3_B — solution quality, restart chk_sj2_03550 (pre-shock).**
+Completed cleanly to 3605.  `promote_refuse = 0` on all 495 reports:
+item 2 prevents the corrupt promotion here, so 3b is provably inert (no
+demotion -> no contribution to any delta).  Tracked cell (~245,101,
+x=1.918 y=0.793): rho_1 ~904 (healthy liquid; the old defect reached
+1280), e_1 ~-8.7e4 (healthy; the old defect collapsed to -2.2e5).  vs
+FIX1 at that cell: rho_1 904 vs 904, e_1 -8.76e4 vs -8.72e4 — agree to
+<0.5%.  **The healthy path is NOT regressed.**
+
+**3c effect, isolated (Run B vs FIX1; 3b was dormant so this is pure
+3c).**  fcompare step 3551 (first step): density 0.08%, alpha_1 0.03%,
+but rho_e 5.0%, Temp 2.6%, pressure 2.3% — a real, immediate energy
+change in corridor cells (the floor-manufactured energy 3c removes on the
+74%-corridor field), NOT chaos.  Grows to ~5-8% globally by 3605
+(chaotic amplification in the active plume), but <0.5% at the tracked
+defect cell.  Stable throughout; more conservative (less manufactured
+energy).  No analytic reference for demo2 to call the 5-8% better or
+worse.
+
+**Status.**
+- 3b: ACCEPTED behaviour — closes the abort channel (item3_A1), inert
+  and non-regressing on the healthy path (item3_B).  Recommend default-on
+  after this evidence.  [DECIDE-8]
+- 3c: works as designed, stable, but moves the plume solution ~5-8% with
+  no reference to adjudicate.  Recommend keeping default-OFF pending a
+  conservation-budget check (is the un-masked corridor energy physical,
+  or was the floor hiding garbage).  [DECIDE-9]
+- Both remain gated; nothing is forced.  The selectors are retired to
+  single-path only on Marc's acceptance, per the ps_star_relaxed pattern.

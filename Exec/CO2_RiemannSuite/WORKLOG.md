@@ -8719,3 +8719,26 @@ MEASURED (A1-Sod-strong, N=64, fresh 2026-09-01 build):
   use=1 + xlo=0 (xhi inherits 1): differs from both, face-selective
 verify_canonical at defaults: ALL CHECKS PASS, digit-identical to the
 2026-09-01 morning baseline (A/C 0.0350, C1 exact, B12 R=0.0097).
+
+2026-09-03 — ITEM 3 (3b/3c) 2-D ACCEPTANCE, MEASURED (Marc's machine
+runs; container analysis w/ fcompare+fextract built from the amrex tree).
+Backtrace of the first item3_A pinned the residual abort to a 5th
+host-dispatch site missed in the first 3b pass, ps_augment_primitives
+(construct_hydro_source lambda); fixed f951169.
+  item3_A1 (restart chk_sj2_03650, promote_checked=1 floor_indep=1):
+    CLEARED step-3669 abort, ran to 3700.  [PS-PROMOTE] promote_refuse
+    L0 ~235/step at 3651 -> decays to 0 by 3684 (inherited-corrupt cells
+    quarantined Corridor and heal); smaller 2nd wave 3693-3699 handled,
+    no abort.  => 3b(A) sufficient; 3b(B) not needed.
+  item3_B (restart chk_sj2_03550): completed to 3605, promote_refuse=0
+    throughout (item 2 prevents corruption; 3b inert).  Tracked cell
+    ~(245,101): rho_1 ~904 e_1 ~-8.7e4 (healthy; old defect 1280/-2.2e5);
+    matches FIX1_star_relaxed to <0.5%.  Healthy path not regressed.
+  3c isolated (item3_B vs FIX1, 3b dormant): first-step rho_e +5.0%,
+    Temp +2.6%, pressure +2.3% (floor-manufactured-energy removal on the
+    74%-corridor field), grows to ~5-8% globally by 3605, <0.5% at the
+    tracked cell.  Stable, more conservative, no reference to adjudicate.
+  NOTE ReRun4 is PRE-item-2 (2026-08-30) -> not a valid item-2 baseline;
+  FIX1_star_relaxed (2026-08-31, ps_star_relaxed=1) is.
+DECIDE-8 3b default-on (recommended).  DECIDE-9 3c default-off pending a
+conservation-budget check (recommended).  Both stay gated.
