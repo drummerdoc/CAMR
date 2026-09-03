@@ -95,10 +95,15 @@ struct PsPres {
     //  3c (DESIGN_ps_corridor_closure.md 5): gate ps_apply_floor's PER-PHASE
     //  leg on Independent.  A corridor phase is host-slaved and its e_k is
     //  never branch-queried, so flooring it only manufactures UE_k drift with
-    //  no face-level consumer.  0 = off (default, bit-identical); 1 = the
-    //  floor's per-phase leg skips non-Independent phases (mixture legs
-    //  untouched).
-    int         floor_indep     = 0;
+    //  no face-level consumer.  DEFAULT-ON since 2026-09-03 ([DECIDE-9],
+    //  Marc): the ps_floor_budget diagnostic (chk_sj2_03650->3669) found
+    //  ~99.9% of the corridor floor legs 3c skips carry a physically
+    //  REACHABLE own-branch state, so the floor was injecting spurious
+    //  non-conservative energy (~4e5 J/step L0) on physical low-P corridor
+    //  states whose host-slaved P_k it does not even feed.  1 = on (default);
+    //  0 = A/B opt-out (kept, not aborting).  The 1-D suite leaves both floors
+    //  at 0 so ps_apply_floor early-returns -> 3c inert there, bit-identical.
+    int         floor_indep     = 1;
 
     //  A NUMERICS dial riding the presence params struct because that struct is
     //  already the by-value carrier reaching all three live c_mix sites

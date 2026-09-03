@@ -590,3 +590,48 @@ remainder is the inherited-corrupt population: bounded, flat (not
 growing), host-slaved and harmless, and caught by 3b at promotion
 (item3_A1 promote_refuse decayed to 0 by step 3684).  **Recommendation:
 3c default-on ([DECIDE-9] -> accept), parallel to 3b.**
+
+---
+
+## 13. Selector retirement to single-path — assessment ([DECIDE-10])
+
+Both item-3 selectors are now DEFAULT-ON (3b `ff6b48d`, 3c this commit).
+"Retiring to single-path" means removing the A/B guard so the fix is
+unconditional, and making the old value abort (the `ps_star_relaxed`
+pattern) or deleting the key.
+
+**Candidates (only these two).**
+- `ps_promote_checked` (3b): single-path point `PS_promote.H` —
+  `if (rg != Independent || pr.promote_checked == 0) return rg;`.  Retire =
+  drop the `|| ...==0` term (always demote) + abort-on-0 / delete key.
+- `ps_floor_indep` (3c): single-path point `PS_relaxation.H` —
+  `if (l_floor_pr.floor_indep != 0 && ps_regime(...) != Independent)`.
+  Retire = drop the `!= 0 &&` (always skip) + abort-on-0 / delete key.
+
+**NOT candidates.**
+- `ps_floor_budget` — a DIAGNOSTIC, stays.
+- per-face `ps_bc_nscbc_{x,y,z}{lo,hi}` — runtime FEATURE flags (per-face
+  BC selection), not campaign A/B selectors; stay.
+- `ps_star_relaxed`, `ps_rk_model` — already retired (abort).
+
+**Why NOT yet — recommend deferring full retirement.**  The precedent
+(`ps_star_relaxed`, `ps_rk_model`) retired selectors whose OLD path was
+proven WRONG or DELETED — `=0` aborts because the code is gone.  3b/3c are
+different: their `=0` path is the LEGITIMATE pre-fix behaviour, the only
+way to reproduce a matched baseline if a regression surfaces.  And the
+evidence to date is two 55-step restart WINDOWS plus a 19-step diagnostic
+— not a full pipe-break production run.  Retiring now would delete the A/B
+baseline before the fixes have run end-to-end even once.  A secondary
+point for 3b: retirement makes the per-would-be-Independent EOS
+reachability test UNCONDITIONAL (~26% of faces, every RK stage); worth a
+perf read before it is non-optional (correctness dominates, but measure).
+
+**Recommendation (staged, matches "prevent/measure before irreversible"):**
+1. DONE — both default-on; `=0` kept as a documented, non-aborting A/B
+   opt-out.
+2. After ONE clean full `inputs.satjet_demo2` production run on the
+   default (both on) with no abort and QoI within expectation, retire to
+   single-path: drop the guards, `=0` aborts with a pointer here, delete
+   the fields.  One mechanical commit; I will do it on Marc's word.
+
+**[DECIDE-10]** retire now vs after a full production run [recommended].
