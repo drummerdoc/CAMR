@@ -125,6 +125,10 @@ main(int argc, char* argv[])
   // Kept: ps_ptg_selftest, ps_relax_sweep, ps_x3_test.  ps_dilute_probe,
   // ps_m2_test, ps_asy1_probe are investigation probes.
   // Retire-candidate: see docs/DESIGN_DECISIONS.md §7 O-8.
+  // The exit code is carried out to main()'s own scope: the process
+  // leaves through amrex::Finalize() only after the "main()" profiler
+  // region is stopped, so a TPROF build sees an empty timer stack.
+  int ps_zerod_exit = -1;   // < 0: no self-test requested
   {
     int ps_ptg_selftest = 0;
     amrex::ParmParse pp_ps("CAMR");
@@ -158,10 +162,14 @@ main(int argc, char* argv[])
         amrex::Print() << "[ps-0D] CI gate: " << (fail==0 ? "PASS" : "FAIL")
                        << " (" << fail << " failures)\n";
       }
-      delete amrptr;
-      amrex::Finalize();
-      return (fail == 0) ? 0 : 1;
+      ps_zerod_exit = (fail == 0) ? 0 : 1;
     }
+  }
+  if (ps_zerod_exit >= 0) {
+    delete amrptr;
+    BL_PROFILE_VAR_STOP(pmain);
+    amrex::Finalize();
+    return ps_zerod_exit;
   }
 #endif
 

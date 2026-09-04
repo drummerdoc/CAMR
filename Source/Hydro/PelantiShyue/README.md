@@ -9,9 +9,17 @@ Compiled only when the Exec `GNUmakefile` sets `USE_PS_HYDRO = TRUE` (adds `-DUS
 | `PS_wavespeed.H` | The one mixture wave speed (Wallis frozen form) used by faces and by the CFL step. |
 | `PS_ctoprim.H` | Extended conservative-to-primitive conversion, mixture pressure $P=\alpha_1P_1+\alpha_2P_2$. |
 | `PS_presence.H` / `PS_promote.H` | Presence parameters ($\alpha_{\mathrm{van}}, \alpha_{\mathrm{cond}}, \alpha_{\mathrm{birth}}, \rho_{\mathrm{deg}}$), the regime classifier, checked promotion to INDEPENDENT. |
-| `PS_relaxation.H` | Relaxation dispatch (`CAMR.ps_relax_mode`, default 5 = coupled X3), folds, floors, relax-gate hysteresis, reports. |
+| `PS_relaxation.H` | Umbrella over the four reaction-operator headers below (include this one). |
+| `PS_relax.H` | Relaxation dispatch (`CAMR.ps_relax_mode`, default 5 = coupled X3), the EOS callback `ps_make_camr_eos_api`, relax-gate hysteresis, sweep reports. |
+| `PS_floors.H` | `ps_apply_floor` (`ps_pres_floor` / `ps_temp_floor`), the URHO and UE1+UE2 identity resyncs. |
+| `PS_folds.H` | Grid drivers of the phase folds (vanish, vacuum, corridor and energy reaps, T-floor) with the `[PS-FOLD]` audit. |
+| `PS_diag.H` | Opt-in read-only walkers: `ps_report_*`, the EOS state harvester, the dormant dilute-energy closure. |
 | `PS_sources.H` | Post-hydro source driver: flash nucleation, split mass transfer (non-default modes), mechanical re-projection. |
-| `hem_pelanti_shyue.H` | The algorithm library shared with the standalone driver: X3 kernel, SRT mass transfer, flash kernel, per-phase closures. |
+| `hem_pelanti_shyue.H` | Umbrella over the AMReX-free `hem` kernel library (include this one). |
+| `hem_eos_api.H` | `V6`, `PsPhase`, the `PsPhaseAPI` EOS contract, the fold mechanics, dial accessors, `ps_state_from_cons`. |
+| `hem_relax_x3.H` | Mechanical / thermal relaxation kernels and the coupled X3 operator `ps_x3_relax_cell`. |
+| `hem_mass_transfer.H` | The split (non-X3) Gibbs-equilibrium and finite-rate SRT mass transfer with its cause census. |
+| `hem_flash.H` | The flash nucleator `ps_flash_source_cell`, its refusal census, `co2_sat_state`, `ps_below_triple_point`. |
 | `PS_nscbc.H` | Characteristic (NSCBC) outflow ghost construction with the choked, flashing fan. |
 | `PS_guards.H` | Single-source guards, floors and their counters. |
 | `PS_validate.H` | `CAMR.ps_validate=1` state-invariant tripwire (reports, never repairs). |
