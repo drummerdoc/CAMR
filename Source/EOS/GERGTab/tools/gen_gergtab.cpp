@@ -2,16 +2,14 @@
 //  gen_gergtab.cpp -- GERGTab table generator (self-contained: computes
 //  AND emits gergtab_table_params.H + gergtab_table_data.cpp).
 //
-//  TABULATION TARGET (deliberate, differs from PRTab's "physical
-//  surface with holes"): the table stores the GERG backend's OWN
-//  fixed-count-bisection T(rho,e) inversion on each guarded surface
-//  (auto + branchL + branchV) -- i.e., exactly the function the
-//  analytic fallback computes (Source/EOS/GERG/EOS.H g_T_from_e_*).
-//  That function is TOTAL, so there are no holes to fill, and
-//  out-of-domain runtime queries fall back to the identical function
-//  (no accuracy cliff).  In far-extension zones where e(T) is
-//  non-monotone the bisection root can jump; the table then smooths a
-//  jump the fallback also has -- localized, trace-phase territory.
+//  Tabulation target: the GERG backend's own fixed-count-bisection
+//  T(rho,e) inversion on each guarded surface (auto, branchL, branchV),
+//  exactly the function the analytic fallback computes
+//  (Source/EOS/GERG/EOS.H g_T_bisect_*).  That function is total, so
+//  there are no holes to fill (unlike PRTab's physical surface), and
+//  out-of-domain queries fall back to the identical function.  In far-
+//  extension zones where e(T) is non-monotone the bisection root can
+//  jump; the table then smooths a jump the fallback also has.
 //
 //  Build/run (host g++, no AMReX):
 //      g++ -O2 -std=c++17 gen_gergtab.cpp -o gen_gergtab && ./gen_gergtab [N]

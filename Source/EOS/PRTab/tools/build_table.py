@@ -48,7 +48,7 @@ def main():
     ap.add_argument("--data", default=os.path.join(PRTAB, "prtab_table_data.cpp"))
     a = ap.parse_args()
 
-    # 1. compile gen_table.cpp against CAMR PR PR
+    # 1. compile gen_table.cpp against CAMR's PR machinery
     exe = os.path.join(HERE, "gen_table")
     # HEM_NO_AMREX shims AMREX_GPU_* + amrex::Real; CAMR's PR header also uses
     # AMREX_FORCE_INLINE, so shim that too (host build -> plain inline).
@@ -93,11 +93,10 @@ def main():
         return ((A*t+B)*t+C)*t+p1
 
     def base_eval(TT, lr, e):           # lr,e flat arrays -> base value
-        #  MIRRORS prtab_bicubic's clamp exactly (AUDIT 2026-08-24 A5:
-        #  coordinate clamped to N-2, index capped at N-3, so the last
-        #  supportable cell interpolates instead of collapsing).  The two
-        #  MUST stay in lockstep or the patch's pinned boundary drifts off
-        #  the runtime base surface and the seam stops being C0.
+        #  Mirrors prtab_bicubic's clamp exactly (coordinate clamped to N-2,
+        #  index capped at N-3, so the last supportable cell interpolates).
+        #  The two must stay in lockstep or the patch's pinned boundary
+        #  drifts off the runtime base surface and the seam stops being C0.
         fu = np.clip((lr-LR0)/(LR1-LR0)*(NLR-1), 1, NLR-2)
         fv = np.clip((e-E0)/(E1-E0)*(NE-1), 1, NE-2)
         iu = np.minimum(fu.astype(int), NLR-3); iv = np.minimum(fv.astype(int), NE-3)

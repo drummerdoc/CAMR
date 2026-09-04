@@ -1,4 +1,2 @@
-// PRTab forwarder — single physical definition lives in PR/.
-// See hem_pr_state.H forwarder for the rationale (avoids a duplicate-file
-// redefinition clash under #pragma once).
+// PRTab forwarder to the single definition in ../PR (see hem_pr_state.H).
 #include "EOS/PR/hem_saturation_amrex.H"

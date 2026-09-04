@@ -1,38 +1,30 @@
 #ifndef EOS_H
 #define EOS_H
 // =====================================================================
-//  PR EOS backend for CAMR   —   Phase 2
+//  PR EOS backend for CAMR: pure-CO2 Peng-Robinson behind CAMR's
+//  namespace EOS { ... } free-function contract.
 //
-//  Single-phase real-fluid Peng-Robinson CO₂ EOS wired into CAMR's
-//  namespace EOS { … } contract.
+//  Algorithm: untranslated Peng-Robinson with a NASA-7 ideal-gas c_p,
+//  device-inline state machinery in hem_pr_state.H (the (rho,e)->T
+//  inversion is a bracketed Illinois solve on [1, 5000] K) and PR
+//  saturation states in hem_saturation_amrex.H.  The EOS contract the
+//  six-equation model relies on is documented in
+//  docs/MODEL_AND_ALGORITHM.md §7.1; the backend table and domain
+//  metadata are in §7.3.
 //
-//  The six functions on the Riemann hot path
-//      REY2T, REY2P, REY2Gam, REY2dpde, REY2dpdr_e, RTY2E
-//  are backed by the SINTEF co2-eos-cfd device-inline PR state
-//  machinery (hem_pr_state.H, hem_saturation_amrex.H copied into
-//  this directory).  Both headers are already
-//  AMREX_GPU_HOST_DEVICE-decorated and use amrex::Real throughout.
+//  Contract: every entry is a total function — it returns a state or
+//  refuses (REY2PTS_phase_try returns false; the other inversions
+//  abort with a reproducible diagnostic).  No substitute state is ever
+//  manufactured.  Phase-locked entries (_liquid/_vapor/_phase) evaluate
+//  the named PR branch, continued metastably past the dome; the
+//  auto-detect entries classify against the saturation locus.
 //
-//  Every other entry point in namespace EOS is either
-//    (a) forwarded to one of the six hot functions, or
-//    (b) implemented as a light wrapper on the same PR machinery
-//        (Cp, Cv, sound speed, ideal-gas c_p integrals), or
-//    (c) an amrex::Error stub for chemistry entries (RTY2WDOT etc.)
-//        that GammaLaw also stubs out.
+//  Units are SI throughout: rho [kg/m3], P [Pa], e [J/kg], T [K].
+//  NUM_SPECIES = 3 keeps the build graph shared with the other
+//  backends; CO2 is one species and every entry ignores Y.
 //
-//  For build-graph compatibility with the rest of CAMR we keep
-//  NUM_SPECIES = 3.  CO₂ is a single species, so the mass-fraction
-//  array carried through the code is effectively Y = (1, 0, 0);
-//  every hot function ignores Y.
-//
-//  Units are SI throughout.  ρ [kg/m³], P [Pa], e [J/kg], T [K].
-//  CAMR itself is EOS-unit-agnostic; the case-side inputs must be in
-//  the same units as this EOS.  Exec/CO2_Sod/inputs-x supplies SI
-//  values from Phase 2 onward.
-//
-//  Placeholder γ = 1.4 is retained ONLY for legacy prob.H files that
-//  still spell   et = P / (EOS::gamma - 1)   inline.  Anything that
-//  matters uses the real EOS.
+//  Dials: CAMR.eos_warmstart (0), CAMR.eos_warmstart_fixed (0) — see
+//  ps_eos_warmstart() below.
 // =====================================================================
 
 #include <AMReX.H>
@@ -43,14 +35,11 @@
 
 #include "PhysicsConstants.H"
 
-// Bring in the SINTEF PR state machinery.  Both headers are
-// self-contained and device-inline.
 #include "hem_pr_state.H"
-// #45 learned Newton warm-start (branch-free MLP (log rho, e, phase)->T_init).
+// Seed for the fixed-iteration warm-started solve (eos_warmstart_fixed).
 #include "ps_warmstart_Tinit.H"
 
-// Fixed-iteration count for the warm-started branch-locked solve (#45: n=3
-// converged over the full visited cloud after on-distribution retraining).
+// Iteration count of the fixed-iteration seeded branch solve.
 #ifndef PS_EOS_WS_NITER
 #define PS_EOS_WS_NITER 3
 #endif
@@ -60,21 +49,13 @@
 namespace EOS {
 
   // ----------------------------------------------------------------
-  //  CO2 PR fluid — constructed by value each call.  Because PRFluid
-  //  is a trivial POD (16 doubles) and hem::PRFluid::make + PR::make
-  //  are pure inline arithmetic, the compiler will fold every call to
-  //  a single struct literal at the call site.  Returning by value
-  //  avoids the "reference to function-local static" pattern which
-  //  breaks under CUDA / HIP / SYCL device compilation.
-  //
-  //  Physical parameters (identical to every co2-eos-cfd driver):
-  //      Tc = 304.13 K,  Pc = 7.3773 MPa,  ω = 0.22394
-  //      M  = 0.04401 kg/mol
-  //  (ω was 0.2239 pre-task-#198; the extra digit matches the
-  //  standalone driver's PRFluid::make call at ppm_1d_ps_wp.cpp:2106
-  //  and closes the 6-ppm ρ discrepancy in the B4 step-locked trace.)
-  //      NASA-7 c_p^ig/R polynomial for CO₂ (200–1000 K fit).
-  //  Peneloux shift = 0 (untranslated PR).
+  //  CO2 PR fluid, constructed by value on each call.  PRFluid is a
+  //  trivial POD and PRFluid::make is pure inline arithmetic, so every
+  //  call folds to a struct literal; returning by value avoids a
+  //  function-local static, which does not survive device compilation.
+  //  Tc = 304.13 K, Pc = 7.3773 MPa, omega = 0.22394, M = 0.04401
+  //  kg/mol; NASA-7 c_p^ig/R polynomial (200-1000 K fit); Peneloux
+  //  shift 0.
   // ----------------------------------------------------------------
   AMREX_GPU_HOST_DEVICE
   AMREX_FORCE_INLINE
@@ -83,7 +64,7 @@ namespace EOS {
       return hem::PRFluid::make(
           amrex::Real(304.13),          // Tc [K]
           amrex::Real(7.3773e6),        // Pc [Pa]
-          amrex::Real(0.22394),         // acentric factor ω (task #198: match standalone driver's 5-digit value)
+          amrex::Real(0.22394),         // acentric factor omega
           amrex::Real(0.04401),         // molar mass [kg/mol]
           amrex::Real( 2.35681300E+00), // a0
           amrex::Real( 8.98412990E-03), // a1
@@ -94,92 +75,60 @@ namespace EOS {
   }
 
   // ----------------------------------------------------------------
-  //  Fluid-property accessors (single source of truth).  Use these
-  //  instead of hardcoding fluid constants at call sites, so the code
-  //  stays agnostic to the specific fluid.  T_crit comes straight from
-  //  the PR fluid definition; the triple point is not used by PR itself
-  //  but is a genuine fluid property (EOS validity bound / gate), so it
-  //  lives here with Tc/Pc rather than scattered as literals.
+  //  Fluid-property accessors: the single source of every critical /
+  //  triple constant.  Every phase-boundary test in the presence
+  //  machinery goes through these, never a literal, so the solver stays
+  //  fluid-agnostic.  T_crit / P_crit come from the PR parameter set;
+  //  the triple point is not used by PR itself but is a genuine fluid
+  //  property (validity bound of the dome-clamped saturation locus).
   // ----------------------------------------------------------------
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   amrex::Real T_crit()   { return co2_fluid().pr.Tc; }        // critical T [K]
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   amrex::Real T_triple() { return amrex::Real(216.592); }     // triple-point T [K]
 
-  //  Critical pressure, needed by the HRM relaxation-time correlation
-  //  (LITERATURE_relaxation_rates.md 4).  Same source as T_crit: the PR
-  //  parameter set, not a second hard-coded constant.
-  //  NOTE this is an entry of the documentary-only EOS contract
-  //  (STATUS_multiphase.md 4).  As of 2026-08-15 (7.1 resolved) GERG and
-  //  PRTab define both P_crit and REY2PTS_phase_try, with GERGTab
-  //  inheriting through its include of GERG/EOS.H; the contract itself is
-  //  still enforced only by comment (the shared-header question stays open).
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   amrex::Real P_crit()   { return co2_fluid().pr.Pc; }        // critical P [Pa]
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   amrex::Real P_triple() { return amrex::Real(5.1795e5); }    // triple-point P [Pa]
 
   // ----------------------------------------------------------------
-  //  DENSITY VALIDITY DOMAIN (guard G1 -- see
-  //  Source/Hydro/PelantiShyue/GUARD_INVENTORY.md).
-  //
-  //  Peng-Robinson has a HARD POLE: P = RT/(v_m - b) - a/(...) diverges as
-  //  the molar volume approaches the covolume b from above.  The density at
-  //  which that happens is rho = M/b, and it is an exact analytic property
-  //  of the EOS, not a tuned number.  For CO2: b = Omega_b R Tc / Pc =
-  //  2.6666e-5 m3/mol, giving rho_max = 1650.4 kg/m3.
-  //
-  //  WHY THIS IS EXPOSED.  The six-equation solver forms per-phase densities
-  //  as rho_k = m_k / alpha_k, which is unbounded above as a phase vanishes.
-  //  Measured in the CO2 pipe-break case, roughly 3.6% of level-2 cells --
-  //  ~1300 cells, EVERY step -- carried a trace liquid phase at rho_1 within
-  //  0.4% of this pole, returning phase pressures above 1e10 Pa.  The
-  //  pre-existing in-EOS guard clamps v_m to b*1.000001, which bounds the
-  //  pressure at 7.5e13 Pa: it prevents the NaN, not the garbage.
-  //
-  //  GERG already clamps rho into [1e-6, 1500] before evaluating (its own
-  //  published validity edge); PR had no equivalent.  Exposing the bound here
-  //  lets the hydro layer clamp BEFORE the call, fluid- and EOS-agnostically.
-  //
-  //  rho_max is returned with a safety factor so the clamp lands where the
-  //  cubic is still well conditioned rather than exactly on the singularity.
+  //  Density domain metadata.  Peng-Robinson has a hard pole where the
+  //  molar volume reaches the covolume b: rho_pole = M/b with
+  //  b = Omega_b R Tc / Pc = 2.6666e-5 m3/mol, i.e. 1650.4 kg/m3 — an
+  //  analytic property of the EOS, not a tuned number.  rho_max carries
+  //  a 0.98 safety factor so a clamp lands where the cubic is still
+  //  conditioned rather than on the singularity.  These are consumed
+  //  as metadata by the state validator (rho_domain census); nothing on
+  //  the flux path clamps to them.
   // ----------------------------------------------------------------
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-  amrex::Real rho_pole()                                     // EXACT pole [kg/m3]
+  amrex::Real rho_pole()                                     // exact pole [kg/m3]
   {
       const hem::PRFluid f = co2_fluid();
       const amrex::Real b = hem::PR_Omega_b * hem::R_gas * f.pr.Tc / f.pr.Pc;
       return f.M / b;
   }
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-  // NOTE (2026-08-09, FINDINGS Addendum 5): rho_min/rho_max are backend
-  // METADATA and diagnostics (ps_validate_state V6 rho_domain); the
-  // flux-path enforcement clamp that consumed them was removed -- see
-  // PS_guards.H G1 removal note.
   amrex::Real rho_max()   { return amrex::Real(0.98) * rho_pole(); }  // ~1617 for CO2
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   amrex::Real rho_min()   { return amrex::Real(1.0e-6); }
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   bool        has_density_pole() { return true; }
 
-  // Saturation pressure P_sat(T) [Pa] — the fluid's own saturation curve,
-  // sourced from the EOS so the flash/relaxation stay fluid-agnostic (task
-  // #53).  For CO2 this is the Span-Wagner correlation (accurate); wired onto
-  // PsPhaseAPI.Psat_of_T so the generic hem flash uses eos.Psat_of_T(T)
-  // instead of a hard-coded co2_P_sat_wagner.  Other fluids provide their own
-  // EOS::Psat.
-  // Pure arithmetic (co2_fluid/T_triple are device-annotated; pow/exp are
-  // device-available) -> device-safe; the annotation was missing (GPU-port #B1).
+  // Saturation pressure P_sat(T) [Pa]: the Span-Wagner reduced-vapour-
+  // pressure fit for CO2, clamped to P_triple below T_triple and to P_c
+  // above T_c.  Exposed through the EOS so the flash and relaxation stay
+  // fluid-agnostic (PsPhaseAPI.Psat_of_T).  Pure arithmetic: device-safe.
   AMREX_GPU_HOST_DEVICE
   AMREX_FORCE_INLINE
   amrex::Real Psat(amrex::Real T)
   {
       const hem::PRFluid f = co2_fluid();
-      const amrex::Real T_c = f.pr.Tc;     // critical point from the fluid def
+      const amrex::Real T_c = f.pr.Tc;
       const amrex::Real P_c = f.pr.Pc;
       if (T <= T_triple()) return amrex::Real(5.18e5);   // triple-point P
       if (T >= T_c)        return P_c;
-      // Span-Wagner reduced-vapor-pressure coefficients (CO2-specific fit).
       const amrex::Real tau = amrex::Real(1.0) - T / T_c;
       const amrex::Real s = amrex::Real(-7.0602087) * tau
                           + amrex::Real( 1.9391218) * std::pow(tau, amrex::Real(1.5))
@@ -188,10 +137,9 @@ namespace EOS {
       return P_c * std::exp(T_c / T * s);
   }
 
-  // Saturated liquid/vapor (rho, e) at temperature T on the PR coexistence
-  // curve.  Used to build a genuine two-phase (saturated) inlet/IC without
-  // relying on flash nucleation.  Iterative (Psat solve) -- call once and
-  // cache, not per cell.
+  // Saturated liquid / vapour (rho, e) at T on the PR coexistence curve,
+  // for genuine two-phase inlets and initial data.  Iterative (Psat
+  // solve): call once and cache, not per cell.
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void co2_sat_LV(amrex::Real T, amrex::Real& rhoL, amrex::Real& eL,
                   amrex::Real& rhoV, amrex::Real& eV)
@@ -203,58 +151,44 @@ namespace EOS {
       rhoV = sV.rho; eV = sV.e;
   }
 
-  // Legacy shim for prob.H files that still do  et = P/(γ-1).  With
-  // the real PR EOS, initial conditions should be constructed via
-  // PYT2RE below; this constant only prevents header-name breakage.
+  // Name-compatibility constant for prob.H files spelling et = P/(gamma-1)
+  // inline; real initial data goes through PYT2RE.
   static constexpr amrex::Real gamma = 1.4;
 
   // ----------------------------------------------------------------
-  //  Per-thread (ρ, e) → State ring-buffer cache.
+  //  (rho, e) -> State ring caches.
   //
-  //  Two access patterns produce redundant Newton solves that this
-  //  cache eliminates:
-  //
-  //  (A) SAME (ρ, e), MANY calls  — hydro_ctoprim does 5 back-to-
-  //      back calls (REY2T, REY2P, REY2Gam, REY2dpde, REY2dpdr_e)
-  //      per cell.  estdt_hydro does 2 (REY2P, REY2Gam).
-  //
-  //  (B) ALTERNATING (ρ, e) pairs — ps_augment_primitives (Phase
-  //      4c-β1) calls REY2P(ρ_1, e_1) then REY2P(ρ_2, e_2), and
-  //      may be called immediately after ctoprim's mixture calls.
-  //      A single-slot cache misses on the phase-2 call.
-  //
-  //  A 4-slot ring catches both patterns: back-to-back same-input
-  //  hits the same slot; alternating phase-1/phase-2 pairs stay
-  //  resident.  Rare misses fall through to a fresh Newton solve.
-  //
-  //  Threading: function-local static — safe for USE_OMP=FALSE and
-  //  MPI-only builds (each process has its own cache).  For future
-  //  USE_OMP=TRUE this needs #pragma omp threadprivate.  For device
-  //  builds the static becomes per-thread and starts fresh, which
-  //  is semantically fine (cache is advisory).
+  //  Host-side 4-slot exact-match rings in front of the auto and the
+  //  per-branch solves.  Two access patterns make them pay: repeated
+  //  calls on one (rho,e) (ctoprim's field-by-field entries) and
+  //  alternating phase-1 / phase-2 pairs, which a single slot would
+  //  thrash; the dominant win is cross-cell reuse in uniform regions
+  //  (~2x on CPU, docs/MODEL_AND_ALGORITHM.md §7.3).  A hit is
+  //  bit-identical to a recompute, so the cache is deterministic and
+  //  box-independent.  The rings are function-local statics: host-only,
+  //  single-threaded (USE_OMP=TRUE is refused by #error), bypassed on
+  //  the device where thousands of concurrent threads share no cache.
   // ----------------------------------------------------------------
 
-  // Pure, device-clean (rho,e)->State solves — the single source of truth the
-  // host-only caches wrap, and what the device pass calls directly.  T_init=-1
-  // gives the deterministic phase-default seed (box-independent).
+  // Pure, device-clean auto-detect (rho,e)->State solve: the single
+  // source of truth the host cache wraps and the device pass calls
+  // directly.  T_init=-1 selects the deterministic phase-default seed.
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   hem::State co2_solve_rho_e(amrex::Real rho, amrex::Real e,
                              amrex::Real T_init = amrex::Real(-1.0))
   { return hem::state_from_rho_e(co2_fluid(), rho, e, T_init); }
 
-  // Warm-start gate.  On the HOST it is a runtime toggle (CAMR.eos_warmstart_
-  // fixed, default 0) so the fixed-iteration path can be A/B'd against the
-  // robust solver without a rebuild.  On the DEVICE (where a ParmParse-backed
-  // static is illegal) it is the compile-time macro PS_EOS_WARMSTART.  The
-  // learned seed + fixed Newton is what makes the every-cell device solve
-  // affordable and branch-convergent once the caches fall away.
+  // Warm-start gate.  On the host a runtime toggle so the fixed-iteration
+  // path can be compared with the robust solver without a rebuild; on the
+  // device (no ParmParse-backed static) the compile-time macro
+  // PS_EOS_WARMSTART.
 #if !defined(__CUDA_ARCH__) && !defined(__HIP_DEVICE_COMPILE__) && !defined(__SYCL_DEVICE_ONLY__)
-  //  Single-read accessor for CAMR.eos_warmstart (AUDIT 2026-08-24 C.4:
-  //  it was read by two identical static lambdas in the auto and phase
-  //  ring caches — agreeing defaults by luck).  NOTE the dial's documented
-  //  role is largely vestigial: the MRU T_init it enables is accepted but
-  //  IGNORED by the robust (rho,e) solvers (their T_init parameter is
-  //  commented out); it only matters combined with eos_warmstart_fixed.
+  // CAMR.eos_warmstart (0): seed a cache miss from the ring's most recent
+  // T; 1 makes the converged state depend on traversal order, so the
+  // default keeps bit-for-bit run-to-run independence.  The seed is only
+  // honoured by the fixed-iteration solve (eos_warmstart_fixed); the
+  // robust bracketed solvers discard it.
+  // Retire-candidate: see docs/DESIGN_DECISIONS.md §5.
   inline bool ps_eos_warmstart()
   {
       static const bool v = []() {
@@ -264,6 +198,9 @@ namespace EOS {
       return v;
   }
 
+  // CAMR.eos_warmstart_fixed (0): 1 replaces the bracketed branch solve
+  // with PS_EOS_WS_NITER seeded Newton steps (state_from_rho_e_phase_fixed).
+  // Retire-candidate: see docs/DESIGN_DECISIONS.md §5.
   inline bool ps_eos_warmstart_fixed()
   {
       static const bool e = []() {
@@ -274,6 +211,8 @@ namespace EOS {
   }
 #endif
 
+  // Pure branch-locked (rho,e)->State solve on the requested PR branch;
+  // the fixed-iteration seeded variant is selected by the gate above.
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   hem::State co2_solve_rho_e_phase(amrex::Real rho, amrex::Real e,
                                    hem::Phase3 phase,
@@ -302,36 +241,17 @@ namespace EOS {
 #endif
   }
 
+  // Auto-detect (rho,e)->State through the host ring cache; direct
+  // solve on the device.
   AMREX_GPU_HOST_DEVICE
   AMREX_FORCE_INLINE
   hem::State
   co2_state_from_rho_e_cached(amrex::Real rho, amrex::Real e)
   {
-      // GPU-portability B3, host/device split.
-      //
-      // MEASURED: the 4-slot bit-exact cache is worth ~2x on CPU (satjet demo2
-      // 7.3s -> 16.1s with it gone) — NOT from ctoprim's 5-call cluster (that
-      // is now handled explicitly by EOS::REY2_prim) but from CROSS-CELL hits:
-      // large uniform regions share an identical (rho,e), so one cell solves
-      // and the rest hit.  Hits are bit-exact (a hit == a recompute), so this
-      // is deterministic and box-independent; only the (default-OFF) MRU warm-
-      // start seed was order-dependent, and it is kept off here.
-      //
-      // That cross-cell reuse relies on SERIAL traversal (cell N reusing cell
-      // N-1's slot).  On the device thousands of threads run concurrently with
-      // no shared mutable cache, so the cache neither compiles (mutable static)
-      // nor helps — a GPU build pays the full per-cell Newton regardless, which
-      // is what the learned warm-start (#45) + fixed-iteration solve address.
-      //
-      // So: keep the cache on the HOST (no CPU regression); on the DEVICE pass
-      // use a direct, deterministic solve (device-clean).
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__) || defined(__SYCL_DEVICE_ONLY__)
       return co2_solve_rho_e(rho, e);
 #else
-      //  AUDIT 2026-08-24 B12(d): the (rho,e) ring caches below are mutable
-      //  function-local statics — safe only single-threaded.  The documented
-      //  USE_OMP=FALSE restriction was advisory; make it a compile error so
-      //  flipping USE_OMP=TRUE cannot silently tear the cached states.
+      // Mutable function-local statics: single-threaded only.
 #ifdef _OPENMP
 #error "The EOS ring caches (function-local statics) are not thread-safe; build with USE_OMP=FALSE or add omp threadprivate first."
 #endif
@@ -350,10 +270,9 @@ namespace EOS {
           }
       }
 
-      // Miss: optional MRU warm-start (CPU-only, OFF by default — it makes the
-      // converged state depend on cell-traversal order, breaking box-
-      // independence; opt-in via CAMR.eos_warmstart=1).  Default T_init=-1.
-      const bool s_warmstart = ps_eos_warmstart();   // single read (AUDIT C.4)
+      // Miss: solve, optionally seeded from the most recently written
+      // slot (see ps_eos_warmstart).
+      const bool s_warmstart = ps_eos_warmstart();
       const int mru = (next_slot + NSLOTS - 1) % NSLOTS;
       const amrex::Real T_init = (s_warmstart && rho_cache[mru] > amrex::Real(0))
                                   ? state_cache[mru].T
@@ -367,37 +286,22 @@ namespace EOS {
 #endif
   }
 
-  // -----------------------------------------------------------------
-  //  Branch-locked (ρ, e) → State cache (task #185 performance fix).
-  //
-  //  The branch-locked REY2P_liquid / _vapor / REY2Cs_* wrappers below
-  //  bypass co2_state_from_rho_e_cached because that cache stores
-  //  auto-detect states.  Without an equivalent per-branch cache, the
-  //  PS pipeline's per-face and per-cell EOS calls became
-  //  hot-loop Newton solves — measured slowdown ~3× on T-Blowdown
-  //  N=256 relative to the pre-#185 baseline.
-  //
-  //  Same 4-slot ring pattern per phase.  8 slots total.  Catches the
-  //  same access patterns the mixture cache handled: back-to-back
-  //  same-input calls in ctoprim (REY2P_liquid then REY2Cs_liquid on
-  //  the same phase-1 state at a face), and alternating phase-1 /
-  //  phase-2 lookups (ctoprim, ps_max_wave_speed, HLLC face solver).
-  // -----------------------------------------------------------------
+  // Branch-locked (rho,e)->State through a per-branch host ring cache
+  // (two independent 4-slot rings, so a vapour query never evicts a
+  // liquid entry about to be reused); direct solve on the device.  The
+  // auto cache cannot serve these calls because it stores auto-detect
+  // states, and the PS pipeline's per-face and per-cell queries are
+  // hot-loop solves without it.
   AMREX_GPU_HOST_DEVICE
   AMREX_FORCE_INLINE
   hem::State
   co2_state_from_rho_e_phase_cached(amrex::Real rho, amrex::Real e,
                                      hem::Phase3 phase)
   {
-      // Host/device split (see co2_state_from_rho_e_cached): the mutable static
-      // ring is host-only and relies on serial cross-cell reuse; the device
-      // pass calls the pure per-branch solve directly (device-clean).
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__) || defined(__SYCL_DEVICE_ONLY__)
       return co2_solve_rho_e_phase(rho, e, phase);
 #else
       constexpr int NSLOTS = 4;
-      // Two independent ring buffers — one per phase — so a phase-2
-      // query never evicts a phase-1 entry we're about to reuse.
       const int p = (phase == hem::Phase3::Liquid) ? 0 : 1;
       static amrex::Real rho_cache[2][NSLOTS] =
           {{amrex::Real(-1), amrex::Real(-1), amrex::Real(-1), amrex::Real(-1)},
@@ -415,18 +319,9 @@ namespace EOS {
           }
       }
 
-      // Warm-start on miss (task #191, follow-up to #190).  MRU
-      // (most-recently-written slot) from THIS phase's ring.  See
-      // co2_state_from_rho_e_cached above for the rationale — O(1)
-      // vs the 4×log nearest-search that added ~19% wall-clock
-      // overhead in #190.
-      //
-      // Cross-cell warm-start OFF BY DEFAULT (box-independence + GPU
-      // safety); opt-in CPU-only optimization via CAMR.eos_warmstart=1.
-      // See co2_state_from_rho_e_cached above for the rationale.  (The
-      // old CAMR.eos_disable_warmstart flag is superseded — warm-start is
-      // now off unless eos_warmstart is set.)
-      const bool s_warmstart = ps_eos_warmstart();   // single read (AUDIT C.4)
+      // Miss: solve, optionally seeded from this branch's most recently
+      // written slot (see ps_eos_warmstart).
+      const bool s_warmstart = ps_eos_warmstart();
       const int mru = (next_slot[p] + NSLOTS - 1) % NSLOTS;
       const amrex::Real T_init = (s_warmstart && rho_cache[p][mru] > amrex::Real(0))
                                   ? state_cache[p][mru].T
@@ -441,7 +336,7 @@ namespace EOS {
   }
 
   // ----------------------------------------------------------------
-  //  Utilities (composition helpers)
+  //  Composition helpers (pure CO2: identity maps).
   // ----------------------------------------------------------------
   AMREX_GPU_HOST_DEVICE
   AMREX_FORCE_INLINE
@@ -467,12 +362,11 @@ namespace EOS {
   }
 
   // ================================================================
-  //  Six hot functions — these are what the Riemann pipeline calls
-  //  every step in ctoprim / reset_internal_e.  Their signatures
-  //  match the GammaLaw versions verbatim.
+  //  Auto-detect entries used by the single-fluid hydro path
+  //  (ctoprim / reset_internal_e).  Signatures match GammaLaw's.
   // ================================================================
 
-  //  ρ, e → T
+  //  rho, e -> T
   AMREX_GPU_HOST_DEVICE
   AMREX_FORCE_INLINE
   void REY2T(amrex::Real R, amrex::Real E, amrex::Real* /*Y*/, amrex::Real& T)
@@ -481,7 +375,7 @@ namespace EOS {
       T = s.T;
   }
 
-  //  ρ, e → P
+  //  rho, e -> P
   AMREX_GPU_HOST_DEVICE
   AMREX_FORCE_INLINE
   void REY2P(amrex::Real R, amrex::Real E, amrex::Real* /*Y*/, amrex::Real& P)
@@ -490,9 +384,7 @@ namespace EOS {
       P = s.P;
   }
 
-  //  ρ, e → γ_1 = ρ c² / P     (the Grüneisen-style ratio used in
-  //  qaux[QGAMC] and in the timestep bound; PPM uses it as a
-  //  linearised acoustic slope).
+  //  rho, e -> gamma_1 = rho c^2 / P (qaux[QGAMC] and the timestep bound).
   AMREX_GPU_HOST_DEVICE
   AMREX_FORCE_INLINE
   void REY2Gam(amrex::Real R, amrex::Real E, amrex::Real* /*Y*/, amrex::Real& gam1)
@@ -501,30 +393,12 @@ namespace EOS {
       gam1 = (s.rho * s.c * s.c) / s.P;
   }
 
-  //  ∂P/∂e|_ρ  and  ∂P/∂ρ|_e   as separate one-shot entry points.
-  //  For a single-phase PR fluid these can be evaluated efficiently
-  //  from the derivative decomposition
-  //      dP = (∂P/∂ρ)_e dρ + (∂P/∂e)_ρ de
-  //  and the Bridgman relations connecting to (∂P/∂T)_v, (∂P/∂v)_T,
-  //  c_v.  hem_pr_state::state_from_rho_e already exposes c, so use
-  //  γ₁ = ρc²/P and Γ (Grüneisen coefficient) implicitly:
-  //      (∂P/∂e)_ρ = ρ (γ₁ − 1)   [ideal-gas-like decomposition; the
-  //                                 exact PR value differs, but this
-  //                                 is what ctoprim's linearisation
-  //                                 uses and matches GammaLaw's own
-  //                                 formula (γ−1)ρ.]
-  //      (∂P/∂ρ)_e = P / ρ         [ideal-gas-like; same rationale;
-  //                                 the actual real-fluid mixed
-  //                                 partial is available via
-  //                                 pureParams2 but that requires
-  //                                 solving for T from (ρ,e) again
-  //                                 and duplicating work already
-  //                                 done in state_from_rho_e.]
-  //  Callers use these only in the linearised source-term update
-  //  (Hydro_ctoprim.H:145-147); the actual pressure comes from
-  //  REY2P above, so a first-order derivative model is sufficient
-  //  for stability.  Phase 4 (Pelanti-Shyue non-equilibrium module)
-  //  computes the exact real-fluid derivatives.
+  //  dP/de|_rho and dP/drho|_e in the ideal-gas-like decomposition
+  //      (dP/de)_rho = rho (gamma_1 - 1),   (dP/drho)_e = P / rho,
+  //  which is what ctoprim's source linearisation uses and matches
+  //  GammaLaw's (gamma-1) rho.  The exact PR partials are not needed
+  //  here: the pressure itself comes from REY2P, and the PS module
+  //  computes its own real-fluid derivatives.
   AMREX_GPU_HOST_DEVICE
   AMREX_FORCE_INLINE
   void REY2dpde(amrex::Real R, amrex::Real E, amrex::Real* /*Y*/, amrex::Real& dpde)
@@ -542,13 +416,10 @@ namespace EOS {
       dpdr_e = s.P / s.rho;
   }
 
-  //  ρ, e → ALL ctoprim primitives from ONE state solve.
-  //  ctoprim previously issued five separate REY2T/P/Gam/dpde/dpdr calls on
-  //  the identical (ρ,e); the (now-removed) MRU cache collapsed them into a
-  //  single Newton.  This fused entry does that explicitly and cache-free:
-  //  solve once, read every field off the state.  Per-field formulas are
-  //  byte-identical to the individual wrappers above, so ctoprim output is
-  //  unchanged — only the solve count drops 5→1.  Device-clean.
+  //  rho, e -> all ctoprim primitives from one state solve.  Per-field
+  //  formulas are identical to the individual entries above, so the
+  //  output is unchanged and only the solve count drops 5 -> 1 (the
+  //  difference the device pays in full, having no cache).
   AMREX_GPU_HOST_DEVICE
   AMREX_FORCE_INLINE
   void REY2_prim(amrex::Real R, amrex::Real E, amrex::Real* /*Y*/,
@@ -563,8 +434,7 @@ namespace EOS {
       dpdr_e = s.P / s.rho;
   }
 
-  //  ρ, T → e   — used only in the internal-energy floor.  The
-  //  standalone PR machinery inverts (ρ,T) → e via state_from_T_v.
+  //  rho, T -> e on the vapour branch (internal-energy floor).
   AMREX_GPU_HOST_DEVICE
   AMREX_FORCE_INLINE
   void RTY2E(amrex::Real R, amrex::Real T, amrex::Real* /*Y*/, amrex::Real& E)
@@ -575,12 +445,8 @@ namespace EOS {
       E = s.e;
   }
 
-  //  ρ, T → e   BRANCH-LOCKED (task #64 dilute-phase energy closure).
-  //  Same PR machinery as RTY2E but on the requested phase branch, so a
-  //  dilute phase can be set to thermal equilibrium with its host on its
-  //  OWN branch (liquid stays liquid, vapor stays vapor).  Mirrors the
-  //  REY2P_liquid/_vapor branch-locked pattern; fluid-agnostic at the
-  //  EOS:: interface.
+  //  rho, T -> e, branch-locked: a dilute phase set to thermal
+  //  equilibrium with its host stays on its own branch.
   AMREX_GPU_HOST_DEVICE
   AMREX_FORCE_INLINE
   void RTY2E_phase(amrex::Real R, amrex::Real T, amrex::Real* /*Y*/,
@@ -598,14 +464,14 @@ namespace EOS {
   void RTY2E_vapor(amrex::Real R, amrex::Real T, amrex::Real* Y, amrex::Real& E)
   { RTY2E_phase(R, T, Y, hem::Phase3::Vapor, E); }
 
-  //  (rho, T) -> {P, e} on the AUTO (equilibrium/dome-aware) surface: the
-  //  DIRECT inverse of REY2T / REY2P at fixed rho.  See the GERG backend
-  //  for the rationale -- ps_apply_floor used to obtain e*(rho, T_floor)
-  //  by a 46-step bisection on e whose predicate was itself the (rho,e)->T
-  //  inversion (a NESTED bisection, thousands of EOS evaluations per phase
-  //  per cell, unconditionally).  Dome-aware: outside the coexistence
-  //  densities take the corresponding branch; inside, lever-rule the
-  //  saturated end states at the SAME T (P = Psat there).
+  //  (rho, T) -> {P, e} on the auto (dome-aware) surface: the direct
+  //  inverse of REY2T / REY2P at fixed rho, so a temperature floor gets
+  //  e*(rho, T_floor) in one call rather than by a nested bisection on
+  //  the (rho,e)->T inversion.  Outside the coexistence densities the
+  //  matching branch is evaluated; inside, the saturated end states at
+  //  the same T are lever-ruled (P = Psat).  The in-dome value is a
+  //  mixture energy, not a branch state, and must not be written into
+  //  a phase slot.
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void RTY2PE_auto(amrex::Real R, amrex::Real T, amrex::Real* /*Y*/,
                    amrex::Real& P, amrex::Real& E)
@@ -614,8 +480,7 @@ namespace EOS {
       const hem::State sL = hem::satStateL(f, T);
       const hem::State sV = hem::satStateV(f, T);
       if (sL.rho > sV.rho && R < sL.rho && R > sV.rho) {
-          // Inside the dome: equilibrium mixture at T.  Mass quality from
-          // the specific-volume lever rule.
+          // Inside the dome: mass quality from the specific-volume lever rule.
           const amrex::Real vL = amrex::Real(1.0)/sL.rho;
           const amrex::Real vV = amrex::Real(1.0)/sV.rho;
           const amrex::Real x  = (amrex::Real(1.0)/R - vL)/(vV - vL);
@@ -631,30 +496,24 @@ namespace EOS {
   }
 
   // ================================================================
-  //  Everything below is either forwarded to the six hot functions,
-  //  implemented as a light wrapper on the same PR machinery, or
-  //  stubbed out for entries GammaLaw itself stubs.
+  //  Remaining GammaLaw-signature entries: forwarded to the solves
+  //  above, light wrappers on the same PR machinery, or stubs for
+  //  entries GammaLaw itself stubs.
   // ================================================================
 
-  //  e → T   (used only when the caller has already computed e/mass
-  //  from other means; forwards to REY2T with any density).
+  //  e -> T without a density.  No exact inversion exists; the critical
+  //  density is used as a proxy (GammaLaw's EY2T has the same limitation).
+  //  Callers that hold rho use REY2T.
   AMREX_GPU_HOST_DEVICE
   AMREX_FORCE_INLINE
   void EY2T(amrex::Real E, amrex::Real* Y, amrex::Real& T)
   {
-      // Without a density we can't invert exactly; use the critical
-      // density as a proxy.  GammaLaw's EY2T has the same defect (it
-      // relies on P/ρ = (γ−1)e regardless of ρ).  In practice EY2T
-      // is only ever called immediately after REY2T, from
-      // CAMR_reset_internal_e; the caller passes ρ, so REY2T is
-      // preferred.
       const hem::PRFluid f = co2_fluid();
       const amrex::Real rho_ref = f.pr.Pc * f.M / (f.pr.Tc * amrex::Real(8.314));
       REY2T(rho_ref, E, Y, T);
   }
 
-  //  ρ, e, [T-hint] → P  — CAMR calls this in Derive.cpp for
-  //  pressure plotfile output.
+  //  rho, e, [T-hint] -> P (pressure plotfile derive).
   AMREX_GPU_HOST_DEVICE
   AMREX_FORCE_INLINE
   void RYET2P(amrex::Real R, amrex::Real* Y, amrex::Real& E, amrex::Real& /*T*/, amrex::Real& P)
@@ -662,32 +521,24 @@ namespace EOS {
       REY2P(R, E, Y, P);
   }
 
-  //  P, Y, T → ρ, e   —  used by prob.H initial conditions.
+  //  P, Y, T -> rho, e for single-phase initial data.  The Vapor hint
+  //  covers supercritical and superheated states; the cubic root
+  //  selection picks the physical root.
   AMREX_GPU_HOST_DEVICE
   AMREX_FORCE_INLINE
   void PYT2RE(amrex::Real P, amrex::Real* /*Y*/, amrex::Real T,
               amrex::Real& R, amrex::Real& E)
   {
-      // Single-phase (T, P) → state.  Phase hint = Vapor for
-      // supercritical or superheated, Liquid for compressed liquid;
-      // we pick Vapor as the safer default and let the cubic solver
-      // choose the correct root.
       hem::State s = hem::state_from_T_P(co2_fluid(), T, P, hem::Phase3::Vapor);
       R = s.rho;
       E = s.e;
   }
 
-  // Phase-selected (T, P) → (ρ, e).  Uses hem::state_from_T_P_metastable
-  // so that when the requested phase has no physical PR root at (T, P)
-  // — e.g., vapor branch at 270 K, 100 bar (deep in the compressed-
-  // liquid region) — the returned state is a well-defined metastable
-  // extrapolation of the single-phase PR continuation, matching the
-  // standalone driver's PR_PhaseBackend<Liquid|Vapor> behaviour.
-  //
-  // Required by cross-init Riemann setups (B4 and every other case in
-  // the A/B/C suite) where each side of the diaphragm is initialised
-  // with both phase states at that side's (T, P), and α_1 is the
-  // material tracer selecting which phase is dominant on each side.
+  // Phase-selected (T, P) -> (rho, e) via state_from_T_P_metastable: when
+  // the requested branch has no PR root at (T, P) (vapour at 270 K, 100
+  // bar, say) the result is the metastable single-phase continuation.
+  // Cross-initialised Riemann setups initialise both phase states on each
+  // side at that side's (T, P), with alpha_1 as the material tracer.
   AMREX_GPU_HOST_DEVICE
   AMREX_FORCE_INLINE
   void PYT2RE_liquid(amrex::Real P, amrex::Real* /*Y*/, amrex::Real T,
@@ -710,19 +561,14 @@ namespace EOS {
       E = s.e;
   }
 
-  //  CHECKED phase-selected (T, P) -> (rho, e, c) with a has_root flag.
-  //  Corridor closure (DESIGN_ps_corridor_closure.md 3a, and 3(b)-i):
-  //  a corridor phase's face intensives are DEFINED by ITS OWN branch at
-  //  the host-anchored (P_mix, T_host).  Unlike PYT2RE_{liquid,vapor},
-  //  which silently substitute an ideal-gas metastable extrapolation when
-  //  the requested phase has no real PR root at (T,P), this REPORTS
-  //  has_root=false so the caller falls back to the host state and COUNTS
-  //  the face.  That detectable no-root REFUSAL -- not a believed number --
-  //  is exactly what distinguishes this forward (P,T)->(rho,e) query from
-  //  the original inverse (rho,e)->P queries on undefined quotient states.
-  //  A real root inside the spinodal (c <= 0) is likewise not a usable
-  //  mechanical state and reports has_root=false (same refusal path).
-  //  Mirrors hem::state_from_T_P_metastable's root logic; adds no constant.
+  //  Checked phase-selected (T, P) -> (rho, e, c) with a has_root flag.
+  //  A corridor phase's face intensives are defined by its own branch at
+  //  the host-anchored (P_mix, T_host); where that branch has no real PR
+  //  root, or the root lies inside the spinodal (c <= 0), this reports
+  //  has_root=false so the caller falls back to the host state and counts
+  //  the face, instead of receiving a metastable substitute as
+  //  PYT2RE_{liquid,vapor} would give.  Same root logic as
+  //  state_from_T_P_metastable; no new constant.
   AMREX_GPU_HOST_DEVICE
   AMREX_FORCE_INLINE
   void PYT2REc_phase_checked(amrex::Real P, amrex::Real T, bool want_liquid,
@@ -773,6 +619,9 @@ namespace EOS {
       R = s.rho;
   }
 
+  //  rho, P -> e on the auto surface.  In-dome this is a saturation-
+  //  mixture lever-rule energy, not a branch state: never write it into
+  //  a phase slot.
   AMREX_GPU_HOST_DEVICE
   AMREX_FORCE_INLINE
   void RYP2E(amrex::Real R, amrex::Real* /*Y*/, amrex::Real P, amrex::Real& E)
@@ -782,25 +631,14 @@ namespace EOS {
   }
 
   // ================================================================
-  //  Branch-locked per-phase EOS wrappers.
+  //  Branch-locked per-phase entries (docs/MODEL_AND_ALGORITHM.md §7.2).
   //
-  //  The stock REY2P / RPY2Cs above use auto-detect (state_from_rho_e
-  //  branches by dome / cubic-root logic).  For the P-S 6-eq module
-  //  where each phase has its own PR branch, auto-detect is wrong:
-  //  a "vapor" phase held at a state deep in the compressed-liquid
-  //  region (a metastable branch state) auto-detects as Liquid, and
-  //  its P at that (ρ, e) diverges from the metastable P used to
-  //  construct the state.  The result is per-phase P inconsistency
-  //  in PS_ctoprim → Pelanti relaxation drives the mixture off in
-  //  the wrong direction.
-  //
-  //  These branch-locked variants wrap hem::state_from_rho_e_phase
-  //  so each phase always sees its own PR branch (Phase3::Liquid or
-  //  Phase3::Vapor), including the metastable single-phase
-  //  extrapolation past the saturation dome.  Used throughout the
-  //  PS pipeline (ctoprim, umeth wave/flux helpers, mechanical
-  //  relaxation).  Phase 1 → Liquid, Phase 2 → Vapor by convention
-  //  (matches the standalone driver's PsPhaseAPI).
+  //  The six-equation model asserts each slot's phase (slot 1 liquid,
+  //  slot 2 vapour) and asks for that branch, continued metastably
+  //  past the dome.  Auto-detect is wrong for it: a nominal vapour at
+  //  compressed-liquid density would return the liquid root, and its
+  //  P would disagree with the metastable P the state was built with,
+  //  driving the relaxation toward an inconsistent equilibrium.
   // ================================================================
 
   AMREX_GPU_HOST_DEVICE
@@ -828,22 +666,12 @@ namespace EOS {
       REY2P_phase(R, E, Y, hem::Phase3::Vapor, P);
   }
 
-  // Branch-locked full-state recovery from (rho, e): a SINGLE
-  // one-Newton-on-T PR state solve that returns P, T and s together.
-  //
-  //  Rationale (task #28 review): the PR solve
-  //  (co2_state_from_rho_e_phase_cached) is the expensive step, and it
-  //  already computes the whole State (P, T, s, h, c) as byproducts.
-  //  Recovering P/T/s via three separate REY2{P,T,S}_phase calls re-enters
-  //  that solve three times — deduped only by the MRU warm-start cache on
-  //  CPU, and NOT at all on GPU (see #23), where it would be a genuine 3x.
-  //  This combined entry point solves once and hands back every field the
-  //  Phase-4g sources need (flash reads T; finite-rate MT reads s for the
-  //  Gibbs driving force g = h - T*s).  Callers that only need P (e.g. the
-  //  pressure-relaxation Newton loop) simply ignore the extra outputs —
-  //  they are free once the solve has run, so no per-field flag is needed.
-  //  The PR entropy satisfies Clausius-Clapeyron across saturation, so
-  //  g_liquid = g_vapor at equilibrium.
+  // Branch-locked (rho, e) -> P, T, s from one solve.  The solve already
+  // produces the whole State, and the mass-transfer driving force needs
+  // g = h - T s, so returning the three together avoids re-entering the
+  // solve three times (a genuine 3x on the device).  PR entropy satisfies
+  // Clausius-Clapeyron across saturation, so g_liquid = g_vapor at
+  // equilibrium.  Aborts when (rho,e) is not a state on the branch.
   AMREX_GPU_HOST_DEVICE
   AMREX_FORCE_INLINE
   void REY2PTS_phase(amrex::Real R, amrex::Real E, amrex::Real* /*Y*/,
@@ -856,9 +684,9 @@ namespace EOS {
       S = s.s;
   }
 
-  //  Non-aborting variant.  Returns false when this (rho,e) has no root on
-  //  the requested branch, so callers holding a validity channel (e.g.
-  //  PsPhaseAPI's ph.valid) can report it instead of the EOS aborting.
+  //  Non-aborting variant: returns false when (rho,e) has no root on the
+  //  requested branch, for callers holding a validity channel
+  //  (PsPhaseAPI's ph.valid) that report instead of aborting.
   AMREX_GPU_HOST_DEVICE
   AMREX_FORCE_INLINE
   bool REY2PTS_phase_try(amrex::Real R, amrex::Real E, amrex::Real* /*Y*/,
@@ -871,17 +699,10 @@ namespace EOS {
       return true;
   }
 
-  // Speed-of-sound at (ρ, P) — branch-locked variant.
-  //
-  //  The stock RPY2Cs (below) uses state_from_P_rho which is
-  //  branch-agnostic; for cross-critical mixtures where phase 1 is a
-  //  metastable liquid at supercritical (T, P), that inversion can
-  //  land on the wrong root or fail.  The branch-locked variant
-  //  first recovers e via state_from_rho_e_phase(ρ, e_guess, phase)
-  //  then reads c directly from that State — one Newton on T rather
-  //  than the P-inversion pair.  Since both PS_umeth call sites for
-  //  RPY2Cs already have per-phase e_k on hand, expose an overload
-  //  that takes (ρ, e, phase) → c directly.
+  // Branch-locked sound speed from (rho, e).  The (rho, P) entry RPY2Cs
+  // below is branch-agnostic and can land on the wrong root for a
+  // metastable liquid at supercritical (T, P); the PS call sites hold
+  // e_k, so this reads c off the branch solve directly.
   AMREX_GPU_HOST_DEVICE
   AMREX_FORCE_INLINE
   void REY2Cs_phase(amrex::Real R, amrex::Real E, amrex::Real* /*Y*/,
@@ -907,12 +728,9 @@ namespace EOS {
       REY2Cs_phase(R, E, Y, hem::Phase3::Vapor, Cs);
   }
 
-  //  Branch-locked (rho,e,phase) -> P AND sound speed c from ONE solve.
-  //  The flux path (PS_umeth wave-speed helper, PS_hllc, PS_nscbc) computes
-  //  P then c on the SAME (rho,e,phase) — two branch-locked solves the host
-  //  cache collapses to one, but the device pays 2x (no cache).  This fused
-  //  entry reads both fields off a single solve: byte-identical to the
-  //  REY2P_phase-then-REY2Cs_phase pair, device-clean 2->1.
+  //  Branch-locked (rho, e, phase) -> P and c from one solve.  The flux
+  //  path needs both on the same state; identical to the
+  //  REY2P_phase-then-REY2Cs_phase pair with the solve count 2 -> 1.
   AMREX_GPU_HOST_DEVICE
   AMREX_FORCE_INLINE
   void REY2PCs_phase(amrex::Real R, amrex::Real E, amrex::Real* /*Y*/,
@@ -949,9 +767,7 @@ namespace EOS {
       P = s.P;
   }
 
-  //  Sound speed helpers.  These forward to state_from_rho_e or
-  //  state_from_T_v depending on which independent variables the
-  //  caller has.
+  //  Auto-surface sound speed from (rho, P) or (rho, T).
   AMREX_GPU_HOST_DEVICE
   AMREX_FORCE_INLINE
   void RPY2Cs(amrex::Real R, amrex::Real P, amrex::Real* /*Y*/, amrex::Real& Cs)
@@ -970,19 +786,16 @@ namespace EOS {
       Cs = s.c;
   }
 
-  //  Specific heat.  For a real fluid c_v = (∂e/∂T)_v and
-  //  c_p = c_v + T (∂P/∂T)²_v / [-(∂P/∂v)_T · ρ² v²].  We approximate
-  //  from the ideal-gas polynomial (valid for CO₂ at any T we simulate);
-  //  the departure correction is small for the temperature ranges
-  //  typical of pipe blowdown (250–320 K).  Full real-fluid c_v
-  //  goes into place in Phase 4.
+  //  Specific heats from the ideal-gas polynomial.  The departure
+  //  correction is omitted: these entries serve plotfile derives, not
+  //  the solver, and the real-fluid c_v lives in the PS module.
   AMREX_GPU_HOST_DEVICE
   AMREX_FORCE_INLINE
   void TY2Cv(amrex::Real T, amrex::Real* /*Y*/, amrex::Real& Cv)
   {
       const hem::PRFluid f = co2_fluid();
-      const amrex::Real R_univ = amrex::Real(8.314);   // J/(mol·K)
-      // c_v_ig = c_p_ig − R;  per mass divides by molar mass.
+      const amrex::Real R_univ = amrex::Real(8.314);   // J/(mol K)
+      // c_v_ig = c_p_ig - R; per mass divides by molar mass.
       const amrex::Real cp_ig_R = hem::cp_ig_over_R(f, T);
       const amrex::Real cv_ig_R = cp_ig_R - amrex::Real(1.0);
       Cv = cv_ig_R * R_univ / f.M;
@@ -1022,18 +835,15 @@ namespace EOS {
           Cpi[n] = Cp;
   }
 
-  //  Internal energy from T (integrate cp_ig - R over T).  Returns
-  //  a per-species array so that TY2E can compute the mixture value
-  //  as   Σ Y_k e_k .  For pure CO₂ every entry is identical.
+  //  Ideal-gas internal energy from T, referenced to T_ref = 298.15 K,
+  //  as a per-species array so TY2E forms sum Y_k e_k; every entry is
+  //  identical for pure CO2.
   AMREX_GPU_HOST_DEVICE
   AMREX_FORCE_INLINE
   void T2Ei(amrex::Real T, amrex::Real Ei[])
   {
       const hem::PRFluid f = co2_fluid();
       const amrex::Real R_univ = amrex::Real(8.314);
-      // e_ig(T) = ∫ cv_ig dT from T_ref, with T_ref = 298.15 K.  Per
-      // mole; convert to per mass.  (We only need differences in most
-      // callers; keeping a consistent T_ref is what matters.)
       const amrex::Real Tref = amrex::Real(298.15);
       const amrex::Real e_ig_per_mol =
           hem::e_ig_per_mole(f, T) - hem::e_ig_per_mole(f, Tref);
@@ -1061,15 +871,12 @@ namespace EOS {
           E += Y[n] * ei[n];
   }
 
-  //  Enthalpy helpers (h = e + P/ρ).  Not on the Riemann hot path
-  //  but used by Derive.cpp when the user asks for h in plotfiles.
+  //  Ideal-gas enthalpy helpers (plotfile derives).  The real-fluid
+  //  enthalpy is h = e + P/rho via RYET2P.
   AMREX_GPU_HOST_DEVICE
   AMREX_FORCE_INLINE
   void T2Hi(amrex::Real T, amrex::Real Hi[])
   {
-      // For a real fluid h depends on ρ (or P) as well as T.  The
-      // per-species entry point here is a Cp-integral approximation;
-      // the full real-fluid enthalpy goes through RYET2P → h = e + P/ρ.
       const hem::PRFluid f = co2_fluid();
       const amrex::Real R_univ = amrex::Real(8.314);
       const amrex::Real Tref = amrex::Real(298.15);
@@ -1099,17 +906,15 @@ namespace EOS {
           H += Y[n] * hi[n];
   }
 
-  //  H, Y → T   — Newton on TY2H would be needed for a real fluid;
-  //  GammaLaw's version uses  T = H / (c_p) directly.  We do the
-  //  same with an ideal-gas c_p — accurate to within the departure
-  //  function for the T range we simulate.
+  //  H -> T by Newton on the ideal-gas enthalpy (accurate to within the
+  //  departure function).
   AMREX_GPU_HOST_DEVICE
   AMREX_FORCE_INLINE
   void HY2T(amrex::Real H, amrex::Real* /*Y*/, amrex::Real& T)
   {
       const hem::PRFluid f = co2_fluid();
       const amrex::Real R_univ = amrex::Real(8.314);
-      // Iterate:  T_next = T + (H - h_ig(T)) / cp_ig(T)
+      // T_next = T + (H - h_ig(T)) / cp_ig(T)
       T = amrex::Real(300.0);
       for (int it = 0; it < 20; ++it) {
           const amrex::Real h_here =
@@ -1130,16 +935,12 @@ namespace EOS {
       HY2T(H, Y, T);
   }
 
-  //  Gruneisen coefficient  G = 1 + (∂P/∂e)_ρ / ρ .  Callers use this
-  //  as an effective γ in a few diagnostic contexts.  We reuse REY2Gam
-  //  when we have (ρ,e), or fall back to an ideal-gas estimate otherwise.
+  //  Effective gamma for diagnostic derives: the ideal-gas c_p/c_v of
+  //  CO2 at 300 K, ~1.29, is adequate there.
   AMREX_GPU_HOST_DEVICE
   AMREX_FORCE_INLINE
   void TY2G(amrex::Real /*T*/, amrex::Real* /*Y*/, amrex::Real& G)
   {
-      // The ideal-gas ratio γ_ig = c_p/c_v at 300 K for CO₂ is ~1.29 .
-      // For the coarse plotfile-derive purposes this is called from,
-      // an approximate constant is acceptable.
       G = amrex::Real(1.29);
   }
 
@@ -1150,18 +951,13 @@ namespace EOS {
       TY2G(T, Y, G);
   }
 
-  //  Bridgman-style combined derivatives.  Used by hydro_srctoprim
-  //  to propagate momentum-source contributions to (∂P/∂t)_ρ,e .
-  //  The GammaLaw version returns  dpde = (γ−1)ρ,  dpdr_e = P/ρ .
-  //  Our real-fluid version does the same at the cost of one PR
-  //  state evaluation (state_from_rho_e).
+  //  (rho, T) -> the same linearised derivatives as REY2dpde /
+  //  REY2dpdr_e, for hydro_srctoprim.
   AMREX_GPU_HOST_DEVICE
   AMREX_FORCE_INLINE
   void RTY2dpde_dpdre(amrex::Real R, amrex::Real T, amrex::Real* /*Y*/,
                      amrex::Real& dpde, amrex::Real& dpdr_e)
   {
-      // Convert (ρ, T) to (ρ, e) via one state call, then reuse
-      // REY2dpde / REY2dpdr_e formulas.
       const hem::PRFluid f = co2_fluid();
       const amrex::Real v_m = hem::v_PR_from_rho(f, R);
       hem::State s = hem::state_from_T_v(f, T, v_m, hem::Phase3::Vapor);
@@ -1170,14 +966,11 @@ namespace EOS {
       dpdr_e = s.P / s.rho;
   }
 
-  //  Legacy Grüneisen/pressure derivatives called from a small number
-  //  of diagnostic paths.  For source-term linearisation the answer
-  //  needs to be self-consistent with REY2dpde/REY2dpdr_e above.
+  //  Constant-gamma derivative signatures kept for diagnostic callers.
   AMREX_GPU_HOST_DEVICE
   AMREX_FORCE_INLINE
   void RPE2dpdr_e(amrex::Real /*R*/, amrex::Real /*P*/, amrex::Real E, amrex::Real& dpdr_e)
   {
-      // Legacy signature — closes on (ρ, e) via a linearised estimate.
       dpdr_e = (gamma - amrex::Real(1.0)) * E;
   }
 
@@ -1188,16 +981,13 @@ namespace EOS {
       dpde = (gamma - amrex::Real(1.0)) * R;
   }
 
-  //  Entropy — one scalar S() with a fixed reference.  Only used to
-  //  probe whether an entropy is available; we return 1.0 as GammaLaw
-  //  does.  A real-fluid entropy is available via state_from_rho_e
-  //  (s field of the returned State).
+  //  Entropy probe: returns 1.0 as GammaLaw does.  The real-fluid
+  //  entropy is the s field of the State from the (rho,e) solves.
   AMREX_GPU_HOST_DEVICE
   AMREX_FORCE_INLINE
   void S(amrex::Real& s) { s = amrex::Real(1.0); }
 
-  //  Chemistry stubs — CO₂ has no reactions in this backend.  Same
-  //  as GammaLaw's approach.
+  //  Chemistry stubs: CO2 has no reactions in this backend.
   AMREX_GPU_HOST_DEVICE
   AMREX_FORCE_INLINE
   void RTY2WDOT(amrex::Real /*R*/, amrex::Real /*T*/,

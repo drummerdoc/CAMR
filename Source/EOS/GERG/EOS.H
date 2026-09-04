@@ -1,22 +1,29 @@
 #ifndef EOS_H
 #define EOS_H
 // =====================================================================
-//  GERG-2008 pure-CO2 EOS backend for CAMR  (Eos_Model := GERG)
+//  GERG-2008 pure-CO2 EOS backend for CAMR (Eos_Model := GERG; also
+//  GERGTab under USE_GERGTAB_EOS, which adds a table seed).
 //
-//  ANALYTIC backend (stage 1): every entry point routes through the
-//  GUARDED GERG evaluator (gerg_co2_guard.H: total, branch-guarded,
-//  Newton-free surface evals; saturation/edges from precomputed
-//  splines).  (rho,e)->T inversions are fixed-count bisections on the
-//  guarded surfaces (deterministic, warp-safe; the table fast path of
-//  stage 2 will replace them on the hot paths, exactly as PRTab does
-//  for PR).
+//  Algorithm: every entry routes through the guarded GERG evaluator
+//  (gerg_co2_guard.H: total, branch-guarded, Newton-free surface
+//  evaluations; saturation and branch edges from precomputed splines).
+//  The (rho,e) -> T inversions are fixed-count 64-step bisections on
+//  [T_trip, T_max] = [216.592, 1100] K, bracket-checked at both ends:
+//  e is monotone in T on each guarded surface, so a root exists iff e
+//  lies strictly between the endpoint energies at that rho, and either
+//  side missing is an unconditional abort (docs/MODEL_AND_ALGORITHM.md
+//  §7.2-7.3).  GERG has no sub-triple extrapolation: such states are
+//  out of domain.  Under GERGTab the bisection is replaced on the hot
+//  paths by a table seed plus two damped-Newton polish steps on the
+//  analytic surface, with the bisection as the residual fallback.
 //
-//  NO CROSS-EOS FALLBACK: PR machinery is included ONLY for the
-//  hem::Phase3 interface type the PS pipeline passes; no PR function
-//  is ever called.  Development/validation record: CAMR LEARNINGS.md
-//  "GERG-2008 arc"; sources: co2-eos-cfd/src/eos_backends/gerg/.
+//  Contract: the namespace EOS free-function set of PR/EOS.H.  No
+//  cross-EOS fallback: the PR header is included only for the
+//  hem::Phase3 / hem::State interface types; no PR function is called.
 //
-//  Units: SI.  rho [kg/m3], P [Pa], e [J/kg], T [K].
+//  Dials: CAMR.gerg_ext_c (1) via gerg_ext_c_init(); under GERGTab
+//  CAMR.eos_table (1), CAMR.eos_table_auto (1), CAMR.eos_diag (0).
+//  Units: SI.
 // =====================================================================
 
 #include <AMReX.H>
@@ -33,8 +40,7 @@
 #include "gerg_co2_guard.H"
 
 #ifdef USE_GERGTAB_EOS
-#include "gergtab_bicubic.H"   // GERGTab build: table fast path (resolved
-                               // via -I Source/EOS/GERGTab, see Make.CAMR)
+#include "gergtab_bicubic.H"   // GERGTab table seed (-I Source/EOS/GERGTab)
 #endif
 
 #define NUM_SPECIES 3
@@ -42,19 +48,23 @@
 namespace EOS {
 
 #ifdef USE_GERGTAB_EOS
-  // Runtime gates (host; device = compile-time on), PRTab conventions:
-  //   CAMR.eos_table      = 1 : table T-inversion on all hot paths; 0 : analytic
-  //   CAMR.eos_table_auto = 1 : table on the AUTO path too; 0 : analytic auto
+  // Host runtime gates; the device path is always the table.
+  // CAMR.eos_table (1): table seed on all hot paths; 0 = analytic
+  // bisection, so one GERGTab build reproduces GERG.  CAMR.eos_mlp is a
+  // deprecated alias.  Retire-candidate (the alias): see
+  // docs/DESIGN_DECISIONS.md §5.
 #if !defined(__CUDA_ARCH__) && !defined(__HIP_DEVICE_COMPILE__) && !defined(__SYCL_DEVICE_ONLY__)
   inline bool gergtab_enabled()
   {
       static const bool e = []() {
           int v = 1; amrex::ParmParse pp("CAMR");
-          pp.query("eos_table", v); pp.query("eos_mlp", v);   // deprecated alias
+          pp.query("eos_table", v); pp.query("eos_mlp", v);
           return v != 0;
       }();
       return e;
   }
+  // CAMR.eos_table_auto (1): table seed on the auto path too; 0 =
+  // analytic there.  CAMR.eos_mlp_auto is a deprecated alias.
   inline bool gergtab_auto_enabled()
   {
       static const bool a = []() {
@@ -68,15 +78,15 @@ namespace EOS {
 #endif
 
 #if !defined(__CUDA_ARCH__) && !defined(__HIP_DEVICE_COMPILE__) && !defined(__SYCL_DEVICE_ONLY__)
-  // ---- CAMR.gerg_ext_c -> gerg::set_ext_c (task #12) ------------------
-  //  The guard header is AMReX-free, so the ParmParse read lives here and is
-  //  pushed down.  force_add puts the RESOLVED value into the ParmParse table
-  //  even when the inputs file is silent, so it always appears in job_info --
-  //  i.e. every plotfile records which extension sound-speed surface produced
-  //  it.  Called once from CAMR::read_params(), before any hydro.
+  // CAMR.gerg_ext_c (1): continuous extension sound speed; 0 = 50 m/s
+  // throughout the extension (reproduction and bisection only).  The
+  // guard header is AMReX-free, so the read lives here and is pushed
+  // down; the resolved value is added to the ParmParse table so every
+  // job_info records which surface produced the plotfile.  Called once
+  // from CAMR::read_params(), before any hydro.
   inline void gerg_ext_c_init()
   {
-      int v = 1;                                  // DEFAULT ON
+      int v = 1;
       amrex::ParmParse pp("CAMR");
       pp.query("gerg_ext_c", v);
       gerg::set_ext_c(v != 0);
@@ -88,7 +98,7 @@ namespace EOS {
   }
 #endif
 
-  // Legacy shim for prob.H files that still do  et = P/(gamma-1).
+  // Name-compatibility constant for prob.H files spelling et = P/(gamma-1).
   static constexpr amrex::Real gamma = 1.4;
 
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
@@ -102,16 +112,9 @@ namespace EOS {
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   amrex::Real T_triple() { return amrex::Real(gerg::T_trip); }
 
-  // ----------------------------------------------------------------
-  //  DENSITY VALIDITY DOMAIN (guard G1 -- see
-  //  Source/Hydro/PelantiShyue/GUARD_INVENTORY.md).
-  //
-  //  GERG-2008 is a Helmholtz-energy surface: there is NO excluded-volume
-  //  pole, so has_density_pole() is false and rho_max is the published
-  //  validity edge rather than a singularity.  The guard already clamps
-  //  internally (gerg::clamp_rho); these accessors expose the SAME bounds so
-  //  the hydro layer can clamp before the call, identically for every backend.
-  // ----------------------------------------------------------------
+  // Density domain metadata.  GERG-2008 is a Helmholtz surface with no
+  // excluded-volume pole, so has_density_pole() is false and rho_max is
+  // the published validity edge, the same bounds gerg::clampR applies.
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   amrex::Real rho_max()   { return amrex::Real(gerg::RHO_MAX); }   // 1500 kg/m3
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
@@ -120,10 +123,6 @@ namespace EOS {
   bool        has_density_pole() { return false; }
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   amrex::Real P_triple() { return amrex::Real(gerg::P_trip); }
-  //  Critical pressure -- EOS-contract entry required by the PS module's
-  //  HRM relaxation-time correlation (LITERATURE_relaxation_rates.md 4);
-  //  same provenance as T_crit above: the GERG parameter set, not a
-  //  second hard-coded constant.
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   amrex::Real P_crit()   { return amrex::Real(gerg::P_c); }
 
@@ -146,33 +145,17 @@ namespace EOS {
       eV = gerg::state_TR(Td, rv).e;
   }
 
-  // ---- fixed-count inversions on the GUARDED surfaces -------------
-  //  e is monotone-increasing in T on each guarded surface (cv>0;
-  //  larger effective cv on the equilibrium surface in the dome).
-  //  The pure-bisection forms are standalone so the eos_diag reference
-  //  can call them directly (they ARE the analytic backend).
-  //  AUDIT 2026-08-24 B6: e is monotone in T on each guarded surface, so a
-  //  root exists in [T_trip, T_max] iff e lies strictly between the
-  //  endpoint energies at this rho.  Without the check these bisections
-  //  converged to a box endpoint and returned it LOOKING VALID — the
-  //  silent-clamp shape PR removed (FINDINGS 10j.3).  This file's own
-  //  REY2PTS_phase_try carried the check while every other route
-  //  (REY2T / REY2P / REY2P_phase / REY2Cs_* / REY2_prim) did not, so the
-  //  PR/GERG contract diverged exactly on bad data.  Aligned with PR's
-  //  ps_eos_noroot: an impossible (rho,e) is an unconditional abort — not
-  //  a clamp, and not contingent on which routine called us.  (_try
-  //  pre-checks the same bracket and never reaches this abort.)
-  //
-  //  DECIDED (Marc, 2026-08-24, B6): the abort applies to BOTH sides,
-  //  including e < e(T_trip).  PR deliberately EXTRAPOLATES below the
-  //  triple point; GERG has no extrapolation, and the old low-side
-  //  endpoint clamp was a silent de-facto proxy for one.  GERG now
-  //  declares sub-triple states OUT OF DOMAIN, full stop.  MEASURED
-  //  consequence: B7-Rupture-Sonic under Eos_Model=GERG aborts (~114
-  //  flash events in: vapour at rho=10.19 reaches e=-156.8 kJ/kg,
-  //  45 kJ/kg below e(T_trip)) — a KNOWN out-of-domain case for GERG,
-  //  previously scored on invented T=T_trip endpoint states.  All other
-  //  battery rows are bit-identical across this change.
+  // ---- fixed-count inversions on the guarded surfaces -------------
+  //  e is monotone in T on each guarded surface (cv > 0; larger
+  //  effective cv on the equilibrium surface in the dome), so a root
+  //  exists in [T_trip, T_max] iff e lies strictly between the endpoint
+  //  energies at this rho.  An unbracketed bisection would converge to a
+  //  box endpoint and return it looking valid; instead an impossible
+  //  (rho,e) is an unconditional abort on either side, including
+  //  e < e(T_trip): sub-triple states are out of GERG's domain (the
+  //  _try entry pre-checks the same bracket and never reaches it).  The
+  //  pure-bisection forms are the analytic reference the eos_diag census
+  //  calls directly.
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void g_noroot(const char* surf, double rho, double e,
                 double e_lo, double e_hi)
@@ -226,15 +209,13 @@ namespace EOS {
   }
 
 #ifdef USE_GERGTAB_EOS
-  //  Table-seeded Newton POLISH: the table provides only the SEED; 2
-  //  damped-Newton steps on the ANALYTIC surface (FD slope — in-dome the
-  //  equilibrium de/dT exceeds the frozen-mix cv, so an analytic-cv
-  //  Newton would overshoot) land T on the analytic surface to ~1e-9.
-  //  This removes ALL table-map roughness (bicubic kink ringing,
-  //  table/fallback switching jumps) from the returned values — found
-  //  necessary in 2D: satjet centerline showed ~2e-3 P jitter from the
-  //  raw auto-table service of in-dome states.  Residual guard ->
-  //  bisection.  Cost ~5 guarded evals vs 64 (bisection).
+  //  Table-seeded polish: the table provides only the seed; two damped
+  //  Newton steps on the analytic surface (finite-difference slope,
+  //  because in-dome the equilibrium de/dT exceeds the frozen-mix cv and
+  //  an analytic-cv Newton would overshoot) land T on the analytic
+  //  surface, so no table roughness (bicubic kinks, table/fallback
+  //  switching) reaches the returned values.  A residual guard falls
+  //  back to the exact bisection.  About 5 guarded evaluations against 64.
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   double g_polish_auto(double rho, double e, double T)
   {
@@ -286,25 +267,11 @@ namespace EOS {
       const bool use_tab = gergtab::in_domain(rho, e);
 #endif
       if (use_tab) {
-          // The table provides a SEED ONLY; g_polish_auto lands the answer on
-          // the ANALYTIC surface (2 damped-Newton steps) and falls back to the
-          // exact bisection if the residual guard fails.  So seed quality is a
-          // PERFORMANCE concern, not an accuracy one, and we must never drop to
-          // the 64-step bisection while a usable seed exists.
-          //
-          // PERF BUG this replaces: the AUTO table was used only to CLASSIFY,
-          // then the seed was taken from the BRANCH table -- and if the BRANCH
-          // mask said no (66-91% of calls in the satjet two-phase region, where
-          // the liquid band is only ~8 e-nodes wide at NE=256) the whole call
-          // fell through to g_T_bisect_auto, discarding a perfectly good auto
-          // seed that was available 99.9% of the time.  That made
-          // estTimeStep/ctoprim/the flux path pay 64 guarded evaluations per
-          // cell instead of 5.  Measured: 12.8x, seed error <= 0.19 K, 100% of
-          // polishes accept, polished T within 1.6e-8 K of exact bisection.
-          //
-          // Preference order (best seed first), but any seed beats none:
-          //   supercritical / in-dome -> auto table
-          //   single-phase            -> branch table if available, else auto
+          // Seed quality is a cost concern, not an accuracy one (the polish
+          // lands on the analytic surface), so any seed beats none and the
+          // call never drops to the bisection while a usable seed exists.
+          // Preference: supercritical / in-dome -> auto table; single-phase
+          // -> branch table if available, else auto.
           double T0;
           if (gergtab::T_auto(rho, e, T0) || gergtab::T_auto_seed(rho, e, T0)) {
               if (T0 >= gerg::SAT_T_HI) return g_polish_auto(rho, e, T0);
@@ -332,20 +299,9 @@ namespace EOS {
       {
           double Tt;
           const bool liq = (ph == gerg::Phase::Liquid);
-          // SEED ONLY -- mask and the former in-dome rejection dropped.
-          //
-          // The in-dome rejection was added when the table VALUE was returned
-          // directly (near-seam leakage reached relP ~4e-3, which seeded 2-dx
-          // noise in 2-D jets).  The Newton polish introduced right after it
-          // made the returned value live on the analytic surface by
-          // construction, so the rejection became a pure cost: in the satjet
-          // two-phase region it sent ~100% of liquid and ~82% of vapour branch
-          // inversions to the 64-step bisection.  The mask is likewise a
-          // seed-quality gate, not an accuracy one (the polish's residual
-          // guard is the real safety net) -- and at NE=256 it blanks the whole
-          // ~8-node-wide liquid band, so table_ok was only 9.3% for liquid.
-          // Measured with seed-only + polish: 100% accept, polished T within
-          // 4.6e-8 K of exact bisection, 12.8x cheaper.
+          // Seed only: the validity mask is a seed-quality gate, not an
+          // accuracy one (the polish's residual guard is the safety net),
+          // so a masked node still seeds through the _seed variants.
           bool ok = liq ? gergtab::T_liq(rho, e, Tt) : gergtab::T_vap(rho, e, Tt);
           if (!ok) ok = liq ? gergtab::T_liq_seed(rho, e, Tt)
                             : gergtab::T_vap_seed(rho, e, Tt);
@@ -380,10 +336,8 @@ namespace EOS {
       return 0.5*(lo + hi);
   }
 
-  // ----------------------------------------------------------------
-  //  Call-site tags for the generation-localized diagnostic (always
-  //  defined; recording machinery below is host-only + GERGTab-only).
-  // ----------------------------------------------------------------
+  // Call-site tags for the table-vs-analytic census (always defined;
+  // the recording machinery below is host-only and GERGTab-only).
   namespace gdiag {
     enum Site : int { S_REY2T = 0, S_REY2P, S_REY2GAM, S_REY2DPDE,
                       S_REY2DPDRE, S_PRIM, S_P_PHASE, S_PTS_PHASE,
@@ -392,15 +346,12 @@ namespace EOS {
 
 #if defined(USE_GERGTAB_EOS) && !defined(__CUDA_ARCH__) && !defined(__HIP_DEVICE_COMPILE__) && !defined(__SYCL_DEVICE_ONLY__)
   // =================================================================
-  //  eos_diag for GERGTab (port of the PRTab generation-localized
-  //  diagnostic; CAMR.eos_diag=1, default 0).  At every call through
-  //  the caches, ALSO computes the ANALYTIC state (pure bisection --
-  //  the eos_table=0 backend) and accumulates rel dP/dT/dc by call
-  //  SITE x PATH (auto/branchL/branchV) x REGIME, plus -- new vs
-  //  PRTab -- the FALLBACK FRACTION (how much traffic the mask/domain
-  //  gates actually route to analytic in a real run).  Read-only;
-  //  diag-off adds one static-bool branch.  Host + serial only.
-  //  Dump: atexit -> ./gergtab_diag.txt
+  //  Table-vs-analytic census for GERGTab (CAMR.eos_diag).  At every
+  //  call through the caches the analytic state (pure bisection) is also
+  //  computed and relative dP/dT/dc accumulated by call site x path
+  //  (auto/branchL/branchV) x regime, plus the fraction of traffic the
+  //  mask and domain gates route to the analytic fallback.  Read-only;
+  //  host, serial only; dumped at exit to ./gergtab_diag.txt.
   // =================================================================
   namespace gdiag {
     inline const char* site_name(int s) {
@@ -467,6 +418,7 @@ namespace EOS {
     }
   } // namespace gdiag
 
+  // CAMR.eos_diag (0): 1 enables the census above (doubles the EOS cost).
   inline bool gergtab_diag_enabled()
   {
       static const bool d = []() {
@@ -479,7 +431,8 @@ namespace EOS {
   }
 #endif
 
-  // ---- (rho,e) -> State caches (host 4-slot rings, as PRTab) ------
+  // ---- (rho,e) -> State caches: host 4-slot exact-match rings as in
+  //      PR/EOS.H (see there); the device path solves directly. ------
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   gerg::State co2_state_from_rho_e_cached(amrex::Real rho, amrex::Real e,
                                           int site = gdiag::S_OTHER)
@@ -489,8 +442,7 @@ namespace EOS {
       return gerg::state_TR_auto(g_T_from_e_auto(rho, e), rho);
 #else
       constexpr int NS = 4;
-      //  AUDIT 2026-08-24 B12(d): mutable function-local-static ring cache —
-      //  single-thread only; make the restriction a compile error.
+      // Mutable function-local statics: single-threaded only.
 #ifdef _OPENMP
 #error "The GERG EOS ring caches (function-local statics) are not thread-safe; build with USE_OMP=FALSE."
 #endif
@@ -521,8 +473,8 @@ namespace EOS {
 #endif
   }
 
-  //  Returns hem::State (interface type: PS_ctoprim.H consumes it
-  //  directly); values are pure GERG.
+  //  hem::State is the interface type the PS pipeline consumes; the
+  //  values are pure GERG.
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   hem::State g2hem(const gerg::State& g, hem::Phase3 ph)
   {
@@ -589,7 +541,7 @@ namespace EOS {
   { for (int n = 0; n < NUM_SPECIES; n++) Y[n] = X[n]; }
 
   // ================================================================
-  //  Six hot functions (auto/equilibrium surface)
+  //  Auto-detect entries (equilibrium surface), through the auto cache.
   // ================================================================
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void REY2T(amrex::Real R, amrex::Real E, amrex::Real*, amrex::Real& T)
@@ -631,7 +583,7 @@ namespace EOS {
   { E = gerg::state_TR_phase(double(T), double(R), gerg::Phase::Vapor).e; }
 
   // ================================================================
-  //  Branch-locked per-phase wrappers (PS-pipeline-critical)
+  //  Branch-locked per-phase entries (docs/MODEL_AND_ALGORITHM.md §7.2).
   // ================================================================
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void RTY2E_phase(amrex::Real R, amrex::Real T, amrex::Real*,
@@ -662,19 +614,12 @@ namespace EOS {
   { hem::State s = co2_state_from_rho_e_phase_cached(R, E, phase, gdiag::S_PTS_PHASE);
     P = s.P; T = s.T; S = s.s; }
 
-  //  Non-aborting variant (STATUS_multiphase.md 7.1; contract set by
-  //  PR/EOS.H).  Returns false when this (rho,e) has no root on the
-  //  requested branch, so callers holding a validity channel (PsPhaseAPI's
-  //  ph.valid) can report it instead of receiving a silently clamped state.
-  //
-  //  e is monotone in T at fixed rho on a locked branch (cv > 0), so a
-  //  sign change over GERG's validity box [T_trip, T_max] is necessary and
-  //  sufficient for a root -- the same construction as PR's
-  //  state_from_rho_e_phase_try, with GERG's own domain as the bracket.
-  //  Without this check g_T_bisect_phase converges to a box endpoint and
-  //  returns it looking valid -- the silent-clamp shape PR removed
-  //  (FINDINGS 10j.3).  On success the value is taken from the SAME path
-  //  REY2PTS_phase uses, so _try(valid) == REY2PTS_phase by construction.
+  //  Non-aborting variant: returns false when (rho,e) has no root on the
+  //  requested branch (the same endpoint bracket as g_T_bisect_phase,
+  //  checked here before the aborting path is entered), for callers
+  //  holding a validity channel (PsPhaseAPI's ph.valid).  On success the
+  //  value comes from the same path REY2PTS_phase uses, so _try(valid)
+  //  equals REY2PTS_phase by construction.
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   bool REY2PTS_phase_try(amrex::Real R, amrex::Real E, amrex::Real*,
                          hem::Phase3 phase,
@@ -749,16 +694,12 @@ namespace EOS {
   void RYP2E(amrex::Real R, amrex::Real*, amrex::Real P, amrex::Real& E)
   { E = gerg::state_TR_auto(g_T_from_P_rho(double(R), double(P)), double(R)).e; }
 
-  //  (rho, T) -> {P, e} on the AUTO (equilibrium) surface: the DIRECT
-  //  inverse of REY2T / REY2P at fixed rho, in ONE evaluation.
-  //  ps_apply_floor needs e*(rho, T_floor) = "smallest e whose REY2T
-  //  reaches T_floor".  Because REY2T is monotone in e, that e IS this
-  //  function -- but it used to be obtained by a 46-step bisection on e
-  //  whose predicate was itself the 64-step (rho,e)->T bisection: 2944
-  //  guarded evaluations per phase per cell, unconditionally.  Verified
-  //  equivalent to the nested bisection to 2e-13 relative on real satjet
-  //  states.  P is returned from the same state so the pressure floor can
-  //  be skipped exactly when it cannot bind (P(T_floor,rho) >= p_floor).
+  //  (rho, T) -> {P, e} on the auto (equilibrium) surface: the direct
+  //  inverse of REY2T / REY2P at fixed rho in one evaluation.  A
+  //  temperature floor needs e*(rho, T_floor), and since REY2T is
+  //  monotone in e that is this function, not a nested bisection.  P
+  //  comes from the same state so a pressure floor can be skipped
+  //  exactly when it cannot bind.
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void RTY2PE_auto(amrex::Real R, amrex::Real T, amrex::Real*,
                    amrex::Real& P, amrex::Real& E)
@@ -876,7 +817,7 @@ namespace EOS {
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void S(amrex::Real& s) { s = amrex::Real(1.0); }
 
-  // ---- chemistry stubs (CO2 has no reactions) ---------------------
+  // Chemistry stubs: CO2 has no reactions.
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void RTY2WDOT(amrex::Real, amrex::Real, amrex::Real*, amrex::Real*)
   { amrex::Error("RTY2WDOT not physically possible for GERG EoS"); }

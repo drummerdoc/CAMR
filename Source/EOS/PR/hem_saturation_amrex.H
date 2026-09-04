@@ -1,48 +1,25 @@
 // =====================================================================
-//  hem_saturation_amrex.H
-//
-//  Pure-component fugacity-based Tsat(P) inversion for HEM using the
-//  Peng-Robinson EOS.  Written as a device-callable AMReX routine.
-//
-//      Newton-Raphson on   h(T) = ln phi_L(T,P) - ln phi_V(T,P) = 0
-//      with analytic dh/dT obtained from   d ln(phi) / dT |_P .
+//  hem_saturation_amrex.H — Peng-Robinson cubic, fugacity coefficients
+//  and the pure-component Tsat(P) inversion, device-callable.
 //
 //  Peng-Robinson:
 //      P     = RT/(v-b) - a(T) / [ (v + (1+sqrt 2) b) (v + (1-sqrt 2) b) ]
 //      a(T)  = Omega_a R^2 Tc^2 / Pc * [1 + kappa (1 - sqrt(T/Tc))]^2
 //      b     = Omega_b R Tc / Pc
 //      kappa = 0.37464 + 1.54226 omega - 0.26992 omega^2
-//      Omega_a = 0.45723553,  Omega_b = 0.07779607
-//
-//  Cubic form used internally (Z = Pv/RT):
+//  Cubic in Z = Pv/RT, with A = a P/(RT)^2 and B = b P/(RT):
 //      Z^3 + (B-1) Z^2 + (A - 3 B^2 - 2 B) Z + (-AB + B^2 + B^3) = 0
-//      A = a P / (R T)^2 ,  B = b P / (R T)
 //
-//  Robustness:
-//      - Wilson seed if T_init is invalid or out of (0, Tc).
-//      - Single-root regimes (compressed liquid or superheated vapor)
-//        are detected so the iteration does not spuriously declare
-//        convergence at h = 0 ; the bracket is tightened and T steps
-//        toward the saturation envelope.
-//      - Newton steps bracketed inside (0, Tc); bisection fallback when
-//        the Newton step leaves the bracket or dh/dT collapses.
+//  Tsat(P): Newton-Raphson on h(T) = ln phi_L(T,P) - ln phi_V(T,P) = 0
+//  with analytic dh/dT, bracketed inside (0, Tc) with bisection when a
+//  step leaves the bracket or dh/dT collapses; single-root regimes
+//  (compressed liquid, superheated vapour) step toward the envelope
+//  instead of declaring convergence at h = 0.  Wilson seed when T_init
+//  is invalid.
 //
-//  Usage:
-//
-//      hem::PR eos = hem::PR::make(304.13, 7.3773e6, 0.2239);   // CO2
-//
-//      amrex::ParallelFor(bx,
-//          [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
-//      {
-//          auto r = hem::satTemperature(eos, P(i,j,k), Tprev(i,j,k));
-//          Tsat(i,j,k) = r.T;
-//      });
-//
-//  Units: SI throughout.  T [K], P [Pa].
-//
-//  Standalone-compile shim:
-//      Define HEM_NO_AMREX before #include to substitute trivial fallbacks
-//      for AMREX_GPU_HOST_DEVICE and amrex::Real - useful for unit tests.
+//  Units: SI.  Define HEM_NO_AMREX before including to substitute
+//  trivial fallbacks for the AMReX macros and amrex::Real (table
+//  generators, unit tests).
 // =====================================================================
 #pragma once
 
@@ -61,7 +38,7 @@
   namespace amrex {
       using Real = double;
       namespace Math { inline double abs(double x) { return std::abs(x); } }
-      // newer hem code (max-packing clamp etc.) uses amrex::max/min
+      // hem_pr_state.H uses amrex::max/min
       template <typename T> inline T max(const T& a, const T& b) { return a > b ? a : b; }
       template <typename T> inline T min(const T& a, const T& b) { return a < b ? a : b; }
   }

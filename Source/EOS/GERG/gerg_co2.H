@@ -11,9 +11,9 @@
 //  Design constraints (CAMR GPU-safety):
 //   - branch-free fixed-op evaluation, no iteration, no data-dependent
 //     loops; header-only, no AMReX dependency (GERG_HD macro adapts).
-//   - (T,rho) -> state ONLY in this pass. Inversions ((rho,e)->T etc.),
-//     saturation, metastable extensions and the guard layer are built
-//     on top (table + splines), NOT inside this evaluator.
+//   - (T,rho) -> state only.  Inversions ((rho,e)->T etc.), saturation,
+//     metastable extensions and the guard layer are built on top
+//     (gerg_co2_guard.H, gerg_co2_sat.H), not inside this evaluator.
 //
 //  Units: SI per-mass in/out (rho kg/m3, T K, P Pa, e/h J/kg,
 //  s J/kg/K, c m/s); internal per-mole.
