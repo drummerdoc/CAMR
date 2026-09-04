@@ -1,0 +1,7 @@
+tag: PRE (pre-cleanup baseline)
+camr: Source/ identical to 5a7edf0 (tag pre-cleanup-2026-09-04); harness at 1d9fe3b
+amrex: 65db2e4e678a15acec1b666d4c42e339ad5b9ec0
+host: Linux aarch64 (Cowork VM), g++ 11.4.0
+exe: CAMR1d.gnu.TPROF.PS.PR.ex built 2026-09-04, DIM=1 USE_MPI=FALSE COMP=gnu Eos_Model=PR
+gate: verify_canonical ALL PASS (A/C mean 0.0350, C1 exact, B12 R=0.0097; checks 3/6b STALE as documented)
+fingerprints: characterization/PRE_defaults.json (21 cases, exact_suite config), PRE_matched.json (21 cases, full_suite config)

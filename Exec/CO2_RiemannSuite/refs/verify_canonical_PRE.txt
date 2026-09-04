@@ -1,0 +1,44 @@
+== 0. build freshness ==
+  [PASS] executable newer than changed PS headers  (exe=CAMR1d.gnu.TPROF.PS.PR.ex)
+== 1. frozen A/C battery (expect handoff Part-2 values) ==
+  [PASS] A1-Sod-strong  (got 0.012,0.013,0.015 expect (0.012, 0.012, 0.015))
+  [PASS] A2-Sod-weak  (got 0.013,0.089,0.015 expect (0.013, 0.089, 0.015))
+  [PASS] A3-Lax-like  (got 0.027,0.084,0.028 expect (0.027, 0.084, 0.028))
+  [PASS] A4-Double-rare  (got 0.022,0.052,0.027 expect (0.022, 0.052, 0.027))
+  [PASS] A5-Two-shock  (got 0.054,0.106,0.067 expect (0.054, 0.106, 0.067))
+  [PASS] A6-Near-vacuum  (got 0.012,0.008,0.015 expect (0.012, 0.008, 0.015))
+  [PASS] C1-Identity  (got 0.000,0.000,0.000 expect (0.0, 0.0, 0.0))
+  [PASS] C2-Acoustic-limit  (got 0.000,0.125,0.000 expect (0.0, 0.125, 0.0))
+  [PASS] C3-Strong-shock-V  (got 0.029,0.108,0.027 expect (0.029, 0.108, 0.027))
+  [PASS] A/C battery mean ~ 0.0350  (mean=0.0350)
+== 2. B4 canonical flatness (mode 4) ==
+  [PASS] B4 u-err ~0.129 at tau=1e-4  (got 0.126)
+  [PASS] B4 u-err ~0.129 at tau=1e-7  (got 0.126)
+  [PASS] B4 flat across tau  (delta=0.0000)
+== 3. B9 canonical value / stale-binary detector ==
+  [STALE] B9 mode-4 u-err ~0.64 (ref 2026-08-10, cap-free + W2-1)  (got 1.000)
+          reason: mode-4 B9 ABORTS -- the abort mode 5 retired.  MEASURED identical on the pre-flip binary, so this is not a regression; the reference itself is pre-X3.  Re-baseline against mode 5 or delete with mode 4 (STATUS 7.8).
+== 4. reproject liveness (PS_sources.H change present) ==
+  [PASS] rp=0 reproduces legacy (~0.845)  (got 0.849)
+  [PASS] rp=1 improves (~0.752)  (got 0.752)
+  [PASS] rp=0 vs rp=1 differ (change is live)  (delta=0.098)
+== 5. presence gates (S1/S2) ==
+  [PASS] presence corridor seeds (alpha_trace=1e-6): A/C mean ~0.0350  (mean=0.0350)
+  [PASS] presence corridor seeds (alpha_trace=1e-6): C1 exact
+  [PASS] presence exact-zero trace (alpha_trace=0): A/C mean ~0.0350  (mean=0.0351)
+  [PASS] presence exact-zero trace (alpha_trace=0): C1 exact
+== 6. S3 transitions: zero-trace two-phase (fold + birth live) ==
+  [PASS] S3 frozen B4 zero-trace u-err ~0.131  (got 0.127)
+  [STALE] S3/S4 canonical B9 zero-trace: flash birth develops (u-err < 0.60)  (got 1.000 (no-birth plateau ~0.85; S4 ref 0.43))
+          reason: same mode-4 B9 abort as check 3, and the 0.60 threshold is an S3/S4-era number taken before the nucleator existed.  The live question it was asking -- does birth from pure liquid develop the evaporation -- is now answered by [PS-FLASH-EV] and the B2/B9 bracket rows at the default config.
+== 7. S4 operator gating (#88 retired under presence) ==
+  [PASS] S4 frozen B5 u-err ~0.39 (guard retired)  (got 0.402)
+  [PASS] S4+B1 pelanti kernel: B2 front stable (umax < 120)  (umax=36.7 (standard kernel: ~700))
+
+== 8. B12 two-phase wall reflection: per-phase compression bound ==
+         P2/P1=1.83  rho_1: 936.4->941.5  rho_2: 88.28->138.19  R=0.0097
+         alpha_1 invariance max|alpha_1-alpha_1^0| = 4.39e-03   (0 => alpha is frozen through the acoustic waves)
+  [PASS] B12 far field undisturbed at t_end  (|dP|=0.00e+00)
+  [PASS] B12 reflection symmetry (task #47)  (max asym=9.31e-09)
+  [PASS] B12 liquid compresses less than vapour (R <= 0.25)  (R=0.0097)
+VERDICT: ALL CHECKS PASS — canonical chain verified on this machine.

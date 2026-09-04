@@ -25,6 +25,7 @@ USAGE
 
     ./characterize.py record BASELINE --cases B4-Cross-critical B2-Evap-wave
     ./characterize.py record BASELINE --defaults   # acceptance config (see below)
+    ./characterize.py merge BASELINE part1 part2   # join batched --cases records
 
 CONFIGURATIONS
     default        full_suite.run_camr: the matched CAMR-vs-standalone config
@@ -159,5 +160,18 @@ if __name__ == '__main__':
         sys.exit(cmd_record(args[0], cases, defaults='--defaults' in sys.argv))
     elif mode == 'compare':
         sys.exit(cmd_compare(args[0], args[1]))
+    elif mode == 'merge':            # merge OUT IN1 IN2 ...  (batched --cases records)
+        out, ins = args[0], args[1:]
+        rec, cfgs = {}, set()
+        for t in ins:
+            d = json.load(open('%s/%s.json' % (STORE, t)))
+            cfgs.add(d.get('_config', 'full_suite matched'))
+            rec.update({k: v for k, v in d.items() if not k.startswith('_')})
+        if len(cfgs) != 1:
+            print('refusing to merge different configurations:', cfgs); sys.exit(2)
+        rec['_config'] = cfgs.pop()
+        with open('%s/%s.json' % (STORE, out), 'w') as fh:
+            json.dump(rec, fh, indent=1, sort_keys=True)
+        print('merged %d cases -> %s/%s.json' % (len(rec) - 1, STORE, out)); sys.exit(0)
     else:
         print(__doc__); sys.exit(2)
