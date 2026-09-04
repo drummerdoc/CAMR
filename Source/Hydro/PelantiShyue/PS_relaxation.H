@@ -1,37 +1,29 @@
 #ifndef PS_RELAXATION_H
 #define PS_RELAXATION_H
 // =====================================================================
-//  PS_relaxation.H  —  Pelanti-Shyue mechanical relaxation
-//                       (proper iso-pressure port).
+//  PS_relaxation.H — the per-cell reaction operators of the six-equation
+//  Pelanti–Shyue model on the CAMR grid: the relaxation dispatch and its
+//  mode kernels, the phase folds, the identity resyncs, the positivity
+//  floor, and the host-only diagnostic walkers that read the same state.
 //
-//  This calls the standalone hem::ps_pressure_relax_cell verbatim,
-//  the same routine that has been validated on the co2-eos-cfd
-//  test suite (B1-B10, A1-A6, C1-C4).  It preserves:
+//  Algorithm: docs/MODEL_AND_ALGORITHM.md §5 (relaxation; the coupled X3
+//  operator, ps_relax_mode=5, is the default), §4.4 (folds), §8 (floors,
+//  resyncs, diagnostics).  The per-cell kernels live in hem_pelanti_shyue.H
+//  and see the EOS through the PsPhaseAPI callback of ps_make_camr_eos_api
+//  (branch-locked; no root = invalid, never an abort).
 //
-//      * per-phase masses m_1 = α_1 ρ_1  and  m_2 = α_2 ρ_2
-//        individually (no mass transfer);
-//      * mixture momentum (relaxation doesn't touch velocity);
-//      * mixture total internal energy m_1 e_1 + m_2 e_2 (the
-//        mechanical-work redistribution conserves this by
-//        construction — see the standalone algorithm notes).
-//
-//  It ADJUSTS:
-//      * volume fraction α_1  (Newton on ΔP = P_1 − P_2 → 0);
-//      * per-phase specific internal energies e_1, e_2  (redistributed
-//        by the P_I·dα work term, keeping the mixture invariant).
-//
-//  Preservation of EOS integrity: this uses the same
-//  hem::state_from_rho_e_phase calls the standalone driver uses,
-//  through the PsPhaseAPI callback constructed below with a lambda
-//  wrapping PR's EOS::REY2P.  No HEM-style reset, no
-//  approximation to the physics — this is the P-S 2014
-//  mechanical-relaxation update as designed.
-//
-//  Cost: per cell,
-//      max_iter × 2 × (state_from_rho_e_phase call = 1 PR Newton)
-//  with typical convergence in 2-3 iterations for cells close to
-//  equilibrium (which is where we usually are — pressure diseq
-//  builds up over ONE hydro flux step, then relaxes back).
+//  Contract.  Every operator acts cell-locally on UALPHA1, UM1RHO1,
+//  UM2RHO2, UE1, UE2; nothing moves between cells.  Relaxation and the
+//  folds leave URHO, momentum and UEDEN exactly invariant; the floor and
+//  the resyncs are the named exceptions.  No state is manufactured: an
+//  operator whose precondition fails leaves the cell untouched, and the
+//  presence-gate refusal is counted at every relax entry site.  Host-only
+//  (std::function callback); counters compile out on GPU.
+//  Dials, each documented once at its accessor: ps_relax_mode (5),
+//  ps_theta_tau (1e-7 s), ps_coexist_action (0), ps_mech_kernel (0),
+//  ps_mech_close (1), ps_relax_hyst (1), ps_resync_mass (1),
+//  ps_phase_e_cap (1e9 J/kg), ps_pres_floor / ps_temp_floor (0 = off),
+//  ps_tfloor_fold (0 = off); the diagnostic and harvester keys default off.
 // =====================================================================
 
 #ifdef USE_PS_HYDRO
@@ -39,8 +31,8 @@
 #include "IndexDefines.H"
 #include "EOS.H"
 #include "hem_pelanti_shyue.H"
-#include "PS_presence.H"   // S3: fold threshold single-sourcing
-#include "PS_promote.H"    // 3c: floor-skip counter (ps_promote_diag)
+#include "PS_presence.H"   // PsPres, ps_regime, the fold thresholds
+#include "PS_promote.H"    // ps_promote_diag counters (floor skips)
 #include <AMReX_Array4.H>
 #include <AMReX_GpuQualifiers.H>
 #include <AMReX_Print.H>
@@ -50,56 +42,44 @@
 #include <string>
 #include <fstream>
 #include <unordered_map>
-#include <vector>      // Stage-1 C3 [PS-PSAT] median
-#include <algorithm>   // Stage-1 C3 std::sort
+#include <vector>      // ps_report_psat
+#include <algorithm>   // ps_report_psat
 
 
 // ---------------------------------------------------------------------
-//  Diagnostic counters — Phase 4d instrumentation.
-//
-//  The relaxation was observed to write α_1 outside the physical
-//  range [α_floor, 1 − α_floor] in some cells during CO2_TBlowdown.
-//  Rather than clamp the symptom, count each write-back category to
-//  identify where and how often it happens.  ps_apply_relaxation
-//  resets these to zero at the start of each MFIter sweep and
-//  prints a summary line at the end.  Because MPI-only + USE_OMP=
-//  FALSE means each process is single-threaded through this code,
-//  plain int suffices — no atomics required.
-//
-//  Values are function-local statics of `ps_relax_diag()` so the
-//  header stays include-safe (no ODR violations).
+//  Per-sweep relaxation counters, host-only.  Every early return of the
+//  mode-0 entry path and every kernel failure is tallied by cause, and an
+//  alpha written outside [0,1] is counted, never clamped, so an upstream
+//  defect (a flux writing alpha > 1) stays visible.  Reset at the start
+//  of each ps_apply_relaxation sweep, reported at its end under
+//  ps_relax_verbose.  Plain ints: the sweep is single-threaded per rank.
+//  Function-local static so the header stays include-safe.
+//  Retire-candidate: see docs/DESIGN_DECISIONS.md §5.
 // ---------------------------------------------------------------------
 struct PsRelaxDiag {
-    int n_calls        = 0;   // total cells the relax visited
-    // --- refined skip taxonomy (was n_skipped) --------------------
-    int n_skip_nan     = 0;   // α_in was NaN/Inf
-    int n_skip_lo      = 0;   // α_in < α_floor           (near-pure-phase-2)
-    int n_skip_hi_ok   = 0;   // α_in ∈ (1 − α_floor, 1.0] (legitimate near-pure-1)
-    int n_skip_hi_bad  = 0;   // α_in > 1.0               (impossible → flux bug)
+    int n_calls        = 0;   // cells visited
+    int n_skip_nan     = 0;   // alpha_in not finite
+    int n_skip_lo      = 0;   // alpha_in < alpha_floor (near-pure phase 2)
+    int n_skip_hi_ok   = 0;   // alpha_in in (1 - alpha_floor, 1]
+    int n_skip_hi_bad  = 0;   // alpha_in > 1 (impossible: an upstream defect)
     int n_skip_mk      = 0;   // m_1 or m_2 non-positive
-    //  AUDIT 2026-08-24 B13: the S4 presence gate's refusals were the ONE
-    //  uncounted early-out on the relax entry path (5 call sites, all
-    //  modes) — a cell inside the α band whose phase pair is not
-    //  Independent+Independent silently kept its pressure disequilibrium.
-    //  ONE shared counter: the five sites apply the identical predicate to
-    //  the identical inputs, so a per-mode split would only re-encode
-    //  ps_relax_mode.
-    int n_gate_presence = 0;  // S4 presence gate refused (per sweep, all modes)
-    // -----------------------------------------------------------------
-    int n_failed       = 0;   // ps_pressure_relax_cell returned false
-    // --- failure taxonomy (task #41) ---
-    int n_fail_eos     = 0;   //   of which: metastable/out-of-domain EOS state
-    int n_fail_slope   = 0;   //   singular dP/dα (even 1-sided + step-shrink)
-    int n_fail_maxiter = 0;   //   did not converge within max_iter
+    //  One counter for the presence-gate refusal at all five relax entry
+    //  sites: identical predicate on identical inputs, so a per-mode
+    //  split would only re-encode ps_relax_mode.
+    int n_gate_presence = 0;
+    int n_failed       = 0;   // kernel returned false; split by cause:
+    int n_fail_eos     = 0;   //   no root / off-domain EOS state
+    int n_fail_slope   = 0;   //   singular dP/dalpha
+    int n_fail_maxiter = 0;   //   no convergence within max_iter
     int n_fail_input   = 0;   //   bad input on entry
-    int n_alpha_low    = 0;   // α_1 written < α_floor
-    int n_alpha_high   = 0;   // α_1 written > 1 − α_floor
-    int n_alpha_gt_one = 0;   // α_1 written > 1  (impossible physically)
-    int n_alpha_lt_zero= 0;   // α_1 written < 0  (impossible physically)
-    double alpha_min_seen    = 1.0;   // min of relax-written α
-    double alpha_max_seen    = 0.0;   // max of relax-written α
-    double alpha_in_max_seen = 0.0;   // max of α_in (BEFORE relax, catches flux overshoot)
-    double alpha_in_min_seen = 1.0;   // min of α_in
+    int n_alpha_low    = 0;   // alpha_1 written < alpha_floor
+    int n_alpha_high   = 0;   // alpha_1 written > 1 - alpha_floor
+    int n_alpha_gt_one = 0;   // alpha_1 written > 1
+    int n_alpha_lt_zero= 0;   // alpha_1 written < 0
+    double alpha_min_seen    = 1.0;   // range of relax-written alpha
+    double alpha_max_seen    = 0.0;
+    double alpha_in_max_seen = 0.0;   // range of alpha_in (catches flux overshoot)
+    double alpha_in_min_seen = 1.0;
 };
 
 inline PsRelaxDiag& ps_relax_diag() {
@@ -108,54 +88,37 @@ inline PsRelaxDiag& ps_relax_diag() {
 }
 
 // ---------------------------------------------------------------------
-//  STAGE-1 instruments (PLAN_measurements_and_fixes.md S1; REVIEW_RESPONSE.md
-//  D3/D4 and X2).  Host-only counters in the PsRelaxDiag pattern: reset at
-//  the start of each ps_apply_relaxation sweep, reported at its end, gated
-//  prints, always-on cheap counting where counting is free.
-//
-//  C1  [PS-PRES]  the P1 != P2 residual the thermal leg leaves behind
-//      (mode 4 has no mechanical pass after it -- D4's unmeasured note).
-//      SPLIT BY CAUSE, per ground rule 2: cells where the leg moved a
-//      temperature by more than 1 K vs cells where it ran but barely moved
-//      vs cells where the gate skipped it.  The post-thermal states cost two
-//      extra branch-locked solves per cell, so they are formed ONLY when
-//      CAMR.ps_pres_diag = 1.
-//
-//  C2  [PS-COEXIT-TH]  the THERMAL leg's band exits, named and counted
-//      (X2).  The MT gate's exits were already counted by [PS-MTCOEX]; the
-//      thermal leg's were a silent skip.  Counting is a few integer adds and
-//      is always on; the report is gated by CAMR.ps_coexit_diag = 1.  The
-//      RESPONSE stays whatever CAMR.ps_coexist_action selects -- this
-//      instrument only makes the event observable.
+//  Per-sweep thermal-leg instruments, host-only, reset and reported with
+//  the sweep.  [PS-PRES]: the |P1-P2| residual at chain exit, split by
+//  whether the thermal leg moved a T by > 1 K, ran and stood, or was
+//  gate-skipped; the post-thermal states cost two branch-locked solves,
+//  so they are formed only under CAMR.ps_pres_diag.  [PS-DT]: |T1-T2| at
+//  entry and exit of the leg (completeness), fed by mode 4 and by X3.
+//  [PS-COEXIT-TH]: the leg's band exits by side and outcome; counting is
+//  always on, the report is gated by ps_coexit_diag, and the response is
+//  whatever ps_coexist_action selects.  Docs/MODEL_AND_ALGORITHM.md §8.6.
 // ---------------------------------------------------------------------
 struct PsPresDiag {
-    // C1: thermal leg RAN and moved a T by > 1 K
+    // thermal leg ran and moved a T by > 1 K
     long   n_run_moved = 0;
     double dp_moved_max = 0.0, dp_moved_sum = 0.0;
-    // C1: thermal leg RAN, no T moved by > 1 K
+    // thermal leg ran, no T moved by > 1 K
     long   n_run_still = 0;
     double dp_still_max = 0.0, dp_still_sum = 0.0;
-    // C1: thermal leg SKIPPED by the gate (residual is post-mechanical,
-    //     read off the already-computed q1/q2 -- no extra solves)
+    // gate-skipped: residual is post-mechanical, read off q1/q2 (no extra solves)
     long   n_skipped = 0;
     double dp_skip_max = 0.0, dp_skip_sum = 0.0;
     long   n_postinval = 0;   // post-thermal state invalid: residual unmeasurable
-    //  F4 session 3 [PS-DT]: thermal disequilibrium |T1-T2| at chain
-    //  ENTRY (post-mechanical / post-projection) and EXIT, over cells
-    //  whose thermal leg ran — the completeness census both relaxation
-    //  modes feed (mode 4 from the C1 states, mode 5 from PsX3Params
-    //  out-params).  Same ps_pres_diag gate as C1.
+    // [PS-DT] |T1-T2| at thermal-leg entry and exit, cells whose leg ran
     long   n_dt = 0;
     double dtpre_max = 0.0,  dtpre_sum = 0.0;
     double dtpost_max = 0.0, dtpost_sum = 0.0;
-    // C2: thermal-leg band exits by side (lo = some T <= T_triple,
-    //     hi = some T >= T_crit, both = lo and hi in the same cell)
+    // band exits by side: lo = some T <= T_triple, hi = some T >= T_crit
     long   n_exit_lo = 0, n_exit_hi = 0, n_exit_both = 0;
-    long   n_exit_continued = 0;   // exit, but ps_coexist_action let it run
-    long   n_exit_refused   = 0;   // exit, thermal leg skipped (legacy response)
-    //  WP-CONTACT-CEIL fix (2026-08-27): hi-side-only exit with the
-    //  supercritical phase beyond 2*T_crit — the runaway-sliver class;
-    //  the thermal leg RUNS for these (subset of n_exit_continued).
+    long   n_exit_continued = 0;   // exit, thermal leg ran anyway
+    long   n_exit_refused   = 0;   // exit, thermal leg stood
+    // hi-side-only exit beyond 2 T_crit: the runaway clause ran the leg
+    // (subset of n_exit_continued)
     long   n_exit_runaway   = 0;
     void reset() { *this = PsPresDiag{}; }
 };
@@ -165,10 +128,13 @@ inline PsPresDiag& ps_pres_diag_data() {
     return d;
 }
 
+// CAMR.ps_pres_diag: see hem::ps_diag_pres (the single read site).
 inline int ps_pres_diag() {
-    return hem::ps_diag_pres();   // single read site (AUDIT C.4)
+    return hem::ps_diag_pres();
 }
 
+// CAMR.ps_coexit_diag (0): 1 prints [PS-COEXIT-TH] each sweep.
+// Retire-candidate: see docs/DESIGN_DECISIONS.md §5.
 inline int ps_coexit_diag() {
     static const int v = []() -> int {
         int val = 0; amrex::ParmParse pp("CAMR");
@@ -179,43 +145,33 @@ inline int ps_coexit_diag() {
 
 
 // -----------------------------------------------------------------
-//  Construct the PsPhaseAPI callback that ps_pressure_relax_cell
-//  needs.  Only p.P and p.valid are read in the relaxation loop
-//  (line 1849-1854 of hem_pelanti_shyue.H); the rest are ignored,
-//  so we fill only what's needed.
-//
-//  Branch-locked per-phase EOS (task #185): dispatches to
-//  EOS::REY2P_liquid for phase 1 and EOS::REY2P_vapor for phase 2
-//  so the mechanical relaxation Newton sees per-phase pressures
-//  that are consistent with each phase's own PR branch (including
-//  the metastable extrapolation).  Without this the Newton drove
-//  the mixture off in an unphysical direction whenever any cell had
-//  a trace phase sitting on the "wrong" side of the saturation
-//  dome — the primary CAMR B4 R-star failure mode.
+//  ps_make_camr_eos_api — the PsPhaseAPI callback every hem kernel here
+//  uses.  Fluid metadata (critical and triple points, density domain,
+//  Psat(T), molar mass) comes from the EOS, so no kernel carries a fluid
+//  constant.  state_from_rho_e_phase is branch-locked (phase 1 liquid,
+//  phase 2 vapour, each with its metastable extrapolation) because the
+//  relaxation Newton must see per-phase pressures on the phase's own
+//  branch; a mixture-root query walks off wherever a phase sits across
+//  the dome from its state.  No root is reported as ph.valid = false,
+//  never an abort (docs/MODEL_AND_ALGORITHM.md §7.2).
 // -----------------------------------------------------------------
 inline hem::PsPhaseAPI
 ps_make_camr_eos_api()
 {
     hem::PsPhaseAPI api;
-    // Fluid properties from the EOS (single source of truth) so the hem
-    // two-phase gates stay agnostic to the specific fluid — no hardcoded
-    // triple point / critical temperature in the gate code.
     api.T_crit_K   = double(EOS::T_crit());
     api.P_crit_Pa  = double(EOS::P_crit());
     api.T_triple_K = double(EOS::T_triple());
-    // E2' (DESIGN_ps_extinction.md §10, Marc-approved 2026-08-10): under
-    // presence, hand the mechanical-relax kernels the backend's density
-    // domain so their alpha walk cannot step either phase outside it.
-    // Legacy (presence off): bounds unset -> kernels bit-identical.
+    // The backend density domain bounds the mechanical kernels' alpha walk
+    // so neither phase can be stepped off it (docs §5.2).
+    // Retire-candidate (the enabled fork): see docs/DESIGN_DECISIONS.md §7.
     if (ps_presence_params().enabled != 0) {
         api.rho_dom_lo = double(EOS::rho_min());
         api.rho_dom_hi = double(EOS::rho_max());
     }
-    // Fluid-sourced saturation pressure for the flash metastability test
-    // (task #53) — no hard-coded co2_P_sat_wagner in the generic flash.
+    // Saturation pressure for the flash metastability window.
     api.Psat_of_T  = [](double T) { return double(EOS::Psat(amrex::Real(T))); };
-    // Molar mass for the SRT kinetic prefactor (ps_mt_tau_model=2, Stage-1
-    // C6) — from the EOS, single source of truth, no hard-coded fluid.
+    // Molar mass for the SRT kinetic prefactor.
     {
         amrex::Real Yw[NUM_SPECIES];
         Yw[0] = amrex::Real(1.0);
@@ -230,19 +186,16 @@ ps_make_camr_eos_api()
         amrex::Real Y[NUM_SPECIES];
         Y[0] = amrex::Real(1.0);
         for (int n = 1; n < NUM_SPECIES; ++n) Y[n] = amrex::Real(0.0);
-        // Single PR state solve -> P, T, s together (see EOS::REY2PTS_phase).
-        // Avoids re-entering the Newton solve once per field; the extra
-        // outputs are free byproducts of the one solve that P already needs,
-        // so callers needing only P (the relaxation Newton loop) pay nothing.
+        // One state solve yields P, T, s together; the extra outputs are
+        // free by-products of the solve P needs, so callers wanting only P
+        // (the relaxation Newton) pay nothing.
         amrex::Real P, T, S;
         const hem::Phase3 ph3 = (phase == 1) ? hem::Phase3::Liquid
                                              : hem::Phase3::Vapor;
         if (!EOS::REY2PTS_phase_try(amrex::Real(rho), amrex::Real(e), Y, ph3,
                                     P, T, S)) {
-            //  No root on this branch for this (rho,e).  Honour the
-            //  PsPhaseAPI contract -- report invalid -- rather than letting
-            //  the EOS abort.  The flash source's documented h_dom fallback
-            //  and the coexistence gate both already test ph.valid.
+            //  No root on this branch: report invalid per the PsPhaseAPI
+            //  contract; every consumer tests ph.valid.
             ph.alpha = ph.alpha; ph.rho = rho; ph.e = e;
             ph.P = 0.0; ph.T = 0.0; ph.c = 0.0;
             ph.h = 0.0; ph.s = 0.0; ph.g = 0.0;
@@ -252,16 +205,11 @@ ps_make_camr_eos_api()
         ph.rho   = rho;
         ph.e     = e;
         ph.P     = double(P);
-        ph.T     = double(T);                 // task #26: flash reads ph.T
-        ph.h     = e + double(P) / rho;        // task #26: flash reads ph.h
-                                               // (CAMR EOS reference, = e+P/ρ)
-        ph.s     = double(S);                  // task #28: MT reads ph.s / ph.g
-        ph.g     = ph.h - double(T) * double(S);   // Gibbs = h - T·s
-        // Per-phase sound speed (task #77 fix): ps_state_from_cons REQUIRES
-        // ph.c > 0 (line ~532); the old callback left c uninitialized, so
-        // ps_state_from_cons — and therefore the coupled MT equilibrium
-        // solver ps_mass_transfer_relax_cell — silently failed (returned
-        // invalid), which is why finite-rate MT never fired (dm_eq forced 0).
+        ph.T     = double(T);
+        ph.h     = e + double(P) / rho;        // h = e + P/rho on the EOS energy scale
+        ph.s     = double(S);
+        ph.g     = ph.h - double(T) * double(S);   // Gibbs = h - T s
+        // Sound speed is always filled: ps_state_from_cons requires ph.c > 0.
         amrex::Real Cs = amrex::Real(0);
         EOS::REY2Cs_phase(amrex::Real(rho), amrex::Real(e), Y, ph3, Cs);
         ph.c     = double(Cs);
@@ -271,38 +219,26 @@ ps_make_camr_eos_api()
 }
 
 
-//  (The host ps_cell_metastable went with mode 3, its last caller, on
-//   2026-08-17 (T1-c).  The device copy ps_dev::ps_cell_metastable
-//   survives for the device mode-0 guard, which presence forces off.)
-
-
 // -----------------------------------------------------------------
-//  ps_presence_relax_gate (S4, design §5).  Returns true when the cell
-//  should be relaxed under presence semantics: BOTH phases INDEPENDENT.
-//  A single-phase cell (other phase ABSENT/CORRIDOR) has nothing to
-//  relax — its corridor phase is transport-only bookkeeping, and its
-//  metastability, if any, is the FLASH source's business (the
-//  nucleator), never the relaxation's.  This is what retires the #88
-//  metastable guard under presence: "don't drag an un-nucleated cell
-//  to the dome" is enforced by never relaxing single-phase cells, and
-//  a nucleated (both-independent) cell always equilibrates — the
-//  distinction #88 could not make (FINDINGS_hem_limit.md addendum 2,
-//  guard-on throttles / guard-off over-develops).
+//  ps_presence_relax_gate — true when the cell may be relaxed: both
+//  phases Independent, or, with ps_relax_hyst on, both relaxable with at
+//  least one in the hysteresis band.  A cell with an Absent or Corridor
+//  phase is single-phase and has nothing to relax; its metastability, if
+//  any, is the flash nucleator's business.  This is what stands in for a
+//  metastable guard: an un-nucleated cell is never dragged to the dome
+//  because it is never relaxed, and a nucleated cell always equilibrates.
+//  See docs/MODEL_AND_ALGORITHM.md §4.5 and §4.7.
 // -----------------------------------------------------------------
-//  F3 hysteresis counter (PRESENCE-PROMOTION fix, WORKLOG 2026-08-29):
-//  gate passes granted via the hysteresis band rather than full
-//  both-INDEPENDENT.  Counts gate EVALUATIONS.
+//  Gate passes granted through the hysteresis band (counts evaluations).
 #if !defined(AMREX_USE_GPU)
 inline long& ps_pres_f3_hyst() { static long n = 0; return n; }
 #endif
 
-//  Cached CAMR.ps_relax_hyst (default 1, PRESENCE-PROMOTION F3): when on,
-//  a phase in the UPPER corridor (alpha >= alpha_cond/2) with a
-//  non-degenerate density quotient still counts as relaxable, so the
-//  source on/off boundary no longer coincides with the exact alpha the
-//  relaxation itself moves — the suspected driver of the near-threshold
-//  regime-toggle hash in Marc's extended demo2 run.  0 = strict
-//  both-INDEPENDENT (the pre-2026-08-29 gate, for A/B).
+//  CAMR.ps_relax_hyst (1): a phase in the upper corridor (alpha >=
+//  alpha_cond/2) with a non-degenerate density quotient still counts as
+//  relaxable, so the source on/off boundary is moved away from the exact
+//  alpha the relaxation itself moves — the suspected driver of
+//  near-threshold regime-toggle noise; 0 = strict both-Independent, for A/B.
 inline int ps_relax_hyst()
 {
     static const int v = []() -> int {
@@ -327,8 +263,7 @@ bool ps_presence_relax_gate(amrex::Real a1, amrex::Real m1, amrex::Real m2,
     if (i1 && i2) return true;
 #if !defined(AMREX_USE_GPU)
     if (ps_relax_hyst() != 0) {
-        //  Hysteresis band: upper-corridor, density-non-degenerate phases
-        //  keep relaxing.  Both phases must qualify (Independent or band).
+        //  Hysteresis band: both phases must qualify (Independent or band).
         auto band = [&pr](amrex::Real a, amrex::Real m) noexcept {
             return a >= amrex::Real(0.5) * pr.alpha_cond
                 && m > pr.rho_deg * a;
@@ -345,18 +280,12 @@ bool ps_presence_relax_gate(amrex::Real a1, amrex::Real m1, amrex::Real m2,
 }
 
 // -----------------------------------------------------------------
-//  Per-cell wrapper: unpack CAMR conservative slots into the V6 the
-//  standalone routine expects, run the Pelanti mechanical
-//  relaxation, then pack the (possibly updated) α, UE1, UE2 back.
-//
-//  Mixture URHO, UMX/UMY/UMZ, UEDEN, UEINT and per-phase UM1RHO1,
-//  UM2RHO2 are NEVER modified — the relaxation is designed to
-//  preserve them exactly.
-//
-//  This is CPU-only (PsPhaseAPI uses std::function).  Our current
-//  build has USE_OMP=FALSE and no GPU, so that's fine.  A device
-//  port would replace the std::function with a lightweight
-//  templated policy class.
+//  ps_mechanical_relax_cell (ps_relax_mode=0): instantaneous P1 = P2 by
+//  Newton on alpha_1 (hem::ps_pressure_relax_cell) with the interfacial
+//  work booked into UE1/UE2.  Writes UALPHA1, UE1, UE2 only; URHO,
+//  momentum, UEDEN, UEINT and the phase masses are invariants of the
+//  kernel.  Every early return is counted in PsRelaxDiag; a kernel
+//  failure leaves the cell unchanged.  Host-only (std::function EOS).
 // -----------------------------------------------------------------
 inline void
 ps_mechanical_relax_cell(int i, int j, int k,
@@ -367,17 +296,12 @@ ps_mechanical_relax_cell(int i, int j, int k,
     PsRelaxDiag& diag = ps_relax_diag();
     ++diag.n_calls;
 
-    // Skip cells that are essentially single-phase — the standalone
-    // routine has its own skip logic (line 1811) but we also want to
-    // avoid unpacking work.  Classify each skip so we can distinguish
-    // legitimate near-pure-phase-1 cells (α_in ∈ (1 − α_floor, 1.0]) from
-    // physically-impossible overshoot (α_in > 1.0) that would indicate
-    // the flux update is producing bad states.
+    // Entry classification, all counted: non-finite, near-pure, and
+    // alpha_in > 1 (an upstream flux defect the relaxation must not hide).
     constexpr Real alpha_floor = Real(1.0e-6);
     const Real alpha1_in = U(i,j,k, UALPHA1);
 
-    // Track incoming α extremes (all cells, not just skipped) — even
-    // cells that go on to relax will have their pre-relax value here.
+    // Incoming alpha extremes over all cells, pre-relaxation.
     if (std::isfinite(alpha1_in)) {
         if (alpha1_in > diag.alpha_in_max_seen) diag.alpha_in_max_seen = alpha1_in;
         if (alpha1_in < diag.alpha_in_min_seen) diag.alpha_in_min_seen = alpha1_in;
@@ -403,18 +327,15 @@ ps_mechanical_relax_cell(int i, int j, int k,
         ++diag.n_skip_mk;
         return;
     }
-    // S4 presence gate (design §5); replaces #88 below when enabled.
+    // Presence gate (docs §4.7); refusal counted.
     const PsPres& prS4 = ps_presence_params();
     if (!ps_presence_relax_gate(alpha1_in, m1, m2, prS4)) {
-        ++diag.n_gate_presence;   // B13: counted (was silent)
+        ++diag.n_gate_presence;
         return;
     }
 
-    // Mixture momentum magnitude → V6[3] = ρ_mix · |u| so that
-    // ½ (V6[3]/ρ_mix)² = ½|u|² is what the standalone uses for
-    // per-phase kinetic energy.  |u|² is direction-independent, so
-    // packing the momentum magnitude is exactly equivalent to the
-    // 1-D standalone's usage.
+    // V6[3] = rho_mix |u|: the kernel forms ½(V6[3]/rho_mix)² = ½|u|²,
+    // which is direction-free, so the momentum magnitude is exact.
     const Real rho_mix = m1 + m2;
     const Real px = U(i,j,k, UMX);
 #if (AMREX_SPACEDIM >= 2)
@@ -429,23 +350,17 @@ ps_mechanical_relax_cell(int i, int j, int k,
 #endif
     const Real p_mag = std::sqrt(px*px + py*py + pz*pz);
 
-    //  (The #88 metastable guard's LEGACY fork lived here.  Deleted
-    //  2026-08-17, T1-b: PsPres::enabled is hard-coded 1 and the
-    //  ps_presence dial is read nowhere, so the enabled == 0 branch was
-    //  unreachable, and mode 3 -- its last live consumer -- is gone too.)
-
     // Pack V6 in the layout ps_pressure_relax_cell expects.
     hem::V6 Uv;
     Uv[0] = alpha1_in;
     Uv[1] = m1;
     Uv[2] = m2;
-    Uv[3] = p_mag;                // any sign/direction is fine; only ½(V6[3]/ρ)² matters
-    Uv[4] = U(i,j,k, UE1);        // α₁ρ₁E₁ (volumetric)
-    Uv[5] = U(i,j,k, UE2);        // α₂ρ₂E₂
+    Uv[3] = p_mag;
+    Uv[4] = U(i,j,k, UE1);        // alpha_1 rho_1 E_1 (volumetric)
+    Uv[5] = U(i,j,k, UE2);        // alpha_2 rho_2 E_2
 
-    // Run the relaxation.  Uses default PsPressureRelaxParams
-    // (max_iter=20, tol_P_rel=1e-4, alpha_min=1e-6, ...).  On
-    // return, Uv[0], Uv[4], Uv[5] are updated in place; Uv[1..3]
+    // Default PsPressureRelaxParams (max_iter 20, tol_P_rel 1e-4,
+    // alpha_min 1e-6).  Uv[0], Uv[4], Uv[5] update in place; Uv[1..3]
     // are invariants.
     int reason = hem::PSR_OK;
     const bool ok = hem::ps_pressure_relax_cell(Uv, eos,
@@ -459,11 +374,10 @@ ps_mechanical_relax_cell(int i, int j, int k,
             case hem::PSR_MAXITER:   ++diag.n_fail_maxiter; break;
             default:                 ++diag.n_fail_input;   break;
         }
-        return;   // failure → leave cell unchanged
+        return;   // failure: leave the cell unchanged
     }
 
-    // Diagnostic: catch any relaxation result outside the physical
-    // range.  DO NOT clamp — that would hide the bug we're chasing.
+    // An out-of-range result is counted, never clamped.
     const Real alpha_out = Uv[0];
     if      (alpha_out < Real(0.0))                  ++diag.n_alpha_lt_zero;
     else if (alpha_out > Real(1.0))                  ++diag.n_alpha_gt_one;
@@ -482,26 +396,14 @@ ps_mechanical_relax_cell(int i, int j, int k,
 
 
 // -----------------------------------------------------------------
-//  ps_pt_equilibrium_relax_cell  —  P+T equilibrium relaxation (task #27).
-//
-//  Isochoric (α-fixed) JOINT pressure+temperature equilibration by
-//  per-phase internal-energy redistribution, mirroring the standalone
-//  `ps_iso_full_relax_grid` (env PS_ISO_RELAX=full): a short Picard
-//  alternation of ps_iso_pressure_relax_cell (drives P₁→P₂) and
-//  ps_iso_thermal_relax_cell (drives T₁→T₂), each conserving the mixture
-//  internal energy m₁e₁+m₂e₂.  This pushes the 6-equation model toward the
-//  5-eq KMS / HEM full-equilibrium limit — the operator that moved the
-//  strong-flash cases (B2/B9) toward the HEM analytic in the standalone
-//  (co2-eos-cfd diagnostics, tasks #25/#27).
-//
-//  Footprint: writes ONLY the per-phase energies UE1/UE2.  α, per-phase
-//  masses, momentum and the mixture UEINT/UEDEN are all preserved (the
-//  redistribution conserves m₁e₁+m₂e₂), so the conserved state is
-//  untouched — even lighter than the mechanical relax (no α write).
-//
-//  This is the INSTANTANEOUS (full-equilibrium) limit — an idempotent
-//  projection, like the mechanical relax.  A finite-rate thermal variant
-//  (which would engage the Strang split, task #29) is a follow-on.
+//  ps_pt_equilibrium_relax_cell (ps_relax_mode=1): isochoric (alpha
+//  fixed) joint P and T equilibrium by a short Picard alternation of
+//  hem::ps_iso_pressure_relax_cell and hem::ps_iso_thermal_relax_cell,
+//  each conserving m1 e1 + m2 e2 — the full-equilibrium (HEM-like) limit
+//  as an idempotent projection.  Writes UE1/UE2 only; alpha, the phase
+//  masses, momentum and UEDEN/UEINT are untouched.  A failed iteration
+//  leaves the cell unchanged.  Docs/MODEL_AND_ALGORITHM.md §5.7.
+//  Retire-candidate: see docs/DESIGN_DECISIONS.md §5.
 // -----------------------------------------------------------------
 inline void
 ps_pt_equilibrium_relax_cell(int i, int j, int k,
@@ -513,16 +415,16 @@ ps_pt_equilibrium_relax_cell(int i, int j, int k,
     constexpr Real alpha_floor = Real(1.0e-6);
     const Real alpha1_in = U(i,j,k, UALPHA1);
     if (!std::isfinite(alpha1_in)) return;
-    // Skip essentially single-phase cells (the iso cell fns skip too).
+    // Near-pure cells are skipped (the iso kernels skip them too).
     if (alpha1_in < alpha_floor || alpha1_in > Real(1.0) - alpha_floor) return;
 
     const Real m1 = U(i,j,k, UM1RHO1);
     const Real m2 = U(i,j,k, UM2RHO2);
     if (m1 <= Real(0.0) || m2 <= Real(0.0)) return;
-    {   // S4 presence gate (design §5)
+    {   // presence gate; refusal counted
         const PsPres& prS4g = ps_presence_params();
         if (!ps_presence_relax_gate(alpha1_in, m1, m2, prS4g)) {
-            ++ps_relax_diag().n_gate_presence;   // B13: counted (was silent)
+            ++ps_relax_diag().n_gate_presence;
             return;
         }
     }
@@ -542,17 +444,17 @@ ps_pt_equilibrium_relax_cell(int i, int j, int k,
     Uv[0] = alpha1_in;
     Uv[1] = m1;
     Uv[2] = m2;
-    Uv[3] = std::sqrt(px*px + py*py + pz*pz);   // |ρu| (only ½(V6[3]/ρ)² used)
+    Uv[3] = std::sqrt(px*px + py*py + pz*pz);   // |rho u|; only ½(V6[3]/rho)² is used
     Uv[4] = U(i,j,k, UE1);
     Uv[5] = U(i,j,k, UE2);
 
-    // Picard alternation P-relax ↔ T-relax (matches ps_iso_full_relax_grid).
+    // Picard alternation P-relax <-> T-relax.
     bool ok = true;
     for (int it = 0; it < outer_iters; ++it) {
         if (!hem::ps_iso_pressure_relax_cell(Uv, eos)) { ok = false; break; }
         if (!hem::ps_iso_thermal_relax_cell (Uv, eos)) { ok = false; break; }
     }
-    if (!ok) return;   // failure → leave cell unchanged
+    if (!ok) return;   // failure: leave the cell unchanged
 
     U(i,j,k, UE1) = Uv[4];
     U(i,j,k, UE2) = Uv[5];
@@ -560,14 +462,14 @@ ps_pt_equilibrium_relax_cell(int i, int j, int k,
 
 
 // -----------------------------------------------------------------
-//  ps_ptg_relax_cell (task #77, ps_relax_mode=2): mechanical/isochoric
-//  pressure equilibrium + FINITE-RATE thermal relaxation.  Same Picard
-//  alternation as ps_pt_equilibrium_relax_cell, but the thermal step
-//  relaxes T1->T2 at rate 1/theta (exact-exponential) instead of
-//  instantaneously.  With theta>0 the cell is NOT re-pinned on the
-//  saturation dome, so the finite-rate MT source in ps_apply_sources
-//  retains a genuine Gibbs driving force (sustained flashing) while the
-//  partial thermal coupling still bounds the per-phase energy (#72).
+//  ps_ptg_relax_cell (ps_relax_mode=2): isochoric pressure equilibrium
+//  plus finite-rate thermal relaxation, T1 -> T2 at rate 1/theta (exact
+//  exponential), in the same Picard alternation as mode 1.  With
+//  theta > 0 the cell is not re-pinned on the dome, so the split
+//  mass-transfer source keeps a Gibbs driving force while the partial
+//  thermal coupling bounds the per-phase energies.  Writes UE1/UE2 only.
+//  This is the mode the 2-D pipe-break decks pin (docs §5.7).
+//  Retire-candidate: see docs/DESIGN_DECISIONS.md §5.
 // -----------------------------------------------------------------
 inline void
 ps_ptg_relax_cell(int i, int j, int k,
@@ -585,10 +487,10 @@ ps_ptg_relax_cell(int i, int j, int k,
     const Real m1 = U(i,j,k, UM1RHO1);
     const Real m2 = U(i,j,k, UM2RHO2);
     if (m1 <= Real(0.0) || m2 <= Real(0.0)) return;
-    {   // S4 presence gate (design §5)
+    {   // presence gate; refusal counted
         const PsPres& prS4g = ps_presence_params();
         if (!ps_presence_relax_gate(alpha1_in, m1, m2, prS4g)) {
-            ++ps_relax_diag().n_gate_presence;   // B13: counted (was silent)
+            ++ps_relax_diag().n_gate_presence;
             return;
         }
     }
@@ -625,32 +527,21 @@ ps_ptg_relax_cell(int i, int j, int k,
 }
 
 
-inline int ps_mech_kernel();   // fwd decl (defined with the cached flags)
-inline int ps_coexist_action();  // fwd decl (defined with the cached flags)
-inline int ps_mech_close();      // fwd decl (defined with the cached flags)
+inline int ps_mech_kernel();     // defined with the cached dials below
+inline int ps_coexist_action();
+inline int ps_mech_close();
 
 // -----------------------------------------------------------------
-//  ps_canonical_relax_cell (ps_relax_mode=4): the canonical-chain
-//  relaxation leg (FINDINGS_hem_limit.md addendum, 2026-08-08).
-//
-//  alpha-ADJUSTING mechanical relaxation FIRST (the P-S 2014 closure:
-//  instantaneous pressure equilibrium with alpha free -- the validated
-//  mode-0 kernel ps_pressure_relax_cell), THEN finite-rate ISOCHORIC
-//  thermal relaxation (T1 -> T2 at rate 1/theta, at the alpha the
-//  mechanical pass chose).
-//
-//  Why not mode 2: its Picard alternates two FIXED-alpha projections
-//  (iso-P and thermal) that fight over the single energy-split DOF --
-//  the gap-item-B5 under-determination, measured T1=T2 to 2e-8 with
-//  dP/P = 0.76.  Here each equation owns its own DOF: P1=P2 owns
-//  alpha, the thermal rate owns the energy split.  Both kernels
-//  pre-exist and are individually validated; no new thresholds.
-//
-//  The #88 metastable guard applies to the mechanical pass exactly as
-//  in mode 0: metastability is model physics -- an un-nucleated cell
-//  must not be dragged toward the dome; the flash source is the
-//  nucleator, and the post-source reproject (PS_sources.H, gap B3)
-//  owns equilibration once mass has actually moved.
+//  ps_canonical_relax_cell (ps_relax_mode=4): the sequential chain.
+//  Alpha-adjusting mechanical relaxation first (P1 = P2 with alpha free,
+//  kernel per ps_mech_kernel), then finite-rate isochoric thermal
+//  relaxation at the new alpha, gated by the coexistence test, then the
+//  closing mechanical pass (ps_mech_close).  Each equation owns one DOF —
+//  P1 = P2 owns alpha, the thermal rate owns the energy split — which is
+//  why this is not mode 2, whose two fixed-alpha projections fight over
+//  the single energy-split DOF.  Writes UALPHA1, UE1, UE2; a failed
+//  mechanical pass leaves the cell unchanged.  Docs §5.7.
+//  Retire-candidate: see docs/DESIGN_DECISIONS.md §5.
 // -----------------------------------------------------------------
 inline void
 ps_canonical_relax_cell(int i, int j, int k,
@@ -667,10 +558,10 @@ ps_canonical_relax_cell(int i, int j, int k,
     const Real m1 = U(i,j,k, UM1RHO1);
     const Real m2 = U(i,j,k, UM2RHO2);
     if (m1 <= Real(0.0) || m2 <= Real(0.0)) return;
-    {   // S4 presence gate (design §5)
+    {   // presence gate; refusal counted
         const PsPres& prS4g = ps_presence_params();
         if (!ps_presence_relax_gate(alpha1_in, m1, m2, prS4g)) {
-            ++ps_relax_diag().n_gate_presence;   // B13: counted (was silent)
+            ++ps_relax_diag().n_gate_presence;
             return;
         }
     }
@@ -689,18 +580,12 @@ ps_canonical_relax_cell(int i, int j, int k,
     const Real p_mag = std::sqrt(px*px + py*py + pz*pz);
     const Real rho_mix = m1 + m2;
 
-    //  (The #88 metastable guard's LEGACY fork lived here.  Deleted
-    //  2026-08-17, T1-b: PsPres::enabled is hard-coded 1 and the
-    //  ps_presence dial is read nowhere, so the enabled == 0 branch was
-    //  unreachable, and mode 3 -- its last live consumer -- is gone too.)
-
 #ifdef CAMR_PS_DIAG
-    //  Diagnostic (CAMR.ps_relax_diag = <i>, default -1 = off).  Dumps this
-    //  cell's phase states at entry / after the mechanical pass / after the
-    //  thermal pass, plus the coexistence decision gating the thermal pass.
-    //  See FINDINGS Addendum 10g.
+    //  CAMR.ps_relax_diag = <i> (see hem::ps_diag_relax_cell): print cell
+    //  i's phase states at entry, after the mechanical pass and after the
+    //  thermal pass, plus the coexistence decision.
     auto relax_probe = [&](const char* stage, const hem::V6& V) {
-        const int rd = hem::ps_diag_relax_cell();   // single read (AUDIT C.4)
+        const int rd = hem::ps_diag_relax_cell();
         if (rd < 0 || i != rd) return;
         const double a1p = V[0];
         const double r1p = V[1] / a1p, r2p = V[2] / (1.0 - a1p);
@@ -728,32 +613,26 @@ ps_canonical_relax_cell(int i, int j, int k,
     relax_probe("ENTRY     ", Uv);
 #endif
 
-    // Mechanical first (alpha-adjusting; preserves m_k and mixture rho-E).
-    // Kernel per CAMR.ps_mech_kernel (B1 A/B; see ps_mech_kernel above).
+    // Mechanical first (alpha-adjusting; preserves m_k and mixture rho-E);
+    // kernel per ps_mech_kernel, failure policy as mode 0.
     if (ps_mech_kernel() == 1) {
         if (!hem::ps_pelanti_relax_cell(Uv, eos)) return;
     } else {
         int reason = hem::PSR_OK;
         if (!hem::ps_pressure_relax_cell(Uv, eos, hem::PsPressureRelaxParams{},
                                          &reason)) {
-            return;   // leave the cell as-is; same failure policy as mode 0
+            return;
         }
     }
 #ifdef CAMR_PS_DIAG
     relax_probe("post-MECH ", Uv);
 #endif
-    // Thermal second (isochoric at the NEW alpha; theta<=0 -> instantaneous),
-    // gated by the task-#35 two-phase-coexistence test, applied here for the
-    // same reason MT and the flash source already apply it: at a
-    // cross-critical material contact (e.g. B4, liquid against SUPERCRITICAL
-    // vapor at T_R = 350 K > Tc) the two "phases" are two different
-    // single-phase fluids, not a coexisting pair, and driving T1 -> T2 there
-    // has no physical basis.  Measured consequence of omitting this gate:
-    // with alpha free (this mode), thermal equilibration walks the smeared
-    // contact cells toward the dome and collapses B4's star velocity
-    // (u-err 0.13 -> 0.44 at theta = 1e-4).  Bounds are EOS-derived
-    // (t_triple/t_crit), fluid-agnostic, shared with the MT/flash gates --
-    // no new constants.
+    // Thermal second (isochoric at the new alpha; theta <= 0 -> instantaneous),
+    // gated by the coexistence test, both T_k inside (T_triple, T_crit): at a
+    // cross-critical material contact the two "phases" are two single-phase
+    // fluids, and driving T1 -> T2 there walks the smeared contact toward
+    // the dome and collapses the star velocity (docs §5.3).  Bounds are EOS
+    // metadata, shared with the mass-transfer and flash gates.
     {
         const double a1n = Uv[0];
         const double r1n = Uv[1] / a1n, r2n = Uv[2] / (1.0 - a1n);
@@ -766,12 +645,11 @@ ps_canonical_relax_cell(int i, int j, int k,
         const bool coexist = q1.valid && q2.valid &&
                              q1.T > Ttr && q1.T < Tcr &&
                              q2.T > Ttr && q2.T < Tcr;
-        //  CAMR.ps_coexist_action (see its accessor for the full rationale).
-        //  Modes 2 and 3 let the thermal leg run for an OUT-OF-BAND cell, on
-        //  the grounds that heat exchange between two phases in contact does
-        //  not require that either can turn into the other.  The states must
-        //  still be VALID -- ungating the predicate does not license running
-        //  the kernel on a phase that has no state at all.
+        //  ps_coexist_action (see its accessor): 2 and 3 run the thermal
+        //  leg for an out-of-band cell — heat exchange between phases in
+        //  contact does not require that either can turn into the other.
+        //  Both states must still be valid; ungating the predicate never
+        //  licenses the kernel on a phase with no state.
         //    2: low-side exits only (some T <= T_triple, none >= T_crit)
         //    3: any exit
         bool run_thermal = coexist;
@@ -781,36 +659,25 @@ ps_canonical_relax_cell(int i, int j, int k,
             const bool hi_side = (q1.T >= Tcr) || (q2.T >= Tcr);
             if (cxa == 3)                  run_thermal = true;
             else if (cxa == 2 && !hi_side) run_thermal = true;
-            //  MODE 4: a LOW-side violation OVERRIDES the high-side veto.
-            //  Rationale, from the mode 2/3 measurements (WORKLOG 2026-08-13):
-            //  the reason to veto is SUPERCRITICALITY -- above T_crit there is
-            //  no distinct liquid and vapour, so driving T_1 -> T_2 there
-            //  smears a material contact between two different single-phase
-            //  fluids, which is what collapses B4 and B10.  The reason NOT to
-            //  veto is SUB-TRIPLE-POINT-ness -- a supercooled vapour is still a
-            //  phase of the same substance, and refusing it heat exchange is
-            //  what freezes B9.  When BOTH occur in one cell the state is not a
-            //  cross-critical contact at all: no physical cell holds a 46 K
-            //  liquid beside a 4500 K vapour.  That is the energy split blowing
-            //  up, and mode 2's refusal to relax it is what entrenches it.
-            //  So: a cell containing a sub-triple-point phase is never a
-            //  cross-critical material contact, and the supercritical veto does
-            //  not apply to it.
+            //  4: a low-side exit overrides the high-side veto.  The veto
+            //  exists for supercriticality (no distinct phases above T_crit,
+            //  so T1 -> T2 smears a material contact); a sub-triple-point
+            //  phase is a supercooled phase of the same substance, and a
+            //  cell holding both is an energy-split blow-up, not a
+            //  cross-critical contact.
             else if (cxa == 4 && lo_side)  run_thermal = true;
-            //  WP-CONTACT-CEIL fix (2026-08-27), mirrored from the X3
-            //  gate so [PS-COEXIT-TH] semantics stay comparable across
-            //  modes: a hi-side-only exit whose supercritical phase is
-            //  beyond 2*T_crit is the runaway-sliver class, not a
-            //  material cross-critical contact — run the thermal leg.
+            //  Runaway clause, always active and mirrored from the X3 gate
+            //  so [PS-COEXIT-TH] is comparable across modes: a hi-side-only
+            //  exit whose supercritical phase is beyond 2 T_crit is a
+            //  ratcheting sliver, not a material contact — run the leg.
+            //  Docs §5.3.
             bool runaway_th = false;
             if (hi_side && !lo_side &&
                 std::max(q1.T, q2.T) > 2.0 * Tcr) {
                 runaway_th = true;
                 run_thermal = true;
             }
-            //  C2 (X2): the thermal leg's band exit, named and counted --
-            //  previously a silent skip.  Counting only; the response above
-            //  is unchanged.  Reported per sweep as [PS-COEXIT-TH].
+            //  The band exit is named and counted; the response is above.
             {
                 PsPresDiag& pd = ps_pres_diag_data();
                 if (lo_side && hi_side) ++pd.n_exit_both;
@@ -822,30 +689,17 @@ ps_canonical_relax_cell(int i, int j, int k,
             }
         }
         if (run_thermal) {
-            //  (CAMR.ps_theta_model = 1 selected an HRM-correlation theta per
-            //   cell here.  RETIRED 2026-08-17, S3: measured 2026-08-13 to be
-            //   the WRONG MAPPING -- the correlation slows as saturation is
-            //   approached, right for phase change and wrong for heat exchange
-            //   between phases in contact -- and B9 ABORTS under it, since it
-            //   spans theta 1.8e-6..2.4e-4 against B9's 1e-5 threshold.
-            //   LITERATURE 7 keeps the reasoning; "DO NOT RE-TRY" stands.)
             hem::ps_iso_thermal_relax_cell_finite(Uv, eos, double(dt),
                                                   double(theta));
         }
-        //  S5-F1(a) (CAMR.ps_mech_close, default 1 since 2026-08-15; 0 = previous behaviour):
-        //  CLOSING MECHANICAL PASS.  Measured (WORKLOG 2026-08-15, M-A): the
-        //  thermal leg leaves 12-96 % |P1-P2|/P at chain exit (B5 0.124 on
-        //  all 64 cells, B9 0.957, B11 0.888) because mode 4 has no
-        //  mechanical pass after it, so every flux between relaxation calls
-        //  is evaluated on a state that violates the D3 closure.  This pass
-        //  re-establishes P1 = P2 (alpha-adjusting, same kernel and same
-        //  failure policy as the opening pass: failure leaves the cell
-        //  as-is).  It runs only when the thermal leg ran -- a gate-skipped
-        //  cell is already at the mechanical Newton's tolerance (measured
-        //  ~1e-4).  Placed BEFORE the [PS-PRES] instrument so C1 keeps
-        //  measuring the true chain exit.  Whether this interim pass or the
-        //  X3 coupled source is the lasting form is decided by M2
-        //  (ps_m2_ordering_test) per the plan's S5-F1 branch.
+        //  Closing mechanical pass (ps_mech_close): an isochoric dT moves
+        //  each phase's P along its own isochore, and the two
+        //  compressibilities differ by orders, so the thermal leg leaves a
+        //  P1 != P2 residual the next hydro step's fluxes would otherwise
+        //  consume.  Same kernel and failure policy as the opening pass.
+        //  Only when the thermal leg ran — a gate-skipped cell is already at
+        //  the Newton tolerance.  Placed before the [PS-PRES] instrument so
+        //  that measures the true chain exit.
         if (run_thermal && ps_mech_close() != 0) {
             if (ps_mech_kernel() == 1) {
                 hem::ps_pelanti_relax_cell(Uv, eos);
@@ -853,16 +707,9 @@ ps_canonical_relax_cell(int i, int j, int k,
                 hem::ps_pressure_relax_cell(Uv, eos);
             }
         }
-        //  C1 (§5 item 1): the P1 != P2 residual at CHAIN EXIT.  Mode 4 has
-        //  no mechanical pass after the thermal leg, and the size of what it
-        //  leaves behind has never been measured (D4).  Split by cause: did
-        //  the leg actually move a temperature (isochoric dT at fixed alpha
-        //  moves each phase's P along its own isochore, and the two
-        //  compressibilities differ by orders), or did it run and barely act,
-        //  or was it gate-skipped (residual is then the mechanical Newton's
-        //  own tolerance, read off q1/q2 with no extra solves).
-        //  Prediction on record (WORKLOG 2026-08-15): percent-level where a
-        //  T moved by > 1 K; falsifier max < 1e-6 there.
+        //  [PS-PRES]: the P1 != P2 residual at chain exit, split by cause
+        //  (leg moved a T by > 1 K / ran and stood / gate-skipped, where the
+        //  residual is read off q1/q2 with no extra solves).
         if (ps_pres_diag() != 0) {
             PsPresDiag& pd = ps_pres_diag_data();
             if (run_thermal) {
@@ -876,7 +723,7 @@ ps_canonical_relax_cell(int i, int j, int k,
                 if (t1.valid && t2.valid && t1.P > 0.0) {
                     const double pref = std::max(std::abs(t1.P), std::abs(t2.P));
                     const double dp = std::abs(t1.P - t2.P) / pref;
-                    //  [PS-DT] (F4 session 3): entry/exit |T1-T2| census.
+                    //  [PS-DT] entry/exit |T1-T2| census.
                     {
                         const double dt_pre  = std::abs(q1.T - q2.T);
                         const double dt_post = std::abs(t1.T - t2.T);
@@ -904,7 +751,7 @@ ps_canonical_relax_cell(int i, int j, int k,
         }
 #ifdef CAMR_PS_DIAG
         {
-            const int rd2 = hem::ps_diag_relax_cell();   // single read (AUDIT C.4)
+            const int rd2 = hem::ps_diag_relax_cell();
             if (rd2 >= 0 && i == rd2) {
                 amrex::Print() << "[RELAX-PROBE " << i << "] GATE       coexist="
                                << int(coexist) << "  thermal="
@@ -923,26 +770,17 @@ ps_canonical_relax_cell(int i, int j, int k,
 }
 
 // -----------------------------------------------------------------
-//  ps_x3_grid_relax_cell (ps_relax_mode=5, F4 session 2): the X3
-//  COUPLED relaxation source on the grid.  Replaces the mode-4
-//  mech->thermal chain AND the split MT source (PS_sources.H disables
-//  its MT block at mode 5) with one call: P1 = P2 as a DAE constraint,
-//  thermal + BE-SRT mass-transfer rates on the constrained manifold,
-//  sub-stepped BE, ONE eligibility question (the mode-4 coexist_action
-//  policy, carried by the kernel).  Flash/nucleation stays upstream in
-//  ps_apply_sources as the birth channel.  Accepted in 0-D 2026-08-16:
-//  the fixed point is route- and basin-independent and IS the HEM flash
-//  of the cell invariants (CAMR.ps_x3_test=1).  The mode-4 interim
-//  ps_mech_close is unnecessary here by construction — the constraint
-//  is enforced at every path evaluation.
-//
-//  Entry gates are the canonical cell's (alpha floor, masses, S4
-//  presence relax gate).  Failure policy: entry/projection failures
-//  leave the cell untouched (the kernel does not write); a sub-step
-//  bail-out keeps its partial progress — admissible, conservative and
-//  on-manifold by construction.  Unlike mode 4 this writes MASSES too
-//  (MT lives here now); mixture rho, momentum and total energy are
-//  conserved by construction, so U[3] is untouched.
+//  ps_x3_grid_relax_cell (ps_relax_mode=5, the default): the coupled X3
+//  operator hem::ps_x3_relax_cell.  P1 = P2 is a DAE constraint imposed
+//  at every path evaluation; the thermal and SRT mass-transfer rates are
+//  integrated by sub-stepped backward Euler on that manifold, with one
+//  eligibility question (ps_coexist_action).  The flash stays upstream in
+//  ps_apply_sources as the birth channel; the split transfer source is
+//  compiled out at this mode.  Entry gates as the canonical cell; entry
+//  and projection failures leave the cell untouched, a sub-step bail-out
+//  keeps its partial, admissible, conservative progress.  Writes alpha,
+//  both masses and UE1/UE2; mixture rho, momentum and E are invariant.
+//  Docs/MODEL_AND_ALGORITHM.md §5.1; 0-D harness CAMR.ps_x3_test.
 // -----------------------------------------------------------------
 inline void
 ps_x3_grid_relax_cell(int i, int j, int k,
@@ -958,10 +796,10 @@ ps_x3_grid_relax_cell(int i, int j, int k,
     const Real m1 = U(i,j,k, UM1RHO1);
     const Real m2 = U(i,j,k, UM2RHO2);
     if (m1 <= Real(0.0) || m2 <= Real(0.0)) return;
-    {   // S4 presence gate, exactly as the canonical cell applies it
+    {   // presence gate, as the canonical cell applies it; refusal counted
         const PsPres& prS4g = ps_presence_params();
         if (!ps_presence_relax_gate(alpha1_in, m1, m2, prS4g)) {
-            ++ps_relax_diag().n_gate_presence;   // B13: counted (was silent)
+            ++ps_relax_diag().n_gate_presence;
             return;
         }
     }
@@ -986,26 +824,24 @@ ps_x3_grid_relax_cell(int i, int j, int k,
 
     hem::PsX3Params xp;
     xp.theta = double(theta);
-    //  Rate/carrier knobs pass through from the MT dial family so a Y4
-    //  configuration means the same thing at mode 5.  CAMR.ps_mt_tau has
-    //  no meaning here (no relaxation time exists on the SRT source).
+    //  Rate and carrier dials are the mass-transfer family, so a
+    //  configuration means the same thing at every mode.  ps_mt_tau has no
+    //  meaning here: the SRT source carries no relaxation time.
     xp.h_w            = hem::ps_dial_mt_h_weight();
     xp.srt_D          = hem::ps_dial_mt_srt_d();
     xp.srt_delta      = hem::ps_dial_mt_srt_delta();
     xp.coexist_action = ps_coexist_action();
     int exit_code = 0;
     xp.exit_code = &exit_code;
-    //  [PS-DT] (F4 session 3): the same completeness census the mode-4
-    //  C1 block feeds, from the kernel's own entry/exit states.  Same
-    //  ps_pres_diag gate; sentinel -1 = the operator did not run.
+    //  [PS-DT] census from the kernel's own entry/exit states; -1 = the
+    //  thermal leg did not run.
     double dt_pre = -1.0, dt_post = -1.0;
     if (ps_pres_diag() != 0) { xp.dT_pre = &dt_pre; xp.dT_post = &dt_post; }
 
     hem::ps_x3_relax_cell(Uv, eos, double(dt), xp);
 
-    //  [PS-DM] (F4 session 4): transfer census, X3 form.  m1 is the
-    //  entry phase-1 mass; the projector conserves m_k, so any change
-    //  is the MT channel's dm.
+    //  [PS-DM] transfer census: the projector conserves m_k, so any change
+    //  in m1 is the transfer's dm.
     hem::ps_dm_census().add(std::abs(double(Uv[1]) - double(m1)));
 
     if (ps_pres_diag() != 0 && dt_pre >= 0.0 && dt_post >= 0.0) {
@@ -1017,8 +853,8 @@ ps_x3_grid_relax_cell(int i, int j, int k,
         if (dt_post > pdt.dtpost_max) pdt.dtpost_max = dt_post;
     }
 
-    //  Band-exit census into the SAME counters mode 4 feeds, so
-    //  [PS-COEXIT-TH] stays comparable across modes.
+    //  Band-exit census into the same counters mode 4 feeds, so
+    //  [PS-COEXIT-TH] is comparable across modes.
     if (exit_code != 0) {
         PsPresDiag& pd = ps_pres_diag_data();
         const bool lo   = (exit_code & 1) != 0;
@@ -1029,12 +865,12 @@ ps_x3_grid_relax_cell(int i, int j, int k,
         else if (hi)  ++pd.n_exit_hi;
         if (cont) ++pd.n_exit_continued;
         else      ++pd.n_exit_refused;
-        if ((exit_code & 8) != 0) ++pd.n_exit_runaway;   // WP-CONTACT-CEIL
+        if ((exit_code & 8) != 0) ++pd.n_exit_runaway;   // runaway clause
     }
 
     //  The kernel writes Uv only past its entry gates, and everything it
-    //  writes is admissible and conservative — including a bail-out's
-    //  partial progress.  Copy back unconditionally.
+    //  writes is admissible and conservative, a bail-out's partial
+    //  progress included.  Copy back unconditionally.
     U(i,j,k, UALPHA1) = Real(Uv[0]);
     U(i,j,k, UM1RHO1) = Real(Uv[1]);
     U(i,j,k, UM2RHO2) = Real(Uv[2]);
@@ -1046,22 +882,12 @@ ps_x3_grid_relax_cell(int i, int j, int k,
 
 
 
-// Cached CAMR.ps_relax_mode: 0 = mechanical pressure relaxation
-// (historical; the default until 2026-08-17); 1 = P+T equilibrium (ps_pt_equilibrium_relax_cell above);
-// 2 = P + finite-rate thermal relaxation (task #77): mechanical/isochoric
-// pressure equilibrium each step + thermal relaxation toward T1=T2 at the
-// physical rate 1/ps_theta_tau.  theta->0 reproduces mode 1; theta->inf
-// reproduces mode 0.  Retains thermal non-equilibrium (T_gas != T_liquid)
-// while damping the #72 per-phase energy runaway; lets the finite-rate MT
-// source keep a Gibbs driving force (cells are not re-pinned on the dome).
-// S4/B1: mechanical-kernel selector for the canonical chain and the B3
-// reproject.  0 (default) = ps_pressure_relax_cell (the validated mode-0
-// kernel).  1 = ps_pelanti_relax_cell — the COTT acoustic-impedance-weighted
-// Δα solve (hem_pelanti_shyue.H:2512; standalone-measured B1 −33 %, B5 −47 %,
-// recommended there as the in-dome default).  The impedance weighting bounds
-// the per-step α excursion by the PHYSICAL partition of the interface
-// pressure jump — the model-derived answer to the flash-front over-drive
-// (no tuned damper).  Gap item B1: this kernel was dead in CAMR.
+// CAMR.ps_mech_kernel (0): the alpha-adjusting mechanical kernel of the
+// sequential chain (mode 4) and the post-source reproject.  0 =
+// hem::ps_pressure_relax_cell, Newton on alpha; 1 = hem::ps_pelanti_relax_cell,
+// the acoustic-impedance-weighted delta-alpha solve, which bounds the
+// per-step alpha excursion by the physical partition of the interface
+// pressure jump rather than by a tuned damper.  Docs §5.2.
 inline int ps_mech_kernel()
 {
     static const int v = []() -> int {
@@ -1073,23 +899,22 @@ inline int ps_mech_kernel()
     return v;
 }
 
+// CAMR.ps_relax_mode (5): 5 = the coupled X3 operator
+// (ps_x3_grid_relax_cell); 0 = mechanical only, for frozen-limit tests;
+// 1 = isochoric P+T equilibrium; 2 = isochoric P + finite-rate thermal
+// (the 2-D pipe-break decks); 4 = the sequential chain; 3 aborts at
+// dispatch.  The default is 5 because the code defaults are the acceptance
+// configuration.  This is the single read site, and an unrecognised value
+// aborts here rather than falling through to mode-0 physics while the
+// split transfer source (gated on != 5) silently re-opens.  3 passes this
+// whitelist so ps_apply_relaxation can refuse it with its replacement
+// named.  Docs/MODEL_AND_ALGORITHM.md §5.7.
 inline int ps_relax_mode()
 {
-    //  DEFAULT 5 since 2026-08-17 (WORKLOG G-DEF, Marc's call): X3 is the
-    //  acceptance configuration, so it is the default rather than a setting
-    //  the harness re-states.  Mode 0 (mechanical only, the historical
-    //  default) must now be asked for explicitly.
     static const int m = []() -> int {
         int v = 5;
         amrex::ParmParse pp("CAMR");
         pp.query("ps_relax_mode", v);
-        //  AUDIT 2026-08-24 B2: an unrecognized mode used to fall through
-        //  the dispatch to mode-0 mechanical AND re-open the split MT
-        //  source (whose ownership gate keys on `!= 5`) — a silently
-        //  different physics configuration from a typo.  Whitelist here,
-        //  at the single read site, so every consumer sees only valid
-        //  values.  (Mode 3 is additionally aborted at dispatch with its
-        //  own message — deleted 2026-08-17.)
         if (v != 0 && v != 1 && v != 2 && v != 3 && v != 4 && v != 5) {
             amrex::Abort("CAMR.ps_relax_mode = " + std::to_string(v) +
                          " is not a mode (valid: 0,1,2,4,5)");
@@ -1100,52 +925,17 @@ inline int ps_relax_mode()
 }
 
 // -----------------------------------------------------------------
-//  CAMR.ps_coexist_action (default 0) -- what happens when a phase leaves the
-//  two-phase coexistence band (T outside (T_triple, T_crit)).
-//
-//  WHY THIS DIAL EXISTS.  Measured 2026-08-13: every one of 834 mass-transfer
-//  refusals on B2/B7/B9 is the coexistence gate, it always closes on the
-//  VAPOUR (below T_triple on B2/B9, above T_crit on B7), and the SAME
-//  predicate gates the finite-rate thermal leg -- so the operator that would
-//  bring T_2 back into the band is disabled by the test requiring it to be
-//  there.  The state is permanent, and it is entered by a silent `return true`.
-//  See DESIGN_ps_extinction.md 12 and the WORKLOG entries of that date.
-//
-//  The response is a DECISION (design 12.4 X0), not a calculation, so the
-//  options are selectable and measured rather than chosen by argument:
-//
-//    0  CURRENT.  Silent no-op, now counted by [PS-MTCAUSE]/[PS-MTCOEX].
-//                 Default; bit-identical to the pre-dial code.
-//    1  ABORT on the first band exit, printing the full cell context.
-//                 X0-(i): a liquid-vapour model holding a "vapour" in the
-//                 solid region is holding a state it cannot describe, and
-//                 should say so rather than keep producing numbers.  Under
-//                 this mode B2/B7/B9 abort DELIBERATELY and early -- that is
-//                 the mode working, not a regression.
-//    2  THERMAL leg runs when the exit is LOW side only (T <= T_triple);
-//                 mass transfer stays gated.  X0-(ii) via 12.5 X1: the two
-//                 predicates are separated, because "these phases cannot
-//                 exchange MASS" does not imply "these phases must not
-//                 exchange HEAT".  LOW side only, because the measurement
-//                 that put this gate on the thermal leg is a HIGH-side one
-//                 (B4 cross-critical, u-err 0.13 -> 0.44).
-//    3  THERMAL leg runs on ANY band exit; mass transfer stays gated.
-//                 As 2, but also tests whether B4's high-side veto is still
-//                 load-bearing -- design 12.6 M4, never measured, inherited.
-//                 MEASURED: it IS load-bearing (B4 u 0.126 -> 0.699, B10
-//                 0.120 -> 0.486, B7 completes -> aborts), while removing the
-//                 LOW-side veto is what fixes B9 (u 0.889 -> 0.450).
-//    4  THERMAL leg runs when a phase is below T_triple, EVEN IF another is
-//                 above T_crit; otherwise the coexistence veto stands.
-//                 The low side overrides the high side.  See the inline
-//                 rationale at the test itself.
-//
-//  MT-ungated is reachable independently via CAMR.ps_mt_no_dome_gate=1, so the
-//  combinations need no further code.
-//  Scope: ps_relax_mode=4 AND 5.  The dial is threaded into the X3 kernel
-//  (PsX3Params.coexist_action) and, since 2026-08-24 (AUDIT A7), action=1
-//  aborts AT THE KERNEL GATE with full cell context — it is no longer a
-//  mode-4-only response silently ignored at the default mode.
+//  CAMR.ps_coexist_action (0): the thermal leg's response when a phase
+//  leaves the coexistence band (T outside (T_triple, T_crit)), modes 4
+//  and 5 (PsX3Params.coexist_action).  One predicate gates thermal
+//  relaxation, mass transfer and the flash, so a cell whose vapour has
+//  left the band has no operator left to bring it back — a self-lock,
+//  silent unless named and counted.  0 = the leg stands, counted in
+//  [PS-COEXIT-TH] (the runaway clause, a hi-side-only exit beyond
+//  2 T_crit, still runs it); 1 = abort on the first exit with the cell
+//  context; 2 = run the leg for low-side exits only; 3 = any exit and
+//  4 = low side overrides the high-side veto, both refuted (the veto is
+//  load-bearing at cross-critical contacts).  Docs §5.3; DESIGN_DECISIONS X-5.
 // -----------------------------------------------------------------
 inline int ps_coexist_action()
 {
@@ -1158,18 +948,12 @@ inline int ps_coexist_action()
     return a;
 }
 
-//  CAMR.ps_mech_close (default 1 since 2026-08-15) -- S5-F1(a): run a
-//  closing mechanical pass after the thermal leg in the canonical chain,
-//  so the chain exits honouring the D3 closure (P1 = P2) instead of
-//  leaving the measured 12-96 % residual (M-A, WORKLOG 2026-08-15) for
-//  the next hydro step's fluxes to consume.  Adopted as DEFAULT after the
-//  same-day battery: residual collapses to the Newton tolerance (~1e-4)
-//  on B5/B11, no case regresses, several improve slightly.  This is the
-//  INTERIM form: M2 (ps_m2_ordering_test) measured the {M,T,G} composite
-//  ORDER-DEPENDENT -- catastrophically so on vapor-rich/off-dome states --
-//  so the lasting form is the X3 coupled relaxation source; this pass
-//  stands until X3 exists.  0 restores the pre-2026-08-15 behaviour.
-//  See the call site in ps_canonical_relax_cell.
+//  CAMR.ps_mech_close (1): closing mechanical pass after the thermal leg
+//  of the sequential chain — live in mode 4 only — so the chain exits
+//  honouring P1 = P2 instead of leaving a percent-level residual for the
+//  next hydro step's fluxes; 0 = no closing pass, for A/B.  X3 (mode 5)
+//  needs no such pass: its constraint holds at every path evaluation.
+//  Retire-candidate: see docs/DESIGN_DECISIONS.md §5.
 inline int ps_mech_close()
 {
     static const int v = []() -> int {
@@ -1183,19 +967,13 @@ inline int ps_mech_close()
 
 
 
-// Cached CAMR.ps_theta_tau (thermal relaxation time [s]).  Used by
-// ps_relax_mode=2, 4 and 5 (mode 3 is deleted and aborts at dispatch).
-//
-// SEMANTICS (Marc's call, 2026-08-24, after the THETA FORK route (a)):
-//   theta <= 0  =  INSTANTANEOUS thermal equilibrium — at mode 5, T1 = T2
-//                  joins the P1 = P2 DAE constraint (hem joint_pt path).
-//                  It does NOT mean "thermal relaxation off"; "MT without
-//                  a thermal leg is not a configuration" (WORKLOG T1-a).
-//   theta > 0   =  finite BE rate.
-// DEFAULT = 1e-7 s, the acceptance-configuration value (THETA-DEFAULTS
-// 2026-08-24): code defaults ARE the acceptance configuration, so the
-// harness no longer re-states this dial and a change to the default is
-// visible in the acceptance table (same principle as WORKLOG G-DEF).
+// CAMR.ps_theta_tau (1e-7 s): thermal relaxation time, modes 2, 4 and 5.
+//   theta > 0   finite backward-Euler rate (the linearised T1-T2 decay time).
+//   theta <= 0  instantaneous thermal equilibrium: at mode 5, T1 = T2 joins
+//               the P1 = P2 constraint.  It never means "thermal off" —
+//               mass transfer without a thermal leg is not a configuration.
+// The default is the acceptance-configuration value, so a change to it is
+// visible in the acceptance table.  Docs/MODEL_AND_ALGORITHM.md §5.3.
 inline amrex::Real ps_theta_tau()
 {
     static const amrex::Real v = []() -> amrex::Real {
@@ -1207,46 +985,19 @@ inline amrex::Real ps_theta_tau()
     return v;
 }
 
-// Cached CAMR.ps_prehydro_diag (#88 diagnostic, default 0 = off).  When 1,
 // -----------------------------------------------------------------
-//  ps_report_morphology  --  CAMR.ps_diag_morph (default 0 = off).
-//
-//  WHAT IT IS FOR.  Measured 2026-08-13 (B11, WORKLOG): the correct thermal
-//  relaxation time differs by three and a half orders of magnitude between a
-//  cell that is a DISPERSED two-phase mixture and one that is a numerically
-//  SMEARED MATERIAL CONTACT, and the six-equation state cannot tell them apart.
-//  CAMR currently assumes DISPERSED everywhere, silently, in at least these
-//  places (LITERATURE_relaxation_rates.md 9):
-//      - theta, the thermal relaxation time
-//      - tau_mt, the mass-transfer time
-//      - the Wallis frozen mixture sound speed c^2 = Y_1 c_1^2 + Y_2 c_2^2,
-//        which presumes ONE acoustic speed describes the cell and which feeds
-//        S_L/S_R directly, hence every flux and the timestep
-//  This report does not fix any of that.  It makes the assumption OBSERVABLE:
-//  it counts, per step, how many cells are being treated as a dispersed mixture
-//  while actually carrying an interface that is sharp at the grid scale.
-//
-//  THIS IS A COUNTER, NOT A CLASSIFIER, and the distinction is the whole point.
-//  A gradient-based test is unsound as a SWITCH -- it is orientation-dependent,
-//  its threshold scales with dx, and it jumps at AMR coarse-fine boundaries
-//  (8.1 of the literature note).  None of that matters for REPORTING, and to
-//  keep it honest no single cut is used to decide anything: four levels are
-//  printed so the distribution is visible rather than a threshold's verdict.
-//
-//  THE MEASURE.  s = the largest one-cell jump in alpha_1 touching the cell,
-//      s = max over directions d of max(|a(i+e_d) - a(i)|, |a(i) - a(i-e_d)|)
-//  dimensionless, in [0,1], and needing no length scale -- so it does not carry
-//  the 1/dx that makes |grad alpha| awkward.  It also behaves correctly under
-//  refinement: a genuine contact stays one to two cells wide, so s stays O(1),
-//  while a physically smooth alpha field gives s ~ dx/L and falls toward zero.
-//  Sharp interface -> s near 1.  Real mixture -> s small.
-//
-//  TWO POPULATIONS are reported because the exposure differs:
-//    RELAXING  both phases INDEPENDENT, so theta and tau_mt act on the cell.
-//    TWOPHASE  alpha_1 strictly interior, so the MIXTURE SOUND SPEED is formed
-//              for it whether or not any relaxation runs.  This is the larger
-//              population and the larger unexamined exposure.
-//  Host-only, no reductions in the solution path, no state mutated.
+//  ps_report_morphology — CAMR.ps_diag_morph (0): per-step census of the
+//  cells treated as a dispersed two-phase mixture while carrying an
+//  interface sharp at the grid scale.  The relaxation times and the
+//  frozen mixture sound speed assume "dispersed" everywhere and the state
+//  cannot tell the two apart; this makes the assumption observable.  A
+//  counter, not a classifier: a gradient test is orientation- and
+//  dx-dependent and jumps at coarse-fine boundaries, so four cut levels
+//  are printed instead of one verdict.  s = largest one-cell |d alpha_1|
+//  touching the cell (sharp contact -> s ~ 1; smooth field -> s ~ dx/L);
+//  RELAXING = both Independent, TWOPHASE = alpha interior (a mixture sound
+//  speed is formed).  Read-only.  Docs §5.3.  Retire-candidate: see
+//  docs/DESIGN_DECISIONS.md §5.
 // -----------------------------------------------------------------
 inline int ps_diag_morph()
 {
@@ -1280,13 +1031,12 @@ ps_report_morphology(amrex::MultiFab& S_new, const char* label, int level,
             const Real a1 = U(i,j,k, UALPHA1);
             if (!std::isfinite(a1)) return;
             const Real m1 = U(i,j,k, UM1RHO1), m2 = U(i,j,k, UM2RHO2);
-            //  TWOPHASE: alpha strictly interior -> a mixture sound speed is
-            //  formed for this cell.  Uses the presence vanish level, not a
-            //  new constant.
+            //  TWOPHASE: alpha strictly interior (the presence vanish level,
+            //  not a new constant).
             const bool twophase = (a1 > pr.alpha_vanish) &&
                                   (a1 < Real(1.0) - pr.alpha_vanish);
             if (!twophase) return;
-            //  RELAXING: both phases INDEPENDENT -> theta / tau_mt act here.
+            //  RELAXING: both phases Independent, so theta / tau_mt act here.
             const bool relaxing =
                 (ps_regime(a1, m1, pr) == PsRegime::Independent) &&
                 (ps_regime(Real(1.0) - a1, m2, pr) == PsRegime::Independent);
@@ -1349,9 +1099,8 @@ ps_report_morphology(amrex::MultiFab& S_new, const char* label, int level,
 #endif
 }
 
-// ps_report_temps prints per-phase T extremes at the labeled point so we can
-// see whether the dilute-phase overheat is born in the HYDRO (pre-relax) or the
-// RELAXATION (post-relax).  Diagnostic only; no effect on the solution.
+// CAMR.ps_prehydro_diag (0): 1 enables ps_report_temps.
+// Retire-candidate: see docs/DESIGN_DECISIONS.md §5.
 inline int ps_prehydro_diag()
 {
     static const int v = []() -> int {
@@ -1364,14 +1113,11 @@ inline int ps_prehydro_diag()
 }
 
 // -----------------------------------------------------------------
-//  ps_report_temps (#88 diagnostic) — per-phase temperature audit.
-//  Computes T1, T2 from (rho_k, e_k) for every two-phase cell and prints the
-//  global extremes + the x-location and alpha of the HOTTEST cell, tagged with
-//  `label` (e.g. "pre-relax" = immediately post-hydro; "post-relax").  Lets a
-//  single run answer: is e_k=UE_k/m_k already overheated straight out of the
-//  wp flux, before any relaxation?  If yes -> the bug is the per-phase energy
-//  TRANSPORT (PS_umeth.cpp UE1/UE2 deposit), not the relaxation kernels.
-//  Gated by CAMR.ps_prehydro_diag; IOProcessor prints one line per call.
+//  ps_report_temps — per-phase temperature extremes over every two-phase
+//  cell, with the location and alpha of the hottest, tagged by `label` at
+//  the pre- and post-relaxation points; one run then shows whether a
+//  phase overheat is born in the hydro (phase-energy transport) or in
+//  the relaxation.  Read-only; one [ps_Tdiag] line per call.
 // -----------------------------------------------------------------
 inline void
 ps_report_temps(amrex::MultiFab& S_new, const char* label,
@@ -1435,14 +1181,13 @@ ps_report_temps(amrex::MultiFab& S_new, const char* label,
 }
 
 // -----------------------------------------------------------------
-//  C3 (Stage 1; §5 item 7): the SIGNED P/Psat(T1) per two-phase cell.
-//  The unsigned HRM psi discards exactly the wanted information (subcooled
-//  P > Psat vs superheated P < Psat), and overlaps between B9 and B11.
-//  Whether the SIGNED ratio separates them is untested; prediction on
-//  record (WORKLOG 2026-08-15): it will NOT -- the distinction is history,
-//  which no pointwise state function carries.  Gated CAMR.ps_psat_diag
-//  (default 0); EOS-heavy (one liquid branch-locked solve per two-phase
-//  cell), read-only, IOProcessor prints one [PS-PSAT] line per call.
+//  ps_report_psat — CAMR.ps_psat_diag (0): the signed P1/Psat(T1) of every
+//  in-band two-phase cell (< 1 superheated liquid, > 1 subcooled), printed
+//  as min/median/max per rank.  The unsigned HRM metastability measure
+//  discards the sign and does not separate dispersed mixtures from
+//  smeared contacts; whether the signed ratio does is the open question
+//  (docs §5.3).  One liquid branch-locked solve per cell; read-only.
+//  Retire-candidate: see docs/DESIGN_DECISIONS.md §5.
 // -----------------------------------------------------------------
 inline int ps_psat_diag()
 {
@@ -1489,16 +1234,15 @@ ps_report_psat(amrex::MultiFab& S_new, const char* label, int nghost = 0)
             hem::PsPhase p1{}; p1.alpha = a1;
             eos.state_from_rho_e_phase(1, double(rho1), double(e1), p1);
             if (!p1.valid) return;
-            //  Psat is only defined inside the band; outside, the cell is
-            //  exactly the [PS-MTCOEX] population and is counted there.
+            //  Psat is defined only inside the band; an out-of-band cell is
+            //  counted by the coexistence-exit instruments instead.
             if (!(p1.T > Ttr && p1.T < Tcr)) return;
             const double ps1 = eos.Psat_of_T ? eos.Psat_of_T(p1.T) : 0.0;
             if (!std::isfinite(ps1) || ps1 <= 0.0) return;
             ratios.push_back(p1.P / ps1);
         });
     }
-    //  Serial-per-rank collection (MPI-only, no OMP -- the PsRelaxDiag
-    //  pattern); print per rank so the matched-pair 1-D runs need no
+    //  Collected and printed per rank (single-threaded per rank); no
     //  parallel gather.
     if (!ratios.empty()) {
         std::sort(ratios.begin(), ratios.end());
@@ -1519,14 +1263,14 @@ ps_report_psat(amrex::MultiFab& S_new, const char* label, int nghost = 0)
 }
 
 // -----------------------------------------------------------------
-//  C4 (Stage 1; M3 harness): per-stage T1/T2 EXTREMES at the labelled
-//  A/A2/B/C/D points of apply_ps_reaction, V9-style, so the fall of B9's
-//  vapour temperature (and B7's rise) can be attributed hydro-vs-operator
-//  by reading consecutive stage lines of one run.  ps_report_temps (#88)
-//  reports only the maxima; the plotfile Temp is clamped UP to the triple
-//  point (CAMR.cpp), so the MINIMUM per-phase T -- the quantity that
-//  leaves the band on B9 -- is otherwise unobservable.  Gated
-//  CAMR.ps_t2_diag (default 0); EOS-heavy; read-only.
+//  ps_report_T2stage — CAMR.ps_t2_diag (0): per-phase T1/T2 ranges, with
+//  the locations of the vapour minimum and maximum, at the labelled
+//  stage points of apply_ps_reaction, so a temperature excursion is
+//  attributed to the hydro or to an operator by reading consecutive
+//  lines.  ps_report_temps reports maxima only and the plotfile
+//  temperature is floored at the triple point, so the per-phase minimum
+//  — the quantity that leaves the band — is otherwise unobservable.
+//  EOS-heavy; read-only.  Retire-candidate: see docs/DESIGN_DECISIONS.md §5.
 // -----------------------------------------------------------------
 inline int ps_t2_diag()
 {
@@ -1605,33 +1349,16 @@ ps_report_T2stage(amrex::MultiFab& S_new, const char* label,
 }
 
 // =====================================================================
-//  #42 active-learning EOS state harvester (in-situ, opt-in, read-only).
-//
-//  Purpose: harvest the (rho, e, phase) states the per-phase PR EOS is
-//  ACTUALLY inverted at during real CAMR runs -- the deployment
-//  distribution -- into a reusable training cloud for both the #45
-//  learned Newton warm-start (rho,e,phase)->T_init and the #33
-//  surrogate MLP EOS pair.  A static (T,rho) grid over-samples the easy
-//  bulk and under-samples the dome / spinodal / metastable trace-phase
-//  regions the solver spends its hard iterations in; harvesting fixes
-//  that by construction.
-//
-//  "Active-learning" mechanism (novelty-greedy, cheap): states are
-//  quantized into log-rho x e x phase buckets.  Each NEW bucket is a
-//  region the training set has not yet covered; we keep the first
-//  representative per bucket + a visit count.  The aggregator can then
-//  either take one-per-bucket (uniform coverage of the VISITED manifold,
-//  which up-weights rare dome/spinodal cells relative to their cell
-//  frequency) or rarity-weight by 1/count.  Bounded memory (#buckets),
-//  bounded output, O(1) per cell.
-//
-//  Safety: purely diagnostic.  Reads S, never writes it -> bit-identical
-//  solution with harvest on/off (validated).  Gated by CAMR.ps_harvest
-//  (default 0).  MPI-only single-thread per rank (see note above) -> a
-//  plain per-rank std::unordered_map needs no atomics; each rank writes
-//  its own shard <file>_r<rank>.csv, flushed at teardown (+ optional
-//  periodic flush for crash resilience).  Fluid-agnostic: buckets and
-//  columns carry no CO2 assumption; retrain per fluid from its own cloud.
+//  EOS state harvester — CAMR.ps_harvest (0): records the (rho, e, phase)
+//  states the per-phase EOS is actually inverted at during a run, as a
+//  training cloud for a surrogate or a Newton warm-start.  States are
+//  quantised into log10(rho) x e x phase buckets and the first
+//  representative per bucket is kept with a visit count, so rare
+//  dome/spinodal states are covered once each rather than by cell
+//  frequency.  Bounded memory, O(1) per cell, read-only.  One CSV shard
+//  per rank, <ps_harvest_file>_r<rank>.csv, flushed at teardown and
+//  optionally every ps_harvest_flush calls.  Fluid-agnostic.
+//  Retire-candidate: see docs/DESIGN_DECISIONS.md §5.
 // =====================================================================
 inline int ps_harvest()
 {
@@ -1640,10 +1367,8 @@ inline int ps_harvest()
         pp.query("ps_harvest", val); return val; }();
     return v;
 }
-// Default 0: record ONLY the physically-present phase of each cell.  In a
-// near-pure cell the trace phase's rho=m/alpha and e=UE/m are numerical noise
-// (the separately-transported m and alpha drift apart) -> a non-physical
-// per-phase state the #88 guard skips.  Set 1 only to audit that trace garbage.
+// CAMR.ps_harvest_trace (0): 1 also records the trace phase of a near-pure
+// cell, whose rho = m/alpha and e = UE/m are numerical noise; audit only.
 inline int ps_harvest_trace()
 {
     static const int v = []() -> int {
@@ -1651,9 +1376,8 @@ inline int ps_harvest_trace()
         pp.query("ps_harvest_trace", val); return val; }();
     return v;
 }
-// Per-phase presence floor: a phase is "physical" (worth harvesting) only where
-// its own volume fraction exceeds this.  Records below it are the degenerate
-// trace states.  Matches the aggregator's MINALPHA.
+// CAMR.ps_harvest_afloor (1e-4): a phase is recorded only where its own
+// volume fraction exceeds this; matches the aggregator's MINALPHA.
 inline amrex::Real ps_harvest_afloor()
 {
     static const amrex::Real v = []() -> amrex::Real {
@@ -1666,11 +1390,11 @@ struct PsHarvestReservoir
 {
     struct Rec { double rho, e, alpha, T; int phase; int valid; long count; };
     std::unordered_map<std::uint64_t, Rec> buckets;
-    double dlr = 0.05;      // log10(rho) bucket width
-    double de  = 2.0e3;     // specific-internal-energy bucket width [J/kg]
-    long   flush_stride = 0;// >0: also flush every N harvest calls
+    double dlr = 0.05;      // CAMR.ps_harvest_dlr: log10(rho) bucket width
+    double de  = 2.0e3;     // CAMR.ps_harvest_de: e bucket width [J/kg]
+    long   flush_stride = 0;// CAMR.ps_harvest_flush: > 0 also flushes every N calls
     long   ncalls = 0;
-    std::string base = "ps_harvest";
+    std::string base = "ps_harvest";   // CAMR.ps_harvest_file
     bool configured = false;
 
     static PsHarvestReservoir& get() { static PsHarvestReservoir R; return R; }
@@ -1721,8 +1445,8 @@ struct PsHarvestReservoir
     ~PsHarvestReservoir() { if (!buckets.empty()) flush(); }
 };
 
-// Harvest every valid per-phase EOS-inversion input in S into the reservoir.
-// Mirrors ps_report_temps' cell walk; read-only.  Gated by CAMR.ps_harvest.
+// Harvest every per-phase EOS-inversion input in S into the reservoir.
+// Same cell walk as ps_report_temps; read-only.
 inline void
 ps_harvest_states(amrex::MultiFab& S_new, int nghost = 0)
 {
@@ -1759,8 +1483,8 @@ ps_harvest_states(amrex::MultiFab& S_new, int nghost = 0)
             const Real e1 = U(i,j,k, UE1)/m1 - ke;
             const Real e2 = U(i,j,k, UE2)/m2 - ke;
             const Real a2 = Real(1.0) - a1;
-            // Record a phase only where it is physically present (alpha>=afloor),
-            // unless trace-audit mode.  Skips the degenerate trace-phase states.
+            // A phase is recorded only where alpha_k >= afloor, unless the
+            // trace audit is on.
             if (trace || a1 >= afloor) {
                 hem::PsPhase p1{}; p1.alpha=a1;
                 eos.state_from_rho_e_phase(1, double(rho1), double(e1), p1);
@@ -1781,9 +1505,9 @@ ps_harvest_states(amrex::MultiFab& S_new, int nghost = 0)
 
 
 
-// Cached CAMR.ps_relax_verbose (default 0 = silent).  When 0, ps_apply_relaxation
-// emits NO per-step stdout and skips the global α min/max MPI reduction — cheap.
-// Set to 1 to restore the [ps_relax] anomaly + post-relax-range diagnostics.
+// CAMR.ps_relax_verbose (0): 1 prints the per-sweep [ps_relax] anomaly line
+// and the post-relaxation global alpha_1 range (an MPI reduction);
+// 0 = silent and cheap.  Retire-candidate: see docs/DESIGN_DECISIONS.md §5.
 inline int ps_relax_verbose()
 {
     static const int v = []() -> int {
@@ -1795,11 +1519,11 @@ inline int ps_relax_verbose()
     return v;
 }
 
-// Cached CAMR.ps_pres_floor (Pa, default 0 = disabled).  When > 0,
-// ps_apply_floor raises each phase's internal energy so its EOS pressure is
-// at least this value — a positivity floor that prevents the near-vacuum
-// crater (strong vents) from collapsing dt.  The PS wp path does not
-// otherwise floor pressure (small_pres is unused there).
+// CAMR.ps_pres_floor (0 Pa = off): ps_apply_floor raises each Independent
+// phase's internal energy so its EOS pressure is at least this — the
+// positivity net for the near-vacuum crater of a strong vent, which would
+// otherwise collapse dt (the 2-D decks set 1e5).  The wp path floors
+// pressure nowhere else (small_pres is unused there).
 inline amrex::Real ps_pres_floor()
 {
     static const amrex::Real v = []() -> amrex::Real {
@@ -1811,11 +1535,10 @@ inline amrex::Real ps_pres_floor()
     return v;
 }
 
-// Cached CAMR.ps_temp_floor (K, default 0 = disabled).  When > 0, ps_apply_floor
-// also raises each phase's internal energy so its EOS temperature is at least
-// this value.  Strong-vent expansion cools CO2 below its triple point
-// (216.6 K), where the PR two-phase EOS is invalid/extrapolated and T
-// oscillates; flooring T at ~triple point keeps the EOS valid.
+// CAMR.ps_temp_floor (0 K = off): ps_apply_floor likewise raises e_k so the
+// phase temperature is at least this (the 2-D decks set 216.6 K, the
+// triple point): strong-vent expansion cools CO2 below the triple point,
+// where the branch EOS is extrapolated and T oscillates.
 inline amrex::Real ps_temp_floor()
 {
     static const amrex::Real v = []() -> amrex::Real {
@@ -1829,45 +1552,24 @@ inline amrex::Real ps_temp_floor()
 
 
 // -----------------------------------------------------------------
-//  ps_resync_mixture_mass  —  enforce URHO == UM1RHO1 + UM2RHO2.
-//
-//  The P-S state stores mixture mass TWICE and nothing kept the two
-//  copies consistent.  (PS_reconstruction.H, deleted 2026-08-27 with
-//  the ps_recon retirement, documented the assumption
-//  ("the slight inconsistency ... e.g. URHO =? UM1RHO1 + UM2RHO2 is
-//  smaller than the MUSCL truncation error"): each conservative slot is
-//  reconstructed independently, so the face states do not satisfy the
-//  algebraic relation and the resulting fluxes advance the two copies
-//  apart.  Independent coarse-fine interpolation adds to it, exactly as
-//  it does for the energy split in ps_resync_phase_energy below.
-//
-//  MEASURED (CO2 pipe-break, CAMR.ps_diag_mass=1): the drift is
-//  introduced ONLY across the hydro/C-F interval -- through the whole
-//  reaction sequence (floor, fold, P/T relaxation, mass transfer, flash)
-//  it is bit-stable.  It grows monotonically in every run: 0.4% peak at
-//  ps_mt_tau=1e-3, 1.5% at 1e-5 across 10x more cells, then 100% in a
-//  runaway that put rho_mix at 1.7e6 kg/m3 and collapsed dt to 4e-12.
-//
-//  DIRECTION: opposite to the energy resync.  There, UEDEN is the trusted
-//  conserved mixture quantity and the phase split is rescaled to match.
-//  For mass it is the other way round -- global conservation identifies
-//  the PHASE PAIR as trustworthy: with a steady inlet, sum(m1+m2) grew
-//  smoothly through the blow-up (95.29 -> 96.11 kg/m, in line with every
-//  prior interval) while sum(URHO) gained 35% from nowhere
-//  (95.29 -> 128.53).  So re-derive URHO from the phases, never the
-//  reverse -- rescaling the phases onto a corrupt URHO would have
-//  amplified 41 kg/m3 to 1.7e6.
-//
-//  Call BEFORE ps_resync_phase_energy so momentum/velocity downstream
-//  (u = mom/URHO) sees the corrected mixture density.
-//  Env/ParmParse escape hatch: CAMR.ps_resync_mass=0 restores the old
-//  behaviour for A/B.
+//  ps_resync_mixture_mass — enforce URHO == UM1RHO1 + UM2RHO2.  Mixture
+//  mass is stored twice, and the hydro update and coarse-fine
+//  interpolation advance the copies apart (the drift arises only across
+//  that interval, is bit-stable through the reaction sequence, and grows
+//  without bound in a runaway).  The phase pair is the trusted copy —
+//  global conservation holds for sum(m1+m2) while sum(URHO) gains mass
+//  from nowhere — so URHO is re-derived from the phases, never the
+//  reverse, which would rescale the phases onto a corrupt URHO.  Acts
+//  only on a finite, non-negative, positive-sum pair; the folds handle
+//  the rest.  Runs before ps_resync_phase_energy so u = mom/URHO sees
+//  the corrected density.  Docs/MODEL_AND_ALGORITHM.md §8.3.
 // -----------------------------------------------------------------
 inline void
 ps_resync_mixture_mass(amrex::MultiFab& S_new, int nghost = 0)
 {
     BL_PROFILE("PS::ps_resync_mixture_mass()");
     using amrex::Real;
+    // CAMR.ps_resync_mass (1): 0 disables the resync, for A/B.
     static const int enabled = []{
         int v = 1; amrex::ParmParse pp("CAMR");
         pp.query("ps_resync_mass", v); return v; }();
@@ -1880,8 +1582,7 @@ ps_resync_mixture_mass(amrex::MultiFab& S_new, int nghost = 0)
             const Real m1 = U(i,j,k, UM1RHO1);
             const Real m2 = U(i,j,k, UM2RHO2);
             const Real s  = m1 + m2;
-            // Only act on a well-posed phase pair; otherwise leave the
-            // cell alone for the floor/fold pass that follows.
+            // Well-posed phase pair only; otherwise the folds decide.
             if (!std::isfinite(s) || !(s > Real(0.0))) return;
             if (!(m1 >= Real(0.0)) || !(m2 >= Real(0.0)))  return;
             U(i,j,k, URHO) = s;
@@ -1891,26 +1592,26 @@ ps_resync_mixture_mass(amrex::MultiFab& S_new, int nghost = 0)
 
 
 // -----------------------------------------------------------------
-//  ps_resync_phase_energy  —  enforce UE1 + UE2 == UEDEN (task #58).
-//  UEDEN (total energy) is the conserved / refluxed mixture quantity;
-//  the per-phase split UE1/UE2 is auxiliary.  After INDEPENDENT
-//  coarse-fine interpolation / regrid (each component interpolated with
-//  its own limiter), UE1+UE2 drifts from UEDEN (a few % at the flash
-//  front, re-injected every regrid) — and the PS reconstruction assumes
-//  they agree, so on the fine level it eventually produces NaN.  Rescale
-//  UE1,UE2 to sum to UEDEN, preserving their RATIO (keeps the
-//  interpolated split) and total energy EXACTLY.  A no-op on interior
-//  cells where the update already keeps them consistent; only C-F /
-//  regrid-touched cells move.  Call BEFORE the floor / relaxation.
+//  ps_resync_phase_energy — enforce UE1 + UE2 == UEDEN.  UEDEN is the
+//  conserved, refluxed quantity; the split UE1/UE2 is auxiliary, and
+//  independent coarse-fine interpolation / regrid (each slot with its own
+//  limiter) breaks the identity by a few % at a flash front, which the
+//  downstream state construction turns into NaN.  UE1, UE2 are rescaled
+//  at fixed ratio to sum to UEDEN: the interpolated split is kept, total
+//  energy is exact, interior cells are a no-op.  A split with |UE_k|/m_k
+//  above ps_phase_e_cap is noise (a trace phase's UE_k and m_k advance
+//  independently) that a fixed-ratio rescale would only renormalise, so
+//  it takes the mass-fraction split of UEDEN, as a degenerate sum does.
+//  Runs before the floor and the relaxation.  Docs §8.3.
 // -----------------------------------------------------------------
 inline void
 ps_resync_phase_energy(amrex::MultiFab& S_new, int nghost = 0)
 {
     BL_PROFILE("PS::ps_resync_phase_energy()");
     using amrex::Real;
-    // Physical bound on per-phase SPECIFIC energy |UE_k|/m_k [J/kg].  CO2 runs
-    // ~1e5-1e6 including kinetic; 1e9 is ~3 orders of generous headroom.
-    // <= 0 disables the ratio-sanity test (pre-fix behaviour).  See below.
+    // CAMR.ps_phase_e_cap (1e9 J/kg): credibility bound on |UE_k|/m_k.
+    // Physical CO2 runs 1e5-1e6 J/kg including kinetic energy, so three
+    // orders of headroom; <= 0 disables the test.
     static const Real e_cap = []() -> Real {
         double v = 1.0e9; amrex::ParmParse pp("CAMR");
         pp.query("ps_phase_e_cap", v); return Real(v); }();
@@ -1926,19 +1627,7 @@ ps_resync_phase_energy(amrex::MultiFab& S_new, int nghost = 0)
             const Real m1 = U(i,j,k, UM1RHO1);
             const Real m2 = U(i,j,k, UM2RHO2);
             const Real mm = m1 + m2;
-            // Is the interpolated SPLIT itself credible?  UE_k and m_k are
-            // advanced/interpolated independently, so in a trace-phase cell
-            // (m_k -> 0) the implied specific energy UE_k/m_k can be absurd
-            // while UE1+UE2 stays finite.  MEASURED in the CO2 pipe-break at
-            // t=2.6556e-3: |UE1|/m1 = 1.4e15 J/kg arriving across the hydro/C-F
-            // interval on a cell with alpha_1 = 1.6e-5, which the alpha-floor
-            // fold then COPIED into the healthy phase (E1 == E2 == 2.6e12) and
-            // the EOS turned into P = 5e10 bar and dt = 1e-12.
-            //
-            // Rescaling by ued/(ue1+ue2) PRESERVES that ratio, so it cannot
-            // repair this -- it just renormalises a garbage split.  Divert to
-            // the mass-fraction branch below, which is the same treatment the
-            // degenerate-sum case already gets.
+            // Split credibility test (see the block comment).
             bool split_ok = true;
             if (e_cap > Real(0.0)) {
                 if (m1 > Real(0.0) && std::abs(ue1) > e_cap * m1) split_ok = false;
@@ -1950,10 +1639,9 @@ ps_resync_phase_energy(amrex::MultiFab& S_new, int nghost = 0)
                 U(i,j,k, UE1) = ue1 * f;
                 U(i,j,k, UE2) = ue2 * f;
             } else {
-                // Degenerate or incredible split: fall back to a mass-fraction
-                // split of the trusted total energy.  Total energy is exact;
-                // the split becomes a thermal-equilibrium assumption, which is
-                // the right call for a trace-phase cell whose split was noise.
+                // Degenerate or incredible split: mass-fraction split of the
+                // trusted total — an equal-specific-energy assumption, the
+                // right call for a cell whose split was noise.
                 if (std::isfinite(mm) && mm > Real(0.0)) {
                     U(i,j,k, UE1) = ued * (m1 / mm);
                     U(i,j,k, UE2) = ued * (m2 / mm);
@@ -1965,33 +1653,17 @@ ps_resync_phase_energy(amrex::MultiFab& S_new, int nghost = 0)
 
 
 // -----------------------------------------------------------------
-//  #64 dilute-phase energy closure (option A; gated, default OFF).
-//
-//  Problem: for a vanishing phase, e_k = UE_k/m_k is the ratio of two
-//  cancellation-dominated small conserved quantities -> a numerically
-//  ill-determined specific energy (garbage T; the 1900-5400 K harvest
-//  tail).  Physics: a phase occupying negligible volume is in thermal
-//  equilibrium with its host (a droplet/bubble equilibrates far faster
-//  than the flow timescale), so its specific energy is DETERMINED by the
-//  host temperature: e_k = e_k^EOS(T_host, rho_k).
-//
-//  Closure: blend the transported e_k toward that equilibrium value with
-//  a SMOOTH, symmetric, threshold-free weight
-//      w_k = exp( -(alpha_k / alpha0)^2 )         (C-infinity; no edges)
-//  so w_k ~ 1 only for a truly dilute phase and w_k -> 0 (super-
-//  exponentially) as the phase becomes present -> the genuine two-phase
-//  band (alpha >~ 5*alpha0) is untouched to machine precision, and there
-//  is NO discontinuity anywhere in state space (addresses the hidden-
-//  threshold sensitivity concern).  Symmetric in 1<->2 (reflection-safe).
-//
-//  Conservation: UEDEN (the conserved mixture energy) is preserved
-//  EXACTLY -- the net energy change from correcting the dilute phase is
-//  absorbed by the present phase(s), distributed by (1-w) so the dilute
-//  phase is not re-perturbed.  Mass, momentum, alpha untouched.
-//
-//  This does NOT touch the flux/relaxation operators; it is a per-cell
-//  closure of the under-determined minor-phase energy DOF applied right
-//  after ps_resync_phase_energy.  Gated by CAMR.ps_dilute_closure.
+//  ps_dilute_energy_closure — CAMR.ps_dilute_closure (0 = off): closes
+//  the ill-determined energy of a vanishing phase (e_k = UE_k/m_k, a
+//  ratio of two cancellation-dominated small numbers) by blending it
+//  toward the EOS energy at the host's temperature on its own branch,
+//  e_k^eq = e_k(T_host, rho_k), with the smooth weight
+//      w_k = exp(-(alpha_k / alpha0)^2)        (C-infinity, no edges)
+//  so only a truly dilute phase moves, the two-phase band (alpha >~
+//  5 alpha0) is untouched to machine precision, and 1 <-> 2 is symmetric.
+//  UEDEN is exact: the net change is absorbed by the present phase(s),
+//  weighted by (1-w).  Mass, momentum, alpha untouched.  Dormant.
+//  Retire-candidate: see docs/DESIGN_DECISIONS.md §5.
 // -----------------------------------------------------------------
 inline int ps_dilute_closure()
 {
@@ -2000,6 +1672,7 @@ inline int ps_dilute_closure()
         pp.query("ps_dilute_closure", val); return val; }();
     return v;
 }
+// CAMR.ps_dilute_alpha0 (0.02): width of the dilute weight.
 inline amrex::Real ps_dilute_alpha0()
 {
     static const amrex::Real v = []() -> amrex::Real {
@@ -2012,8 +1685,7 @@ inline void
 ps_dilute_energy_closure(amrex::MultiFab& S_new, int nghost = 0)
 {
     using amrex::Real;
-    // EOS-heavy when enabled: 2 REY2PTS_phase + up to 2 RTY2E_* per touched
-    // cell.  Gated (CAMR.ps_dilute_closure); registers ~0 when off.
+    // EOS-heavy when enabled: 2 REY2PTS_phase + up to 2 RTY2E per touched cell.
     BL_PROFILE("PS::ps_dilute_energy_closure()");
     if (ps_dilute_closure() == 0) return;
     const Real a0 = ps_dilute_alpha0();
@@ -2056,16 +1728,13 @@ ps_dilute_energy_closure(amrex::MultiFab& S_new, int nghost = 0)
             const Real e1 = ue1/m1 - ke;
             const Real e2 = ue2/m2 - ke;
 
-            // Host temperatures (branch-locked): T of the PRESENT phase sets
-            // the dilute phase's equilibrium energy.  Solve both; each is the
-            // host for the other.
+            // Branch-locked temperatures; each phase is the other's host.
             Real P1,T1,S1, P2,T2,S2;
             EOS::REY2PTS_phase(rho1, e1, Y, hem::Phase3::Liquid, P1, T1, S1);
             EOS::REY2PTS_phase(rho2, e2, Y, hem::Phase3::Vapor,  P2, T2, S2);
             if (!std::isfinite(T1) || !std::isfinite(T2)) return;
 
-            // Equilibrium specific energy of each phase at the HOST T, on its
-            // OWN branch.  (Phase 1 dilute -> host is phase 2 -> use T2.)
+            // Equilibrium energy of each phase at the host T, on its own branch.
             Real e1eq = e1, e2eq = e2;
             if (w1 >= wtol) EOS::RTY2E_liquid(rho1, T2, Y, e1eq);
             if (w2 >= wtol) EOS::RTY2E_vapor (rho2, T1, Y, e2eq);
@@ -2075,11 +1744,10 @@ ps_dilute_energy_closure(amrex::MultiFab& S_new, int nghost = 0)
             const Real e1n = (Real(1.0)-w1)*e1 + w1*e1eq;
             const Real e2n = (Real(1.0)-w2)*e2 + w2*e2eq;
 
-            // Corrected per-phase total energies (uncompensated).
+            // Corrected per-phase total energies, then the net change removed
+            // from the present phase(s) by (1-w) so UEDEN is exact.
             const Real ue1c = m1*(e1n + ke);
             const Real ue2c = m2*(e2n + ke);
-            // Preserve UEDEN exactly: remove the net change, distributed to the
-            // PRESENT phase(s) by (1-w) so the dilute phase is not re-perturbed.
             const Real net = (ue1c + ue2c) - ued;
             const Real b1 = Real(1.0) - w1, b2 = Real(1.0) - w2;
             Real bs = b1 + b2; if (!(bs > Real(0.0))) bs = Real(1.0);
@@ -2094,16 +1762,14 @@ ps_dilute_energy_closure(amrex::MultiFab& S_new, int nghost = 0)
 }
 
 // -----------------------------------------------------------------
-//  #64 decision diagnostic: per-phase specific-energy MONOTONICITY
-//  OVERSHOOT.  Consistent advective transport of an intensive quantity
-//  obeys a local maximum principle -- e_k in a cell stays within the
-//  range of its same-phase spatial neighbours.  A spurious NEW extremum
-//  (e_k outside the neighbour range) is the fingerprint of the mass/
-//  energy operator inconsistency (option B territory).  Binned by the
-//  phase fraction alpha_k, this answers "is A enough?": if overshoot is
-//  confined to the alpha->0 tail (which the closure fixes), A suffices;
-//  if it is significant in the well-mixed band, B is warranted.
-//  Read-only; gated by CAMR.ps_eovs_diag.  One summary line per call.
+//  ps_report_energy_overshoot — CAMR.ps_eovs_diag (0): per-phase
+//  specific-energy overshoot.  Consistent advection of an intensive
+//  quantity obeys a local maximum principle, so an e_k outside the range
+//  of its same-phase neighbours is the fingerprint of a mass/energy
+//  operator inconsistency.  Binned by alpha_k, so it is visible whether
+//  overshoot is confined to the alpha -> 0 tail or reaches the
+//  well-mixed band.  Read-only; one summary per call.
+//  Retire-candidate: see docs/DESIGN_DECISIONS.md §5.
 // -----------------------------------------------------------------
 inline int ps_eovs_diag()
 {
@@ -2185,30 +1851,27 @@ ps_report_energy_overshoot(amrex::MultiFab& S_new, const char* label, int /*ngho
 
 
 // -----------------------------------------------------------------
-//  ps_apply_floor  —  per-cell positivity floor (task #50).  For each
-//  phase, if the EOS pressure at (rho_k, e_k) is below ps_pres_floor
-//  (or non-finite), raise the phase internal energy e_k to the value
-//  giving P_k = ps_pres_floor at the current rho_k (EOS::RYP2E).  Mass
-//  and momentum are untouched; the mixture UEDEN/UEINT are re-synced
-//  from the per-phase energies (UEDEN = UE1 + UE2).  Energy is added at
-//  floored (pathological near-vacuum) cells only — a robustness net,
-//  not a conservative operation.  CPU (uses the branch-locked per-phase
-//  EOS + the single-phase inverse), applied post-hydro before relax.
+//  ps_apply_floor — opt-in positivity floor (ps_pres_floor, ps_temp_floor).
+//  For each Independent phase, raise e_k at fixed rho_k so that P_k and
+//  T_k are at least the floors; then UEDEN = UE1 + UE2 and UEINT are
+//  re-synced.  Mass and momentum untouched.  Energy is added
+//  non-conservatively at floored near-vacuum cells only: a robustness net
+//  for the vent crater, not a conservative operation, and the largest
+//  cost of the 2-D step.  Runs post-hydro after the folds and before the
+//  relaxation, and after every AMR transfer.  Docs §4.5, §8.3.
 // -----------------------------------------------------------------
 inline void
 ps_apply_floor(amrex::MultiFab& S_new, int nghost = 0)
 {
     using amrex::Real;
-    // EOS-heavy when a floor is active: per two-phase cell it runs EOS::RYP2E
-    // (pressure floor) and a REY2T bisection (temperature floor).  Called from
-    // the reaction path AND from post_regrid / avgDown(state_indx), so this
-    // timer aggregates the floor's EOS cost across all three sites.
+    // EOS-heavy when a floor is active; the timer aggregates the reaction
+    // path, post_regrid and avgDown call sites.
     BL_PROFILE("PS::ps_apply_floor()");
     const Real pfloor = ps_pres_floor();
     const Real tfloor = ps_temp_floor();
     if (pfloor <= Real(0.0) && tfloor <= Real(0.0)) return;
     constexpr Real alpha_floor = Real(1.0e-6);
-    //  3c: presence params for the per-phase Independent gate (host read once).
+    // Presence params for the per-phase Independent gate, read once.
     const PsPres l_floor_pr = ps_presence_params();
 
     for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
@@ -2223,13 +1886,6 @@ ps_apply_floor(amrex::MultiFab& S_new, int nghost = 0)
             const Real m2 = U(i,j,k, UM2RHO2);
             if (m1 <= Real(0.0) || m2 <= Real(0.0)) return;
             const Real rho_mix = m1 + m2;
-
-            // NOTE (perf, task #45 superseded): there used to be a UTEMP-based
-            // pre-filter here to skip the temperature floor's ITERATIVE EOS
-            // work for warm cells.  Both the filter and the iteration are gone
-            // -- the floor energy is now a single direct EOS evaluation (see
-            // below), which is cheaper than the pre-filter's own cost and does
-            // not depend on UTEMP being up to date at this call site.
 
             const Real px = U(i,j,k, UMX);
 #if (AMREX_SPACEDIM >= 2)
@@ -2254,17 +1910,19 @@ ps_apply_floor(amrex::MultiFab& S_new, int nghost = 0)
                 const Real mk  = (ph == 1) ? m1 : m2;
                 const Real alk = (ph == 1) ? alpha1 : (Real(1.0) - alpha1);
                 const int  ue  = (ph == 1) ? UE1 : UE2;
-                //  3c: skip the per-phase floor for a non-Independent phase —
-                //  it is host-slaved, never branch-queried, so flooring its
-                //  e_k only manufactures UE_k drift (design §5).  The mixture
-                //  UEDEN/UEINT reset below is unaffected (still fires if the
-                //  OTHER, Independent, phase was floored).
+                //  A non-Independent phase is host-slaved and never
+                //  branch-queried, so flooring its e_k only manufactures
+                //  UE_k drift: skip and count (CAMR.ps_floor_indep, see
+                //  PS_presence.H).  The UEDEN/UEINT reset below still fires
+                //  if the other phase is floored.
                 if (l_floor_pr.floor_indep != 0 &&
                     ps_regime(alk, mk, l_floor_pr) != PsRegime::Independent) {
 #if !defined(AMREX_USE_GPU)
                     ++ps_promote_diag::n_floor_skip();
                     if (l_floor_pr.floor_budget != 0) {
-                        //  3c conservation-budget probe (diagnostic only).
+                        //  Budget probe (CAMR.ps_floor_budget): is the skipped
+                        //  phase reachable on its own branch, and how much
+                        //  energy would the pressure floor have added?
                         const Real rhod = mk / alk;
                         const Real ekd  = U(i,j,k, ue) / mk - kesp;
                         const hem::Phase3 brd = (ph == 1) ? hem::Phase3::Liquid
@@ -2290,49 +1948,24 @@ ps_apply_floor(amrex::MultiFab& S_new, int nghost = 0)
                 const Real rhok = mk / alk;
                 const Real ek   = U(i,j,k, ue) / mk - kesp;   // phase internal e
 
-                // Continuous, symmetry-preserving floor (task #54).  The
-                // correction is a pure clamp
+                // Continuous, symmetry-preserving floor: a pure clamp
                 //     e_new = max(ek, e_pf, e_tf)
-                // where e_pf / e_tf are the BRANCHLESS base-PR inverse
-                // energies that put this phase at P = pfloor (RYP2E,
-                // state_from_P_rho) and T = tfloor (RTY2E, Vapor-branch
-                // state_from_T_v).  RYP2E / RTY2E are smooth, always-finite
-                // functions of rho_k, and max() is continuous, so two mirror
-                // cells whose states differ by round-off receive corrections
-                // differing only by round-off: the floor cannot manufacture a
-                // finite y-reflection asymmetry.
-                //
-                // The previous design keyed a boolean predicate off the
-                // BRANCH-LOCKED per-phase EOS (REY2PTS_phase, Liquid for
-                // phase 1).  At the venting orifice lip phase 1 expands to
-                // vapor-like density, where the Liquid branch goes non-finite
-                // / non-monotone; the resulting isfinite cliff flipped between
-                // mirror cells and injected a finite, non-conservative
-                // asymmetry that grew every step.
+                // with e_pf / e_tf the branchless base-EOS inverse energies
+                // that put this phase at P = pfloor and T = tfloor.  Both are
+                // smooth, always-finite functions of rho_k and max() is
+                // continuous, so mirror cells differing by round-off receive
+                // corrections differing by round-off: the floor cannot seed a
+                // reflection asymmetry.  A branch-locked predicate does — the
+                // liquid branch goes non-finite at the vapour-like density a
+                // phase reaches at the orifice lip, and the cliff flips
+                // between mirror cells.
                 Real e_floor = ek;
 
-                // ---- TEMPERATURE FLOOR: ONE direct EOS evaluation ----------
-                // We need e*(rho_k, tfloor) = the smallest e whose auto-detect
-                // temperature REY2T(rho_k, e) reaches tfloor.  REY2T is
-                // monotone increasing in e at fixed rho, so e* is EXACTLY the
-                // auto-surface energy at (tfloor, rho_k) -- i.e. the direct
-                // inverse, RTY2PE_auto.
-                //
-                // This replaces a NESTED bisection: a 46-step bisection on e
-                // whose predicate called REY2T, itself a 64-step bisection on
-                // T => 2944 guarded EOS evaluations per phase per cell, run
-                // unconditionally whenever the UTEMP pre-filter did not fire.
-                // Measured 1859 us per phase per cell (GERG); it was 98.5% of
-                // total runtime in a TinyProfile of one satjet step
-                // (ps_apply_floor 486 s of 496 s).  The direct call is 0.62 us
-                // -- ~3000x -- and agrees with the bisection to 2e-13 relative.
-                //
-                // Symmetry (task #54) is preserved: RTY2PE_auto is a smooth,
-                // always-finite, monotone function of rho_k and the correction
-                // is still the continuous clamp e_new = max(ek, e_tf, e_pf), so
-                // two mirror cells differing by round-off get corrections
-                // differing by round-off.  It is also branchless and
-                // fixed-op (better for GPU than the loop it replaces).
+                // Temperature floor, one direct evaluation: REY2T is monotone
+                // increasing in e at fixed rho, so the smallest e reaching
+                // tfloor is exactly the auto-surface energy at (tfloor, rho_k),
+                // RTY2PE_auto.  This replaces a nested bisection that was the
+                // dominant cost of a 2-D step and agrees with it to 2e-13.
                 bool have_Ptf = false;
                 Real P_tf = Real(0.0);
                 if (tfloor > Real(0.0)) {
@@ -2342,28 +1975,18 @@ ps_apply_floor(amrex::MultiFab& S_new, int nghost = 0)
                     if (std::isfinite(e_tf) && e_tf > e_floor) e_floor = e_tf;
                 }
 
-                // ---- PRESSURE FLOOR ---------------------------------------
-                // Skip when it provably cannot bind.  e_pf <= e_tf exactly
-                // when P(tfloor, rho_k) >= pfloor, and P_tf came free from the
-                // call above.  For CO2 with pfloor=1 bar / tfloor=216.6 K the
-                // crossing is at rho ~ 2.5 kg/m3, so every real two-phase cell
-                // (rho_k ~ 25-900) skips the RYP2E inversion (64 guarded evals
-                // per phase per cell, ~40 us, previously unconditional).
+                // Pressure floor, skipped when it provably cannot bind:
+                // e_pf <= e_tf exactly when P(tfloor, rho_k) >= pfloor, and
+                // P_tf came free above (for CO2 at 1 bar / 216.6 K the
+                // crossing is rho ~ 2.5 kg/m3, so real two-phase cells skip
+                // the RYP2E inversion).
                 const bool skip_pfloor = have_Ptf && (P_tf >= pfloor);
                 if (pfloor > Real(0.0) && !skip_pfloor) {
-                    // Pressure floor via the phase-DETECTED base-PR inverse
-                    // (state_from_P_rho): smooth and continuous in rho_k, hence
-                    // symmetry-safe.  NOTE: this hits the auto-detect pressure,
-                    // which for a phase held on the "wrong" locked branch (e.g.
-                    // a physically-vapor phase 1 at the orifice lip) undershoots
-                    // the branch-locked MIXTURE pressure the derived field reads
-                    // -- a mixture-pressure branch-convention artifact (#21/#41),
-                    // not a floor bug.  A branch-consistent target (bisection on
-                    // REY2PTS_phase) removes the undershoot but the branch-locked
-                    // EOS is non-monotone near the dome, so it root-jumps between
-                    // mirror cells and REINTRODUCES the y-asymmetry.  Symmetry
-                    // wins here; the residual crater is a handful of trace lip
-                    // cells and is addressed separately via the mixture rule.
+                    // Auto-detect inverse (state_from_P_rho): smooth in rho_k,
+                    // hence symmetry-safe.  For a phase held on the "wrong"
+                    // locked branch it undershoots the branch-locked mixture
+                    // pressure; a branch-consistent target root-jumps between
+                    // mirror cells near the dome, so symmetry wins.
                     Real e_pf;
                     EOS::RYP2E(rhok, Y, pfloor, e_pf);
                     if (std::isfinite(e_pf) && e_pf > e_floor) e_floor = e_pf;
@@ -2383,16 +2006,15 @@ ps_apply_floor(amrex::MultiFab& S_new, int nghost = 0)
 
 
 // -----------------------------------------------------------------
-//  FOLD-MASS AUDIT (S0, DESIGN_ps_presence_discrete.md §3): every fold
-//  event and the phase mass it moved, keyed by CAUSE, so the phase-
-//  removal churn is visible (conservative bookkeeping made observable;
-//  the ps_diag_mass pattern).  Host-only statics like ps_guard counters.
-//  Read+reset alongside the PS-MASS report in CAMR_advance.cpp.
+//  Fold-mass audit: every fold event and the phase mass it moved, by
+//  cause, so phase-removal churn is visible ([PS-FOLD]).  Host-only
+//  statics; read and reset with the [PS-MASS] report in CAMR_advance.cpp.
+//  Docs/MODEL_AND_ALGORITHM.md §4.4.
 // -----------------------------------------------------------------
 #if !defined(AMREX_USE_GPU)
 struct PsFoldAudit {
     long   n_vanish = 0, n_tfloor = 0, n_vacuum = 0;
-    long   n_cdeg = 0, n_edeg = 0;    // PRESENCE-PROMOTION F2 reaps
+    long   n_cdeg = 0, n_edeg = 0;    // corridor-density and energy reaps
     double m_vanish = 0.0, m_tfloor = 0.0, m_vacuum = 0.0;   // |phase mass folded|
     double m_cdeg = 0.0, m_edeg = 0.0;
     void reset() { *this = PsFoldAudit{}; }
@@ -2401,68 +2023,28 @@ inline PsFoldAudit& ps_fold_audit() { static PsFoldAudit a; return a; }
 #endif
 
 // -----------------------------------------------------------------
-//  ps_apply_vanish_fold  —  grid-level wrapper for the standalone's
-//  hem::ps_apply_vanish_fold.  When a cell's α_1 drops below
-//  alpha_vanish (or rises above 1 - alpha_vanish), the vanishing
-//  phase's mass and total-energy are folded into the surviving
-//  phase and the vanished slot is zeroed.  This prevents
-//  phantom-density buildup (m_k / α_k explodes as α_k → 0) which
-//  drives the R-star u hump on B4-class cross-critical problems.
-//
-//  Called from CAMR::CAMR_advance BEFORE ps_apply_relaxation so
-//  the relaxation Newton doesn't see cells with pathological
-//  per-phase (ρ, e).  Task #189.
-//
-//  Runtime toggle CAMR.ps_alpha_vanish (default 0 = disabled,
-//  matching pre-#189 behaviour).  Standalone winning B4 config
-//  uses 1e-8.
-// -----------------------------------------------------------------
-// -----------------------------------------------------------------
-//  ps_apply_tfloor_fold  --  grid-level driver for hem::ps_apply_tfloor_fold.
-//
-//  STANDALONE LESSON NOT PREVIOUSLY CARRIED ACROSS (gap item A2, see
-//  STANDALONE_LESSONS_GAP.md).  The per-cell helper has existed in
-//  hem_pelanti_shyue.H:261 since the port, but nothing in CAMR ever called it
-//  -- the definition was the only reference in the entire Source/ tree, so it
-//  was dead code.  In the standalone it runs EVERY RK stage inside
-//  clamp_cons6 (ppm_1d_ps_wp.cpp:1298-1300).
-//
-//  Why it is needed (cott_algorithm_reconciliation.md, "Symptom 1"): a trace
-//  phase in an expansion fan gets cooled below any physical temperature, the
-//  branch-locked EOS then returns an invalid state, and the mixture sound
-//  speed goes NaN.  Folding that phase away eliminates the crash.  Together
-//  with ps_apply_vanish_fold these are the ONLY phase-removal mechanisms;
-//  without this one CAMR can only remove a phase on volume fraction, never on
-//  temperature.
-//
-//  Ordering: call AFTER ps_apply_vanish_fold, per the helper's own docstring
-//  ("place this AFTER ps_apply_vanish_fold in clamp so we don't double-count").
-//
-//  Gated by its OWN knob CAMR.ps_tfloor_fold (default 0 = disabled) -- see the
-//  accessor below, which warns why this must NOT be bound to CAMR.ps_temp_floor.
-//  The two are complementary -- ps_apply_floor RAISES e_k to keep a phase that
-//  can be saved; the fold removes one that cannot.
+//  ps_apply_tfloor_fold — grid driver for hem::ps_apply_tfloor_fold.  A
+//  trace phase in an expansion fan can cool below any physical
+//  temperature; its branch-locked EOS then has no state and the mixture
+//  sound speed goes NaN.  Folding it into the host removes it
+//  conservatively (mass and energy move between phases within the cell).
+//  With ps_apply_vanish_fold these are the only phase-removal channels,
+//  and this is the only one keyed on temperature.  Runs after the vanish
+//  fold (the helper assumes that order).  Opt-in through
+//  CAMR.ps_tfloor_fold, deliberately its own key: the floor raises e_k to
+//  keep a phase, the fold removes one it cannot keep.  Docs §4.4.
 // -----------------------------------------------------------------
 inline void
 ps_apply_tfloor_fold(amrex::MultiFab& S_new, int nghost = 0)
 {
-    // OWN parameter, default 0 = DISABLED -- matching the standalone, whose
-    // ps_t_floor_default() read env PS_T_FLOOR with default 0.0 (the CAMR-side
-    // copy of that helper was deleted 2026-08-15, env knobs retired) and whose
-    // first line is `if (T_floor <= 0.0) return false;`.  It is called every RK
-    // stage there but with a zero threshold, i.e. it is opt-in, not always-on.
-    //
-    // DO NOT bind this to CAMR.ps_temp_floor.  That parameter belongs to
-    // ps_apply_floor, which RAISES e_k to satisfy a temperature floor; it is a
-    // different operation with different semantics.  Binding the fold to it
-    // (216.6 K in the pipe-break inputs) fired the fold on every mixed cell
-    // whose phase temperature dipped, collapsing cells to a PURE phase
-    // (U[0] -> 0 or 1) at mixture densities where no single-phase state
-    // exists: measured 1132 cells at rho_mix = 120 kg/m3 and T = 216.6 K
-    // labelled pure vapour, where saturated vapour is ~14 and saturated liquid
-    // ~1225 kg/m3.  Such a cell is necessarily two-phase and no energy
-    // adjustment can repair it, which is why moving ps_apply_floor after the
-    // folds did not help.
+    // CAMR.ps_tfloor_fold (0 K = off): fold away a phase whose branch
+    // temperature is below this.  Not bound to CAMR.ps_temp_floor, which
+    // belongs to ps_apply_floor and has the opposite meaning.  Binding the
+    // fold to the floor temperature (216.6 K in the pipe-break decks) fires
+    // it on every mixed cell whose phase temperature dips and collapses
+    // cells at rho_mix = 120 kg/m3 to a pure phase — a state no
+    // single-phase CO2 can occupy (saturated vapour ~14, saturated liquid
+    // ~1225 kg/m3) and no energy adjustment can repair.
     static const amrex::Real fold_T = []() -> amrex::Real {
         amrex::Real v = amrex::Real(0.0);
         amrex::ParmParse pp("CAMR");
@@ -2484,9 +2066,9 @@ ps_apply_tfloor_fold(amrex::MultiFab& S_new, int nghost = 0)
             Uv[0] = double(U(i, j, k, UALPHA1));
             Uv[1] = double(U(i, j, k, UM1RHO1));
             Uv[2] = double(U(i, j, k, UM2RHO2));
-            // UNLIKE the vanish fold, this helper READS V6[3] (it forms
-            // u_mix = U[3]/rho_mix to strip kinetic energy before the EOS
-            // query), so the real normal momentum must be passed.
+            // Unlike the vanish fold this helper reads V6[3] (u_mix =
+            // U[3]/rho_mix strips the kinetic energy before the EOS query),
+            // so the real normal momentum is passed.
             Uv[3] = double(U(i, j, k, UMX));
             Uv[4] = double(U(i, j, k, UE1));
             Uv[5] = double(U(i, j, k, UE2));
@@ -2504,22 +2086,31 @@ ps_apply_tfloor_fold(amrex::MultiFab& S_new, int nghost = 0)
                 U(i, j, k, UE1    ) = amrex::Real(Uv[4]);
                 U(i, j, k, UE2    ) = amrex::Real(Uv[5]);
                 // URHO / UEINT / UEDEN unchanged: the fold moves mass and
-                // energy BETWEEN phases within the cell, conserving both.
+                // energy between phases within the cell, conserving both.
             }
         });
     }
 }
 
 
+// -----------------------------------------------------------------
+//  ps_apply_vanish_fold — phase death: four conservative folds per cell,
+//  in order vanish (alpha_k <= alpha_vanish; hem::ps_apply_vanish_fold),
+//  vacuum (m_k <= rho_min alpha_k at finite alpha), corridor-density reap
+//  (corridor phase with m_k <= rho_deg alpha_k) and energy reap (E_k/m_k
+//  outside [e_deg_lo, e_deg_hi]).  Each moves the dying phase's mass and
+//  energy into the survivor and sets alpha_1 to exactly 0 or 1; URHO and
+//  UEDEN are untouched, so conservation is by construction.  The reaps
+//  fire only when exactly one phase qualifies (a both-degenerate cell has
+//  no host; the validator reports it).  Each fold is counted with the mass
+//  moved.  Runs after each RK stage, at the head of the reaction step and
+//  after every AMR transfer, before the floor.  Docs §4.4.
+// -----------------------------------------------------------------
 inline void
 ps_apply_vanish_fold(amrex::MultiFab& S_new, int nghost = 0)
 {
-    // S3 (design §3): under presence semantics the vanish fold is not
-    // optional — phase DEATH is part of the model's discrete state, and its
-    // threshold is the presence classifier's alpha_vanish (single-sourced:
-    // CAMR.ps_presence_vanish).  The retired CAMR.ps_alpha_vanish knob was
-    // read here but provably inert — presence is hard-enabled — so the read
-    // is deleted (AUDIT 2026-08-24, dial-hygiene 9); a set key now aborts.
+    // The threshold is the presence death edge, CAMR.ps_presence_vanish
+    // (PS_presence.H).  CAMR.ps_alpha_vanish aborts: replaced by ps_presence_vanish.
     static const bool s_retired_key_checked = []() {
         amrex::ParmParse pp("CAMR");
         if (pp.contains("ps_alpha_vanish")) {
@@ -2534,22 +2125,19 @@ ps_apply_vanish_fold(amrex::MultiFab& S_new, int nghost = 0)
     if (a_v <= amrex::Real(0.0)) return;
     BL_PROFILE("PS::ps_apply_vanish_fold()");
     const double alpha_vanish = double(a_v);
-    const double rminF = double(EOS::rho_min());      // E2' vacuum criterion
+    const double rminF = double(EOS::rho_min());      // vacuum criterion
 
     for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
         const amrex::Box bx = mfi.growntilebox(nghost);
         amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
         amrex::LoopOnCpu(bx, [=] (int i, int j, int k) noexcept
         {
-            // Pack the CAMR cell into the V6 layout the standalone
-            // fold helper expects.
+            // Pack the cell into the V6 layout the fold helper expects.
             hem::V6 Uv;
             Uv[0] = double(U(i, j, k, UALPHA1));
             Uv[1] = double(U(i, j, k, UM1RHO1));
             Uv[2] = double(U(i, j, k, UM2RHO2));
-            // The velocity slot on V6 index 3 is ρ_mix · u; the fold
-            // only reads/writes UM1RHO1/UM2RHO2/UE1/UE2 and UALPHA1,
-            // so V6[3] doesn't matter — pass 0.
+            // The vanish helper never reads V6[3]; pass 0.
             Uv[3] = 0.0;
             Uv[4] = double(U(i, j, k, UE1));
             Uv[5] = double(U(i, j, k, UE2));
@@ -2559,23 +2147,18 @@ ps_apply_vanish_fold(amrex::MultiFab& S_new, int nghost = 0)
             if (hem::ps_apply_vanish_fold(Uv, alpha_vanish)) {
 #if !defined(AMREX_USE_GPU)
                 ++ps_fold_audit().n_vanish;
-                // the folded phase's mass = whichever partial mass went to 0
+                // the folded phase's mass is whichever partial mass went to 0
                 ps_fold_audit().m_vanish +=
                     (Uv[1] == 0.0) ? m1_pre : m2_pre;
 #endif
                 wrote = true;
             }
-            // E2' VACUUM DEATH (DESIGN_ps_extinction.md §10, Marc-approved
-            // 2026-08-10; presence only): a phase with finite alpha but
-            // rho_k = m_k/alpha_k at or below the backend's density-domain
-            // floor owns volume without a thermodynamic state — the SECOND
-            // degenerate corner (m -> 0 at finite alpha; the alpha corner
-            // is the vanish fold above).  Fold its volume AND residual
-            // mass/energy into the host, exactly and conservatively.
-            // Division-free criterion: m_k <= rho_min * alpha_k (<= not <:
-            // a phase PINNED at the declared validity floor has no
-            // interior state either).  Both-vacuum cells are left for the
-            // validator — there is no host to fold into.
+            // Vacuum death: a phase with finite alpha but rho_k = m_k/alpha_k
+            // at or below the backend's density floor owns volume without a
+            // thermodynamic state — the second degenerate corner (m -> 0 at
+            // finite alpha; the alpha corner is the vanish fold above).
+            // Division-free; <= rather than <, since a phase pinned at the
+            // validity floor has no interior state either.  Docs §5.4.
             const double a1v = Uv[0];
             const bool vac1 = (a1v > 0.0) && (Uv[1] <= rminF * a1v);
             const bool vac2 = (a1v < 1.0) && (Uv[2] <= rminF * (1.0 - a1v));
@@ -2595,16 +2178,14 @@ ps_apply_vanish_fold(amrex::MultiFab& S_new, int nghost = 0)
                 }
                 wrote = true;
             }
-            //  PRESENCE-PROMOTION F2 (WORKLOG 2026-08-29): two further
-            //  conservative reaps, same mechanics as the vacuum fold.
-            //  (a) CORRIDOR DENSITY DEGENERACY: a corridor phase whose
-            //  rho_k = m/alpha has fallen below rho_deg owns volume the
-            //  mass cannot fill — the alpha/m advective decoupling the
-            //  corridor permits by design.  Left alone it is the loaded
-            //  gun that killed Marc's demo2 run at step 1826 the moment
-            //  alpha grew across alpha_cond.  Reap it while it is still
-            //  small.  Division-free; corridor-only, so it can never
-            //  touch a legit Independent phase (measured min 1.406).
+            //  Two further reaps, same mechanics as the vacuum fold.
+            //  (a) Corridor-density reap: a corridor phase whose rho_k =
+            //  m/alpha has fallen below rho_deg owns volume its mass cannot
+            //  fill — the alpha/m advective decoupling the corridor permits.
+            //  Left alone it promotes across alpha_cond as a phase with no
+            //  state; reap it while it is small.  Division-free and
+            //  corridor-only, so it can never touch a legitimate Independent
+            //  phase.  Docs §4.5.
             {
                 const double a1c = Uv[0];
                 const double cnd = double(prS3.alpha_cond);
@@ -2625,11 +2206,10 @@ ps_apply_vanish_fold(amrex::MultiFab& S_new, int nghost = 0)
                     wrote = true;
                 }
             }
-            //  (b) ENERGY DEGENERACY: exactly one phase whose specific
-            //  energy e_k = E_k/m_k sits outside [e_deg_lo, e_deg_hi]
-            //  (physical CO2 spans ~[-1.5e5, ~4e6]; the crash carried
-            //  +7.6e7).  Catches the decoupling's energy face, which no
-            //  density test sees.  Division-free comparisons.
+            //  (b) Energy reap: exactly one phase whose E_k/m_k sits outside
+            //  [e_deg_lo, e_deg_hi] (physical CO2 spans ~[-1.5e5, 4e6] J/kg).
+            //  Catches the decoupling's energy face, which no density test
+            //  sees.  Division-free comparisons.
             {
                 const double elo = double(prS3.e_deg_lo);
                 const double ehi = double(prS3.e_deg_hi);
@@ -2655,10 +2235,8 @@ ps_apply_vanish_fold(amrex::MultiFab& S_new, int nghost = 0)
                 U(i, j, k, UM2RHO2) = amrex::Real(Uv[2]);
                 U(i, j, k, UE1    ) = amrex::Real(Uv[4]);
                 U(i, j, k, UE2    ) = amrex::Real(Uv[5]);
-                // URHO / UEINT / UEDEN unchanged: total mass and
-                // total energy are preserved by the fold (mass/energy
-                // moved *between* phases within the cell, not
-                // between cells).
+                // URHO / UEINT / UEDEN unchanged: mass and energy moved
+                // between phases within the cell, not between cells.
             }
         });
     }
@@ -2666,41 +2244,35 @@ ps_apply_vanish_fold(amrex::MultiFab& S_new, int nghost = 0)
 
 
 // -----------------------------------------------------------------
-//  ps_apply_relaxation  —  MFIter driver.  Constructs the EOS
-//  callback once, then a ParallelFor over each tile calling the
-//  per-cell wrapper.  Called from CAMR::CAMR_advance after the
-//  hydro step, under `if (ps_hydro != 0)`.
+//  ps_apply_relaxation — the relaxation sweep.  Builds the EOS callback
+//  once, resets the per-sweep counters, dispatches every cell to the
+//  kernel for ps_relax_mode, then prints the gated reports ([ps_prdiag],
+//  [PS-PRES], [PS-GATE], [PS-DT], [PS-DM x3], [PS-X3], [PS-COEXIT-TH],
+//  [ps_relax]).  Called from apply_ps_reaction under CAMR.ps_do_relax;
+//  do_print = false skips the reports and reductions (Strang pre-half
+//  step).  Host-only: the kernels take a std::function callback.
 // -----------------------------------------------------------------
 inline void
 ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
                     int nghost = 0, bool do_print = true)
 {
-    // EOS-heavy: per cell runs the branch-locked PR Newton (2-3 iters × 2
-    // phases).  This is the dominant physics cost of CAMR_advance.
+    // EOS-heavy (branch-locked solves per phase per cell): the dominant
+    // physics cost of CAMR_advance.
     BL_PROFILE("PS::ps_apply_relaxation()");
-    //  (The fused device-kernel dispatch and PS_relax_device.H, 485 lines of
-    //   hand-mirrored "byte-faithful copies", were deleted 2026-08-17 (S1):
-    //   after mode 3 went the mirror covered only modes 0 and 2, neither of
-    //   them production, while X3 has no twin and the acceptance path is
-    //   CPU-only.  A GPU port starts from X3, not from a copy of the modes
-    //   it replaced.)
 
     const hem::PsPhaseAPI eos = ps_make_camr_eos_api();
 
-    // Reset diagnostic counters for this sweep.
+    // Reset the per-sweep counters.
     ps_relax_diag() = PsRelaxDiag{};
-    ps_pres_diag_data().reset();      // Stage-1 C1/C2 counters, same cadence
+    ps_pres_diag_data().reset();
 
-    // Relaxation strategy: 0 = mechanical (pressure, adjusts α); 1 = P+T
-    // equilibrium (isochoric, redistributes per-phase energy); 2 = P +
-    // finite-rate thermal relaxation (theta = ps_theta_tau).  tasks #27/#77.
+    // Dispatch on ps_relax_mode (documented at its accessor).
     const int relax_mode = ps_relax_mode();
     const amrex::Real theta = ps_theta_tau();
-    //  Mode 3 (finite-rate mechanical, task #80) was DELETED 2026-08-17
-    //  (WORKLOG Tier 2) after P-A measured its dial inert: 2.1 % spread in
-    //  B11's u across five decades of ps_p_tau, 0.01 % on B2, against
-    //  theta's 85 %.  Tell a stale input file so, rather than silently
-    //  demoting it to mode 0.
+    //  Mode 3 (a finite-rate mechanical leg) passes the whitelist in
+    //  ps_relax_mode and is refused here with its replacement named:
+    //  0 for instantaneous mechanical relaxation, 5 for the coupled source.
+    //  Docs/MODEL_AND_ALGORITHM.md §5.2.
     if (relax_mode == 3) {
         amrex::Abort("CAMR.ps_relax_mode=3 was deleted 2026-08-17: the "
                      "finite-rate mechanical leg was measured inert "
@@ -2711,9 +2283,8 @@ ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
     for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
         const amrex::Box bx = mfi.growntilebox(nghost);
         amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
-        // The lambda captures `eos` by copy so the std::function
-        // is available inside each cell call.  This is CPU-only
-        // (device kernels can't call std::function).
+        // `eos` is captured by copy so the std::function is available in
+        // each cell call.
         amrex::LoopOnCpu(bx, [=] (int i, int j, int k) noexcept
         {
             if (relax_mode == 5) {
@@ -2730,23 +2301,19 @@ ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
         });
     }
 
-    // ---- relaxation cost/convergence report (CAMR.ps_prdiag = 1) ----
-    // Companion to CAMR.ps_mt_diag.  nt_* = Newton, fb_* = the #41
-    // validity-guarded bracketing fallback (65 samples x 2 per-phase EOS
-    // inversions + up to 60 bisections per cell -- the expensive path).
+    // [ps_prdiag] (CAMR.ps_prdiag, see hem::ps_diag_prdiag): cost and
+    // convergence of the isochoric pressure projection; nt_* = Newton,
+    // fb_* = the validity-guarded bracketing fallback (the expensive path).
     {
-        const int rx_diag = hem::ps_diag_prdiag();   // single read (AUDIT C.4)
+        const int rx_diag = hem::ps_diag_prdiag();
         if (rx_diag != 0) {
             hem::PsPrStats& st = hem::ps_pr_stats();
             const long solved = st.seen - st.trivial;
-            //  NAMES ITS PATH (T1-b, 2026-08-17): these counters live in
-            //  ps_iso_pressure_relax_cell, the ISOCHORIC pressure variant,
-            //  which only modes 1 and 2 call.  At modes 4 and 5 the
-            //  projection is ps_pressure_relax_cell (alpha-adjusting) and
-            //  this report is all zeros -- measured, 103 sweeps of zeros on
-            //  B2 at mode 5.  The production path's constraint outcomes are
-            //  in [PS-X3] instead.  Relabelled rather than re-pointed
-            //  because modes 1/2 are themselves Tier-2 candidates.
+            //  The label names its path: these counters live in
+            //  ps_iso_pressure_relax_cell, which only modes 1 and 2 call.  At
+            //  modes 4 and 5 the projection is the alpha-adjusting
+            //  ps_pressure_relax_cell and this line is all zeros; the
+            //  production constraint outcomes are in [PS-X3].
             amrex::Print() << "[ps_prdiag iso, modes 1/2 only] seen=" << st.seen
                            << " trivial=" << st.trivial
                            << " solved=" << solved
@@ -2764,8 +2331,7 @@ ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
         }
     }
 
-    // ---- Stage-1 C1: [PS-PRES] the post-thermal P1 != P2 residual --------
-    // (CAMR.ps_pres_diag = 1; counters split by cause per ground rule 2.)
+    // [PS-PRES] (ps_pres_diag): the post-thermal P1 != P2 residual by cause.
     if (ps_pres_diag() != 0) {
         const PsPresDiag& pd = ps_pres_diag_data();
         auto mean = [](double s, long n) { return n > 0 ? s/double(n) : 0.0; };
@@ -2781,10 +2347,9 @@ ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
             << " mean=" << mean(pd.dp_skip_sum, pd.n_skipped)
             << " | post-invalid=" << pd.n_postinval
             << "   (|P1-P2|/max(P1,P2) at chain exit)\n";
-        //  AUDIT 2026-08-24 B13: S4 presence-gate refusals, per sweep, all
-        //  modes (counted at the five relax entry sites; the cells [PS-X3]
-        //  never even sees).  Not an anomaly — a refused cell is the gate
-        //  doing its job — but a STALL routed through it must be visible.
+        //  [PS-GATE]: presence-gate refusals this sweep, all modes (cells
+        //  [PS-X3] never sees).  Not an anomaly — the gate doing its job —
+        //  but a stall routed through it must be visible.
         if (ps_relax_diag().n_gate_presence > 0) {
             amrex::AllPrint()
                 << "[PS-GATE] S4 presence relax gate refused n="
@@ -2792,8 +2357,8 @@ ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
                 << " in-band cells this sweep (phase pair not "
                    "Independent+Independent; all modes)\n";
         }
-        //  [PS-DT] (F4 session 3): thermal completeness — |T1-T2| at
-        //  entry (post-mech/projection) vs exit, cells whose leg ran.
+        //  [PS-DT]: thermal completeness, |T1-T2| at entry vs exit over the
+        //  cells whose thermal leg ran.
         if (pd.n_dt > 0) {
             amrex::AllPrint()
                 << "[PS-DT] n=" << pd.n_dt
@@ -2806,8 +2371,8 @@ ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
                 << ")\n";
         }
     }
-    //  [PS-DM x3] per-sweep print (F4 session 4); reset only when mode 5
-    //  owns the census (the split form prints+resets in ps_apply_sources).
+    //  [PS-DM x3] per-sweep transfer census; reset here only when mode 5
+    //  owns it (the split source prints and resets it in ps_apply_sources).
     if (ps_relax_mode() == 5) {
         hem::PsDmCensus& dc = hem::ps_dm_census();
         if (ps_pres_diag() != 0 && dc.n > 0) {
@@ -2817,13 +2382,9 @@ ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
         }
         dc.reset();
     }
-    //  [PS-X3] (cleanup step 0): the coupled operator's own outcome and
-    //  the P1 = P2 constraint's failures, cause-split.  Mode 5 only.
-    //  (Historical: before THETA FORK route (a), theta <= 0 dead-ended
-    //  the kernel — rc=2 on the first sub-step — and the discarded bool
-    //  made that battery-wide no-op invisible.  theta <= 0 now means
-    //  INSTANTANEOUS thermal equilibrium, so that failure shape is gone;
-    //  rc=2 'dead' now only counts genuinely structural refusals.)
+    //  [PS-X3]: the coupled operator's outcome and the P1 = P2 constraint's
+    //  failures, by cause.  Mode 5 only; 'dead' counts structural refusals,
+    //  and a sweep in which every cell is dead is banner-flagged.
     if (ps_relax_mode() == 5) {
         hem::PsX3Stats& xs = hem::ps_x3_stats();
         if (ps_pres_diag() != 0 && xs.n_calls > 0) {
@@ -2851,8 +2412,8 @@ ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
         }
         xs.reset();
     }
-    // ---- Stage-1 C2: [PS-COEXIT-TH] thermal-leg band exits (X2) ----------
-    // (CAMR.ps_coexit_diag = 1; the counting itself is always on.)
+    // [PS-COEXIT-TH] (ps_coexit_diag): thermal-leg band exits; the counting
+    // itself is always on.
     if (ps_coexit_diag() != 0) {
         const PsPresDiag& pd = ps_pres_diag_data();
         amrex::AllPrint()
@@ -2866,18 +2427,15 @@ ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
             << ps_coexist_action() << ")\n";
     }
 
-    // Strang pre-half-step calls pass do_print=false to skip the global
-    // reductions/prints (avoids double diagnostics + reduction cost).
+    // Strang pre-half-step calls pass do_print = false: no reports, no
+    // reductions.
     if (!do_print) return;
 
-    // Diagnostics are opt-in (CAMR.ps_relax_verbose=1).  Default: silent and
-    // cheap — no per-step stdout, and we skip the global α min/max reduction.
+    // The rest is opt-in (ps_relax_verbose).
     if (ps_relax_verbose() == 0) return;
 
-    // Per-rank summary — report only when an anomaly appears.  With the
-    // refined counters we also flag n_skip_hi_bad (α_in > 1 from the
-    // flux update, an *upstream* problem the relax can't fix because it
-    // early-outs before touching those cells).
+    // Per-rank summary, only when an anomaly appears; n_skip_hi_bad
+    // (alpha_in > 1) is an upstream problem the relaxation cannot fix.
     const PsRelaxDiag& d = ps_relax_diag();
     const bool anomaly =
         d.n_failed        > 0 ||
@@ -2894,7 +2452,7 @@ ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
             <<    ",hi_ok="   << d.n_skip_hi_ok
             <<    ",hi_BAD="  << d.n_skip_hi_bad
             <<    ",mk="      << d.n_skip_mk << ")"
-            << " gate_presence=" << d.n_gate_presence   // B13 (not an anomaly)
+            << " gate_presence=" << d.n_gate_presence   // not an anomaly
             << " failed=" << d.n_failed
             << " (eos=" << d.n_fail_eos
             <<  ",slope=" << d.n_fail_slope
@@ -2910,14 +2468,9 @@ ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
             << ", "             << d.alpha_max_seen << "]\n";
     }
 
-    // ---------------------------------------------------------------
-    //  Option B: post-relaxation global min/max of α_1 in S_new.
-    //  MultiFab::min/max do an MPI reduction, so only rank 0 needs to
-    //  print.  Print every step so we get a per-step time series of
-    //  the extremes, whether or not any counter tripped.  Any print
-    //  showing amax > 1.0 or amin < 0.0 in the *output* MultiFab is a
-    //  hard bug regardless of where it originated.
-    // ---------------------------------------------------------------
+    // Post-relaxation global alpha_1 range (an MPI reduction; rank 0
+    // prints), every step.  amax > 1 or amin < 0 in the output is a hard
+    // bug wherever it originated.
     const amrex::Real amin_out = S_new.min(UALPHA1, 0, false);
     const amrex::Real amax_out = S_new.max(UALPHA1, 0, false);
     if (amrex::ParallelDescriptor::IOProcessor()) {
