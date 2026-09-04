@@ -6,7 +6,7 @@ inert instead of argued about.
 This is deliberately NOT a correctness test.  It does not compare against the
 standalone, against an analytic solution, or against anything else external.
 It records what CAMR does today and tells you, later, whether that changed and
-by how much.  Correctness lives in full_suite.py / run_ac_suite.py.
+by how much.  Correctness lives in exact_suite.py / verify_canonical.py.
 
 WHY THIS EXISTS
 ---------------
@@ -24,6 +24,16 @@ USAGE
     ./characterize.py compare BASELINE CANDIDATE
 
     ./characterize.py record BASELINE --cases B4-Cross-critical B2-Evap-wave
+    ./characterize.py record BASELINE --defaults   # acceptance config (see below)
+
+CONFIGURATIONS
+    default        full_suite.run_camr: the matched CAMR-vs-standalone config
+                   (mode 2, tau=1e-4 on two-phase cases, alpha_trace=1e-6).
+    --defaults     exact_suite.run: bare code defaults, alpha_trace=0 -- the
+                   acceptance configuration that exact_suite.py scores.  Use
+                   this one to lock behaviour before a refactor; compare only
+                   fingerprints recorded with the same configuration (the
+                   JSON records which under "_config").
 
 INTERPRETING compare
     IDENTICAL   every field bit-for-bit.  A refactor that claims to be
@@ -63,24 +73,31 @@ def fingerprint(path):
     return out
 
 
-def latest_plotfile(name):
-    g = [p for p in glob.glob(F.CAMR_PRE + name + '_*')
+def latest_plotfile(name, pre=None):
+    g = [p for p in glob.glob((pre if pre else F.CAMR_PRE + name + '_') + '*')
          if os.path.isdir(p) and '.old' not in p]
     return max(g, key=os.path.getmtime) if g else None
 
 
-def cmd_record(tag, cases):
+def cmd_record(tag, cases, defaults=False):
     os.makedirs(STORE, exist_ok=True)
-    rec = {}
+    rec = {'_config': 'exact_suite defaults' if defaults else 'full_suite matched'}
+    if defaults:
+        import exact_suite as X
     for nm in cases:
-        for p in glob.glob(F.CAMR_PRE + nm + '_*'):      # clear stale output
+        pre = ('ch_' + nm + '_') if defaults else (F.CAMR_PRE + nm + '_')
+        for p in glob.glob(pre + '*'):                   # clear stale output
             if os.path.isdir(p):
                 subprocess.run(['rm', '-rf', p])
         try:
-            F.run_camr(nm)
+            if defaults:
+                rc, _ = X.run(nm, 'wp', pre)
+                if rc != 0: raise RuntimeError('rc=%d' % rc)
+            else:
+                F.run_camr(nm)
         except Exception as e:
             print('  %-26s RUN FAILED (%s)' % (nm, e)); rec[nm] = None; continue
-        p = latest_plotfile(nm)
+        p = latest_plotfile(nm, pre)
         if p is None:
             print('  %-26s NO OUTPUT' % nm); rec[nm] = None; continue
         rec[nm] = fingerprint(p)
@@ -88,16 +105,19 @@ def cmd_record(tag, cases):
         print('  %-26s ok%s' % (nm, '   *** %d NaN ***' % nn if nn else ''))
     with open('%s/%s.json' % (STORE, tag), 'w') as fh:
         json.dump(rec, fh, indent=1, sort_keys=True)
-    ok = sum(1 for v in rec.values() if v)
-    print('\nrecorded %d/%d cases -> %s/%s.json' % (ok, len(cases), STORE, tag))
+    ok = sum(1 for k, v in rec.items() if v and not k.startswith('_'))
+    print('\nrecorded %d/%d cases (%s) -> %s/%s.json' % (ok, len(cases), rec['_config'], STORE, tag))
     return 0 if ok == len(cases) else 1
 
 
 def cmd_compare(ta, tb):
     A = json.load(open('%s/%s.json' % (STORE, ta)))
     B = json.load(open('%s/%s.json' % (STORE, tb)))
-    names = sorted(set(A) | set(B))
+    names = sorted(k for k in (set(A) | set(B)) if not k.startswith('_'))
     ident = changed = missing = 0
+    ca, cb = A.get('_config', 'full_suite matched'), B.get('_config', 'full_suite matched')
+    if ca != cb:
+        print('WARNING: configurations differ (%s: %s / %s: %s) -- not comparable' % (ta, ca, tb, cb))
     print('%-26s %-11s %s' % ('case', 'verdict', 'max rel diff by field'))
     print('-' * 78)
     for nm in names:
@@ -136,7 +156,7 @@ if __name__ == '__main__':
     else:
         cases = [c[0] for c in F.CASES]
     if mode == 'record':
-        sys.exit(cmd_record(args[0], cases))
+        sys.exit(cmd_record(args[0], cases, defaults='--defaults' in sys.argv))
     elif mode == 'compare':
         sys.exit(cmd_compare(args[0], args[1]))
     else:
