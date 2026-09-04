@@ -132,8 +132,7 @@ Face face_from_state(int idir, const amrex::Real U[NVAR],
 
     // Species carrier (pure CO₂).
     Real Y[NUM_SPECIES];
-    Y[0] = Real(1.0);
-    for (int n = 1; n < NUM_SPECIES; ++n) Y[n] = Real(0.0);
+    ps_pure_species(Y);
 
     // Branch-locked per-phase P and c, one solve per phase, host dispatch
     // as in ps_augment_primitives: the host's query defines the cell; a

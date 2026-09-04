@@ -97,8 +97,7 @@ ps_augment_primitives(int i, int j, int k,
     // region must return the metastable extrapolation on its own branch,
     // or the relaxation Newton is driven by an inconsistent pressure.
     amrex::Real Y[NUM_SPECIES];
-    Y[0] = amrex::Real(1.0);
-    for (int n = 1; n < NUM_SPECIES; ++n) Y[n] = amrex::Real(0.0);
+    ps_pure_species(Y);
 
     // Presence dispatch (same rule as PS_hllc face_from_state): the host
     // phase (larger volume fraction) is queried unconditionally and defines
@@ -200,8 +199,7 @@ ps_mixture_pressure_from_cons(const amrex::Real U[NVAR], amrex::Real P_stock,
     const Real e2   = q2.exists ? q2.e   : E_mix;
 
     Real Y[NUM_SPECIES];
-    Y[0] = Real(1.0);
-    for (int n = 1; n < NUM_SPECIES; ++n) Y[n] = Real(0.0);
+    ps_pure_species(Y);
     Real P1, P2;
     const Real P_ss = ps_guard::sanitize_stock_pressure(P_stock);
     if (q1.exists && ps_regime_reach(rg1, rho1, e1, /*liquid=*/true, pr) == PsRegime::Independent) { EOS::REY2P_liquid(rho1, e1, Y, P1);
@@ -256,8 +254,7 @@ ps_phase_temp_from_cons(const amrex::Real U[NVAR], int phase, amrex::Real T_mix)
     const Real e_k   = ((phase == 1) ? U[UE1] : U[UE2]) / mk - ke;
 
     amrex::Real Y[NUM_SPECIES];
-    Y[0] = amrex::Real(1.0);
-    for (int n = 1; n < NUM_SPECIES; ++n) Y[n] = amrex::Real(0.0);
+    ps_pure_species(Y);
     amrex::Real Pq, Tq, Sq;
     EOS::REY2PTS_phase(rho_k, e_k, Y,
                        (phase == 1) ? hem::Phase3::Liquid : hem::Phase3::Vapor,

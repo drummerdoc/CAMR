@@ -115,8 +115,7 @@ ps_physical_flux_from_state(int idir, const Real U[NVAR], Real F[NVAR],
     const Real e2    = q2.exists ? q2.e   : e_mix;
 
     Real Y[NUM_SPECIES];
-    Y[0] = Real(1.0);
-    for (int n = 1; n < NUM_SPECIES; ++n) Y[n] = Real(0.0);
+    ps_pure_species(Y);
 
     // Branch-locked per-phase pressures (phase 1 liquid, phase 2 vapour/SC);
     // no single-fluid mixture query, which can have no root in a two-phase
@@ -302,8 +301,8 @@ ps_wp_face(int idir, int i, int j, int k, int iL, int jL, int kL,
                         EOS::rho_min(), EOS::rho_max());
                 const Real e1d = (m1d > ps_const::M_TINY) ? UL[UE1]/m1d - ked : UL[UEINT]/rhod;
                 const Real e2d = (m2d > ps_const::M_TINY) ? UL[UE2]/m2d - ked : UL[UEINT]/rhod;
-                Real Yd[NUM_SPECIES]; Yd[0] = Real(1.0);
-                for (int n = 1; n < NUM_SPECIES; ++n) Yd[n] = Real(0.0);
+                Real Yd[NUM_SPECIES];
+                ps_pure_species(Yd);
                 Real P1d, c1d, P2d, c2d;
                 EOS::REY2PCs_liquid(r1_cl, e1d, Yd, P1d, c1d);
                 EOS::REY2PCs_vapor (r2_cl, e2d, Yd, P2d, c2d);
@@ -438,7 +437,7 @@ ps_wp_tvterm(int d, int t, int i, int j, int k,
             Real rho=qb(URHO); if(!(std::isfinite(rho)&&rho>Real(1e-30))) rho=Real(1e-30);
             const Real invr=Real(1.0)/rho;
             const Real ud=qb(UM_d)*invr, ut=qb(UM_t)*invr, e=qb(UEINT)*invr;
-            Real Y[NUM_SPECIES]; Y[0]=Real(1.0); for(int s=1;s<NUM_SPECIES;++s) Y[s]=Real(0.0);
+            Real Y[NUM_SPECIES]; ps_pure_species(Y);
             Real P,g1; EOS::REY2P(rho,e,Y,P); EOS::REY2Gam(rho,e,Y,g1);
             Real c2=g1*P*invr; if(!(std::isfinite(c2)&&c2>Real(1.0))) c2=Real(1.0);
             const Real snd=std::sqrt(c2);

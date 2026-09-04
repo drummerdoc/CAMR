@@ -89,6 +89,7 @@ ps_make_camr_eos_api()
     api.T_crit_K   = double(EOS::T_crit());
     api.P_crit_Pa  = double(EOS::P_crit());
     api.T_triple_K = double(EOS::T_triple());
+    api.P_triple_Pa = double(EOS::P_triple());
     // The backend density domain bounds the mechanical kernels' alpha walk
     // so neither phase can be stepped off it (docs §5.2).
     api.rho_dom_lo = double(EOS::rho_min());
@@ -98,8 +99,7 @@ ps_make_camr_eos_api()
     // Molar mass for the SRT kinetic prefactor.
     {
         amrex::Real Yw[NUM_SPECIES];
-        Yw[0] = amrex::Real(1.0);
-        for (int n = 1; n < NUM_SPECIES; ++n) Yw[n] = amrex::Real(0.0);
+        ps_pure_species(Yw);
         amrex::Real wbar = amrex::Real(0.0);
         EOS::Y2WBAR(Yw, wbar);            // [kg/mol] in every CAMR backend
         api.M_kg_mol = double(wbar);
@@ -108,8 +108,7 @@ ps_make_camr_eos_api()
         [](int phase, double rho, double e, hem::PsPhase& ph)
     {
         amrex::Real Y[NUM_SPECIES];
-        Y[0] = amrex::Real(1.0);
-        for (int n = 1; n < NUM_SPECIES; ++n) Y[n] = amrex::Real(0.0);
+        ps_pure_species(Y);
         // One state solve yields P, T, s together; the extra outputs are
         // free by-products of the solve P needs, so callers wanting only P
         // (the relaxation Newton) pay nothing.
@@ -1418,8 +1417,8 @@ ps_dilute_energy_closure(amrex::MultiFab& S_new, int nghost = 0)
     const Real inv_a0sq = (a0 > Real(0.0)) ? Real(1.0)/(a0*a0) : Real(0.0);
     constexpr Real afl  = Real(1.0e-12);
     constexpr Real wtol = Real(1.0e-12);   // perf skip: negligible & deep in tail
-    Real Y[NUM_SPECIES]; Y[0] = Real(1.0);
-    for (int s = 1; s < NUM_SPECIES; ++s) Y[s] = Real(0.0);
+    Real Y[NUM_SPECIES];
+    ps_pure_species(Y);
 
     for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
         const amrex::Box bx = mfi.growntilebox(nghost);
@@ -1604,8 +1603,7 @@ ps_apply_floor(amrex::MultiFab& S_new, int nghost = 0)
             const Real kesp = Real(0.5) * p2 / (rho_mix * rho_mix);   // ½u²
 
             amrex::Real Y[NUM_SPECIES];
-            Y[0] = Real(1.0);
-            for (int n = 1; n < NUM_SPECIES; ++n) Y[n] = Real(0.0);
+            ps_pure_species(Y);
 
             bool floored = false;
             for (int ph = 1; ph <= 2; ++ph) {

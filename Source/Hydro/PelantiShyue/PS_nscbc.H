@@ -162,8 +162,7 @@ _hem_reclose(amrex::Real P,
     if (alpha1 < Real(0.0)) alpha1 = Real(0.0);
     if (alpha1 > Real(1.0)) alpha1 = Real(1.0);
     Real Yp[NUM_SPECIES];
-    Yp[0] = Real(1.0);
-    for (int n = 1; n < NUM_SPECIES; ++n) Yp[n] = Real(0.0);
+    ps_pure_species(Yp);
     EOS::REY2PCs_liquid(r1, e1, Yp, Pk1, ck1);
     EOS::REY2PCs_vapor (r2, e2, Yp, Pk2, ck2);
     if (Pk1 < ps_guard::P_FLOOR_PA || !std::isfinite(Pk1)) Pk1 = ps_guard::P_FLOOR_PA;
@@ -346,8 +345,7 @@ outflow_face(const amrex::Real s_N  [NVAR],
     const bool host_is_1  = (ph.alpha1 >= ph.alpha2);
 
     Real Yp[NUM_SPECIES];
-    Yp[0] = Real(1.0);
-    for (int n = 1; n < NUM_SPECIES; ++n) Yp[n] = Real(0.0);
+    ps_pure_species(Yp);
 
     Real cap0 = Real(1.0e300);
     if (p1_present) cap0 = amrex::min(cap0, PACK_ETA * ph.rho1 * ph.c1 * ph.c1);

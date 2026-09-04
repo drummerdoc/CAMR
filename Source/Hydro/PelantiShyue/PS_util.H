@@ -32,6 +32,17 @@ ps_finite_or(amrex::Real x, amrex::Real fallback) noexcept
     return std::isfinite(x) ? x : fallback;
 }
 
+//  Pure-fluid species carrier for the EOS entries that take a Y[] and
+//  ignore it (CO2 is one species): Y[0] = 1, the rest 0.
+AMREX_GPU_HOST_DEVICE
+AMREX_FORCE_INLINE
+void
+ps_pure_species(amrex::Real Y[NUM_SPECIES]) noexcept
+{
+    Y[0] = amrex::Real(1.0);
+    for (int n = 1; n < NUM_SPECIES; ++n) Y[n] = amrex::Real(0.0);
+}
+
 //  ½|u|² from the velocity components (the ladder the caller formed).
 AMREX_GPU_HOST_DEVICE
 AMREX_FORCE_INLINE

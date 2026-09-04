@@ -151,8 +151,8 @@ struct PsPhaseAPI {
     std::function<void(int phase, double rho, double e, PsPhase& ph)>
         state_from_rho_e_phase;
 
-    // Saturation pressure P_sat(T) [Pa] from the fluid's own EOS.  Null
-    // -> callers fall back to co2_P_sat_wagner.
+    // Saturation pressure P_sat(T) [Pa] from the fluid's own EOS.  The
+    // flash (ps_flash_source_cell) requires it and refuses when unset.
     std::function<double(double T)> Psat_of_T;
 
     // Fluid critical and triple-point data, set from the EOS so the
@@ -161,6 +161,7 @@ struct PsPhaseAPI {
     double T_crit_K   = 0.0;
     double P_crit_Pa  = 0.0;
     double T_triple_K = 0.0;
+    double P_triple_Pa = 0.0;
     // Backend density-validity domain.  When set (>0) the alpha-adjusting
     // mechanical kernels treat it as a barrier on the alpha walk:
     // rho_k = m_k/alpha_k may not leave [rho_dom_lo, rho_dom_hi], because
@@ -173,6 +174,7 @@ struct PsPhaseAPI {
     double t_crit()   const { return (T_crit_K   > 0.0) ? T_crit_K   : 304.13; }
     double p_crit()   const { return (P_crit_Pa  > 0.0) ? P_crit_Pa  : 7.3773e6; }
     double t_triple() const { return (T_triple_K > 0.0) ? T_triple_K : 216.6; }
+    double p_triple() const { return (P_triple_Pa > 0.0) ? P_triple_Pa : 5.1795e5; }
     //  Molar mass [kg/mol] for the SRT kinetic prefactor; set from
     //  EOS::Y2WBAR, CO2 fallback by the same convention.
     double M_kg_mol   = 0.0;
@@ -2190,24 +2192,9 @@ inline bool ps_x3_relax_cell(V6& U, const PsPhaseAPI& eos, double dt,
 //  the minority phase toward alpha_birth and declines everywhere else;
 //  the relaxation kernels then own the cell.  Enabled by
 //  CAMR.ps_flash_tau (read in PS_sources.H; default 1e-7 s, <= 0 off).
-//  P_sat(T) comes from PsPhaseAPI::Psat_of_T when set, else the CO2
-//  Wagner fit below.  docs/MODEL_AND_ALGORITHM.md §5.5.
+//  P_sat(T) comes from PsPhaseAPI::Psat_of_T (the fluid's own EOS;
+//  EOS::Psat under CAMR).  docs/MODEL_AND_ALGORITHM.md §5.5.
 // =====================================================================
-
-// Wagner CO2 saturation-pressure fit, T [K] -> P_sat [Pa], valid from
-// the triple point (216.6 K) to the critical point (304.13 K), < 0.1 %.
-inline double co2_P_sat_wagner(double T) {
-    constexpr double T_c = 304.13;
-    constexpr double P_c = 7.3773e6;
-    if (T <= 216.6) return 5.18e5;
-    if (T >= T_c)    return P_c;
-    const double tau = 1.0 - T / T_c;
-    const double sum = -7.0602087 * tau
-                     +  1.9391218 * std::pow(tau, 1.5)
-                     -  1.6463597 * std::pow(tau, 2.5)
-                     -  3.2995634 * std::pow(tau, 5.0);
-    return P_c * std::exp(T_c / T * sum);
-}
 
 // -----------------------------------------------------------------
 // CO2 saturation densities (rho_L_sat, rho_V_sat)(T) [kg/m^3] from a
@@ -2252,11 +2239,12 @@ inline long& ps_flash_source_count() { return ps_counters().flash_source_count; 
 inline long& ps_triple_point_count() { return ps_counters().triple_point_count; }
 
 // True when (T, P) lies below the CO2 sublimation line, where the EOS
-// extrapolates analytically past the solid region.  The response is
+// extrapolates analytically past the solid region.  The triple point
+// comes from the EOS metadata the api carries.  The response is
 // selected by CAMR.ps_triple_point_action (read in PS_sources.H).
-inline bool ps_below_triple_point(double T, double P_Pa) {
-    constexpr double T_triple  = 216.592;   // K  (NIST)
-    constexpr double P_triple  = 5.1795e5;  // Pa
+inline bool ps_below_triple_point(double T, double P_Pa, const PsPhaseAPI& eos) {
+    const double T_triple = eos.t_triple();   // K
+    const double P_triple = eos.p_triple();   // Pa
     if (T >= T_triple) return false;
     // Clausius-Clapeyron sublimation line: d ln P / d(1/T) = -dh_sub/R,
     // dh_sub ~ 26 kJ/mol -> 3130 K.
@@ -2333,7 +2321,7 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
                                   int project_sat_in = -1)
 {
     if (tau_flash <= 0.0 || dt <= 0.0) PS_FLASH_REFUSE(PS_FLR_TAU);
-    if (!eos.valid()) PS_FLASH_REFUSE(PS_FLR_EOS);
+    if (!eos.valid() || !eos.Psat_of_T) PS_FLASH_REFUSE(PS_FLR_EOS);
 
     double alpha_1 = U[0];
     if (!std::isfinite(alpha_1)) PS_FLASH_REFUSE(PS_FLR_A_NAN);
@@ -2395,8 +2383,7 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
                      * ss01((T_crit_g - p_dom.T) / bw_T);
     if (w_T <= 0.0) PS_FLASH_REFUSE(PS_FLR_W_T);   // strictly outside the saturation dome
 
-    const double P_sat_here = eos.Psat_of_T ? eos.Psat_of_T(p_dom.T)
-                                            : co2_P_sat_wagner(p_dom.T);
+    const double P_sat_here = eos.Psat_of_T(p_dom.T);
     // (b) Metastability window: a liquid-dominant cell boils as P falls
     //     below (1 - margin) P_sat, a vapour-dominant cell condenses as P
     //     rises above (1 + margin) P_sat, each a smooth ramp.

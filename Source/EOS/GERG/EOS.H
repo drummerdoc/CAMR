@@ -17,9 +17,11 @@
 //  paths by a table seed plus two damped-Newton polish steps on the
 //  analytic surface, with the bisection as the residual fallback.
 //
-//  Contract: the namespace EOS free-function set of PR/EOS.H.  No
-//  cross-EOS fallback: the PR header is included only for the
-//  hem::Phase3 / hem::State interface types; no PR function is called.
+//  Contract: the namespace EOS free-function set of PR/EOS.H; the
+//  backend-independent tail (branch wrappers, ideal-gas forwarders,
+//  composition maps) comes from EOS/EOS_contract.H.  No cross-EOS
+//  fallback: the PR header is included only for the hem::Phase3 /
+//  hem::State interface types; no PR function is called.
 //
 //  Dials: CAMR.gerg_ext_c (1) via gerg_ext_c_init(); under GERGTab
 //  CAMR.eos_table (1), CAMR.eos_table_auto (1), CAMR.eos_diag (0).
@@ -544,12 +546,6 @@ namespace EOS {
   // ---- composition helpers (pure CO2) -----------------------------
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void Y2WBAR(amrex::Real*, amrex::Real& WBAR) { WBAR = amrex::Real(gerg::M); }
-  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-  void Y2X(const amrex::Real Y[], amrex::Real X[])
-  { for (int n = 0; n < NUM_SPECIES; n++) X[n] = Y[n]; }
-  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-  void X2Y(const amrex::Real X[], amrex::Real Y[])
-  { for (int n = 0; n < NUM_SPECIES; n++) Y[n] = X[n]; }
 
   // ================================================================
   //  Auto-detect entries (equilibrium surface), through the auto cache.
@@ -600,23 +596,11 @@ namespace EOS {
   void RTY2E_phase(amrex::Real R, amrex::Real T, amrex::Real*,
                    hem::Phase3 phase, amrex::Real& E)
   { E = gerg::state_TR_phase(double(T), double(R), g_phase(phase)).e; }
-  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-  void RTY2E_liquid(amrex::Real R, amrex::Real T, amrex::Real* Y, amrex::Real& E)
-  { RTY2E_phase(R, T, Y, hem::Phase3::Liquid, E); }
-  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-  void RTY2E_vapor(amrex::Real R, amrex::Real T, amrex::Real* Y, amrex::Real& E)
-  { RTY2E_phase(R, T, Y, hem::Phase3::Vapor, E); }
 
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void REY2P_phase(amrex::Real R, amrex::Real E, amrex::Real*,
                    hem::Phase3 phase, amrex::Real& P)
   { P = co2_state_from_rho_e_phase_cached(R, E, phase, gdiag::S_P_PHASE).P; }
-  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-  void REY2P_liquid(amrex::Real R, amrex::Real E, amrex::Real* Y, amrex::Real& P)
-  { REY2P_phase(R, E, Y, hem::Phase3::Liquid, P); }
-  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-  void REY2P_vapor(amrex::Real R, amrex::Real E, amrex::Real* Y, amrex::Real& P)
-  { REY2P_phase(R, E, Y, hem::Phase3::Vapor, P); }
 
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void REY2PTS_phase(amrex::Real R, amrex::Real E, amrex::Real*,
@@ -650,24 +634,12 @@ namespace EOS {
   void REY2Cs_phase(amrex::Real R, amrex::Real E, amrex::Real*,
                     hem::Phase3 phase, amrex::Real& Cs)
   { Cs = co2_state_from_rho_e_phase_cached(R, E, phase, gdiag::S_CS_PHASE).c; }
-  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-  void REY2Cs_liquid(amrex::Real R, amrex::Real E, amrex::Real* Y, amrex::Real& Cs)
-  { REY2Cs_phase(R, E, Y, hem::Phase3::Liquid, Cs); }
-  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-  void REY2Cs_vapor(amrex::Real R, amrex::Real E, amrex::Real* Y, amrex::Real& Cs)
-  { REY2Cs_phase(R, E, Y, hem::Phase3::Vapor, Cs); }
 
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void REY2PCs_phase(amrex::Real R, amrex::Real E, amrex::Real*,
                      hem::Phase3 phase, amrex::Real& P, amrex::Real& Cs)
   { hem::State s = co2_state_from_rho_e_phase_cached(R, E, phase, gdiag::S_PCS_PHASE);
     P = s.P; Cs = s.c; }
-  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-  void REY2PCs_liquid(amrex::Real R, amrex::Real E, amrex::Real* Y, amrex::Real& P, amrex::Real& Cs)
-  { REY2PCs_phase(R, E, Y, hem::Phase3::Liquid, P, Cs); }
-  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-  void REY2PCs_vapor(amrex::Real R, amrex::Real E, amrex::Real* Y, amrex::Real& P, amrex::Real& Cs)
-  { REY2PCs_phase(R, E, Y, hem::Phase3::Vapor, P, Cs); }
 
   // ================================================================
   //  Inversion / initial-condition entry points
@@ -676,10 +648,6 @@ namespace EOS {
   void EY2T(amrex::Real E, amrex::Real* Y, amrex::Real& T)
   { const amrex::Real rho_ref = gerg::P_c*gerg::M/(gerg::T_c*amrex::Real(8.314));
     REY2T(rho_ref, E, Y, T); }
-
-  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-  void RYET2P(amrex::Real R, amrex::Real* Y, amrex::Real& E, amrex::Real&, amrex::Real& P)
-  { REY2P(R, E, Y, P); }
 
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void PYT2RE(amrex::Real P, amrex::Real*, amrex::Real T, amrex::Real& R, amrex::Real& E)
@@ -749,14 +717,8 @@ namespace EOS {
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void TY2Cv(amrex::Real T, amrex::Real*, amrex::Real& Cv) { Cv = g_cv0(double(T)); }
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-  void RTY2Cv(amrex::Real, amrex::Real T, amrex::Real* Y, amrex::Real& Cv)
-  { TY2Cv(T, Y, Cv); }
-  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void TY2Cp(amrex::Real T, amrex::Real*, amrex::Real& Cp)
   { Cp = g_cv0(double(T)) + gerg::Rgas/gerg::M; }
-  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-  void RTY2Cp(amrex::Real, amrex::Real T, amrex::Real* Y, amrex::Real& Cp)
-  { TY2Cp(T, Y, Cp); }
 
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void T2Cpi(amrex::Real T, amrex::Real Cpi[])
@@ -767,28 +729,12 @@ namespace EOS {
   void T2Ei(amrex::Real T, amrex::Real Ei[])
   { const double e = g_e0(double(T)) - g_e0(298.15);
     for (int n = 0; n < NUM_SPECIES; n++) Ei[n] = e; }
-  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-  void RTY2Ei(amrex::Real, amrex::Real T, amrex::Real*, amrex::Real Ei[])
-  { T2Ei(T, Ei); }
-  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-  void TY2E(amrex::Real T, const amrex::Real Y[], amrex::Real& E)
-  { amrex::Real ei[NUM_SPECIES]; T2Ei(T, ei);
-    E = amrex::Real(0.0);
-    for (int n = 0; n < NUM_SPECIES; n++) E += Y[n]*ei[n]; }
 
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void T2Hi(amrex::Real T, amrex::Real Hi[])
   { const double h = (g_e0(double(T)) + gerg::Rgas*double(T)/gerg::M)
                    - (g_e0(298.15)    + gerg::Rgas*298.15/gerg::M);
     for (int n = 0; n < NUM_SPECIES; n++) Hi[n] = h; }
-  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-  void RTY2Hi(amrex::Real, amrex::Real T, amrex::Real*, amrex::Real Hi[])
-  { T2Hi(T, Hi); }
-  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-  void TY2H(amrex::Real T, const amrex::Real Y[NUM_SPECIES], amrex::Real& H)
-  { amrex::Real hi[NUM_SPECIES]; T2Hi(T, hi);
-    H = amrex::Real(0.0);
-    for (int n = 0; n < NUM_SPECIES; n++) H += Y[n]*hi[n]; }
 
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void HY2T(amrex::Real H, amrex::Real*, amrex::Real& T)
@@ -802,14 +748,9 @@ namespace EOS {
         if (T < amrex::Real(50.0))   T = amrex::Real(50.0);
         if (T > amrex::Real(3000.0)) T = amrex::Real(3000.0);
     } }
-  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-  void RHY2T(amrex::Real, amrex::Real H, amrex::Real* Y, amrex::Real& T)
-  { HY2T(H, Y, T); }
 
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void TY2G(amrex::Real, amrex::Real*, amrex::Real& G) { G = amrex::Real(1.29); }
-  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-  void RTY2G(amrex::Real, amrex::Real T, amrex::Real* Y, amrex::Real& G) { TY2G(T, Y, G); }
 
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void RTY2dpde_dpdre(amrex::Real R, amrex::Real T, amrex::Real*,
@@ -818,15 +759,10 @@ namespace EOS {
     const amrex::Real gam1 = (s.rho*s.c*s.c)/s.P;
     dpde = (gam1 - amrex::Real(1.0))*R; dpdr_e = s.P/s.rho; }
 
-  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-  void RPE2dpdr_e(amrex::Real, amrex::Real, amrex::Real E, amrex::Real& dpdr_e)
-  { dpdr_e = (gamma - amrex::Real(1.0))*E; }
-  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-  void RG2dpde(amrex::Real R, amrex::Real, amrex::Real& dpde)
-  { dpde = (gamma - amrex::Real(1.0))*R; }
-
-  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-  void S(amrex::Real& s) { s = amrex::Real(1.0); }
+  // Backend-independent tail: the _liquid/_vapor branch wrappers, the
+  // ideal-gas forwarders (RTY2Cv/Cp/Ei/Hi, TY2E/H, RHY2T, RTY2G, RYET2P),
+  // Y2X / X2Y, the constant-gamma derivative signatures and S.
+#include "EOS/EOS_contract.H"
 
   // Chemistry stubs: CO2 has no reactions.
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE

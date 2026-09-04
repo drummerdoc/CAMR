@@ -4,7 +4,7 @@ A Helmholtz-energy (GERG-2008, pure CO₂: $T_c = 304.1282$ K, $P_c = 7.3773\tim
 
 | File | Purpose |
 |---|---|
-| `EOS.H` | The contract. $(\rho,e)\to T$ inversions are fixed-count (64-step) bisections on the guarded surfaces — deterministic, warp-safe; the `USE_GERGTAB_EOS` define enables the table hooks used by `../GERGTab`. |
+| `EOS.H` | The contract. $(\rho,e)\to T$ inversions are fixed-count (64-step) bisections on the guarded surfaces — deterministic, warp-safe; the `USE_GERGTAB_EOS` define enables the table hooks used by `../GERGTab`. The backend-independent tail (`_liquid`/`_vapor` wrappers, ideal-gas forwarders, `Y2X`/`X2Y`) comes from `../EOS_contract.H`. |
 | `gerg_co2.H` | The bare GERG-2008 surface and its constants. |
 | `gerg_co2_sat.H` | Precomputed saturation and branch-edge splines ($P_{\mathrm{sat}}$, $\rho_{L,V}$, the spinodal-side edges), valid to 304.000 K, above which the guard treats the state as supercritical. |
 | `gerg_co2_guard.H` | The kernel-facing guard layer: every entry total, branch-guarded, monotone-regularised. $T$ clamped to $[T_{\mathrm{triple}}, T_{\max}]$; past a branch edge (where $\partial P/\partial\rho\vert _T$ falls below `CSQ_FLOOR` = 2500 m²/s²) $P$ continues linearly with that slope under a softplus positive floor ($P \ge 10^3$ Pa); two-phase assembly from splined saturation densities with the Wood-limit equilibrium sound speed. |

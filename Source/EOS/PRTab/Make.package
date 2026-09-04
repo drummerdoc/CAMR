@@ -1,12 +1,13 @@
 # PRTab EOS backend — bicubic-table PR (tabulated T(rho,e) forward solve
 # with PR fallback outside the table domain / on guard rejection).
 #
-# This mirrors PR/Make.package.  PRTab carries its own copies of
-# hem_pr_state.H and hem_saturation_amrex.H (do NOT add ../PR to the
-# include path — both backends name their header EOS.H and an earlier
-# -I would silently shadow this one).  The generated table sources
-# (prtab_table_data.cpp / prtab_table_params.H) are git-ignored and
-# built by `make tables` — see tools/.
+# This mirrors PR/Make.package.  The fluid and the contract surface are
+# EOS/PR/pr_base.H and EOS/PR/pr_contract.H, included by path (do NOT
+# add ../PR to the include path — both backends name their header EOS.H
+# and an earlier -I would silently shadow this one); PRTab carries
+# forwarders for hem_pr_state.H and hem_saturation_amrex.H.  The
+# generated table sources (prtab_table_data.cpp / prtab_table_params.H)
+# are git-ignored and built by `make tables` — see tools/.
 
 CEXE_headers += EOS.H
 CEXE_headers += prtab_bicubic.H

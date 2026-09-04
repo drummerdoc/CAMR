@@ -4,7 +4,7 @@ The PR backend with the bracketed inversion $T(\rho,e)$ replaced by bicubic tabl
 
 | File | Purpose |
 |---|---|
-| `EOS.H` | The contract; every hot function routes through `prtab_state_from_rho_e[_phase]`, the one place the table is consulted. |
+| `EOS.H` | The table gates, the table-vs-PR census and the two table solves `prtab_state_from_rho_e[_phase]`, the one place the table is consulted; the fluid and the contract surface are `../PR/pr_base.H` and `../PR/pr_contract.H` (included by path), whose ring caches route to the table solves under `USE_PRTAB_EOS` — the same pattern as `../GERGTab` over `../GERG`. |
 | `prtab_bicubic.H` | Catmull–Rom bicubic in $(\log_{10}\rho, e)$ over three tables (auto, liquid, vapour) plus a clamped Hermite refinement patch over the dome box, C0+C1 at its seam; declares the generated arrays `extern`. |
 | `hem_pr_state.H`, `hem_saturation_amrex.H` | Include-forwarders (8 and 4 lines) to `../PR`: one physical definition, no include shadowing (both directories name their header `EOS.H`, so `../PR` must not be on the include path). |
 | `tools/gen_table.cpp`, `tools/build_table.py` | AMReX-free PR sampler and the assembler writing `prtab_table_data.cpp` / `prtab_table_params.H` (git-ignored). |

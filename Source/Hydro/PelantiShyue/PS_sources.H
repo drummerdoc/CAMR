@@ -473,7 +473,7 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                 p.alpha = ad;
                 eos.state_from_rho_e_phase(dom, rho_d, e_d, p);
                 if (!p.valid) { return; }
-                if (!hem::ps_below_triple_point(p.T, p.P)) { return; }
+                if (!hem::ps_below_triple_point(p.T, p.P, eos)) { return; }
                 ++hem::ps_triple_point_count();
                 if (action == 3) {
                     amrex::Abort("CAMR.ps_triple_point_action=error: a cell "
@@ -481,8 +481,7 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                                  "point).");
                 } else if (action == 2) {   // CLIP: raise energy to T_triple
                     amrex::Real Y[NUM_SPECIES];
-                    Y[0] = amrex::Real(1.0);
-                    for (int n = 1; n < NUM_SPECIES; ++n) { Y[n] = amrex::Real(0.0); }
+                    ps_pure_species(Y);
                     amrex::Real e_clip;
                     EOS::RTY2E(rho_d, T_triple, Y, e_clip);
                     const amrex::Real Ud_new = md*(e_clip + ke);

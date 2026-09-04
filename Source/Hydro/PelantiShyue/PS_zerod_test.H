@@ -187,8 +187,8 @@ inline int ps_m2_ordering_test()
 
         //  HEM flash of the conserved mixture invariants (auto surface).
         const double rho_mix = m1 + m2, e_mix = (U0[4] + U0[5]) / rho_mix;
-        amrex::Real Yh[NUM_SPECIES]; Yh[0] = amrex::Real(1.0);
-        for (int n = 1; n < NUM_SPECIES; ++n) Yh[n] = amrex::Real(0.0);
+        amrex::Real Yh[NUM_SPECIES];
+        ps_pure_species(Yh);
         amrex::Real P_hem = amrex::Real(0.0);
         EOS::REY2P(amrex::Real(rho_mix), amrex::Real(e_mix), Yh, P_hem);
 
@@ -327,8 +327,8 @@ inline int ps_x3_fixedpoint_test()
         U0[4] = m1 * e1; U0[5] = m2 * e2;
 
         const double rho_mix = m1 + m2, e_mix = (U0[4] + U0[5]) / rho_mix;
-        amrex::Real Yh[NUM_SPECIES]; Yh[0] = amrex::Real(1.0);
-        for (int n = 1; n < NUM_SPECIES; ++n) Yh[n] = amrex::Real(0.0);
+        amrex::Real Yh[NUM_SPECIES];
+        ps_pure_species(Yh);
         amrex::Real P_hem = amrex::Real(0.0);
         EOS::REY2P(amrex::Real(rho_mix), amrex::Real(e_mix), Yh, P_hem);
 

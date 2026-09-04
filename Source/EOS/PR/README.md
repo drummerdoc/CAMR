@@ -4,7 +4,9 @@ The reference backend of the acceptance battery: a device-inline Peng–Robinson
 
 | File | Purpose |
 |---|---|
-| `EOS.H` | The contract: hot-path inversions and the branch-locked per-phase surface. |
+| `EOS.H` | The backend: the PR $(\rho,e)$ solves and their warm-start gates; includes the three headers below. |
+| `pr_base.H` | The fluid (`co2_fluid()`), `T_crit`/`T_triple`/`P_crit`/`P_triple`, the density domain, `Psat`, `co2_sat_LV`; shared with `../PRTab`. |
+| `pr_contract.H` | The contract surface — ring caches, hot-path inversions, the branch-locked per-phase entries, ideal-gas integrals — built on the solves the including backend supplies (`USE_PRTAB_EOS` routes the caches to the PRTab table solves); ends by including `../EOS_contract.H`, the tail every CO₂ backend shares (`_liquid`/`_vapor` wrappers, ideal-gas forwarders, `Y2X`/`X2Y`). |
 | `hem_pr_state.H` | PR state machinery shared with the standalone driver: cubic roots, $T(\rho,e)$ bracketed solves on $[T_{\min},T_{\max}] = [1, 5000]$ K, metastable branch continuation, `hem::Phase3`. |
 | `hem_saturation_amrex.H` | Saturation curve: $P_{\mathrm{sat}}(T)$, saturated liquid/vapour states. |
 | `ps_warmstart_Tinit.H` | Optional Newton warm-start seed (`CAMR.eos_warmstart`, `eos_warmstart_fixed`, default 0 = off); host-only, slated for removal. |

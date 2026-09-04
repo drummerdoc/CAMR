@@ -102,8 +102,7 @@ ps_phase_speeds_from_state(const Real U[NVAR], const PsPres& pr) noexcept
     const Real e2 = (m2 > ps_const::M_TINY) ? E2_tot / m2 - ke_spec : e_mix;
 
     Real Y[NUM_SPECIES];
-    Y[0] = Real(1.0);
-    for (int n = 1; n < NUM_SPECIES; ++n) Y[n] = Real(0.0);
+    ps_pure_species(Y);
     // One branch-locked solve per phase returns both P and c.
     Real P1, P2, c1, c2;
     // Presence dispatch: the host (larger alpha) is always queried on its
