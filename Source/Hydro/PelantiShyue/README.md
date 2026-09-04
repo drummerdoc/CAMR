@@ -1,10 +1,6 @@
 # Source/Hydro/PelantiShyue — six-equation wave-propagation hydro module
 
-Compiled only when the Exec `GNUmakefile` sets `USE_PS_HYDRO = TRUE` (adds `-DUSE_PS_HYDRO`, the `.PS` executable
-suffix, this directory to `Bdirs`; refused for `Eos_Model=GammaLaw`, which lacks the extended EOS contract). The state
-layout — five extra slots `UALPHA1, UM1RHO1, UM2RHO2, UE1, UE2` after the stock slots, `QALPHA1, QRHO1, QRHO2, QP1,
-QP2` in the primitive block — is in `Source/Utils/IndexDefines.H`. `USE_PS_DIAG=TRUE` (`-DCAMR_PS_DIAG`, set in
-`Exec/CO2_RiemannSuite/GNUmakefile`) compiles in opt-in dt/cell/fallback probes.
+Compiled only when the Exec `GNUmakefile` sets `USE_PS_HYDRO = TRUE` (adds `-DUSE_PS_HYDRO`, the `.PS` executable suffix, this directory to `Bdirs`; refused for `Eos_Model=GammaLaw`, which lacks the extended EOS contract). The state layout — five extra slots `UALPHA1, UM1RHO1, UM2RHO2, UE1, UE2` after the stock slots, `QALPHA1, QRHO1, QRHO2, QP1, QP2` in the primitive block — is in `Source/Utils/IndexDefines.H`. `USE_PS_DIAG=TRUE` (`-DCAMR_PS_DIAG`, set in `Exec/CO2_RiemannSuite/GNUmakefile`) compiles in opt-in dt/cell/fallback probes.
 
 | File | Purpose |
 |---|---|
@@ -23,6 +19,4 @@ QP2` in the primitive block — is in `Source/Utils/IndexDefines.H`. `USE_PS_DIA
 | `PS_FluctuationRegister.H` | Coarse-fine register for the phase-energy defect (`CAMR.ps_bl_reflux=1`; the default 2 uses the standard register with an α co-move). |
 | `Make.package`, `SOURCE_STAMP` | Build list; provenance of the copied algorithm header. |
 
-The argument for each choice is in `docs/MODEL_AND_ALGORITHM.md`: ch. 1 (wave propagation vs Godunov), 2 (star state),
-3 (limiter, contact taper), 4 (presence), 5 (extinction, coexistence gate), 8 (guards), 9 (GPU); formal statement in
-`docs/camr_ps_model.tex`.
+The argument for each choice is in `docs/MODEL_AND_ALGORITHM.md`: ch. 1 (wave propagation vs Godunov), 2 (star state), 3 (limiter, contact taper), 4 (presence), 5 (extinction, coexistence gate), 8 (guards), 9 (GPU); formal statement in `docs/camr_ps_model.tex`.

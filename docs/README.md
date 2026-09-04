@@ -15,18 +15,8 @@ The documents describe the current tree; git history holds the past.
 
 ## Read in this order
 
-A newcomer who wants to understand and run the code: `../README.md`, then
-`MODEL_AND_ALGORITHM.md` chapter 1 (the primer on wave propagation) and the
-`camr_ps_model.pdf` sections on the state vector, equations and sources, then
-`RUNNING.md` for the build and decks, then `VERIFICATION.md` to see what a
-passing run looks like. `FUTURE_WORK.md` last, to know what is not there.
+A newcomer who wants to understand and run the code: `../README.md`, then `MODEL_AND_ALGORITHM.md` chapter 1 (the primer on wave propagation) and the `camr_ps_model.pdf` sections on the state vector, equations and sources, then `RUNNING.md` for the build and decks, then `VERIFICATION.md` to see what a passing run looks like. `FUTURE_WORK.md` last, to know what is not there.
 
-A developer about to change the solver: `GROUND_RULES.md` first and in full,
-then `DESIGN_DECISIONS.md` (the refuted list before anything else), then the
-`MODEL_AND_ALGORITHM.md` chapter for the operator being touched, then the
-matching section of `camr_ps_model.pdf` for the formal statement, then
-`VERIFICATION.md` for the gate the change must pass and `RUNNING.md` for the
-dial the change will need to default to previous behaviour.
+A developer about to change the solver: `GROUND_RULES.md` first and in full, then `DESIGN_DECISIONS.md` (the refuted list before anything else), then the `MODEL_AND_ALGORITHM.md` chapter for the operator being touched, then the matching section of `camr_ps_model.pdf` for the formal statement, then `VERIFICATION.md` for the gate the change must pass and `RUNNING.md` for the dial the change will need to default to previous behaviour.
 
-Module READMEs (`Source/Hydro/PelantiShyue/`, `Source/EOS/*/`, `Exec/CO2_*/`)
-are file inventories and run recipes; they point back here for the argument.
+Module READMEs (`Source/Hydro/PelantiShyue/`, `Source/EOS/*/`, `Exec/CO2_*/`) are file inventories and run recipes; they point back here for the argument.

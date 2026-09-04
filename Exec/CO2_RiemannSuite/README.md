@@ -1,8 +1,6 @@
 # Exec/CO2_RiemannSuite — the 1-D acceptance battery
 
-One executable that runs any case of the standalone `co2-eos-cfd` shock-tube suite (families A single-phase, B two-phase and cross-critical, C
-identity/acoustic) through `prob.*` keys: per side `phase_{L,R}` (0 vapour, 1 liquid, 2 supercritical, 3 saturated at quality `x_qual_{L,R}`),
-`T_{L,R}`, `p_{L,R}`, `u_{L,R}`, plus `x_diaph`, `alpha_trace`. One-dimensional in $x$ (thin $y$ strip). The gate every solver change passes first.
+One executable that runs any case of the standalone `co2-eos-cfd` shock-tube suite (families A single-phase, B two-phase and cross-critical, C identity/acoustic) through `prob.*` keys: per side `phase_{L,R}` (0 vapour, 1 liquid, 2 supercritical, 3 saturated at quality `x_qual_{L,R}`), `T_{L,R}`, `p_{L,R}`, `u_{L,R}`, plus `x_diaph`, `alpha_trace`. One-dimensional in $x$ (thin $y$ strip). The gate every solver change passes first.
 
 Build (the `GNUmakefile` default `DIM = 2` is overridden on the command line; the harness looks for `./CAMR1d.*.ex`):
 
@@ -21,5 +19,4 @@ Run one case by hand (B4 at N = 256; read the plotfile with `ps_plotfile.py`):
 
     ./CAMR1d.gnu.TPROF.PS.PR.ex inputs amr.n_cell=256 prob.phase_L=1 prob.T_L=270 prob.p_L=1e7 prob.phase_R=0 prob.T_R=350 prob.p_R=5e6
 
-References: `refs/exact/` (vendored exact/HEM profiles) or `CO2_STANDALONE=<co2-eos-cfd checkout>`; no stored CAMR output has authority. 0-D
-self-tests run after init and exit: `CAMR.ps_ptg_selftest=1`, `ps_relax_sweep=1`, `ps_x3_test=1`. Every number above, with its derivation: `docs/VERIFICATION.md`.
+References: `refs/exact/` (vendored exact/HEM profiles) or `CO2_STANDALONE=<co2-eos-cfd checkout>`; no stored CAMR output has authority. 0-D self-tests run after init and exit: `CAMR.ps_ptg_selftest=1`, `ps_relax_sweep=1`, `ps_x3_test=1`. Every number above, with its derivation: `docs/VERIFICATION.md`.
