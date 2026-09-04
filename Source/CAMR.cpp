@@ -26,6 +26,7 @@
 #include "PS_wavespeed.H"      // ps_guard counters (clean_state repairs)
 #include "PS_promote.H"       // checked promotion (ps_regime_reach)
 #include "PS_retired_keys.H"  // ps_abort_on_retired_keys (read_params)
+#include "PS_constants.H"     // ps_const::ALPHA_REFLUX_MIN (reflux)
 #endif
 
 bool CAMR::signalStopJob = false;
@@ -1039,7 +1040,7 @@ CAMR::reflux()
     // corridor-small α₁ at 1e-8 rather than letting it reach 0: an open
     // decision, docs/DESIGN_DECISIONS.md §7 O-17.
     if (ps_bl_reflux > 1) {
-        const amrex::Real amin = amrex::Real(1.0e-8);
+        const amrex::Real amin = ps_const::ALPHA_REFLUX_MIN;
         const amrex::Real rho_floor = amrex::Real(1.0e-10);
         for (amrex::MFIter mfi(S_crse); mfi.isValid(); ++mfi) {
             const amrex::Box& bx = mfi.validbox();

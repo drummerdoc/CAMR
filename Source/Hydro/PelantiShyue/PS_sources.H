@@ -30,6 +30,8 @@
 #include "EOS.H"
 #include "hem_pelanti_shyue.H"
 #include "PS_relaxation.H"          // ps_make_camr_eos_api()
+#include "PS_constants.H"           // ps_const::ALPHA_ROUNDOFF
+#include "PS_util.H"                // ps_pack_v6 / ps_unpack_v6, ps_kinetic_energy
 #include <AMReX_MultiFab.H>
 #include <AMReX_ParmParse.H>
 #include <AMReX_Print.H>
@@ -139,24 +141,7 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                     ((m1 > amrex::Real(0.0)) != (m2 > amrex::Real(0.0)));
                 if (!one_absent && (m1 <= amrex::Real(0.0)
                                     || m2 <= amrex::Real(0.0))) { return; }
-                const amrex::Real px = U(i,j,k, UMX);
-#if (AMREX_SPACEDIM >= 2)
-                const amrex::Real py = U(i,j,k, UMY);
-#else
-                const amrex::Real py = amrex::Real(0.0);
-#endif
-#if (AMREX_SPACEDIM == 3)
-                const amrex::Real pz = U(i,j,k, UMZ);
-#else
-                const amrex::Real pz = amrex::Real(0.0);
-#endif
-                hem::V6 Uv;
-                Uv[0] = a1;
-                Uv[1] = m1;
-                Uv[2] = m2;
-                Uv[3] = std::sqrt(px*px + py*py + pz*pz);   // |ρu|
-                Uv[4] = U(i,j,k, UE1);
-                Uv[5] = U(i,j,k, UE2);
+                hem::V6 Uv = ps_pack_v6(U, i, j, k, a1, m1, m2);   // V6[3] = |ρu|
                 // The flash is the single-phase nucleator only: a both-
                 // Independent cell is mass-transfer territory (docs §4.7).
                 if (ps_regime(a1, m1, l_pr) == PsRegime::Independent &&
@@ -178,7 +163,7 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                     }
                 }
                 if (hem::ps_flash_source_cell(Uv, eos, double(dt), double(tau),
-                                              double(l_seed), 1.0e-6,
+                                              double(l_seed), ps_const::ALPHA_ROUNDOFF,
                                               l_fl_proj)) {
                     // Reproject: the flash moved mass; restore P1 = P2
                     // (alpha-adjusting; preserves m_k and mixture rho, E).
@@ -199,11 +184,7 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                                           << " a1_pre=" << Uv_pre[0]
                                           << " a1_post=" << Uv[0] << "\n";
                     }
-                    U(i,j,k, UALPHA1) = Uv[0];
-                    U(i,j,k, UM1RHO1) = Uv[1];
-                    U(i,j,k, UM2RHO2) = Uv[2];
-                    U(i,j,k, UE1)     = Uv[4];
-                    U(i,j,k, UE2)     = Uv[5];
+                    ps_unpack_v6(U, i, j, k, Uv);
                 }
             });
         }
@@ -305,24 +286,7 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                 const amrex::Real m2 = U(i,j,k, UM2RHO2);
                 if (!std::isfinite(a1) || m1 <= amrex::Real(0.0)
                                        || m2 <= amrex::Real(0.0)) { return; }
-                const amrex::Real px = U(i,j,k, UMX);
-#if (AMREX_SPACEDIM >= 2)
-                const amrex::Real py = U(i,j,k, UMY);
-#else
-                const amrex::Real py = amrex::Real(0.0);
-#endif
-#if (AMREX_SPACEDIM == 3)
-                const amrex::Real pz = U(i,j,k, UMZ);
-#else
-                const amrex::Real pz = amrex::Real(0.0);
-#endif
-                hem::V6 Uv;
-                Uv[0] = a1;
-                Uv[1] = m1;
-                Uv[2] = m2;
-                Uv[3] = std::sqrt(px*px + py*py + pz*pz);   // |ρu|
-                Uv[4] = U(i,j,k, UE1);
-                Uv[5] = U(i,j,k, UE2);
+                hem::V6 Uv = ps_pack_v6(U, i, j, k, a1, m1, m2);   // V6[3] = |ρu|
                 // Mass transfer acts only where both phases are Independent:
                 // corridor phases are transport-only, pure cells have nothing
                 // to transfer.  The kernel's own smallness cuts (5e-3) are then
@@ -333,7 +297,7 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                 }
                 const hem::V6 Uv_pre = Uv;
                 if (hem::ps_mass_transfer_finite_cell(Uv, eos, double(dt), double(tau),
-                                                      1.0e-6, double(gref), l_mt_upd,
+                                                      ps_const::ALPHA_ROUNDOFF, double(gref), l_mt_upd,
                                                       l_mt_cr, l_mt_h_w,
                                                       l_mt_tau_model,
                                                       l_mt_target)) {
@@ -348,11 +312,7 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                         if (ps_mech_kernel() == 1) { hem::ps_pelanti_relax_cell(Uv, eos); }
                         else                        { hem::ps_pressure_relax_cell(Uv, eos); }
                     }
-                    U(i,j,k, UALPHA1) = Uv[0];
-                    U(i,j,k, UM1RHO1) = Uv[1];
-                    U(i,j,k, UM2RHO2) = Uv[2];
-                    U(i,j,k, UE1)     = Uv[4];
-                    U(i,j,k, UE2)     = Uv[5];
+                    ps_unpack_v6(U, i, j, k, Uv);
                 }
             });
         }
@@ -514,20 +474,8 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                 const amrex::Real md = (dom == 1) ? m1 : m2;
                 if (ad <= amrex::Real(0.0)) { return; }
                 const amrex::Real rho_d = md / ad;
-                const amrex::Real px = U(i,j,k, UMX);
-#if (AMREX_SPACEDIM >= 2)
-                const amrex::Real py = U(i,j,k, UMY);
-#else
-                const amrex::Real py = amrex::Real(0.0);
-#endif
-#if (AMREX_SPACEDIM == 3)
-                const amrex::Real pz = U(i,j,k, UMZ);
-#else
-                const amrex::Real pz = amrex::Real(0.0);
-#endif
                 const amrex::Real rho_mix = m1 + m2;
-                const amrex::Real ke = amrex::Real(0.5)*(px*px+py*py+pz*pz)
-                                       /(rho_mix*rho_mix);
+                const amrex::Real ke = ps_kinetic_energy(U, i, j, k, rho_mix);
                 const amrex::Real Ud = (dom == 1) ? U(i,j,k, UE1) : U(i,j,k, UE2);
                 const amrex::Real e_d = Ud/md - ke;
                 hem::PsPhase p{};

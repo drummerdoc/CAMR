@@ -15,3 +15,5 @@ CEXE_headers += PS_wavespeed.H
 CEXE_headers += PS_zerod_test.H
 CEXE_headers += PS_FluctuationRegister.H
 CEXE_headers += PS_retired_keys.H
+CEXE_headers += PS_constants.H
+CEXE_headers += PS_util.H

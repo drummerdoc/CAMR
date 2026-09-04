@@ -35,6 +35,7 @@
 #include "EOS.H"
 #include "PS_presence.H"      // ps_phase_quot
 #include "PS_relaxation.H"    // ps_make_camr_eos_api (V7 validity channel)
+#include "PS_util.H"          // ps_kinetic_energy
 #include <AMReX_MultiFab.H>
 #include <AMReX_ParmParse.H>
 #include <AMReX_ParallelDescriptor.H>
@@ -161,19 +162,7 @@ ps_validate_state(amrex::MultiFab& S, const char* label, int nghost = 0)
                 // V7 (rho_k, e_k) reachability on phase k's own branch.
                 const Real rho_mix = m1 + m2;
                 if (api_v7.valid() && rho_mix > Real(0.0)) {
-                    const Real px = U(i,j,k, UMX);
-#if (AMREX_SPACEDIM >= 2)
-                    const Real py = U(i,j,k, UMY);
-#else
-                    const Real py = Real(0.0);
-#endif
-#if (AMREX_SPACEDIM == 3)
-                    const Real pz = U(i,j,k, UMZ);
-#else
-                    const Real pz = Real(0.0);
-#endif
-                    const Real ke = Real(0.5) * (px*px + py*py + pz*pz)
-                                  / (rho_mix * rho_mix);
+                    const Real ke = ps_kinetic_energy(U, i, j, k, rho_mix);
                     for (int kk = 1; kk <= 2; ++kk) {
                         const Real a_k = (kk == 1) ? a1 : a2;
                         const Real m_k = (kk == 1) ? m1 : m2;

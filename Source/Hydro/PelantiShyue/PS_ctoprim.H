@@ -31,6 +31,8 @@
 #include "PS_guards.H"
 #include "PS_presence.H"
 #include "PS_promote.H"
+#include "PS_constants.H"
+#include "PS_util.H"
 #include <AMReX_Array4.H>
 #include <AMReX_GpuQualifiers.H>
 
@@ -71,16 +73,15 @@ ps_augment_primitives(int i, int j, int k,
 #else
     const amrex::Real uz = amrex::Real(0.0);
 #endif
-    const amrex::Real ke_spec =
-        amrex::Real(0.5) * (ux*ux + uy*uy + uz*uz);
+    const amrex::Real ke_spec = ps_kinetic_energy(ux, uy, uz);
 
     // Checked construction: (rho_k, e_k) with an exists flag.  A phase with
     // no state carries the mixture values as placeholders only; it is never
     // branch-queried below.  The mixture density is floored because this
     // runs on grown boxes where unfilled ghost corners are least trustworthy.
     const amrex::Real rho_mix_den =
-        (std::isfinite(u(i,j,k, URHO)) && u(i,j,k, URHO) > amrex::Real(1.0e-6))
-        ? u(i,j,k, URHO) : amrex::Real(1.0e-6);
+        (std::isfinite(u(i,j,k, URHO)) && u(i,j,k, URHO) > ps_const::RHO_MIX_MIN)
+        ? u(i,j,k, URHO) : amrex::Real(ps_const::RHO_MIX_MIN);
     const amrex::Real E_mix = u(i,j,k, UEINT) / rho_mix_den;
     const PsPhaseQuot q1 = ps_phase_quot(a1, m1rho1, E1_tot, ke_spec, pr);
     const PsPhaseQuot q2 = ps_phase_quot(a2, m2rho2, E2_tot, ke_spec, pr);
@@ -164,7 +165,7 @@ ps_mixture_pressure_from_cons(const amrex::Real U[NVAR], amrex::Real P_stock,
                               const PsPres& pr)
 {
     using amrex::Real;
-    constexpr Real rho_floor   = Real(1.0e-6);
+    constexpr Real rho_floor   = ps_const::RHO_MIX_MIN;
 
     Real a1 = U[UALPHA1];
     if (a1 < Real(0.0)) a1 = Real(0.0);
@@ -184,7 +185,7 @@ ps_mixture_pressure_from_cons(const amrex::Real U[NVAR], amrex::Real P_stock,
 #else
     const Real uz = Real(0.0);
 #endif
-    const Real ke_spec = Real(0.5) * (ux*ux + uy*uy + uz*uz);
+    const Real ke_spec = ps_kinetic_energy(ux, uy, uz);
     const Real E_mix   = U[UEINT] * inv_r;
 
     const Real m1 = U[UM1RHO1], m2 = U[UM2RHO2];
@@ -250,7 +251,7 @@ ps_phase_temp_from_cons(const amrex::Real U[NVAR], int phase, amrex::Real T_mix)
 #else
     const Real uz = Real(0.0);
 #endif
-    const Real ke  = Real(0.5) * (ux*ux + uy*uy + uz*uz);
+    const Real ke  = ps_kinetic_energy(ux, uy, uz);
     const Real rho_k = mk / ak;
     const Real e_k   = ((phase == 1) ? U[UE1] : U[UE2]) / mk - ke;
 

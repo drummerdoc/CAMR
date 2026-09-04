@@ -467,7 +467,7 @@ inline int ps_asy1_probe()
             bool over = false; int nonmono = 0, it = 0;
             double gd = g0;
             for (; it < 400; ++it) {
-                hem::ps_mass_transfer_finite_cell(U, eos, dt, 1.0e3, 1.0e-6,
+                hem::ps_mass_transfer_finite_cell(U, eos, dt, 1.0e3, ps_const::ALPHA_ROUNDOFF,
                                                   0.0, /*update_alpha=*/1,
                                                   /*cr_diag=*/0,
                                                   /*h_w=*/-1.0,

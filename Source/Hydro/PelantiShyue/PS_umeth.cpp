@@ -43,6 +43,8 @@
 #include "PS_guards.H"
 #include "PS_ctoprim.H"
 #include "PS_wavespeed.H"
+#include "PS_constants.H"
+#include "PS_util.H"
 
 #include <AMReX_ParmParse.H>
 
@@ -66,7 +68,7 @@ ps_physical_flux_from_state(int idir, const Real U[NVAR], Real F[NVAR],
                             const PsPres& pr) noexcept
 {
     // Derive mixture primitives.
-    const Real rho    = amrex::max(ps_finite_or(U[URHO], Real(1.0e-6)), Real(1.0e-6));
+    const Real rho    = amrex::max(ps_finite_or(U[URHO], Real(ps_const::RHO_MIX_MIN)), Real(ps_const::RHO_MIX_MIN));
     const Real inv_r  = Real(1.0) / rho;
     const Real ux     = ps_finite_or(U[UMX], Real(0.0)) * inv_r;
 #if (AMREX_SPACEDIM >= 2)
@@ -99,7 +101,7 @@ ps_physical_flux_from_state(int idir, const Real U[NVAR], Real F[NVAR],
     // never a repaired quotient.
     const PsRegime rg1 = ps_regime(alpha_1, m1, pr);
     const PsRegime rg2 = ps_regime(alpha_2, m2, pr);
-    const Real ke_spec = Real(0.5) * (ux*ux + uy*uy + uz*uz);
+    const Real ke_spec = ps_kinetic_energy(ux, uy, uz);
     const PsPhaseQuot q1 = ps_phase_quot(alpha_1, m1,
                                          ps_finite_or(U[UE1], Real(0.0)), ke_spec, pr);
     const PsPhaseQuot q2 = ps_phase_quot(alpha_2, m2,
@@ -293,13 +295,13 @@ ps_wp_face(int idir, int i, int j, int k, int iL, int jL, int kL,
                 const Real rhod = UL[URHO];
                 const Real uxd = (rhod != Real(0.0)) ? UL[UMX]/rhod : Real(0.0);
                 const Real ked = Real(0.5)*uxd*uxd;
-                const Real r1_raw = m1d / amrex::max(a1d, Real(1.0e-300));
+                const Real r1_raw = m1d / amrex::max(a1d, Real(ps_const::DENOM_TINY));
                 const Real r1_cl = ps_guard::clamp_phase_density(r1_raw, EOS::rho_min(), EOS::rho_max());
                 const Real r2_cl = ps_guard::clamp_phase_density(
-                        m2d / amrex::max(Real(1.0)-a1d, Real(1.0e-300)),
+                        m2d / amrex::max(Real(1.0)-a1d, Real(ps_const::DENOM_TINY)),
                         EOS::rho_min(), EOS::rho_max());
-                const Real e1d = (m1d > Real(1.0e-12)) ? UL[UE1]/m1d - ked : UL[UEINT]/rhod;
-                const Real e2d = (m2d > Real(1.0e-12)) ? UL[UE2]/m2d - ked : UL[UEINT]/rhod;
+                const Real e1d = (m1d > ps_const::M_TINY) ? UL[UE1]/m1d - ked : UL[UEINT]/rhod;
+                const Real e2d = (m2d > ps_const::M_TINY) ? UL[UE2]/m2d - ked : UL[UEINT]/rhod;
                 Real Yd[NUM_SPECIES]; Yd[0] = Real(1.0);
                 for (int n = 1; n < NUM_SPECIES; ++n) Yd[n] = Real(0.0);
                 Real P1d, c1d, P2d, c2d;

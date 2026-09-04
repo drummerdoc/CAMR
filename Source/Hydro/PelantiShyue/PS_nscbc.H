@@ -32,6 +32,8 @@
 #include "IndexDefines.H"
 #include "EOS.H"
 #include "PS_wavespeed.H"
+#include "PS_constants.H"
+#include "PS_util.H"
 #include <AMReX_GpuQualifiers.H>
 #include <cmath>
 
@@ -55,14 +57,6 @@ struct Params {
 // ---------------------------------------------------------------------
 //  Small helpers
 // ---------------------------------------------------------------------
-AMREX_GPU_HOST_DEVICE
-AMREX_FORCE_INLINE
-amrex::Real
-_finite_or(amrex::Real x, amrex::Real fallback) noexcept
-{
-    return std::isfinite(x) ? x : fallback;
-}
-
 AMREX_GPU_HOST_DEVICE
 AMREX_FORCE_INLINE
 void
@@ -89,26 +83,26 @@ _cell_primitives(const amrex::Real s[NVAR],
                  amrex::Real  Y[NUM_SPECIES]) noexcept
 {
     using amrex::Real;
-    rho = amrex::max(_finite_or(s[URHO], Real(1.0e-6)), Real(1.0e-6));
+    rho = amrex::max(ps_finite_or(s[URHO], Real(ps_const::RHO_MIX_MIN)), Real(ps_const::RHO_MIX_MIN));
     const Real inv_rho = Real(1.0) / rho;
-    u_x = _finite_or(s[UMX], Real(0.0)) * inv_rho;
+    u_x = ps_finite_or(s[UMX], Real(0.0)) * inv_rho;
 #if (AMREX_SPACEDIM >= 2)
-    u_y = _finite_or(s[UMY], Real(0.0)) * inv_rho;
+    u_y = ps_finite_or(s[UMY], Real(0.0)) * inv_rho;
 #else
     u_y = Real(0.0);
 #endif
 #if (AMREX_SPACEDIM == 3)
-    u_z = _finite_or(s[UMZ], Real(0.0)) * inv_rho;
+    u_z = ps_finite_or(s[UMZ], Real(0.0)) * inv_rho;
 #else
     u_z = Real(0.0);
 #endif
-    e_spec = _finite_or(s[UEINT], Real(0.0)) * inv_rho;
+    e_spec = ps_finite_or(s[UEINT], Real(0.0)) * inv_rho;
     for (int n = 0; n < NUM_SPECIES; ++n) {
-        Y[n] = _finite_or(s[UFS + n], Real(0.0)) * inv_rho;
+        Y[n] = ps_finite_or(s[UFS + n], Real(0.0)) * inv_rho;
     }
     EOS::REY2P(rho, e_spec, Y, P);
-    if (!std::isfinite(P) || P < Real(1.0)) {
-        P = Real(1.0);
+    if (!std::isfinite(P) || P < ps_guard::P_FLOOR_PA) {
+        P = ps_guard::P_FLOOR_PA;
         ps_guard::count_nscbc_pmix_fail();
     }
 }
@@ -137,7 +131,7 @@ _hem_reclose(amrex::Real P,
     using amrex::Real;
     if (!(P < EOS::P_crit())) return false;
     const Real msum = m1 + m2;
-    if (!(msum > Real(1.0e-12))) return false;
+    if (!(msum > ps_const::M_TINY)) return false;
     const Real Y1    = m1 / msum;
     const Real e_mix = Y1 * e1 + (Real(1.0) - Y1) * e2;
     // rho_mix = m1 + m2 by construction, so v_mix = 1/(m1+m2).
@@ -174,8 +168,8 @@ _hem_reclose(amrex::Real P,
     EOS::REY2PCs_vapor (r2, e2, Yp, Pk2, ck2);
     if (Pk1 < ps_guard::P_FLOOR_PA || !std::isfinite(Pk1)) Pk1 = ps_guard::P_FLOOR_PA;
     if (Pk2 < ps_guard::P_FLOOR_PA || !std::isfinite(Pk2)) Pk2 = ps_guard::P_FLOOR_PA;
-    if (!std::isfinite(ck1) || ck1 <= Real(0.0)) ck1 = Real(1.0);
-    if (!std::isfinite(ck2) || ck2 <= Real(0.0)) ck2 = Real(1.0);
+    if (!std::isfinite(ck1) || ck1 <= Real(0.0)) ck1 = ps_const::C_MIN;
+    if (!std::isfinite(ck2) || ck2 <= Real(0.0)) ck2 = ps_const::C_MIN;
     ps_guard::count_nscbc_flash();
     return true;
 }
@@ -312,7 +306,7 @@ outflow_face(const amrex::Real s_N  [NVAR],
     Real P_g      = Real(0.5) * rho_c * (Rp_ghost - Rm_target);
 
     // Ghost pressure floor max(1e-3 P_amb, 1 Pa).
-    const Real P_floor = amrex::max(Real(1.0e-3) * p.P_amb, Real(1.0));
+    const Real P_floor = amrex::max(Real(1.0e-3) * p.P_amb, Real(ps_guard::P_FLOOR_PA));
     if (!std::isfinite(P_g) || P_g < P_floor) P_g = P_floor;
     if (!std::isfinite(un_out_g)) un_out_g = un_out_N;
 
@@ -346,7 +340,7 @@ outflow_face(const amrex::Real s_N  [NVAR],
     //  the counted zero-gradient ghost (nscbc_zg pack).  docs §6.3.
     constexpr Real PACK_ETA = Real(0.05);  // max |drho_k|/rho_k per substep (5 % strain)
     constexpr int  FAN_NMAX = 256;         // fan substep ceiling (a 100 bar-to-choke march needs ~100)
-    constexpr Real m_tiny   = Real(1.0e-12);   // kg/m³, phase-presence threshold for the pack
+    constexpr Real m_tiny   = ps_const::M_TINY;   // kg/m³, phase-presence threshold for the pack
     const bool p1_present = (ph.m1 > m_tiny);
     const bool p2_present = (ph.m2 > m_tiny);
     const bool host_is_1  = (ph.alpha1 >= ph.alpha2);
@@ -398,7 +392,7 @@ outflow_face(const amrex::Real s_N  [NVAR],
         //  no HEM, no choke; the ghost velocity stays the invariant value.
         const bool full_fan = (p.flash != 0);
         const Real P_t = full_fan
-            ? amrex::max(p.P_amb, amrex::max(Real(1.0e-3) * p.P_amb, Real(1.0)))
+            ? amrex::max(p.P_amb, amrex::max(Real(1.0e-3) * p.P_amb, Real(ps_guard::P_FLOOR_PA)))
             : P_g;
         const bool expanding = full_fan && (P_t < P_N);
         bool fan_ok = true;
@@ -410,7 +404,7 @@ outflow_face(const amrex::Real s_N  [NVAR],
         Real s_u = u_out, s_P = P_cur;
         while (P_cur != P_t) {
             const Real msum = fm1 + fm2;
-            if (!(msum > Real(1.0e-12))) { fan_ok = false; break; }
+            if (!(msum > ps_const::M_TINY)) { fan_ok = false; break; }
 
             Real cap = Real(1.0e300);
             if (p1_present) cap = amrex::min(cap, PACK_ETA * r1 * ck1 * ck1);
@@ -453,8 +447,8 @@ outflow_face(const amrex::Real s_N  [NVAR],
             }
             if (Pk1 < ps_guard::P_FLOOR_PA || !std::isfinite(Pk1)) Pk1 = ps_guard::P_FLOOR_PA;
             if (Pk2 < ps_guard::P_FLOOR_PA || !std::isfinite(Pk2)) Pk2 = ps_guard::P_FLOOR_PA;
-            if (!std::isfinite(ck1) || ck1 <= Real(0.0)) ck1 = Real(1.0);
-            if (!std::isfinite(ck2) || ck2 <= Real(0.0)) ck2 = Real(1.0);
+            if (!std::isfinite(ck1) || ck1 <= Real(0.0)) ck1 = ps_const::C_MIN;
+            if (!std::isfinite(ck2) || ck2 <= Real(0.0)) ck2 = ps_const::C_MIN;
             if (!std::isfinite(r1) || !std::isfinite(ee1) ||
                 !std::isfinite(r2) || !std::isfinite(ee2)) { fan_ok = false; break; }
 
@@ -471,7 +465,7 @@ outflow_face(const amrex::Real s_N  [NVAR],
             Real c2p = (dPs != Real(0.0) && drho_path != Real(0.0))
                            ? (dPs / drho_path) : Real(-1.0);
             if (!(c2p > Real(0.0)) || !std::isfinite(c2p)) {
-                const Real Y1c = fm1 / amrex::max(rho_after, Real(1.0e-12));
+                const Real Y1c = fm1 / amrex::max(rho_after, Real(ps_const::M_TINY));
                 c2p = ps_cmix2(Y1c, Real(1.0) - Y1c, ck1, ck2);
                 if (!(c2p > Real(0.0)) || !std::isfinite(c2p)) { fan_ok = false; break; }
             }
@@ -514,7 +508,7 @@ outflow_face(const amrex::Real s_N  [NVAR],
         rho_g = m1_g + m2_g;
     }
 
-    if (!(rho_g > Real(1.0e-6)) || !std::isfinite(rho_g)) {
+    if (!(rho_g > ps_const::RHO_MIX_MIN) || !std::isfinite(rho_g)) {
         ps_guard::count_nscbc_zg_slots();
         _zero_gradient_ghost(s_N, s_ghost);
         return;
@@ -525,7 +519,7 @@ outflow_face(const amrex::Real s_N  [NVAR],
     if      (idir == 0) ux_g = un_int_g;
     else if (idir == 1) uy_g = un_int_g;
     else                uz_g = un_int_g;
-    const Real ke_spec_g = Real(0.5) * (ux_g*ux_g + uy_g*uy_g + uz_g*uz_g);
+    const Real ke_spec_g = ps_kinetic_energy(ux_g, uy_g, uz_g);
 
     // ---- 6. Pack conservative ghost state -------------------------
     const Real rhoe_g = m1_g * e1_g + m2_g * e2_g;

@@ -37,6 +37,7 @@
 #include <string>            // ps_knob_str
 #include <AMReX.H>           // amrex::Abort (dial-contract violations)
 #include <AMReX_ParmParse.H> // CAMR.* runtime dials
+#include "PS_constants.H"   // ps_const:: shared numeric floors
 
 namespace hem {
 
@@ -243,10 +244,45 @@ struct PsPhaseAPI {
     }
 };
 
+// Strict coexistence band of the fluid, T_triple < T < T_crit, from the
+// EOS metadata the kernels receive.  The one-phase form is the window
+// in which Psat(T) is defined; the two-phase form is the gate the
+// thermal leg, the mass transfer and the flash share.  Both strict.
+inline bool ps_T_in_band(double T, const PsPhaseAPI& eos)
+{
+    return T > eos.t_triple() && T < eos.t_crit();
+}
+inline bool ps_in_coexistence_band(double T1, double T2, const PsPhaseAPI& eos)
+{
+    return ps_T_in_band(T1, eos) && ps_T_in_band(T2, eos);
+}
+
 
 // ---------------------------------------------------------------------
 //  Conservative-variable helpers.
 // ---------------------------------------------------------------------
+
+// Fold phase `victim` (1 or 2) into the other: its partial mass and
+// total energy are added to the survivor's slots, its own slots zeroed
+// and alpha_1 set to exact 0 (victim 1) or 1 (victim 2).  Mixture mass
+// and energy are invariant.  The single mechanics behind every phase
+// removal (vanish, T-floor, vacuum and the corridor reaps).
+inline void fold_phase(V6& U, int victim)
+{
+    if (victim == 1) {
+        U[2] += U[1];      // m_2 += m_1
+        U[5] += U[4];      // (α_2 ρ_2 E_2) += (α_1 ρ_1 E_1)
+        U[1]  = 0.0;
+        U[4]  = 0.0;
+        U[0]  = 0.0;
+    } else {
+        U[1] += U[2];
+        U[4] += U[5];
+        U[2]  = 0.0;
+        U[5]  = 0.0;
+        U[0]  = 1.0;
+    }
+}
 
 // Vanish fold: when alpha_k <= alpha_vanish, phase k's mass and total
 // energy are folded into the survivor and its slots zeroed (alpha to
@@ -261,20 +297,12 @@ inline bool ps_apply_vanish_fold(V6& U, double alpha_vanish)
     const double alpha1 = U[0];
     if (alpha1 <= alpha_vanish) {
         // Phase 1 vanishes: fold its mass and total-energy into phase 2.
-        U[2] += U[1];      // m_2 += m_1
-        U[5] += U[4];      // (α_2 ρ_2 E_2) += (α_1 ρ_1 E_1)
-        U[1]  = 0.0;
-        U[4]  = 0.0;
-        U[0]  = 0.0;
+        fold_phase(U, 1);
         return true;
     }
     if (alpha1 >= 1.0 - alpha_vanish) {
         // Phase 2 vanishes: fold into phase 1.
-        U[1] += U[2];
-        U[4] += U[5];
-        U[2]  = 0.0;
-        U[5]  = 0.0;
-        U[0]  = 1.0;
+        fold_phase(U, 2);
         return true;
     }
     return false;
@@ -328,7 +356,7 @@ inline int ps_diag_relax_cell() { static const int v = ps_knob_int("ps_relax_dia
 // recovery exists; the caller decides).
 inline bool ps_apply_tfloor_fold(V6& U, const PsPhaseAPI& eos,
                                   double T_floor,
-                                  double alpha_floor = 1.0e-6)
+                                  double alpha_floor = ps_const::ALPHA_ROUNDOFF)
 {
     if (T_floor <= 0.0) return false;
     if (!std::isfinite(U[0])) return false;
@@ -363,36 +391,20 @@ inline bool ps_apply_tfloor_fold(V6& U, const PsPhaseAPI& eos,
     if (p1_bad) {
         if (phase2_is_volume_dominant) {
             // Phase 1 volume-trace: fold into phase 2.
-            U[2] += U[1];
-            U[5] += U[4];
-            U[1]  = 0.0;
-            U[4]  = 0.0;
-            U[0]  = 0.0;
+            fold_phase(U, 1);
         } else {
             // Phase 1 volume-dominant with a bad state: fold phase 2 into it.
-            U[1] += U[2];
-            U[4] += U[5];
-            U[2]  = 0.0;
-            U[5]  = 0.0;
-            U[0]  = 1.0;
+            fold_phase(U, 2);
         }
         return true;
     }
     if (p2_bad) {
         if (phase2_is_volume_dominant) {
             // Cold-vapour collapse: fold phase 1 into phase 2 (evaporation direction).
-            U[2] += U[1];
-            U[5] += U[4];
-            U[1]  = 0.0;
-            U[4]  = 0.0;
-            U[0]  = 0.0;
+            fold_phase(U, 1);
         } else {
             // Phase 2 volume-trace: fold into phase 1.
-            U[1] += U[2];
-            U[4] += U[5];
-            U[2]  = 0.0;
-            U[5]  = 0.0;
-            U[0]  = 1.0;
+            fold_phase(U, 2);
         }
         return true;
     }
@@ -412,7 +424,7 @@ inline bool ps_apply_tfloor_fold(V6& U, const PsPhaseAPI& eos,
 //  Retire-candidate: see docs/DESIGN_DECISIONS.md §5.
 // ---------------------------------------------------------------------
 inline PsState ps_state_from_cons(const V6& U, const PsPhaseAPI& eos,
-                                  double alpha_floor = 1.0e-6,
+                                  double alpha_floor = ps_const::ALPHA_ROUNDOFF,
                                   double rho_floor   = 1.0e-6)
 {
     PsState st;
@@ -583,7 +595,7 @@ inline double ps_single_phase_threshold_default() {
 struct PsPressureRelaxParams {
     double tol_P_rel = 1.0e-4;   // stop when |P_1-P_2|/max(|P_1|,|P_2|)<tol
     int    max_iter  = 30;
-    double alpha_min = 1.0e-9;   // hard bound on alpha to keep rho_k finite
+    double alpha_min = ps_const::ALPHA_NEWTON_MIN;   // hard bound on alpha to keep rho_k finite
     double step_cap_frac = 0.3;  // Newton step capped to this fraction of
                                  //   min(alpha, 1-alpha) to avoid overshoot
     double single_phase_threshold = ps_single_phase_threshold_default();
@@ -1387,7 +1399,7 @@ inline bool ps_mass_transfer_relax_cell(
 //  Any other value (including -1) aborts: the caller resolves the dial.
 inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
                                           double dt, double tau_g,
-                                          double alpha_floor = 1.0e-6,
+                                          double alpha_floor = ps_const::ALPHA_ROUNDOFF,
                                           double g_ref = 0.0,
                                           int update_alpha = -1,
                                           int diag_contract = 0,
@@ -1460,7 +1472,7 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
             if (gr_here < cx.grel_min) cx.grel_min = gr_here;
             if (gr_here > cx.grel_max) cx.grel_max = gr_here;
             // P_1/Psat(T_1) only where Psat is defined.
-            if (eos.Psat_of_T && p1.T > T_trip && p1.T < T_crit) {
+            if (eos.Psat_of_T && ps_T_in_band(p1.T, eos)) {
                 const double ps1 = eos.Psat_of_T(p1.T);
                 if (std::isfinite(ps1) && ps1 > 0.0) {
                     const double r1 = p1.P / ps1;
@@ -1939,7 +1951,7 @@ inline bool ps_x3_relax_cell(V6& U, const PsPhaseAPI& eos, double dt,
     PsX3Stats& x3s = ps_x3_stats();
     ++x3s.n_calls;
     if (!eos.valid() || !(dt > 0.0)) { ++x3s.n_entry_refused; return false; }
-    constexpr double alpha_floor = 1.0e-6;
+    constexpr double alpha_floor = ps_const::ALPHA_ROUNDOFF;
     if (!std::isfinite(U[0])) { ++x3s.n_entry_refused; return false; }
     if (U[0] <= alpha_floor || U[0] >= 1.0 - alpha_floor) {
         ++x3s.n_entry_refused; return false; }
@@ -2405,7 +2417,7 @@ inline void ps_flash_refuse_reset()
 inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
                                   double dt, double tau_flash,
                                   double alpha_seed_target,
-                                  double alpha_floor = 1.0e-6,
+                                  double alpha_floor = ps_const::ALPHA_ROUNDOFF,
                                   int project_sat_in = -1)
 {
     if (tau_flash <= 0.0 || dt <= 0.0) PS_FLASH_REFUSE(PS_FLR_TAU);

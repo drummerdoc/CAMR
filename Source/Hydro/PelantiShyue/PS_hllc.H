@@ -30,17 +30,12 @@
 #include "PS_guards.H"
 #include "PS_presence.H"
 #include "PS_promote.H"
+#include "PS_constants.H"
+#include "PS_util.H"
 #include <AMReX_GpuQualifiers.H>
 #include <cmath>
 
 namespace PS_HLLC {
-
-AMREX_GPU_HOST_DEVICE
-AMREX_FORCE_INLINE
-amrex::Real _finite_or(amrex::Real x, amrex::Real fallback) noexcept
-{
-    return std::isfinite(x) ? x : fallback;
-}
 
 // -------------------------------------------------------------------
 //  Per-side face state extracted from a CAMR NVAR array.
@@ -82,11 +77,11 @@ Face face_from_state(int idir, const amrex::Real U[NVAR],
     Face f;
     f.valid = false;
 
-    f.m_1 = amrex::max(_finite_or(U[UM1RHO1], Real(0.0)), Real(0.0));
-    f.m_2 = amrex::max(_finite_or(U[UM2RHO2], Real(0.0)), Real(0.0));
-    f.rho_mix = amrex::max(f.m_1 + f.m_2, Real(1.0e-6));
+    f.m_1 = amrex::max(ps_finite_or(U[UM1RHO1], Real(0.0)), Real(0.0));
+    f.m_2 = amrex::max(ps_finite_or(U[UM2RHO2], Real(0.0)), Real(0.0));
+    f.rho_mix = amrex::max(f.m_1 + f.m_2, Real(ps_const::RHO_MIX_MIN));
 
-    Real a1 = _finite_or(U[UALPHA1], Real(1.0));
+    Real a1 = ps_finite_or(U[UALPHA1], Real(1.0));
     // Bounds only; out-of-range values are ps_validate_state's to report.
     if (a1 < Real(0.0)) a1 = Real(0.0);
     if (a1 > Real(1.0)) a1 = Real(1.0);
@@ -101,22 +96,22 @@ Face face_from_state(int idir, const amrex::Real U[NVAR],
     // its contribution is bounded by the tiny m_k; formed clamped.
     // Absent: never divided; the host's density is substituted below.
     f.rho_1 = (rg1 == PsRegime::Absent) ? Real(0.0)
-            : ps_guard::clamp_phase_density(f.m_1 / amrex::max(f.alpha_1, Real(1.0e-300)),
+            : ps_guard::clamp_phase_density(f.m_1 / amrex::max(f.alpha_1, Real(ps_const::DENOM_TINY)),
                                             EOS::rho_min(), EOS::rho_max());
     f.rho_2 = (rg2 == PsRegime::Absent) ? Real(0.0)
-            : ps_guard::clamp_phase_density(f.m_2 / amrex::max(f.alpha_2, Real(1.0e-300)),
+            : ps_guard::clamp_phase_density(f.m_2 / amrex::max(f.alpha_2, Real(ps_const::DENOM_TINY)),
                                             EOS::rho_min(), EOS::rho_max());
 
     // Velocity components.
     const Real inv_r = Real(1.0) / f.rho_mix;
-    f.ux = _finite_or(U[UMX], Real(0.0)) * inv_r;
+    f.ux = ps_finite_or(U[UMX], Real(0.0)) * inv_r;
 #if (AMREX_SPACEDIM >= 2)
-    f.uy = _finite_or(U[UMY], Real(0.0)) * inv_r;
+    f.uy = ps_finite_or(U[UMY], Real(0.0)) * inv_r;
 #else
     f.uy = Real(0.0);
 #endif
 #if (AMREX_SPACEDIM == 3)
-    f.uz = _finite_or(U[UMZ], Real(0.0)) * inv_r;
+    f.uz = ps_finite_or(U[UMZ], Real(0.0)) * inv_r;
 #else
     f.uz = Real(0.0);
 #endif
@@ -125,12 +120,12 @@ Face face_from_state(int idir, const amrex::Real U[NVAR],
     else                f.u_n = f.uz;
 
     // Per-phase specific total and internal energies.
-    const Real ke_spec = Real(0.5) * (f.ux*f.ux + f.uy*f.uy + f.uz*f.uz);
-    const Real E1_tot = _finite_or(U[UE1], Real(0.0));
-    const Real E2_tot = _finite_or(U[UE2], Real(0.0));
-    const Real e_mix  = _finite_or(U[UEINT], Real(0.0)) * inv_r;
-    f.E_1 = (f.m_1 > Real(1.0e-12)) ? E1_tot / f.m_1 : (e_mix + ke_spec);
-    f.E_2 = (f.m_2 > Real(1.0e-12)) ? E2_tot / f.m_2 : (e_mix + ke_spec);
+    const Real ke_spec = ps_kinetic_energy(f.ux, f.uy, f.uz);
+    const Real E1_tot = ps_finite_or(U[UE1], Real(0.0));
+    const Real E2_tot = ps_finite_or(U[UE2], Real(0.0));
+    const Real e_mix  = ps_finite_or(U[UEINT], Real(0.0)) * inv_r;
+    f.E_1 = (f.m_1 > ps_const::M_TINY) ? E1_tot / f.m_1 : (e_mix + ke_spec);
+    f.E_2 = (f.m_2 > ps_const::M_TINY) ? E2_tot / f.m_2 : (e_mix + ke_spec);
     f.e_1 = f.E_1 - ke_spec;
     f.e_2 = f.E_2 - ke_spec;
 
@@ -178,8 +173,8 @@ Face face_from_state(int idir, const amrex::Real U[NVAR],
     f.P_mix = f.alpha_1 * f.P_1 + f.alpha_2 * f.P_2;
     // Both c_k are floored to 1 m/s on a non-finite or non-positive EOS
     // return (docs §8.3, guard inventory).
-    if (!std::isfinite(c1) || c1 <= Real(0.0)) c1 = Real(1.0);
-    if (!std::isfinite(c2) || c2 <= Real(0.0)) c2 = Real(1.0);
+    if (!std::isfinite(c1) || c1 <= Real(0.0)) c1 = ps_const::C_MIN;
+    if (!std::isfinite(c2) || c2 <= Real(0.0)) c2 = ps_const::C_MIN;
     f.c_1 = c1;
     f.c_2 = c2;
 
@@ -416,7 +411,7 @@ bool ps_star_state(int idir, const Face& fK, const amrex::Real UK[NVAR],
     if      (idir == 0) ux = S_M;
     else if (idir == 1) uy = S_M;
     else                uz = S_M;
-    const Real ke = Real(0.5) * (ux*ux + uy*uy + uz*uz);
+    const Real ke = ps_kinetic_energy(ux, uy, uz);
     const Real e_mix_s = (m1s * (E1s - ke) + m2s * (E2s - ke)) / rhos;
 
     for (int n = 0; n < NVAR; ++n) U_star[n] = UK[n];
@@ -437,7 +432,7 @@ bool ps_star_state(int idir, const Face& fK, const amrex::Real UK[NVAR],
     U_star[UE2]     = m2s * E2s;
     const Real rr = rhos / fK.rho_mix;
     for (int n = 0; n < NUM_SPECIES; ++n)
-        U_star[UFS + n] = _finite_or(UK[UFS + n], Real(0.0)) * rr;
+        U_star[UFS + n] = ps_finite_or(UK[UFS + n], Real(0.0)) * rr;
     return true;
 }
 
@@ -571,8 +566,8 @@ bool fluctuations(int idir, const amrex::Real UL[NVAR], const amrex::Real UR[NVA
         else if (sl > Real(0.0)) for (int n = 0; n < NVAR; ++n) f.Ap[n] += sl * f.W[l][n];
     }
     for (int n = 0; n < NVAR; ++n) {
-        f.Am[n] = _finite_or(f.Am[n], Real(0.0));
-        f.Ap[n] = _finite_or(f.Ap[n], Real(0.0));
+        f.Am[n] = ps_finite_or(f.Am[n], Real(0.0));
+        f.Ap[n] = ps_finite_or(f.Ap[n], Real(0.0));
     }
 #if !defined(AMREX_USE_GPU)
     {   // Per-fluctuation identity mismatch |Δ(UE1+UE2) − ΔUEDEN|; the star

@@ -33,6 +33,8 @@
 #include "hem_pelanti_shyue.H"
 #include "PS_presence.H"   // PsPres, ps_regime, the fold thresholds
 #include "PS_promote.H"    // ps_promote_diag counters (floor skips)
+#include "PS_constants.H"  // ps_const:: shared numeric floors
+#include "PS_util.H"       // ps_kinetic_energy, ps_pack_v6 / ps_unpack_v6
 #include <AMReX_Array4.H>
 #include <AMReX_GpuQualifiers.H>
 #include <AMReX_Print.H>
@@ -277,6 +279,37 @@ bool ps_presence_relax_gate(amrex::Real a1, amrex::Real m1, amrex::Real m2,
 }
 
 // -----------------------------------------------------------------
+//  ps_relax_entry_gate — the entry test the mode 1, 2, 4 and 5 relax
+//  cells share: alpha_1 finite and inside [ALPHA_ROUNDOFF, 1 -
+//  ALPHA_ROUNDOFF], both partial masses positive, and the presence gate
+//  (docs §4.7), whose refusal is counted.  Returns true when the cell may
+//  be relaxed, with alpha1_in, m1, m2 read out; false leaves the cell
+//  untouched.  Mode 0 keeps its own copy: it counts every early return.
+// -----------------------------------------------------------------
+inline bool
+ps_relax_entry_gate(int i, int j, int k,
+                    amrex::Array4<amrex::Real> const& U,
+                    amrex::Real& alpha1_in, amrex::Real& m1, amrex::Real& m2)
+{
+    using amrex::Real;
+    constexpr Real alpha_floor = ps_const::ALPHA_ROUNDOFF;
+    alpha1_in = U(i,j,k, UALPHA1);
+    if (!std::isfinite(alpha1_in)) return false;
+    if (alpha1_in < alpha_floor || alpha1_in > Real(1.0) - alpha_floor) return false;
+    m1 = U(i,j,k, UM1RHO1);
+    m2 = U(i,j,k, UM2RHO2);
+    if (m1 <= Real(0.0) || m2 <= Real(0.0)) return false;
+    {   // presence gate; refusal counted
+        const PsPres& prS4g = ps_presence_params();
+        if (!ps_presence_relax_gate(alpha1_in, m1, m2, prS4g)) {
+            ++ps_relax_diag().n_gate_presence;
+            return false;
+        }
+    }
+    return true;
+}
+
+// -----------------------------------------------------------------
 //  ps_mechanical_relax_cell (ps_relax_mode=0): instantaneous P1 = P2 by
 //  Newton on alpha_1 (hem::ps_pressure_relax_cell) with the interfacial
 //  work booked into UE1/UE2.  Writes UALPHA1, UE1, UE2 only; URHO,
@@ -295,7 +328,7 @@ ps_mechanical_relax_cell(int i, int j, int k,
 
     // Entry classification, all counted: non-finite, near-pure, and
     // alpha_in > 1 (an upstream flux defect the relaxation must not hide).
-    constexpr Real alpha_floor = Real(1.0e-6);
+    constexpr Real alpha_floor = ps_const::ALPHA_ROUNDOFF;
     const Real alpha1_in = U(i,j,k, UALPHA1);
 
     // Incoming alpha extremes over all cells, pre-relaxation.
@@ -333,28 +366,8 @@ ps_mechanical_relax_cell(int i, int j, int k,
 
     // V6[3] = rho_mix |u|: the kernel forms ½(V6[3]/rho_mix)² = ½|u|²,
     // which is direction-free, so the momentum magnitude is exact.
-    const Real rho_mix = m1 + m2;
-    const Real px = U(i,j,k, UMX);
-#if (AMREX_SPACEDIM >= 2)
-    const Real py = U(i,j,k, UMY);
-#else
-    const Real py = Real(0.0);
-#endif
-#if (AMREX_SPACEDIM == 3)
-    const Real pz = U(i,j,k, UMZ);
-#else
-    const Real pz = Real(0.0);
-#endif
-    const Real p_mag = std::sqrt(px*px + py*py + pz*pz);
-
     // Pack V6 in the layout ps_pressure_relax_cell expects.
-    hem::V6 Uv;
-    Uv[0] = alpha1_in;
-    Uv[1] = m1;
-    Uv[2] = m2;
-    Uv[3] = p_mag;
-    Uv[4] = U(i,j,k, UE1);        // alpha_1 rho_1 E_1 (volumetric)
-    Uv[5] = U(i,j,k, UE2);        // alpha_2 rho_2 E_2
+    hem::V6 Uv = ps_pack_v6(U, i, j, k, alpha1_in, m1, m2);
 
     // Default PsPressureRelaxParams (max_iter 20, tol_P_rel 1e-4,
     // alpha_min 1e-6).  Uv[0], Uv[4], Uv[5] update in place; Uv[1..3]
@@ -409,41 +422,12 @@ ps_pt_equilibrium_relax_cell(int i, int j, int k,
                              int outer_iters = 3)
 {
     using amrex::Real;
-    constexpr Real alpha_floor = Real(1.0e-6);
-    const Real alpha1_in = U(i,j,k, UALPHA1);
-    if (!std::isfinite(alpha1_in)) return;
     // Near-pure cells are skipped (the iso kernels skip them too).
-    if (alpha1_in < alpha_floor || alpha1_in > Real(1.0) - alpha_floor) return;
+    Real alpha1_in, m1, m2;
+    if (!ps_relax_entry_gate(i, j, k, U, alpha1_in, m1, m2)) return;
 
-    const Real m1 = U(i,j,k, UM1RHO1);
-    const Real m2 = U(i,j,k, UM2RHO2);
-    if (m1 <= Real(0.0) || m2 <= Real(0.0)) return;
-    {   // presence gate; refusal counted
-        const PsPres& prS4g = ps_presence_params();
-        if (!ps_presence_relax_gate(alpha1_in, m1, m2, prS4g)) {
-            ++ps_relax_diag().n_gate_presence;
-            return;
-        }
-    }
-
-    const Real px = U(i,j,k, UMX);
-#if (AMREX_SPACEDIM >= 2)
-    const Real py = U(i,j,k, UMY);
-#else
-    const Real py = Real(0.0);
-#endif
-#if (AMREX_SPACEDIM == 3)
-    const Real pz = U(i,j,k, UMZ);
-#else
-    const Real pz = Real(0.0);
-#endif
-    hem::V6 Uv;
-    Uv[0] = alpha1_in;
-    Uv[1] = m1;
-    Uv[2] = m2;
-    Uv[3] = std::sqrt(px*px + py*py + pz*pz);   // |rho u|; only ½(V6[3]/rho)² is used
-    Uv[4] = U(i,j,k, UE1);
-    Uv[5] = U(i,j,k, UE2);
+    // |rho u| in V6[3]; only ½(V6[3]/rho)² is used.
+    hem::V6 Uv = ps_pack_v6(U, i, j, k, alpha1_in, m1, m2);
 
     // Picard alternation P-relax <-> T-relax.
     bool ok = true;
@@ -476,40 +460,10 @@ ps_ptg_relax_cell(int i, int j, int k,
                   int outer_iters = 3)
 {
     using amrex::Real;
-    constexpr Real alpha_floor = Real(1.0e-6);
-    const Real alpha1_in = U(i,j,k, UALPHA1);
-    if (!std::isfinite(alpha1_in)) return;
-    if (alpha1_in < alpha_floor || alpha1_in > Real(1.0) - alpha_floor) return;
+    Real alpha1_in, m1, m2;
+    if (!ps_relax_entry_gate(i, j, k, U, alpha1_in, m1, m2)) return;
 
-    const Real m1 = U(i,j,k, UM1RHO1);
-    const Real m2 = U(i,j,k, UM2RHO2);
-    if (m1 <= Real(0.0) || m2 <= Real(0.0)) return;
-    {   // presence gate; refusal counted
-        const PsPres& prS4g = ps_presence_params();
-        if (!ps_presence_relax_gate(alpha1_in, m1, m2, prS4g)) {
-            ++ps_relax_diag().n_gate_presence;
-            return;
-        }
-    }
-
-    const Real px = U(i,j,k, UMX);
-#if (AMREX_SPACEDIM >= 2)
-    const Real py = U(i,j,k, UMY);
-#else
-    const Real py = Real(0.0);
-#endif
-#if (AMREX_SPACEDIM == 3)
-    const Real pz = U(i,j,k, UMZ);
-#else
-    const Real pz = Real(0.0);
-#endif
-    hem::V6 Uv;
-    Uv[0] = alpha1_in;
-    Uv[1] = m1;
-    Uv[2] = m2;
-    Uv[3] = std::sqrt(px*px + py*py + pz*pz);
-    Uv[4] = U(i,j,k, UE1);
-    Uv[5] = U(i,j,k, UE2);
+    hem::V6 Uv = ps_pack_v6(U, i, j, k, alpha1_in, m1, m2);
 
     bool ok = true;
     for (int it = 0; it < outer_iters; ++it) {
@@ -547,34 +501,8 @@ ps_canonical_relax_cell(int i, int j, int k,
                         amrex::Real dt, amrex::Real theta)
 {
     using amrex::Real;
-    constexpr Real alpha_floor = Real(1.0e-6);
-    const Real alpha1_in = U(i,j,k, UALPHA1);
-    if (!std::isfinite(alpha1_in)) return;
-    if (alpha1_in < alpha_floor || alpha1_in > Real(1.0) - alpha_floor) return;
-
-    const Real m1 = U(i,j,k, UM1RHO1);
-    const Real m2 = U(i,j,k, UM2RHO2);
-    if (m1 <= Real(0.0) || m2 <= Real(0.0)) return;
-    {   // presence gate; refusal counted
-        const PsPres& prS4g = ps_presence_params();
-        if (!ps_presence_relax_gate(alpha1_in, m1, m2, prS4g)) {
-            ++ps_relax_diag().n_gate_presence;
-            return;
-        }
-    }
-
-    const Real px = U(i,j,k, UMX);
-#if (AMREX_SPACEDIM >= 2)
-    const Real py = U(i,j,k, UMY);
-#else
-    const Real py = Real(0.0);
-#endif
-#if (AMREX_SPACEDIM == 3)
-    const Real pz = U(i,j,k, UMZ);
-#else
-    const Real pz = Real(0.0);
-#endif
-    const Real p_mag = std::sqrt(px*px + py*py + pz*pz);
+    Real alpha1_in, m1, m2;
+    if (!ps_relax_entry_gate(i, j, k, U, alpha1_in, m1, m2)) return;
     const Real rho_mix = m1 + m2;
 
 #ifdef CAMR_PS_DIAG
@@ -599,13 +527,7 @@ ps_canonical_relax_cell(int i, int j, int k,
                        << " ok1=" << int(s1.valid) << " ok2=" << int(s2.valid) << "\n";
     };
 #endif
-    hem::V6 Uv;
-    Uv[0] = alpha1_in;
-    Uv[1] = m1;
-    Uv[2] = m2;
-    Uv[3] = p_mag;
-    Uv[4] = U(i,j,k, UE1);
-    Uv[5] = U(i,j,k, UE2);
+    hem::V6 Uv = ps_pack_v6(U, i, j, k, alpha1_in, m1, m2);
 #ifdef CAMR_PS_DIAG
     relax_probe("ENTRY     ", Uv);
 #endif
@@ -640,8 +562,7 @@ ps_canonical_relax_cell(int i, int j, int k,
         eos.state_from_rho_e_phase(2, r2n, e2n, q2);
         const double Ttr = eos.t_triple(), Tcr = eos.t_crit();
         const bool coexist = q1.valid && q2.valid &&
-                             q1.T > Ttr && q1.T < Tcr &&
-                             q2.T > Ttr && q2.T < Tcr;
+                             hem::ps_in_coexistence_band(q1.T, q2.T, eos);
         //  ps_coexist_action (see its accessor): 2 and 3 run the thermal
         //  leg for an out-of-band cell — heat exchange between phases in
         //  contact does not require that either can turn into the other.
@@ -786,38 +707,10 @@ ps_x3_grid_relax_cell(int i, int j, int k,
                       amrex::Real dt, amrex::Real theta)
 {
     using amrex::Real;
-    constexpr Real alpha_floor = Real(1.0e-6);
-    const Real alpha1_in = U(i,j,k, UALPHA1);
-    if (!std::isfinite(alpha1_in)) return;
-    if (alpha1_in < alpha_floor || alpha1_in > Real(1.0) - alpha_floor) return;
-    const Real m1 = U(i,j,k, UM1RHO1);
-    const Real m2 = U(i,j,k, UM2RHO2);
-    if (m1 <= Real(0.0) || m2 <= Real(0.0)) return;
-    {   // presence gate, as the canonical cell applies it; refusal counted
-        const PsPres& prS4g = ps_presence_params();
-        if (!ps_presence_relax_gate(alpha1_in, m1, m2, prS4g)) {
-            ++ps_relax_diag().n_gate_presence;
-            return;
-        }
-    }
-    const Real px = U(i,j,k, UMX);
-#if (AMREX_SPACEDIM >= 2)
-    const Real py = U(i,j,k, UMY);
-#else
-    const Real py = Real(0.0);
-#endif
-#if (AMREX_SPACEDIM == 3)
-    const Real pz = U(i,j,k, UMZ);
-#else
-    const Real pz = Real(0.0);
-#endif
-    hem::V6 Uv;
-    Uv[0] = alpha1_in;
-    Uv[1] = m1;
-    Uv[2] = m2;
-    Uv[3] = std::sqrt(px*px + py*py + pz*pz);
-    Uv[4] = U(i,j,k, UE1);
-    Uv[5] = U(i,j,k, UE2);
+    // Entry gates as the canonical cell applies them (presence refusal counted).
+    Real alpha1_in, m1, m2;
+    if (!ps_relax_entry_gate(i, j, k, U, alpha1_in, m1, m2)) return;
+    hem::V6 Uv = ps_pack_v6(U, i, j, k, alpha1_in, m1, m2);
 
     hem::PsX3Params xp;
     xp.theta = double(theta);
@@ -868,11 +761,7 @@ ps_x3_grid_relax_cell(int i, int j, int k,
     //  The kernel writes Uv only past its entry gates, and everything it
     //  writes is admissible and conservative, a bail-out's partial
     //  progress included.  Copy back unconditionally.
-    U(i,j,k, UALPHA1) = Real(Uv[0]);
-    U(i,j,k, UM1RHO1) = Real(Uv[1]);
-    U(i,j,k, UM2RHO2) = Real(Uv[2]);
-    U(i,j,k, UE1)     = Real(Uv[4]);
-    U(i,j,k, UE2)     = Real(Uv[5]);
+    ps_unpack_v6(U, i, j, k, Uv);
 }
 
 
@@ -1123,7 +1012,7 @@ ps_report_temps(amrex::MultiFab& S_new, const char* label,
     using amrex::Real;
     if (ps_prehydro_diag() == 0) return;
     const hem::PsPhaseAPI eos = ps_make_camr_eos_api();
-    constexpr Real afl = Real(1.0e-6);
+    constexpr Real afl = ps_const::ALPHA_ROUNDOFF;
     const Real dx = geom.CellSize(0);
     const Real xlo = geom.ProbLo(0);
     Real t1max=-1, t2max=-1, xhot=-1, ahot=-1, thot=-1;  // hottest (either phase)
@@ -1138,18 +1027,7 @@ ps_report_temps(amrex::MultiFab& S_new, const char* label,
             const Real m1 = U(i,j,k, UM1RHO1), m2 = U(i,j,k, UM2RHO2);
             if (m1 <= Real(0.0) || m2 <= Real(0.0)) return;
             const Real rho_mix = m1 + m2;
-            const Real px = U(i,j,k, UMX);
-#if (AMREX_SPACEDIM >= 2)
-            const Real py = U(i,j,k, UMY);
-#else
-            const Real py = Real(0.0);
-#endif
-#if (AMREX_SPACEDIM == 3)
-            const Real pz = U(i,j,k, UMZ);
-#else
-            const Real pz = Real(0.0);
-#endif
-            const Real ke = Real(0.5)*(px*px+py*py+pz*pz)/(rho_mix*rho_mix);
+            const Real ke = ps_kinetic_energy(U, i, j, k, rho_mix);
             const Real rho1 = m1/a1, rho2 = m2/(Real(1.0)-a1);
             const Real e1 = U(i,j,k, UE1)/m1 - ke;
             const Real e2 = U(i,j,k, UE2)/m2 - ke;
@@ -1217,7 +1095,7 @@ ps_report_psat(amrex::MultiFab& S_new, const char* label, int nghost = 0)
     using amrex::Real;
     if (ps_psat_diag() == 0) return;
     const hem::PsPhaseAPI eos = ps_make_camr_eos_api();
-    constexpr Real afl = Real(1.0e-6);
+    constexpr Real afl = ps_const::ALPHA_ROUNDOFF;
     const double Ttr = eos.t_triple(), Tcr = eos.t_crit();
     std::vector<double> ratios;
     for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
@@ -1230,18 +1108,7 @@ ps_report_psat(amrex::MultiFab& S_new, const char* label, int nghost = 0)
             const Real m1 = U(i,j,k, UM1RHO1), m2 = U(i,j,k, UM2RHO2);
             if (m1 <= Real(0.0) || m2 <= Real(0.0)) return;
             const Real rho_mix = m1 + m2;
-            const Real px = U(i,j,k, UMX);
-#if (AMREX_SPACEDIM >= 2)
-            const Real py = U(i,j,k, UMY);
-#else
-            const Real py = Real(0.0);
-#endif
-#if (AMREX_SPACEDIM == 3)
-            const Real pz = U(i,j,k, UMZ);
-#else
-            const Real pz = Real(0.0);
-#endif
-            const Real ke = Real(0.5)*(px*px+py*py+pz*pz)/(rho_mix*rho_mix);
+            const Real ke = ps_kinetic_energy(U, i, j, k, rho_mix);
             const Real rho1 = m1/a1;
             const Real e1 = U(i,j,k, UE1)/m1 - ke;
             hem::PsPhase p1{}; p1.alpha = a1;
@@ -1301,7 +1168,7 @@ ps_report_T2stage(amrex::MultiFab& S_new, const char* label,
     using amrex::Real;
     if (ps_t2_diag() == 0) return;
     const hem::PsPhaseAPI eos = ps_make_camr_eos_api();
-    constexpr Real afl = Real(1.0e-6);
+    constexpr Real afl = ps_const::ALPHA_ROUNDOFF;
     const Real dx = geom.CellSize(0);
     const Real xlo = geom.ProbLo(0);
     double t1min = 1.0e300, t1max = -1.0, t2min = 1.0e300, t2max = -1.0;
@@ -1317,18 +1184,7 @@ ps_report_T2stage(amrex::MultiFab& S_new, const char* label,
             const Real m1 = U(i,j,k, UM1RHO1), m2 = U(i,j,k, UM2RHO2);
             if (m1 <= Real(0.0) || m2 <= Real(0.0)) return;
             const Real rho_mix = m1 + m2;
-            const Real px = U(i,j,k, UMX);
-#if (AMREX_SPACEDIM >= 2)
-            const Real py = U(i,j,k, UMY);
-#else
-            const Real py = Real(0.0);
-#endif
-#if (AMREX_SPACEDIM == 3)
-            const Real pz = U(i,j,k, UMZ);
-#else
-            const Real pz = Real(0.0);
-#endif
-            const Real ke = Real(0.5)*(px*px+py*py+pz*pz)/(rho_mix*rho_mix);
+            const Real ke = ps_kinetic_energy(U, i, j, k, rho_mix);
             const Real rho1 = m1/a1, rho2 = m2/(Real(1.0)-a1);
             const Real e1 = U(i,j,k, UE1)/m1 - ke;
             const Real e2 = U(i,j,k, UE2)/m2 - ke;
@@ -1480,18 +1336,7 @@ ps_harvest_states(amrex::MultiFab& S_new, int nghost = 0)
             const Real m1 = U(i,j,k, UM1RHO1), m2 = U(i,j,k, UM2RHO2);
             if (m1 <= Real(0.0) || m2 <= Real(0.0)) return;
             const Real rho_mix = m1 + m2;
-            const Real px = U(i,j,k, UMX);
-#if (AMREX_SPACEDIM >= 2)
-            const Real py = U(i,j,k, UMY);
-#else
-            const Real py = Real(0.0);
-#endif
-#if (AMREX_SPACEDIM == 3)
-            const Real pz = U(i,j,k, UMZ);
-#else
-            const Real pz = Real(0.0);
-#endif
-            const Real ke = Real(0.5)*(px*px+py*py+pz*pz)/(rho_mix*rho_mix);
+            const Real ke = ps_kinetic_energy(U, i, j, k, rho_mix);
             const Real rho1 = m1/a1, rho2 = m2/(Real(1.0)-a1);
             const Real e1 = U(i,j,k, UE1)/m1 - ke;
             const Real e2 = U(i,j,k, UE2)/m2 - ke;
@@ -1725,18 +1570,7 @@ ps_dilute_energy_closure(amrex::MultiFab& S_new, int nghost = 0)
             const Real ue1 = U(i,j,k, UE1), ue2 = U(i,j,k, UE2);
             if (!std::isfinite(ued) || !std::isfinite(ue1) || !std::isfinite(ue2)) return;
             const Real rho_mix = m1 + m2;
-            const Real px = U(i,j,k, UMX);
-#if (AMREX_SPACEDIM >= 2)
-            const Real py = U(i,j,k, UMY);
-#else
-            const Real py = Real(0.0);
-#endif
-#if (AMREX_SPACEDIM == 3)
-            const Real pz = U(i,j,k, UMZ);
-#else
-            const Real pz = Real(0.0);
-#endif
-            const Real ke = Real(0.5)*(px*px+py*py+pz*pz)/(rho_mix*rho_mix);
+            const Real ke = ps_kinetic_energy(U, i, j, k, rho_mix);
             const Real rho1 = m1/a1, rho2 = m2/a2;
             const Real e1 = ue1/m1 - ke;
             const Real e2 = ue2/m2 - ke;
@@ -1809,18 +1643,7 @@ ps_report_energy_overshoot(amrex::MultiFab& S_new, const char* label, int /*ngho
             const Real mk = (ph==1)?U(i,j,k,UM1RHO1):U(i,j,k,UM2RHO2);
             if (!(mk>Real(0.0)) || ak<=Real(0.0)) return std::nan("");
             const Real rho=U(i,j,k,UM1RHO1)+U(i,j,k,UM2RHO2);
-            const Real px=U(i,j,k,UMX);
-#if (AMREX_SPACEDIM>=2)
-            const Real py=U(i,j,k,UMY);
-#else
-            const Real py=Real(0.0);
-#endif
-#if (AMREX_SPACEDIM==3)
-            const Real pz=U(i,j,k,UMZ);
-#else
-            const Real pz=Real(0.0);
-#endif
-            const Real kesp=Real(0.5)*(px*px+py*py+pz*pz)/(rho*rho);
+            const Real kesp=ps_kinetic_energy(U, i, j, k, rho);
             const Real uek=(ph==1)?U(i,j,k,UE1):U(i,j,k,UE2);
             return uek/mk - kesp;
         };
@@ -1883,7 +1706,7 @@ ps_apply_floor(amrex::MultiFab& S_new, int nghost = 0)
     const Real pfloor = ps_pres_floor();
     const Real tfloor = ps_temp_floor();
     if (pfloor <= Real(0.0) && tfloor <= Real(0.0)) return;
-    constexpr Real alpha_floor = Real(1.0e-6);
+    constexpr Real alpha_floor = ps_const::ALPHA_ROUNDOFF;
     // Presence params for the per-phase Independent gate, read once.
     const PsPres l_floor_pr = ps_presence_params();
 
@@ -2093,11 +1916,7 @@ ps_apply_tfloor_fold(amrex::MultiFab& S_new, int nghost = 0)
                 ps_fold_audit().m_tfloor +=
                     (Uv[1] == 0.0) ? m1_pre : m2_pre;
 #endif
-                U(i, j, k, UALPHA1) = amrex::Real(Uv[0]);
-                U(i, j, k, UM1RHO1) = amrex::Real(Uv[1]);
-                U(i, j, k, UM2RHO2) = amrex::Real(Uv[2]);
-                U(i, j, k, UE1    ) = amrex::Real(Uv[4]);
-                U(i, j, k, UE2    ) = amrex::Real(Uv[5]);
+                ps_unpack_v6(U, i, j, k, Uv);
                 // URHO / UEINT / UEDEN unchanged: the fold moves mass and
                 // energy between phases within the cell, conserving both.
             }
@@ -2171,15 +1990,7 @@ ps_apply_vanish_fold(amrex::MultiFab& S_new, int nghost = 0)
                 ++ps_fold_audit().n_vacuum;
                 ps_fold_audit().m_vacuum += vac1 ? Uv[1] : Uv[2];
 #endif
-                if (vac1) {       // fold phase 1 into phase 2
-                    Uv[2] += Uv[1];  Uv[5] += Uv[4];
-                    Uv[1] = 0.0;     Uv[4] = 0.0;
-                    Uv[0] = 0.0;
-                } else {          // fold phase 2 into phase 1
-                    Uv[1] += Uv[2];  Uv[4] += Uv[5];
-                    Uv[2] = 0.0;     Uv[5] = 0.0;
-                    Uv[0] = 1.0;
-                }
+                hem::fold_phase(Uv, vac1 ? 1 : 2);
                 wrote = true;
             }
             //  Two further reaps, same mechanics as the vacuum fold.
@@ -2203,10 +2014,7 @@ ps_apply_vanish_fold(amrex::MultiFab& S_new, int nghost = 0)
                     ++ps_fold_audit().n_cdeg;
                     ps_fold_audit().m_cdeg += cd1 ? Uv[1] : Uv[2];
 #endif
-                    if (cd1) { Uv[2] += Uv[1]; Uv[5] += Uv[4];
-                               Uv[1] = 0.0;    Uv[4] = 0.0;  Uv[0] = 0.0; }
-                    else     { Uv[1] += Uv[2]; Uv[4] += Uv[5];
-                               Uv[2] = 0.0;    Uv[5] = 0.0;  Uv[0] = 1.0; }
+                    hem::fold_phase(Uv, cd1 ? 1 : 2);
                     wrote = true;
                 }
             }
@@ -2226,19 +2034,12 @@ ps_apply_vanish_fold(amrex::MultiFab& S_new, int nghost = 0)
                     ++ps_fold_audit().n_edeg;
                     ps_fold_audit().m_edeg += ed1 ? Uv[1] : Uv[2];
 #endif
-                    if (ed1) { Uv[2] += Uv[1]; Uv[5] += Uv[4];
-                               Uv[1] = 0.0;    Uv[4] = 0.0;  Uv[0] = 0.0; }
-                    else     { Uv[1] += Uv[2]; Uv[4] += Uv[5];
-                               Uv[2] = 0.0;    Uv[5] = 0.0;  Uv[0] = 1.0; }
+                    hem::fold_phase(Uv, ed1 ? 1 : 2);
                     wrote = true;
                 }
             }
             if (wrote) {
-                U(i, j, k, UALPHA1) = amrex::Real(Uv[0]);
-                U(i, j, k, UM1RHO1) = amrex::Real(Uv[1]);
-                U(i, j, k, UM2RHO2) = amrex::Real(Uv[2]);
-                U(i, j, k, UE1    ) = amrex::Real(Uv[4]);
-                U(i, j, k, UE2    ) = amrex::Real(Uv[5]);
+                ps_unpack_v6(U, i, j, k, Uv);
                 // URHO / UEINT / UEDEN unchanged: mass and energy moved
                 // between phases within the cell, not between cells.
             }

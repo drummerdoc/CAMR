@@ -33,18 +33,10 @@
 #include "PS_presence.H"
 #include "PS_promote.H"
 #include "PS_guards.H"
+#include "PS_constants.H"
+#include "PS_util.H"
 
 using amrex::Real;
-
-// Finite-or-fallback for every conserved read in the flux helpers.
-AMREX_GPU_HOST_DEVICE
-AMREX_FORCE_INLINE
-Real
-ps_finite_or(Real x, Real fallback) noexcept
-{
-    return std::isfinite(x) ? x : fallback;
-}
-
 
 //  Per-phase decomposition underneath the frozen mixture sound speed,
 //  returned as a struct so the NSCBC ghost pack can perturb each phase
@@ -66,7 +58,7 @@ PsPhaseSpeeds
 ps_phase_speeds_from_state(const Real U[NVAR], const PsPres& pr) noexcept
 {
     PsPhaseSpeeds o;
-    const Real rho    = amrex::max(ps_finite_or(U[URHO], Real(1.0)), Real(1.0e-6));
+    const Real rho    = amrex::max(ps_finite_or(U[URHO], Real(1.0)), Real(ps_const::RHO_MIX_MIN));
     const Real inv_r  = Real(1.0) / rho;
     const Real ux     = ps_finite_or(U[UMX], Real(0.0)) * inv_r;
 #if (AMREX_SPACEDIM >= 2)
@@ -92,13 +84,13 @@ ps_phase_speeds_from_state(const Real U[NVAR], const PsPres& pr) noexcept
     const PsRegime rg2 = ps_regime(alpha_2, m2, pr);
     Real rho_1, rho_2;
     rho_1 = (rg1 == PsRegime::Absent) ? rho
-          : ps_guard::clamp_phase_density(m1 / amrex::max(alpha_1, Real(1.0e-300)),
+          : ps_guard::clamp_phase_density(m1 / amrex::max(alpha_1, Real(ps_const::DENOM_TINY)),
                                           EOS::rho_min(), EOS::rho_max());
     rho_2 = (rg2 == PsRegime::Absent) ? rho
-          : ps_guard::clamp_phase_density(m2 / amrex::max(alpha_2, Real(1.0e-300)),
+          : ps_guard::clamp_phase_density(m2 / amrex::max(alpha_2, Real(ps_const::DENOM_TINY)),
                                           EOS::rho_min(), EOS::rho_max());
 
-    const Real ke_spec = Real(0.5) * (ux*ux + uy*uy + uz*uz);
+    const Real ke_spec = ps_kinetic_energy(ux, uy, uz);
     const Real E1_tot = ps_finite_or(U[UE1], Real(0.0));
     const Real E2_tot = ps_finite_or(U[UE2], Real(0.0));
     const Real e_mix  = ps_finite_or(U[UEINT], Real(0.0)) * inv_r;
@@ -106,8 +98,8 @@ ps_phase_speeds_from_state(const Real U[NVAR], const PsPres& pr) noexcept
     // predates the checked construction; recorded as an open cleanup item
     // (docs/MODEL_AND_ALGORITHM.md §4.6).  It is never branch-queried: a
     // phase that small is Absent or Corridor and takes the host's P, c.
-    const Real e1 = (m1 > Real(1.0e-12)) ? E1_tot / m1 - ke_spec : e_mix;
-    const Real e2 = (m2 > Real(1.0e-12)) ? E2_tot / m2 - ke_spec : e_mix;
+    const Real e1 = (m1 > ps_const::M_TINY) ? E1_tot / m1 - ke_spec : e_mix;
+    const Real e2 = (m2 > ps_const::M_TINY) ? E2_tot / m2 - ke_spec : e_mix;
 
     Real Y[NUM_SPECIES];
     Y[0] = Real(1.0);
@@ -132,8 +124,8 @@ ps_phase_speeds_from_state(const Real U[NVAR], const PsPres& pr) noexcept
     // direction in the wave-speed hot path and perturb every run's dt.
     if (P1 < ps_guard::P_FLOOR_PA || !std::isfinite(P1)) P1 = ps_guard::P_FLOOR_PA;
     if (P2 < ps_guard::P_FLOOR_PA || !std::isfinite(P2)) P2 = ps_guard::P_FLOOR_PA;
-    if (!std::isfinite(c1) || c1 <= Real(0.0)) c1 = Real(1.0);
-    if (!std::isfinite(c2) || c2 <= Real(0.0)) c2 = Real(1.0);
+    if (!std::isfinite(c1) || c1 <= Real(0.0)) c1 = ps_const::C_MIN;
+    if (!std::isfinite(c2) || c2 <= Real(0.0)) c2 = ps_const::C_MIN;
 
     o.rho = rho;  o.ux = ux;  o.uy = uy;  o.uz = uz;
     o.rho1 = rho_1;  o.rho2 = rho_2;  o.e1 = e1;  o.e2 = e2;
@@ -169,7 +161,7 @@ Real
 ps_max_wave_speed_from_state(int idir, const Real U[NVAR],
                              const PsPres& pr) noexcept
 {
-    const Real rho    = amrex::max(ps_finite_or(U[URHO], Real(1.0)), Real(1.0e-6));
+    const Real rho    = amrex::max(ps_finite_or(U[URHO], Real(1.0)), Real(ps_const::RHO_MIX_MIN));
     const Real inv_r  = Real(1.0) / rho;
     Real un = ps_finite_or(U[UMX], Real(0.0)) * inv_r;
 #if (AMREX_SPACEDIM >= 2)
