@@ -1,0 +1,2197 @@
+# CAMR two-phase solver: model and algorithm
+
+CAMR's two-phase extension solves the Pelanti–Shyue six-equation model: one mixture velocity
+$\mathbf{u}$ and one mixture momentum, two phase masses $m_k=\alpha_k\rho_k$ that may exchange mass
+through finite-rate transfer $\Gamma$, two phase total energies $\mathcal{E}_k=\alpha_k\rho_kE_k$
+that exchange heat $\mathcal{Q}$ and carry the non-conservative interfacial work $\mp
+P_I\,\partial_t\alpha_1$, and a volume fraction $\alpha_1$ that is advected
+($\partial_t\alpha_1+\mathbf{u}\cdot\nabla\alpha_1=\mathcal{S}_\alpha$) rather than fluxed. Each
+phase has its own branch-locked real-fluid equation of state (liquid for phase 1, vapour for phase
+2), its own pressure $P_k$ and temperature; the mixture pressure is $P=\alpha_1P_1+\alpha_2P_2$ and
+mechanical equilibrium $P_1=P_2$ is imposed as an instantaneous constraint after every hyperbolic
+step. The formal statement of the equations, sources and closures is `doc/camr_ps_model.tex` §1–§4;
+this document gives the argument behind the discretisation.
+
+The conserved state is CAMR's stock array extended by five slots (`Source/Utils/IndexDefines.H`,
+active under `USE_PS_HYDRO`, `NUM_PS = 5`). In storage order: `URHO` $\rho$, `UMX`/`UMY`/`UMZ`
+$\rho\mathbf{u}$ (as many as `AMREX_SPACEDIM`), `UEDEN` $\rho E$, `UEINT` $\rho e$, `UTEMP` $T$,
+then the passive block `UFA` (advected scalars, `NUM_ADV = 0`), `UFS` (`NUM_SPECIES = 3`, pure
+CO$_2$ in slot 0), `UFX` (`NUM_AUX = 0`), and from `UPS` the five PS slots `UALPHA1` $\alpha_1$ [–],
+`UM1RHO1` $\alpha_1\rho_1$ [kg/m³], `UM2RHO2` $\alpha_2\rho_2$ [kg/m³], `UE1` $\alpha_1\rho_1E_1$
+[J/m³], `UE2` $\alpha_2\rho_2E_2$ [J/m³]; `NVAR = NTHERM + NUM_ADV + NUM_SPECIES + NUM_AUX +
+NUM_PS`. The primitive array mirrors this with `QALPHA1`, `QRHO1`, `QRHO2`, `QP1`, `QP2`. The state
+is deliberately redundant — $\rho=m_1+m_2$ and $\rho E=\mathcal{E}_1+\mathcal{E}_2$ are invariants
+the scheme must maintain, not consequences of it (tex §1).
+
+## 1. Why wave propagation rather than Godunov flux differencing
+
+The method is LeVeque's wave-propagation algorithm in the Berger–LeVeque adaptive-mesh form with the
+LeVeque–Bale–Mitran–Rossmanith high-resolution correction; the code and decks call it `wp`
+(`CAMR.ps_flux = wp`, the only interior flux; any other value aborts). This chapter is the argument
+for it.
+
+### 1.1 The two update templates
+
+Both methods solve a Riemann problem at every cell face. They differ in what they do with the
+answer.
+
+Godunov's flux-differencing form builds a single numerical flux $F^*$ at each face from the Riemann
+solution and updates the cell by the net flux through its two faces:
+
+$$Q_i^{n+1} = Q_i^n - \frac{\Delta t}{\Delta x}\left(F^*_{i+1/2} - F^*_{i-1/2}\right).$$
+
+The wave-propagation (fluctuation) form never forms a flux. It decomposes the jump across the face
+into waves $\mathcal{W}^p$ moving at speeds $s^p$, splits them by sign of speed into a left-going
+and a right-going fluctuation,
+
+$$\mathcal{A}^-\Delta Q = \sum_{s^p<0} s^p\,\mathcal{W}^p \quad(\text{affects the left cell}),\qquad \mathcal{A}^+\Delta Q = \sum_{s^p>0} s^p\,\mathcal{W}^p \quad(\text{affects the right cell}),$$
+
+and updates each cell from the fluctuations that reach it:
+
+$$Q_i^{n+1} = Q_i^n - \frac{\Delta t}{\Delta x}\left(\mathcal{A}^+\Delta Q_{i-1/2} + \mathcal{A}^-\Delta Q_{i+1/2}\right) + \text{high-resolution correction}.$$
+
+For a genuine conservation law these are the same method. If a flux function $F(Q)$ exists, the wave
+decomposition satisfies $\mathcal{A}^+\Delta Q + \mathcal{A}^-\Delta Q = F(Q_R) - F(Q_L)$ and the
+two updates are algebraically identical; choosing between them would be a matter of taste. The
+six-equation two-phase model is not a genuine conservation law, and that is the whole story.
+
+### 1.2 Why the six-equation model is not a conservation law
+
+Most of the state evolves in divergence form. Two things do not (tex §2).
+
+The volume fraction is advected, not conserved: $\partial_t\alpha_1 + \mathbf{u}\cdot\nabla\alpha_1
+= 0$. There is no $\nabla\cdot(\cdot)$ here; $\alpha_1$ is carried along with the material velocity
+and its equation cannot be written as a flux difference. The phase energies carry a non-conservative
+product: $\partial_t\mathcal{E}_k + \nabla\cdot\big((\mathcal{E}_k+\alpha_kP)\mathbf{u}\big) = \mp
+P_I\,\partial_t\alpha_1$, an interfacial pressure multiplying the rate of change of a quantity that
+is itself discontinuous at a material interface.
+
+This matters more than it looks. Godunov's method is derived from the integral form of a
+conservation law — integrate over a cell, apply the divergence theorem, and the cell average changes
+only by what crosses the faces. That derivation requires divergence form and simply does not apply
+to the two equations above. Worse, a product like $P_I\nabla\alpha$ in which both factors jump at
+the same location is not defined by the weak solution alone: its value depends on the assumed
+internal structure of the discontinuity, the path taken through state space (the Dal
+Maso–LeFloch–Murat theory of non-conservative products). Different discretisations correspond to
+different paths and give genuinely different answers, and no amount of grid refinement makes them
+agree.
+
+### 1.3 What goes wrong with flux differencing here
+
+The practical consequence has a name and a test. A two-material interface at uniform pressure and
+uniform velocity must stay uniform: nothing physical happens there, the interface simply drifts at
+speed $u$ (Abgrall's condition). Any scheme that fails to reproduce this exactly manufactures
+pressure and velocity oscillations at every material interface in the domain, on every step.
+
+For a Godunov update on this system, the volume-fraction transport has to be carried as an
+additional explicit source term alongside the fluxes. The cancellation at a uniform-$p$, uniform-$u$
+state is then a race between two separately constructed discretisations — the face-averaged flux on
+one side, the cell-centred source on the other — and they do not cancel identically. What survives
+is a small, systematic, interface-localised error.
+
+Measured on the B4 cross-critical rarefaction of the CO$_2$ Riemann suite: mixture HLLC in standard
+Godunov form, with the volume-fraction transport added as an explicit source, overshoots the
+star-state velocity by about 12 %, and the error converges under grid refinement to a floor that
+does not close. That last clause is the diagnostic signature. An error that shrinks with resolution
+is a discretisation error and more cells fix it; an error that converges to a non-zero floor means
+the scheme is converging to the wrong answer, which is the fingerprint of a mis-set non-conservative
+product.
+
+Rejected: fluxing $\alpha_1$ as $\alpha_1u_n$ through the conservative divergence and subtracting
+$\Delta t\,\alpha\,\nabla\cdot\mathbf{u}$ afterwards from a centred finite difference of the
+velocity. Why: the divergence produces $\alpha^{n+1} = \alpha^n - \Delta
+t(\mathbf{u}\cdot\nabla\alpha + \alpha\nabla\cdot\mathbf{u})$, whose second term is not in the
+model; under compression it drives $\alpha_1$ above 1 and under expansion below 0 (it reached about
+1.13 behind the rarefaction of the pipe blowdown case). The after-the-fact correction is exactly the
+two-discretisations-racing-to-cancel pattern of §1.3, and under wave propagation there is nothing
+for it to cancel, because $\alpha_1$ never enters the flux divergence. The kernel that did this no
+longer exists.
+
+### 1.4 Why fluctuations sidestep it
+
+In the fluctuation form the non-conservative terms are resolved inside the Riemann solver, as part
+of the wave structure, rather than bolted on afterwards. The jump in $\alpha_1$ across a face is
+carried entirely by the contact wave, and the associated $P_I\nabla\alpha$ contribution is assembled
+into that same wave's fluctuation using the same star pressure the solver already computed for the
+contact. There is no second, independently discretised source term to cancel against; the
+cancellation is structural. At a uniform-pressure, uniform-velocity interface the acoustic waves
+have zero strength (no pressure or velocity jump to drive them), the contact carries the $\alpha$
+jump, and its fluctuation contributes nothing to pressure or velocity. The interface condition is
+satisfied by construction rather than by arithmetic coincidence.
+
+Measured: the same B4 case in wave-propagation form with no relaxation gives a star velocity of 8.95
+m/s against the analytic 8.99 m/s (0.4 %) versus 12 % for the Godunov path; the full solver with
+mechanical relaxation is within 0.5 %. The C1 identity case (uniform state advected) scores exactly
+0.000 because zero-strength waves are fixed points of the construction.
+
+Two secondary advantages are structural rather than accidental. The order separation is clean: the
+first-order scheme is the fluctuations, the second-order scheme is the fluctuations plus a
+limited-wave correction, selectable by `CAMR.ps_wp_order` without touching the face algebra (Chapter
+3). And multi-dimensional coupling is natural: LeVeque's transverse propagation is expressed in the
+same wave language — a fluctuation from one direction is itself decomposed and propagated in the
+other — which is what `CAMR.ps_wp_transverse = 1` does (§3.5).
+
+### 1.5 How the two classes of slot are actually handled
+
+The implementation does something better than "two schemes side by side". One face computation
+(`ps_wp_face` in `PS_umeth.cpp`, calling `PS_HLLC::fluctuations` in `PS_hllc.H`) produces the wave
+decomposition from the raw cell averages on either side, and from it the code takes two different
+exits, chosen per state variable.
+
+Conserved slots — mixture density, the momenta, total and internal energy, the two phase masses,
+species — receive a single recovered interface flux written into the ordinary flux array,
+
+$$F^* = \tfrac12\Big[\big(F(U_L) + \mathcal{A}^-\Delta Q\big) + \big(F(U_R) - \mathcal{A}^+\Delta Q\big)\Big].$$
+
+Because the face states are raw cell averages and the star states satisfy the mixture
+Rankine–Hugoniot relations (§2.3), the decomposition satisfies $\mathcal{A}^+\Delta Q +
+\mathcal{A}^-\Delta Q = F(U_R)-F(U_L)$ on these slots (for the partial masses this follows from
+$m_k^*(S_K-S_M) = m_k(S_K-u_K)$ on each side, whose sum telescopes to $m_Ru_R-m_Lu_L$), so $F^*$
+equals $F(U_L)+\mathcal{A}^-\Delta Q$ and the stock conservative divergence in `hydro_consup`
+telescopes exactly to the fluctuation update $-(\mathcal{A}^+_{i-1/2}+\mathcal{A}^-_{i+1/2})/\Delta
+x$. The symmetrised average is used rather than the left-biased $F_L+\mathcal{A}^-$ so that where
+the identity does not hold to round-off the flux stays invariant under reflection of the face, which
+is what keeps mirror-symmetric 2-D cases symmetric to machine precision. The point is that the
+conserved variables are not handled by a parallel mechanism: they go through CAMR's normal
+flux-difference path, keep its exact conservation, and keep the stock AMReX flux register for
+coarse–fine reflux.
+
+The physical flux on the phase-energy slots uses the mixture pressure, $F[\mathcal{E}_k] =
+(\mathcal{E}_k + \alpha_kP)\,u_n$ with $P=\alpha_1P_1+\alpha_2P_2$ (`ps_physical_flux_from_state`).
+Using each phase's own $P_k$ instead is inconsistent with the star state, which is also built on
+$P$, and the inconsistency was measured as a $5\times10^{-7}$ relative drift per step in the
+phase-energy split; the two forms coincide at mechanical equilibrium, which is the state the code
+imposes every step, so the per-phase option was removed.
+
+Non-conserved slots — `UALPHA1`, `UE1`, `UE2` — get a face flux of exactly zero, so `hydro_consup`
+contributes nothing, and their left- and right-going fluctuations are stored per face. A separate
+cell kernel (Pass 3 of `PS_umeth`) deposits them directly:
+
+$$\frac{d\alpha_1}{dt}\Big|_i = -\frac{\mathcal{A}^+\Delta Q_{i-1/2} + \mathcal{A}^-\Delta Q_{i+1/2}}{\Delta x}\,[\alpha_1],\qquad\text{likewise for }\mathcal{E}_1,\ \mathcal{E}_2,$$
+
+summed over directions. The second-order correction is added as a limited-wave flux difference on
+the same slots (Chapter 3), which Berger and LeVeque show is legitimate even for a non-conservative
+system, and the transverse terms enter the same way. The division of labour is therefore: one
+Riemann solve per face; conservative variables take the exact-telescoping flux route,
+non-conservative variables take the fluctuation route; both routes are fed by the same wave
+structure, which is why they cannot disagree about what happened at that face.
+
+Under AMR the conserved slots reflux through the standard register. The volume fraction is
+coarse–fine corrected by a capacity-form co-move in `CAMR::reflux` (`CAMR.ps_bl_reflux = 2`, the
+default): the coarse cell's $\alpha_1$ is moved with its own already-refluxed mass, $\Delta\alpha_1
+= \Delta(\alpha_1\rho_1)/\rho_1$ with $\rho_1$ the pre-reflux phase density, so that $\rho_1$ is
+exactly preserved and no pressure spike is introduced at the coarse–fine layer. On a genuinely
+two-dimensional contact (the XC2D case) reflux without the co-move corrects $m_k$ but not $\alpha$,
+the broken $\rho_k=m_k/\alpha_k$ decomposition reaches the fine ghosts through interpolation, and
+the run dies at coarse step 22; with the co-move it runs to the stop time. The co-move carries two
+counted limiters, a per-reflux cap $|\Delta\alpha_1|\le0.05$ and a clamp to $[10^{-8},1-10^{-8}]$
+(`[PS-GUARD]` `reflux_cap`/`reflux_clamp`). The phase-energy split at the coarse–fine layer is not
+refluxed: the purpose-built one-sided register `PS_FluctuationRegister.H` still exists, but under
+`wp` the non-conservative defect is embedded in the fluctuations rather than being a one-sided
+per-cell source, so `PS_umeth` leaves that register's scratch at zero and its reflux is a no-op. The
+residual coarse–fine gap is measured on XC2D against a uniform reference as $|\Delta\alpha_1| =
+8.5\times10^{-8}$ at the contact and a relative $|\Delta\mathcal{E}_1|\approx1.9\times10^{-4}$
+localised to the coarse–fine band, non-growing; a two-sided fluctuation register for the split is
+deferred on that evidence.
+
+### 1.6 The honest costs
+
+Conservation is arranged, not automatic. Flux differencing conserves by construction; in fluctuation
+form it holds only because the telescoping identity holds, and for a system with redundant state it
+is easy to let two representations of the same quantity drift apart. CAMR stores mixture mass twice
+— as `URHO` and as $m_1+m_2$ — and until the identity was enforced nothing did. The drift ran at
+about 0.4 % in every production run before it was detected and in one case reached 100 %, producing
+a mixture density of $1.7\times10^{6}$ kg/m³ and a timestep collapse to $10^{-12}$ s. The repair
+(`ps_resync_mixture_mass`, and its energy analogue) is trivial; noticing required a per-stage
+instrumentation probe, which is why `[PS-MASS]` and `ps_validate_state` exist.
+
+Adaptive-mesh reflux is harder. AMReX's stock register assumes a two-sided flux difference at every
+coarse–fine face; a one-sided non-conservative deposit gets both the sign and the affected cell
+wrong. Under `wp` the answer is the $\alpha$ co-move above rather than a second register, but it is
+machinery the conservative code never needed.
+
+The solver is system-specific. No generic flux function can be dropped in; the wave decomposition,
+including the per-phase star states of Chapter 2, is constructed for this model.
+
+### 1.7 When Godunov is the right choice
+
+For any system genuinely in divergence form — single-phase Euler, and the A-case and C-case
+single-phase benchmarks of the suite — the two methods are algebraically identical, and flux
+differencing is simpler, conserves automatically and refluxes with stock machinery. There is no
+accuracy argument for wave propagation there. The case for it rests entirely on the two
+non-conservative terms; it is a targeted answer to a specific structural problem, not a
+general-purpose improvement.
+
+| | Godunov flux differencing | Wave propagation |
+|:--|:--|:--|
+| update | $F^*_{i+1/2}-F^*_{i-1/2}$ | $\mathcal{A}^+\Delta Q_{i-1/2}+\mathcal{A}^-\Delta Q_{i+1/2}$ |
+| needs a flux function | yes | no |
+| non-conservative terms | separate explicit source | inside the wave structure |
+| interface condition | approximate; error floor | satisfied by construction |
+| B4 star-velocity error | ~12 %, non-closing floor | 0.4 % frozen, 0.5 % full solver |
+| conservation | automatic | arranged and checked |
+| AMR reflux | stock | stock for conserved slots; $\alpha$ co-move |
+| identical for conservative systems | — | yes |
+
+The one-line rationale: the six-equation model is not a conservation law, and Godunov's method is
+derived from the assumption that it is. Wave propagation does not make that assumption, so the
+volume-fraction transport is resolved consistently with the wave structure instead of being
+discretised separately and hoping the two cancel. The 12 % non-closing error floor on B4 is what
+hoping costs.
+
+### 1.8 Where to look in the code
+
+| what | where |
+|:--|:--|
+| interior flux selector | `ps_flux_selector`, `PS_umeth.cpp`: `CAMR.ps_flux = wp` is the only value; `llf`/`hllc` abort |
+| physical flux (for the recovered $F^*$ and the LLF fallback) | `ps_physical_flux_from_state`, `PS_umeth.cpp` |
+| face state, wave speeds, star state, fluctuation assembly | `PS_HLLC::face_from_state`, `wave_speeds`, `ps_star_state`, `fluctuations`, `PS_hllc.H` |
+| per-face exit into flux vs deposit store | `ps_wp_face`, `PS_umeth.cpp` |
+| second-order correction (Pass 2), deposit (Pass 3) | `PS_umeth`, `PS_umeth.cpp` |
+| transverse coupling | `ps_wp_tvterm`, `PS_umeth.cpp` |
+| $\alpha$ coarse–fine co-move | `CAMR::reflux`, `CAMR.cpp` (`CAMR.ps_bl_reflux = 2`) |
+| one-sided phase-energy register (no-op under `wp`) | `PS_FluctuationRegister.H` |
+
+## 2. The Riemann solver: wave speeds and the star state
+
+Three waves per face — a left acoustic wave at $S_L$, a contact at $S_M$, a right acoustic wave at
+$S_R$ — in the HLLC template specialised to the six-equation model after Pelanti. It is an
+approximate solver with no iteration on the exact fan; the exact real-fluid Riemann solver is far
+too expensive per face and exists only to generate reference solutions.
+
+### 2.1 The face state
+
+`PS_HLLC::face_from_state` builds, from one cell's conserved array, everything the fan needs on that
+side: $m_k$, $\rho_{\text{mix}}=\max(m_1+m_2,10^{-6}\,\text{kg/m}^3)$, $\alpha_1$ clamped to $[0,1]$
+with no interior floor (exact 0 and 1 are legal and mean the phase is absent), the velocity, the
+per-phase specific total and internal energies ($E_k=\mathcal{E}_k/m_k$ when $m_k>10^{-12}$ kg/m³,
+else the mixture value), and per phase a branch-locked pressure and sound speed $(P_k,c_k)$ from
+`EOS::REY2PCs_liquid`/`_vapor`. The dispatch follows the presence model (Chapter 4): the host phase
+(larger $\alpha_k$) always has a state and its query defines the cell; a phase that is not
+independent on that side takes the host's $P$ and $c$ by definition, and an absent phase
+additionally takes the host's $\rho$, $e$, $E$ as placeholders that are multiplied by $m_k=0$
+downstream. An independent minority phase's pressure is sanity-tested against the host's
+(`ps_guard::sanitize_phase_pressure`). A non-finite or non-positive $c_k$ is replaced by 1 m/s; the
+mixture pressure is $P=\alpha_1P_1+\alpha_2P_2$; the face is valid when $\rho_{\text{mix}}$ and the
+frozen sound speed are finite and positive.
+
+### 2.2 Wave speeds
+
+Outer speeds are Davis estimates, each side using its own mixture sound speed,
+
+$$S_L = \min(u_L-c_L,\ u_R-c_R),\qquad S_R = \max(u_L+c_L,\ u_R+c_R),$$
+
+so the fan is at least as wide as the local acoustic speed however asymmetric the composition across
+the face. This is a robustness choice: too wide is diffusive, too narrow is unstable. The mixture
+speed is the Wallis frozen form (`ps_cmix2`, `PS_presence.H`; the single construction every consumer
+uses, including the timestep and the plotfile derives),
+
+$$c^2 = Y_1c_1^2 + Y_2c_2^2,\qquad Y_1=\frac{\alpha_1\rho_1}{\rho_{\text{mix}}},\quad Y_2 = 1-Y_1,$$
+
+with $Y_2$ formed as $1-Y_1$ so that it is bit-exactly zero at $\alpha_1=1$. "Frozen" means no mass
+transfer during the acoustic response; the much slower equilibrium speed belongs to the relaxation
+operator, which is applied separately. The choice is not load-bearing, and that is a measured
+statement: the alternatives $c=\max(c_1,c_2)$ and the Wood equilibrium speed move the B11
+advected-contact case by 3 % against the 85 % that the thermal relaxation rate moves the same case,
+because $S_L$ and $S_R$ only have to bound the fan while the contact — which carries the volume
+fraction — rides on $S_M$, which never touches $c$. The derived reason applies in any dimension; $c$
+also sets $\Delta t$.
+
+Rejected: the Wood (mechanical-equilibrium) mixture sound speed as the fan speed. Why: it aborts the
+B9 deep-expansion case with a real-fluid EOS, and the fan only needs a bound, so nothing is gained
+where it survives.
+
+The contact speed follows from the mixture mass and momentum balance across the fan (Toro's HLLC
+algebra) using the mixture pressure:
+
+$$S_M = \frac{P_R-P_L + \rho_Lu_L(S_L-u_L) - \rho_Ru_R(S_R-u_R)}{\rho_L(S_L-u_L)-\rho_R(S_R-u_R)}.$$
+
+A denominator below $10^{-30}$ in magnitude or a non-finite $S_M$ refuses the face (§2.6). The
+volume fraction is advected at $S_M$ — the local contact velocity at that face, not a cell-averaged
+velocity — which is what preserves the contact.
+
+Rejected: refusing the face when the PVRS linearised contact pressure
+$P^*=P_L+\rho_L(S_L-u_L)(S_M-u_L)$ is non-positive. Why: $P^*$ was read nowhere, so the test could
+only subtract information; the PVRS estimate's textbook failure is the strong double rarefaction,
+where it returns a negative pressure while the exact solution has a small positive one, which is
+precisely the regime of B7 (100 bar liquid discharging into 1 bar vapour), and it caused 33 of 33
+refusals there and through them the phase-energy identity defect that aborted the run; and it was
+built from the left side only, so it broke the face's L/R symmetry. What still guards the path are
+the star-state tests of §2.6, which inspect quantities that are actually used.
+
+### 2.3 The star state: relaxed-$\alpha$ construction
+
+Inside the fan, on side $K\in\{L,R\}$, `ps_star_state` builds the star vector in `NVAR` layout.
+Every star state shares one contraction ratio and the per-phase mass jump
+
+$$r_K = \frac{S_K-u_K}{S_K-S_M},\qquad m_k^* = r_K\,m_k\quad(k=1,2),$$
+
+which is forced, not chosen: with one velocity and per-phase mass conservation across a single
+discontinuity moving at $S_K$, $m_k^*(S_K-S_M)=m_k(S_K-u_K)$ whatever the volume or energy partition
+does (`ps_star_masses`, single-sourced). What is free is how the two phases share the volume and the
+compression work, and this is where the construction departs from the standard form.
+
+The statement in `doc/camr_ps_model.tex` §6.2 — equal volumetric strain for both phases,
+$\rho_k^*=r_K\rho_k$, $\alpha^*=\alpha$ frozen across the acoustic waves, $E_k^* = E_k +
+(S_M-u)(S_M+P/q_k)$ with $q_k=\rho_k(S_K-u_K)$ — is stale and describes only the degenerate fallback
+of the code; the tex needs to be brought into line with what follows. That equal-strain form is the
+exact single-discontinuity jump structure of the frozen six-equation model, and the work term
+$(S_M-u)P/q_k$ is exactly $P\,\delta v_k$ for the equal-strain volume change $\delta
+v_k=(1/\rho_k)(1-1/r_K)$, so it is self-consistent; but it forces the liquid to take the same
+relative compression as the vapour, and the model's own closure then has to undo that with an
+instantaneous mechanical relaxation that moves $\alpha$ after every acoustic step. On the B12
+two-phase wall reflection the liquid was compressed 17 times too much, and in the 2-D pipe-break
+production run the same mechanism drove corridor-liquid cells (denied the relaxation operator by
+design) to $\rho_1$ 54 % above their pre-shock value and to phase energies outside the EOS domain.
+The star state that ships prevents the unrelaxed intermediate at creation instead of repairing it
+afterwards.
+
+Behind each acoustic wave the two phases are taken to be at mechanical equilibrium at a common
+pressure rise $\delta P$, each carrying the volumetric strain its own bulk modulus admits. The
+constraints, per side, are all inherited from the mixture HLLC algebra that sets $S_M$:
+
+$$\text{(C1)}\ m_1^*+m_2^* = r_K\rho,\quad \text{(C2)}\ u^*=S_M,\quad \text{(C3)}\ m_1^*E_1^*+m_2^*E_2^* = \rho^*E^*_{\text{HLLC}},\quad \text{(C4)}\ \alpha_1^*+\alpha_2^*=1,\quad \text{(C5)}\ m_k^*=r_Km_k.$$
+
+The closure is the per-phase acoustic response to $\delta P$, with $B_k=\rho_kc_k^2$ the phase bulk
+modulus:
+
+$$s_k = \frac{\delta P}{B_k},\qquad \rho_k^* = \rho_k(1+s_k),\qquad \alpha_k^* = \frac{m_k^*}{\rho_k^*} = \frac{\alpha_k\,r_K}{1+s_k},$$
+
+and (C4) becomes one scalar equation in $\delta P$,
+
+$$f(\delta P) = \frac{\alpha_1r_K}{1+\delta P/B_1} + \frac{\alpha_2r_K}{1+\delta P/B_2} - 1 = 0,$$
+
+which is monotone decreasing wherever $1+s_k>0$, so the root is unique. The seed is the
+linearisation,
+
+$$\delta P_0 = \frac{1-1/r_K}{\alpha_1/B_1+\alpha_2/B_2},$$
+
+the mixture volumetric strain distributed by the Wood (mechanical-equilibrium) compressibility —
+which is exactly what "relaxed" means — followed by three Newton steps at a fixed count, so there is
+no convergence tolerance to tune. The energy partition keeps the kinetic term and pays each phase
+$P\,\mathrm{d}V$ for its own volume change,
+
+$$E_k^* = E_k + (S_M-u_K)\,S_M + P\,\frac{s_k}{\rho_k(1+s_k)},$$
+
+where $s_k/(\rho_k(1+s_k)) = 1/\rho_k - 1/\rho_k^*$. Summing with the star masses,
+
+$$\sum_k m_k^*E_k^* = r_K\big[\rho E + \rho(S_M-u_K)S_M\big] + P\,r_K\sum_k\frac{\alpha_ks_k}{1+s_k} = r_K\big[\rho E + \rho(S_M-u_K)S_M\big] + P\,(r_K-1),$$
+
+using $f(\delta P)=0$ in the last step; this is term for term the equal-strain mixture sum, so (C3)
+holds exactly whenever the scalar equation is solved exactly. No fudge factor, no renormalisation,
+no new constant enters: $c_1,c_2,\alpha_k,\rho_k,P,r_K,S_M$ are all already in the face state. The
+remaining star components follow: $\rho^*=m_1^*+m_2^*$, normal velocity $S_M$ with the tangential
+components advected, $\rho^*E^*=m_1^*E_1^*+m_2^*E_2^*$, $\rho^*e^*$ from the same minus the kinetic
+energy, species scaled by $\rho^*/\rho$.
+
+Limits, each checked algebraically. Equal bulk moduli ($B_1=B_2$, which includes every single-phase
+cell and every corridor face whose non-independent phase is slaved to the host's $c$ with equal
+$\rho_k$): the root gives $1+s_k=r_K$ for both phases, $\alpha_k^*=\alpha_k$, $\rho_k^*=r_K\rho_k$,
+and the work term reduces to $(S_M-u)P/q_k$ — the equal-strain form is the equal-compressibility
+special case of this construction. Zero-strength wave ($S_M=u_K$, $r_K=1$): $\delta P=0$ and the
+star state is the cell state, so the interface condition and the C1 identity case are preserved by
+construction. $\alpha_1\to0$: $\delta P$ goes to the host's acoustics and the trace phase's strain
+scales by $B_2/B_1$; with the corridor's host-slaved $c$ that ratio is
+$\rho_2/\rho_1\approx0.06$–$0.09$ for the pipe-break liquid, which is what takes B12's compression
+ratio $R$ from 1.0000 to the measured 0.0097 against the gate $R\le0.25$.
+
+What the construction touches, and what it does not. Since (C3) holds exactly, every conserved-slot
+star component — $\rho^*$, momenta, $\rho^*E^*$, $\rho^*e^*$, species, and both partial masses — is
+identical to the equal-strain form; the wave speeds, $c$, and $\Delta t$ are built from face states
+and are unchanged. The modification is confined to the three non-conserved slots' wave components:
+`UALPHA1` (which now jumps across the acoustic waves too — the Kapila compression term, discretely),
+`UE1` and `UE2` (work re-partitioned). The conservative flux route is bit-identical by construction
+and single-phase cells are exactly untouched, so the A/C single-phase battery mean stays at exactly
+0.0350 and C1 at exactly 0.000; the movement is confined to the two-phase B cases. Measured: B12 $R$
+1.0000 $\to$ 0.0097; B4 star velocity 0.126 flat; B5 (both phases independent) `energyid`
+$6.1\times10^{-14}$ with zero fallbacks; the pipe-break restart through the shock passage shows
+$\rho_1$ rising 4.9 % instead of 54 %, $e_1$ no longer collapsing, and $E_1$ rising under
+compression as it must.
+
+Rejected: renormalised per-phase contraction ratios ($m_k^*$ scaled by each phase's own acoustic
+ratio, $\alpha$ frozen). Why: it violates (C5), the one partition that conservation actually pins,
+and freezes the quantity — $\alpha$ — that must move; on corridor faces it is provably inert because
+the slaved phase has $c_k=c_{\text{host}}$ and both ratios collapse to $r_K$; and on independent
+faces it breaks (C3), so the conserved flux route and the fluctuation route disagree about the total
+energy and the identity $\mathcal{E}_1+\mathcal{E}_2=\rho E$ drifts — measured on B5 as worst
+`energyid` $6.97\times10^{-1}$ against $4.47\times10^{-14}$ for the same run without it, with the
+mass identity unchanged at $3\times10^{-16}$. The selector is gone and a set key aborts.
+
+Rejected: energy repartition alone, with $\alpha$ still frozen. Why: it leaves the equal-strain
+density defect in place and B12 stays failed.
+
+Rejected: slaving $\rho_k$ at corridor faces (a corridor-closure change) instead of changing the
+star state. Why: it treats the corridor but leaves independent faces equal-strain, and its blast
+radius — $Y_k$, $c$, $S_L$, $S_R$, $\Delta t$ on 74 % of production faces — is out of proportion to
+the defect.
+
+### 2.4 What this is, model-theoretically
+
+Freezing $\alpha$ through the acoustics and relaxing afterwards versus compressing $\alpha$ inside
+the wave are two operator splittings of the same relaxed limit. For independent cells the change is
+a rearrangement: the downstream mechanical relaxation finds $P_1\approx P_2$ already and does
+little. For corridor cells, which are denied that operator, the star state now carries the closure
+the presence design promises them — intensives from the host closure — instead of fighting it.
+
+One asymmetry, stated rather than hidden: the fan geometry ($S_L$, $S_R$ from the frozen Wallis $c$)
+remains frozen-acoustics while the internal partition is relaxed. That mirrors exactly what the code
+does cell-wise (frozen hydro, then instantaneous mechanical relaxation), keeps $\Delta t$ and the
+upwinding untouched, and avoids the Wood-speed subcharacteristic question entirely. The fan speeds
+are deliberately not changed.
+
+### 2.5 Waves and fluctuations
+
+With both star states in hand, `PS_HLLC::fluctuations` forms the three waves and their speeds,
+
+$$\mathcal{W}^1 = U_L^*-U_L\ (S_L),\qquad \mathcal{W}^2 = U_R^*-U_L^*\ (S_M),\qquad \mathcal{W}^3 = U_R-U_R^*\ (S_R),$$
+
+and sums $s^p\mathcal{W}^p$ into $\mathcal{A}^-\Delta Q$ for $s^p<0$ and $\mathcal{A}^+\Delta Q$ for
+$s^p>0$ (a wave at exactly zero speed contributes to neither). Every raw wave satisfies the linear
+identities $\mathcal{W}[\rho]=\mathcal{W}[m_1]+\mathcal{W}[m_2]$ and $\mathcal{W}[\rho
+E]=\mathcal{W}[\mathcal{E}_1]+\mathcal{W}[\mathcal{E}_2]$, because both endpoints of every wave —
+cell states held by the resyncs, star states by (C1) and (C3) — satisfy them; Chapter 3 depends on
+this. The host-side face audit (`CAMR.ps_face_diag = 1`, `[PS-FACE]`) records per face class the
+largest per-fluctuation identity mismatch $|\Delta(\mathcal{E}_1+\mathcal{E}_2)-\Delta(\rho E)|$
+with its location; on all-independent faces it reads round-off ($\sim10^{-6}$ absolute at flux
+scale). On corridor faces in 2-D production it reads 0.05–0.11 — the host-slaved corridor
+placeholders do not themselves satisfy the identity exactly — which is small, quantified, decoupled
+from every gate, and open.
+
+### 2.6 Refusal, not repair
+
+A face that cannot produce a star state is refused, and nothing is clamped to make one exist. The
+tests, each of which names its cause (`PsFlCause`): the face state invalid (`face`); the
+contact-speed denominator degenerate (`ws_denom`); $S_M$ non-finite (`ws_SM`); and in
+`ps_star_state`, $|S_K-S_M|<10^{-30}$ (`st_denom`), a negative star partial mass (`st_massneg`),
+$\rho^*\le0$ (`st_rho`), a per-phase mass-flux denominator $|q_k|<10^{-30}$ (`st_q`), a non-finite
+star phase energy (`st_Estar`). The relaxed construction has its own, softer degeneracy handling: a
+non-finite or vanishing $B_k$, $1+s_k\le10^{-30}$ during or after the Newton steps, a vanishing
+Newton derivative, a non-finite $\delta P$, or $\alpha_1^*\notin(0,1)$ makes that face fall back to
+the equal-strain form — the model's own weak form, a principled fallback rather than a clamp — and
+is counted (`[PS-RELAXFB]`); exact $\alpha_1\in\{0,1\}$ skips the solve because the two forms are
+algebraically identical there and presence needs those values preserved bit-exactly. Measured: zero
+fallbacks across the 1-D suite and 225 steps of 2-D production; a persistent non-zero count in
+production is a finding to investigate, not a reason to widen the fallback.
+
+A refused face falls back, for that face only, to a local Lax–Friedrichs flux with
+$\lambda=\max_{L,R}(|u_n|+c)$ from `ps_max_wave_speed_from_state`:
+$F^*=\tfrac12(F_L+F_R)-\tfrac12\lambda\Delta U$ on the conserved slots, and its waves are zeroed so
+the second-order correction skips it. The non-conserved slots must be treated identity-consistently
+(`CAMR.ps_llf_identity = 1`, the default): the phase energies take $\mathcal{A}^\mp =
+\tfrac12(\Delta F\mp\lambda\Delta U)$ so that $\mathcal{A}^-+\mathcal{A}^+=\Delta F$ matches the LLF
+flux difference the total energy sees, and $\alpha$ takes the advective form $\bar u\,\Delta\alpha$
+with $\bar u=\tfrac12(u_{n,L}+u_{n,R})$ split as $\tfrac12\bar
+u\Delta\alpha\mp\tfrac12\lambda\Delta\alpha$ — not $\Delta(\alpha u_n)$, which would re-introduce
+the spurious $\alpha\nabla\cdot\mathbf{u}$ term of §1.3; $\bar u$ is symmetric, so mirror faces keep
+exact reflection symmetry. The pure-diffusion split ($\mathcal{A}^\mp=\mp\tfrac12\lambda\Delta U$,
+`ps_llf_identity = 0`) transported total energy through a refused face but no phase energy, and was
+measured as the sole source of the B7 phase-energy identity defect (correlation 22 of 22 faces,
+cells affected equal to faces refused plus one). At the current tree the face audit measures zero
+refusals on B7, B2 and B9 (8777, 6901 and 6901 faces respectively), so the identity-consistent
+fallback guards a latent path.
+
+Refusals are observable by cause. `[PS-FLCAUSE]`, printed with the face audit only when something
+refused, gives the total, the count per cause name, and which side's star state refused (`star side
+L=… R=…`), so a spurious refusal (fix: stop refusing) and a legitimate one (fix: make the fallback
+consistent) are distinguishable — different pieces of work that a single failure counter could not
+separate.
+
+| key (`CAMR.`) | default | meaning |
+|:--|:--|:--|
+| `ps_llf_identity` | 1 | identity-consistent LLF fallback on the non-conserved slots; 0 = pure-diffusion split (refuted, kept only for A/B) |
+| `ps_face_diag` | 0 | host-only face audit: `[PS-FACE]` per-class counts and worst identity mismatch, `[PS-FLCAUSE]`, `[PS-RELAXFB]`, `[PS-W21]` |
+
+## 3. Second-order correction and limiting
+
+### 3.1 The correction
+
+First order is the fluctuations alone (`CAMR.ps_wp_order = 1`). Second order (`ps_wp_order = 2`, the
+acceptance order, set by every deck and harness in the tree; the code default when the key is absent
+is 1) adds LeVeque's limited correction flux at each face,
+
+$$\tilde F_{i-1/2} = \sum_{p=1}^{3} w_p\,\tfrac12\,|s^p|\Big(1-\frac{|s^p|\,\Delta t}{\Delta x}\Big)\,\phi(\theta^p)\,\mathcal{W}^p,$$
+
+with the upwind neighbour face for wave $p$ at $i-3/2$ if $s^p>0$ and $i+1/2$ if $s^p<0$; a face
+with no in-box upwind neighbour drops the term (first order there), as does a face whose waves were
+zeroed by a refusal; $w_p$ is 1 on the acoustic waves and the contact keep-weight of §3.4 on $p=2$.
+On the conserved slots $\tilde F$ is added to the recovered flux and telescopes through
+`hydro_consup`; on the non-conserved slots it is stored and differenced in the deposit, $-(\tilde
+F_{i+1/2}-\tilde F_{i-1/2})/\Delta x$, which is the flux-differencing form Berger and LeVeque show
+is legitimate for the correction even when the first-order operator is not conservative.
+Second-order accuracy comes only from this correction: the face states are raw cell averages by
+design.
+
+Rejected: MUSCL or PPM reconstruction of the face states. Why: reconstructed face states destabilise
+the star state on the B4 cross-critical fan in the fluctuation form and turn the sharp $\alpha$
+contact into curvature; the correction lifts smooth $\alpha$ advection (the ADV2D case,
+$L_1(\alpha)=6.8\times10^{-4}$ at $64^2$) to second order without either. The reconstruction path no
+longer exists and a set `ps_recon` key aborts.
+
+### 3.2 Anatomy of a phase front under the correction
+
+At a front where a phase is being born or dying, the face states are regime-dispatched (§2.1) but
+the wave algebra is not, and the phase-energy slots are the singular objects: $E_k^*$ contains
+$P/q_k$ with $q_k=\rho_k(S_K-u_K)$, which grows as a phase thins. That singularity is never reached
+— the face audit shows zero refusals at fronts — and the identity mismatch per fluctuation is
+round-off. The defect that does appear at fronts is in the correction, and it is a limiter defect.
+Measured on the B9 zero-trace stiff leg (mass-transfer time $10^{-7}$ s): at first order the
+post-hydro identities read `massid` $10^{-13}$, `energyid` $5\times10^{-5}$; at second order with a
+per-component van Leer limiter they read $5\times10^{-3}$ and 0.71, and the run collapses in $\Delta
+t$. Limiting `UE1`, `UE2` and `UEDEN` independently breaks their linear identity at exactly the
+faces where the limiter factors differ.
+
+The first response, still in the code as an assignment, is to limit the phase slots and derive the
+mixture slots as their sums:
+
+$$\tilde F[\rho] := \tilde F[m_1]+\tilde F[m_2],\qquad \tilde F[\rho E] := \tilde F[\mathcal{E}_1]+\tilde F[\mathcal{E}_2].$$
+
+Identities exact by construction, conservation untouched (still a flux), no constants; the B9 stiff
+leg completes with `energyid` $2.9\times10^{-3}$ and its velocity error against the HEM reference at
+0.427, and the 2-D production testbed's worst post-hydro `energyid` drops from 5–8 % at the
+coarse–fine stage to $10^{-15}$. But it ties the mixture to the phases without tying the phases to
+each other: `UE1` and `UE2` are still shaved by different factors, so their ratio — the phase-energy
+split — drifts. On B7 the liquid specific energy falls near-linearly at $1.2\times10^{4}$ J/kg per
+step, 79 % of it inside the hydro, until it leaves the EOS domain; at first order the drift is 1.7
+J/kg per step. The energies, unlike the masses, have opposite signs (liquid
+$e\approx-1.3\times10^{5}$ J/kg, vapour $\approx+4\times10^{5}$) and cancel to roughly one
+thirteenth of their magnitudes, so the same relative bias lands amplified on the split.
+
+Rejected: one limiter factor for the phase-energy pair, $\phi=\min(\phi_1,\phi_2)$, so the pair's
+ratio is preserved while each slot stays inside its own TVD bound. Why: it is more limiting on both
+energy slots than what it replaces and should have moved toward first-order behaviour, which is
+healthy; it moved hard the other way — final $e_{1,\min}$ on B7
+$-1.37\times10^{6}\to-2.77\times10^{6}$ J/kg (2× worse), B2 118× worse, B9 48× worse — and perturbed
+B4/B5 in the third digit. The reason is the derivation direction of the sum assignment: because
+$\tilde F[\rho E]$ is defined as $\tilde F[\mathcal{E}_1]+\tilde F[\mathcal{E}_2]$, limiting the
+phase energies more also limits the mixture energy correction more while $\rho$ and the momenta are
+untouched, so the mixture energy falls out of step with the mass and momentum corrections it must
+stay consistent with, and that inconsistency costs more than the split bias it removes. The split
+and the mixture-energy/momentum consistency are coupled through the sum assignment and cannot be
+tuned independently; any per-slot factor bends the wave. Do not re-derive.
+
+### 3.3 Scalar-per-wave limiting from a nondimensional projection
+
+The cause of all of the above is that LeVeque's limiter is a scalar per wave family, obtained by
+projecting the upwind wave onto this one and applying the factor to the whole wave vector, and the
+code was applying one factor per component instead — on the stated grounds that the six-equation
+waves are non-orthogonal, which is not what the projection needs. Scaling every component of a wave
+by one number preserves the wave's direction in state space; scaling them by different numbers bends
+it, and a bent wave is no longer a wave of this system. Since every raw wave satisfies the linear
+identities (§2.5), a scalar scaling preserves them for free.
+
+The limiter that ships (Pass 2 of `PS_umeth`, `CAMR.ps_wp_limiter = vanleer`) computes, per face and
+per wave,
+
+$$\theta^p = \frac{\langle \mathcal{W}^p_{\text{up}},\,\mathcal{W}^p_f\rangle_D}{\langle \mathcal{W}^p_f,\,\mathcal{W}^p_f\rangle_D},\qquad \phi(\theta) = \frac{\theta+|\theta|}{1+|\theta|},$$
+
+with the van Leer function unchanged from the per-component form ($2ab/(a+b)$ is
+$2\theta/(1+\theta)$ for $\theta>0$ and 0 otherwise), and the inner product nondimensionalised per
+component by the magnitude the two adjacent cells actually carry,
+
+$$\langle a,b\rangle_D = \sum_{n\ne\texttt{UTEMP}} \frac{a_n\,b_n}{\big(|U_{L,n}|+|U_{R,n}|\big)^2},$$
+
+(`CAMR.ps_wp_proj_scale = 1`). A component that is identically zero in both cells carries no
+information and is skipped — the norm rather than an edge case, since an absent phase's slots are
+exactly zero — unless the wave itself is non-zero there (phase birth), in which case that component
+is scaled by its own magnitude. A wave of zero strength leaves $\phi=1$ rather than dividing by
+zero. The factor $\phi$ is applied to the raw wave, so the scaling changes only which scalar comes
+out; direction preservation, and with it the identities, is untouched. `ps_wp_limiter = none` sets
+$\phi=1$ (pure Lax–Wendroff, not monotone, for smooth order-of-accuracy checks only).
+
+Rejected: the projection in raw conservative components ($D=I$). Why: the components span orders of
+magnitude, and for CO$_2$ the energies dominate — on B8 (pure liquid, $\rho\approx621$ kg/m³,
+$|u|\approx50$ m/s, $e\approx-1.3\times10^{5}$ J/kg) they contribute $\sim10^{13}$ to
+$\langle\mathcal{W},\mathcal{W}\rangle$ against $\sim10^{7}$ from momentum and $\sim10^{2}$ from
+mass — so the single $\phi$ is set by the energy wave alone and density, momentum and $\alpha$
+inherit it. That cost B8, a case with no two-phase content at all, 12 % (rel-$L_2$ $\rho/u/P$
+.0116/.1654/.0531 $\to$ .0131/.1859/.0606); the scaled projection recovers it to .0115/.1647/.0527.
+LeVeque's projection presumes commensurate components; raw conservative variables are not.
+
+Measured effect of the scalar limiter with the scaled projection: the B7 liquid drain is essentially
+eliminated at full second order — final $e_{1,\min}$ $-1.3653\times10^{6}$ J/kg per component,
+$-4.9422\times10^{5}$ scalar raw, $-2.3131\times10^{4}$ scalar scaled, against the first-order floor
+of $-1.79\times10^{4}$ (98.3 % of the drift removed) — and B7 runs to completion on the HEM leg; the
+A/C single-phase battery mean holds the gate at 0.0350. The sum assignments of §3.2 remain in the
+code but are now a measured no-op rather than a repair: the relative residual they would remove,
+$|\tilde F[\rho]-\tilde F[m_1]-\tilde F[m_2]|/\Sigma|\cdot|$ and its energy analogue, is accumulated
+host-side and printed as `[PS-W21]`; it must read round-off, and anything larger falsifies the
+derivation. The mass residual reads $1.1\times10^{-13}$.
+
+### 3.4 The contact-wave taper
+
+The correction loop runs over all three waves, including the contact, which carries the
+non-conservative $\alpha$ jump; its correction is deposited into the
+$\alpha$/$\mathcal{E}_1$/$\mathcal{E}_2$ stash and, through the sum identities, into the phase
+densities and energies. At a material interface this is the mechanism behind a non-growing $2\Delta
+x$ wiggle of 0.4–1 % in $\alpha_1$ at the jet edge of the 2-D pipe-break case. The standalone driver
+simply skips the contact wave. CAMR cannot: in a single-phase A/C case the contact wave is the
+ordinary Euler entropy contact and its correction sharpens it, and that sharpening is part of the
+hyperbolic core's measured advantage. Measured on the frozen A/C battery, skipping the contact
+everywhere moves the mean from 0.0350 to 0.0374 (+6.9 %), concentrated at the strong single-phase
+contacts — A3 $\rho$ 0.0269 $\to$ 0.0360, C3 $\rho$ 0.0292 $\to$ 0.0400, A1 $u$ 0.0125 $\to$ 0.0185
+— with the acoustic cases unchanged. The two-phase fix therefore has a single-phase cost unless it
+is confined to material interfaces.
+
+The hard constraint is the identity argument of §3.3: dropping or scaling a whole wave preserves
+$\tilde F[\rho]=\tilde F[m_1]+\tilde F[m_2]$ and $\tilde F[\rho E]=\tilde F[\mathcal{E}_1]+\tilde
+F[\mathcal{E}_2]$, because every wave satisfies them and so does any scalar multiple; zeroing only
+some components of the contact wave breaks them, which is the drift §3.2 exists to prevent. Any
+contact skip must act on the whole wave.
+
+Rejected: skipping only the $\alpha$, $\mathcal{E}_1$, $\mathcal{E}_2$ components of the contact
+wave. Why: breaks the identities (the 0.71 `energyid` class). Rejected: the blanket skip. Why: the
+0.0350 $\to$ 0.0374 single-phase cost above. Rejected: a hard on/off switch on a presence-regime
+change across the face. Why: threshold-free and it holds the A/C mean (0.0351) and removes the
+oscillatory zigzag, but it imprints a monotone kink in the front at the $\alpha_{\text{cond}}$
+contour where the correction switches fully off (front curvature
+$2.74\times10^{-3}\to5.45\times10^{-3}$). Rejected: tapering on the level of $\alpha$. Why: the A/C
+cases carry a uniform trace $\alpha$ below $\alpha_{\text{cond}}$, so a level band would wrongly
+skip them.
+
+What ships (`CAMR.ps_lw_skip_contact = 2`) is one scalar per face on the whole contact wave, tapered
+on the jump:
+
+$$t = \min\!\Big(1,\frac{|\alpha_{1,L}-\alpha_{1,R}|}{\alpha_{\text{cond}}}\Big),\qquad w_{\text{contact}} = 1 - t^2(3-2t),$$
+
+a smoothstep in $|\Delta\alpha|/\alpha_{\text{cond}}$ with $\alpha_{\text{cond}}=2\times10^{-2}$,
+the presence conditioning bound (Chapter 4). It adds no new threshold: the blend width is
+$\alpha_{\text{cond}}$ itself. A uniform region at any level, including a uniform trace, has
+$\Delta\alpha=0$ and weight 1; a jump of $\alpha_{\text{cond}}$ or more has weight 0; there is no
+on/off switch, so no kink. Mode 0 is the full correction and mode 1 the blanket skip, both kept for
+A/B.
+
+| quantity (pipe-break demo3, step 50, centreline) | full contact correction | hard switch | taper |
+|:--|:--|:--|:--|
+| zigzag $\max|\partial^2\alpha_1|$, $x\in[0.013,0.030]$ | $1.18\times10^{-3}$ | ~0 | $1.06\times10^{-3}$ (amplitude ~5× smaller) |
+| front $\max|\partial^2\alpha_1|$, $x\in[0.034,0.046]$ | $2.74\times10^{-3}$ | $5.45\times10^{-3}$ (kink) | $1.06\times10^{-3}$ (smooth) |
+| spurious extrema (sign flips) | 4 | – | 2 |
+| A/C battery mean (1-D) | 0.0350 | 0.0351 | 0.0350 (exact) |
+
+The residual zigzag ($\pm10^{-4}$ in $\alpha$, 0.2 % of the 0.05 reservoir value) is left as is;
+sharpening the normalisation to remove it trades back toward the kink.
+
+### 3.5 Transverse terms
+
+In two and three dimensions the scheme is directionally split by default (`CAMR.ps_wp_transverse =
+0`). Mode 1 adds LeVeque's transverse correction restricted to the contact wave: at each $d$-face,
+the contact-wave part of the fluctuations on the four neighbouring $t$-faces ($t\ne d$) is
+transported in $d$ at the $d$-velocity of that $t$-face, upwinded by its sign, and folded into the
+$d$-flux (conserved slots) or the $d$-deposit store (non-conserved slots),
+
+$$\tilde G_d \mathrel{+}= -\frac{\Delta t}{2\Delta x_t}\sum_{\text{4 }t\text{-faces}} u_d^{\pm}\,\big[s^2\mathcal{W}^2\big]_t^{\pm},$$
+
+with contributions from out-of-domain columns dropped at domain boundaries. Because the contact's
+transverse speed is the material velocity the term is an exact no-op for flow with no $d$-velocity
+component, which is what keeps the 1-D-aligned cases bit-identical. In 3-D the single-transverse
+pairs are included and the double-transverse corner term is not.
+
+Mode 2 additionally transports the two acoustic waves, projected analytically onto the $d$-direction
+acoustic eigenvectors of the mixture ($\lambda_\pm=u_d\pm c$, strengths $a_\pm=(\delta p\pm\rho
+c\,\delta u_d)/2c^2$, phase slots partitioned by mass and energy fraction so the identities hold,
+$\alpha$ not moved). It is experimental and off: it is stable and symmetric at coarse resolution,
+but the odd–even velocity checkerboard it was built to damp in the near-orifice jet turned out to be
+a shear mode — a $y$-direction alternation in the $x$-velocity on the linearly degenerate field,
+which no wave coupling can dissipate — and at fine resolution mode 2 does not stop its growth (14.9
+m/s versus 14.6 m/s without it). Its effectiveness numbers were also taken before a defect in the
+eigenvector's energy component was fixed and have not been re-measured; if it is ever pursued they
+must be. An earlier finite-difference HLL transverse split blew up (604 bar) and is not to be
+re-tried. Mode 2 also makes a single-fluid mixture EOS query with a hard-coded 1 m/s sound-speed
+floor, which the rest of the PS path forbids; it is live the moment the mode is enabled.
+
+### 3.6 Shear dissipation and viscosity
+
+Two conservative flux-form terms address the shear checkerboard directly; both are off by default
+and both partition their energy flux to $\mathcal{E}_1$, $\mathcal{E}_2$ by mass fraction so the
+identities hold, leaving $\alpha$ untouched.
+
+`CAMR.ps_shear_diss` (coefficient, default 0) adds a Jameson-sensor-gated dissipation of the
+transverse momentum across each $d$-face,
+
+$$\Phi[\rho u_t] = -\,\text{coef}\cdot s\cdot\tfrac14(\rho_L+\rho_R)(\lambda_L+\lambda_R)\,(u_{t,R}-u_{t,L}),\qquad s = \frac{|\Delta_{LR}-\tfrac12(\Delta_{LL}+\Delta_{RR})|}{|\Delta_{LR}|+\tfrac12|\Delta_{LL}|+\tfrac12|\Delta_{RR}|+10^{-12}},$$
+
+with $\Delta$ the neighbouring differences of $u_t$ and an energy flux
+$\tfrac12(u_{t,L}+u_{t,R})\Phi$; the sensor is 0 for any locally linear profile and 1 at grid-scale
+alternation, so the term vanishes at second order in smooth flow. Skipped within two cells of a
+domain edge. Measured on the coarse pipe-break jet ($256\times128$, step 40), transverse odd–even
+amplitude at four stations: 7.2/3.9/2.7/1.6 m/s at coefficient 0, 3.9/1.7/1.4/1.1 at 0.2,
+2.8/1.1/0.9/0.8 at 0.5, symmetric to machine precision.
+
+`CAMR.ps_mu` (dynamic viscosity in Pa s, default 0) adds the deviatoric Newtonian stress,
+$\tau_{dd}=\mu(2\partial_du_d-\tfrac23\nabla\cdot\mathbf{u})$,
+$\tau_{dt}=\mu(\partial_du_t+\partial_tu_d)$, with momentum flux $-\tau_{d\cdot}$ and energy flux
+$-\mathbf{u}\cdot\tau_{d\cdot}$, transverse gradients from the two cells straddling the face,
+skipped within one cell of a transverse domain edge. It gives the orifice shear layer a finite
+physical thickness $\sim\mu/(\rho U)$ so that the Kelvin–Helmholtz roll-up is a resolved mode rather
+than grid-scale alternation; the wavelength of the alternation shrinks with refinement (0.094 m at
+256, 0.026 m at 512), which identifies it as numerical and makes dissipating it safe. The pipe-break
+production decks run $\mu=2$ Pa s as an effective viscosity with the shear dissipation off.
+
+### 3.7 Dials
+
+| key (`CAMR.`) | default | meaning |
+|:--|:--|:--|
+| `ps_wp_order` | 1 (every deck sets 2) | 1 = fluctuations only; 2 = plus the limited correction, the acceptance order |
+| `ps_wp_limiter` | `vanleer` | `none`/`unlimited` sets $\phi=1$ (verification only, not monotone) |
+| `ps_wp_proj_scale` | 1 | nondimensional projection; 0 = raw components (refuted, A/B only) |
+| `ps_lw_skip_contact` | 2 | contact-wave correction weight: 0 = full, 1 = blanket skip, 2 = smoothstep taper in $|\Delta\alpha|/\alpha_{\text{cond}}$ |
+| `ps_wp_transverse` | 0 | 0 = split; 1 = contact-only transverse term; 2 = plus acoustic (experimental, off) |
+| `ps_shear_diss` | 0 | sensor-gated transverse-shear dissipation coefficient (2-D/3-D) |
+| `ps_mu` | 0 | Newtonian dynamic viscosity [Pa s] (2-D/3-D) |
+| `ps_bl_reflux` | 2 | 2 = $\alpha$ coarse–fine co-move with its refluxed mass; 1 = historical no-op register only; 0 = off |
+
+
+
+## 4. Presence-discrete phase state
+
+The six-equation model stores two phases in every cell. This chapter is
+about what the code does in a cell where one of them does not physically
+exist, why that question has to be answered in the representation rather
+than in a guard, and what the answer costs. The formal statement is
+`doc/camr_ps_model.tex` §5; the parameters live in
+`Source/Hydro/PelantiShyue/PS_presence.H`, the promotion check in
+`PS_promote.H`, and the folds in `PS_relaxation.H`.
+
+### 4.1 The problem: a nominally present phase has no state at $\alpha\to0$
+
+The intensive quantities the EOS needs are quotients of conserved slots,
+
+$$\rho_k = \frac{m_k}{\alpha_k}, \qquad e_k = \frac{\mathcal{E}_k}{m_k} - \tfrac12|\mathbf{u}|^2 ,$$
+
+and the two denominators are different things: $\alpha_k$ partitions
+volume, $m_k$ partitions mass, and nothing in the model ties one to the
+other. In a cell where phase $k$ is physically absent both numerator and
+denominator are cancellation-dominated small numbers. The quotient is not
+inaccurate; it is undefined. The hydro advances $m_k$ with an absolute error
+set by the mixture scale, so $\rho_k$ inherits a relative error of order
+$\eta/\alpha_k$, where $\eta$ is the scheme's per-step mass inconsistency.
+As a phase thins, its computed density becomes noise divided by a small
+number, and the branch-locked EOS is then asked for the liquid (or vapour)
+root at a point where that branch has none.
+
+Carrying such a phase anyway — the "trace-phase fiction": floor
+$\alpha_k$ at $10^{-6}$ and let the trace slot hold a copy of the host's
+state — is measurably fatal on the pipe-break case. With that
+representation every cell starts as a vapour with a "liquid" that is a
+literal copy of the vapour ($\rho = 44.18$ kg/m³, $T = 280$ K), a point at
+which the Peng–Robinson liquid branch has no root; 28 cells carry a phase
+pressure more than $100\times$ the mixture pressure before the first step,
+and by $t = 2.6$ ms about 15 000 cells per step (3.6 % of the fine grid) do,
+with trace-liquid densities up to 1643.8 kg/m³ — 99.6 % of the PR pole
+$M/b = 1650.4$ — and phase pressures up to $2.6\times10^{10}$ Pa, exactly
+$RT/(v-b)$.
+
+No downstream repair can recover this, because the information was never
+there. The example that settles it: at $\rho_{\rm mix} = 120$ kg/m³ and
+$T = 216.6$ K, CO₂ has no single-phase representation at all (saturated
+vapour is about 14 kg/m³, saturated liquid about 1225 kg/m³), so the cell
+is necessarily two-phase; collapsing it to one phase produces a state that
+cannot exist, raising its energy would have to create energy, and clamping
+its pressure hides the symptom while the same state still feeds relaxation,
+mass transfer, wave speeds and the time step. The fiction lives in the
+conserved state vector, not in the thermodynamics, and it has to be removed
+at creation.
+
+### 4.2 Representation: three regimes encoded in the state itself
+
+A phase in a cell is in exactly one regime, determined by its own
+$\alpha_k$ and $m_k$ with no auxiliary flag array, so the regime can never
+fall out of step with the state (`ps_regime` in `PS_presence.H`):
+
+| regime | condition | semantics |
+|:--|:--|:--|
+| Absent | $\alpha_k \le \alpha_{\rm vanish}$, or $m_k \le 0$ | The phase is not there. $m_k = \mathcal{E}_k = 0$, $\alpha_1 \in \{0,1\}$ exactly. No intensive quantity is ever formed; the cell is single-phase Euler with the survivor's EOS. |
+| Corridor | $\alpha_{\rm vanish} < \alpha_k < \alpha_{\rm cond}$, or $\alpha_k \ge \alpha_{\rm cond}$ with $m_k \le \rho_{\rm deg}\,\alpha_k$ | Transport-only. The conserved $(\alpha_k, m_k, \mathcal{E}_k)$ advect normally, but the phase is not an independent thermodynamic state: no branch-locked EOS query, no relaxation, no mass transfer, no flash participation. Where a face expression needs its pressure or sound speed it takes the host's. |
+| Independent | $\alpha_k \ge \alpha_{\rm cond}$ and $m_k > \rho_{\rm deg}\,\alpha_k$ | A full six-equation phase; $\rho_k$ is well-conditioned by construction and every operator acts. |
+
+The host of a cell is the phase with the larger volume fraction. It is
+Independent whenever the cell is physical, since $\alpha_{\rm host} \ge
+\tfrac12 \gg \alpha_{\rm cond}$, and its branch-locked query defines the
+cell; this is why the corridor closure is a definition rather than a repair.
+
+The corridor is the load-bearing idea. Without it every sub-threshold
+deposit would have to be folded into the host at every stage, which
+relabels a slowly advancing front's phase mass as host mass each step —
+numerically forced phase conversion — and means a front moving slower than
+$\alpha_{\rm cond}$ per step could never propagate at all. The corridor
+preserves the mass's identity while denying it thermodynamic authority.
+Crossing $\alpha_{\rm cond}$ from below is birth by accumulation, and it
+needs no construction step because at $\alpha_k \ge \alpha_{\rm cond}$ the
+stored conserved variables already define a well-conditioned state (subject
+to the checks of §4.5).
+
+The price of the corridor is stated in the same breath: inside it
+$\alpha_k$ is advected non-conservatively (at $S_M$) while $m_k$ is fluxed
+conservatively, and no source re-couples them, so the two slots drift apart
+freely in rough flow. On the pipe-break case several hundred corridor cells
+per step carry $\rho_k = m_k/\alpha_k < 100$ kg/m³ (worst 0.9) chronically.
+That is harmless while the phase is corridor and is exactly what the
+promotion machinery of §4.5 exists to intercept.
+
+Contract 3 — checked construction. A phase state is a checked construction:
+a phase either has a state (both partitions meaningfully non-zero, both
+quotients well posed) or it has none, and a consumer of intensive
+properties must take the no-state branch rather than receive a clamped
+number. Concretely, `ps_phase_quot` returns $(\rho_k, e_k)$ together with
+an `exists` flag and callers branch on the flag, never on a magnitude test;
+branch-locked EOS queries are issued only for phases that exist and are
+Independent; where a corridor or absent phase needs an intensive value for
+an expression to be defined it takes the host's; and floors that must
+survive are named, bounded and counted, while everything else aborts. No
+state is ever manufactured — the code refuses instead. This is also why the
+1-D battery is allowed not to run to completion: the aborts replaced silent
+floors that were concealing the same defects.
+
+### 4.3 The constants and their provenance
+
+| constant | value | key | what fixes it |
+|:--|:--|:--|:--|
+| $\alpha_{\rm cond}$ | $2\times10^{-2}$ | `CAMR.ps_alpha_cond` | Conditioning bound: $\rho_k$ inherits relative error $\eta/\alpha_k$; at a 5 % accuracy target $\alpha_{\rm cond} = \eta_{\max}/\varepsilon$. The 2-D production $\eta_{\max} = 9.6\times10^{-4}$ gives $1.92\times10^{-2}$. (The 1-D-only value $\eta_{\max} = 5.2\times10^{-4}$, $\eta_{\rm median} = 2.1\times10^{-4}$, gives $1.0\times10^{-2}$ and independently reproduces the 5e-3/1e-2/2e-2 cuts it replaced.) The insensitivity sweep over $[4.2\times10^{-3}, 2\times10^{-2}]$ moved no case above scheme error (largest change 0.014 absolute on B7's 0.66 $P$ error), so the deployment-wide bound is adopted. Replaces six competing smallness cuts. |
+| $\alpha_{\rm vanish}$ | $10^{-8}$ | `CAMR.ps_presence_vanish` | Death threshold, derived rather than asserted: at $\alpha \le 10^{-8}$ the reconstructed density carries relative error $\eta_{\rm median}/\alpha \approx 2.1\times10^{4}$, i.e. the phase holds no recoverable information at any accuracy target, so folding it discards nothing that was information. Four decades below $\alpha_{\rm cond}$; the decade sweep $\{10^{-9}, 10^{-7}\}$ is bit-identical on the battery. |
+| $\alpha_{\rm birth}$ | $4\times10^{-2} = 2\alpha_{\rm cond}$ | `CAMR.ps_alpha_birth` | Flash-nucleation seed level. Must sit far enough above $\alpha_{\rm cond}$ that one step of $\eta$-scale erosion cannot demote a newborn phase; the factor 2 is the one chosen (not derived) number in the design — the smallest integer factor giving O(1) separation. The factor sweep $\{1.5, 2, 4\}$ is bit-identical on the battery. |
+| $\rho_{\rm deg}$ | 0.5 kg/m³ | `CAMR.ps_presence_rho_deg` | Density-degeneracy floor for promotion and for the corridor reap. The minimum legitimate Independent-phase density over all twenty battery finals is 1.406 kg/m³ (C3); the promotion that crashed the pipe-break run carried 0.076. 0.5 separates them by a factor of about 3 both ways. |
+| $e_{\rm deg}$ band | $[-2\times10^{6}, 2\times10^{7}]$ J/kg | `CAMR.ps_presence_e_deg_lo/_hi` | Energy-degeneracy band for the fold's energy reap. Physical CO₂ on this EOS's energy scale spans roughly $[-1.5\times10^{5}, 4\times10^{6}]$ J/kg; the crash carried $+7.6\times10^{7}$. Zero battery-final cells fall outside the band. |
+
+The three $\alpha$ thresholds are ordered deliberately so that there is
+hysteresis with no flip-flop channel: birth at $2\alpha_{\rm cond}$, loss of
+independence only below $\alpha_{\rm cond}$ (with a further hysteresis band
+for the relaxation gate, §4.5), death only below $\alpha_{\rm vanish}$. A
+phase cannot oscillate across a single boundary. All constants are read once
+on the host into the by-value `PsPres` struct and captured into kernels;
+nothing in the classifier reads species — it sees $\alpha_k$ and phase
+totals only, which is what keeps the design composition-agnostic.
+
+Known limitation. $\alpha_{\rm cond}$ is stated in volume, but the quantity
+the corridor strands is mass. A corridor liquid at $\alpha_1 = 9\times10^{-3}$
+in vapour has been measured holding $Y_1 = m_1/\rho = 0.46$ — 46 % of the
+cell's mass with every thermodynamic operator disabled — while the mirror
+case, corridor vapour in liquid at $\alpha_2 = 10^{-6}$, holds $Y_2 =
+2.4\times10^{-7}$. The conditioning derivation is density-ratio-blind, and
+this asymmetry belongs in front of any future corridor decision.
+
+### 4.4 Transition operators: the only places phase state is created or destroyed
+
+Death is a fold. `ps_apply_vanish_fold` (`PS_relaxation.H`, per-cell
+helper `hem::ps_apply_vanish_fold`) moves the dying phase's $m_k$ and
+$\mathcal{E}_k$ into the survivor and sets $\alpha_1$ to exactly 0 or 1.
+The mixture slots $\rho$, $\rho E$ are untouched, so every fold is
+conservative by construction: mass and energy move between phases within a
+cell, never between cells. The same wrapper applies five triggers, each
+counted by cause with the phase mass it moved:
+
+| fold | trigger | what it catches | counter |
+|:--|:--|:--|:--|
+| vanish | $\alpha_k \le \alpha_{\rm vanish}$ | the $\alpha\to0$ corner: true dust | `vanish` |
+| vacuum | $m_k \le \rho_{\min}\,\alpha_k$ at finite $\alpha_k$ ($\rho_{\min}$ = the backend's declared density floor, $10^{-6}$ kg/m³ for PR) | the second degenerate corner, $m\to0$ at finite $\alpha$: a phase that owns volume with no thermodynamic state. Division-free; $\le$ rather than $<$ because a phase pinned at the validity floor has no interior state either. | `vacuum` |
+| corridor density | corridor phase with $m_k \le \rho_{\rm deg}\,\alpha_k$ | the $\alpha/m$ decoupling the corridor permits: volume the mass cannot fill. Corridor-only, so it can never touch a legitimate Independent phase. | `cdeg` |
+| energy | exactly one phase with $\mathcal{E}_k/m_k$ outside $[e_{\rm deg,lo}, e_{\rm deg,hi}]$ | the decoupling's energy face, which no density test sees | `edeg` |
+| temperature | `CAMR.ps_tfloor_fold` > 0 (default 0 = off): a phase whose branch temperature falls below the fold temperature | trace phase cooled below any physical temperature in an expansion fan | `tfloor` |
+
+The vacuum, density and energy reaps fire only when exactly one phase
+qualifies; a both-degenerate cell has no host to fold into and is left for
+the validator. The temperature fold has its own key deliberately separate
+from `CAMR.ps_temp_floor`: binding the fold to the floor temperature
+(216.6 K in the pipe-break decks) fired it on every mixed cell whose phase
+temperature dipped and collapsed 1132 cells at $\rho_{\rm mix} = 120$
+kg/m³ to "pure vapour" — the impossible state of §4.1.
+
+Every fold increments the fold-mass audit (`PsFoldAudit`), reported as
+`[PS-FOLD]` per level and step with counts and folded masses by cause, plus
+the promotion-demotion and hysteresis-pass event counts of §4.5. The report
+is printed only when something fired, so a silent channel cannot exist:
+every removal, demotion and hysteresis pass is visible. Conservation across
+folds is asserted to round-off by the validator (`CAMR.ps_validate=1`).
+
+The fold runs at every point where a sliver can be created: after both
+Runge–Kutta stages (the stage-1 intermediate reaches the stage-2 flux, so
+it is folded before that), at the head of the reaction step, and after every
+AMR transfer that interpolates (post-regrid, `avgDown`, and the coarse
+state after reflux). Order within the reaction step is folds before floors,
+matching the standalone: a phase just folded away must never be "repaired"
+by a floor that runs too early to see it.
+
+Birth has exactly two channels. Channel 1 is the flash nucleator (§5.5),
+which seeds a minority phase at $\alpha_{\rm birth}$ in a saturated state its
+own solve constructs — the only operator that converts a single-phase
+metastable cell into a two-phase cell. Channel 2 is advective accumulation
+through the corridor: crossing $\alpha_{\rm cond}$ is the event and there is
+no code for it beyond the checks below.
+
+### 4.5 Promotion: what it takes to become Independent
+
+An Independent edge that reads $\alpha_k$ alone violates Contract 3 in its
+own terms: a phase can arrive volume-Independent and mass-empty. That is how the extended pipe-break run died — a corridor
+liquid at $\alpha_1 = 0.0039$, $\rho_1 = 0.93$ kg/m³ grew across
+$\alpha_{\rm cond}$ six steps later at $\alpha_1 = 0.0219$ with $m_1 =
+0.0017$, i.e. $\rho_1 = 0.076$ kg/m³ and $e_1 = 7.6\times10^{7}$ J/kg; it
+was promoted, the both-Independent branch granted the EOS query, and the
+branch-locked inversion rightly found no root. The refusal was correct; the
+promotion was the defect. Three companions close it, all default-on and all
+counted:
+
+Degeneracy floor. Independent additionally requires $m_k > \rho_{\rm
+deg}\,\alpha_k$ (division-free); otherwise the phase stays Corridor whatever
+its $\alpha_k$. Demotions are counted as evaluations (`f1_demote_ev`),
+not cells — non-zero means the guard is live, the magnitude is not a census.
+
+Reaps. The corridor-density and energy folds of §4.4 remove the loaded gun
+while it is still small rather than merely refusing it promotion.
+
+Relaxation-gate hysteresis (`CAMR.ps_relax_hyst`, default 1). The
+relaxation, thermal and mass-transfer operators require both phases
+relaxable. A phase is relaxable if Independent, or, with hysteresis on, if
+it is in the upper corridor, $\alpha_k \ge \alpha_{\rm cond}/2$, with a
+non-degenerate quotient $m_k > \rho_{\rm deg}\,\alpha_k$; both phases must
+qualify and at least one must be using the band for the pass to count as a
+hysteresis pass (`f3_hyst_ev`). The point is to move the source on/off
+boundary away from the exact $\alpha$ the relaxation itself moves, which is
+the suspected driver of the near-threshold regime-toggle noise observed in
+the same run (cells with $\alpha_1 \in [0.015, 0.03]$ grew from 6.5 k to
+11.2 k while the pressure hash in the feature grew from 0.57 to 1.61 bar).
+`=0` restores the strict both-Independent gate for A/B. The hysteresis
+branch is compiled only in host builds (`#if !defined(AMREX_USE_GPU)`).
+
+Measured: the floor and both reaps together are bit-identical on the
+twenty-case 1-D battery (no 1-D case carries a decoupled sliver at
+promotion, as the two pre-measurements above predicted). With hysteresis on,
+all twenty cases complete; diffs are confined to the four cases with
+near-threshold corridor activity, rel-L2 against the exact solutions moving
+B2 $\rho$ 0.0929→0.0920 and $u$ 0.7816→0.7887, B7 $u$ 0.7099→0.7182 and
+$P$ 0.3211→0.3238, B9 $u$ 0.7565→0.7604, and B11 $u$ 0.0278→0.0291 with $P$
+0.0927→0.0989. B11's $P$ change (+6.7 % relative, +0.006 absolute on a
+0.1 norm) grazes the 5 % falsifier line and is recorded as the cost of the
+default; `CAMR.ps_relax_hyst=0` is the one-key A/B if B11 matters more than
+the 2-D hash.
+
+Checked promotion (`CAMR.ps_promote_checked`, default 1;
+`PS_promote.H::ps_regime_reach`). $\rho_{\rm deg}$ bounds the density
+quotient; nothing above checks the energy, and a phase with healed density
+and corrupt energy ($e_1 = -2.2\times10^{5}$ J/kg, below the coldest
+reachable liquid energy) promotes freely, drifts for tens of steps to the
+branch edge, and aborts in `computeTemp`. Checked promotion demotes a
+would-be-Independent phase to Corridor when its $(\rho_k, e_k)$ has no root
+on its own branch, tested with the non-aborting `EOS::REY2PTS_phase_try`
+(which brackets $e(T)$ over $T \in [1, 5000]$ K and reports a sign change or
+none). It adds no constant — the branch's own energy domain is the bound —
+and it is applied as an extra condition on the existing "Independent → own
+branch query, else host-slave" dispatch at every site that issues an
+aborting branch-locked query: `face_from_state` (`PS_hllc.H`),
+`ps_wp_face` (`PS_umeth.cpp`), `ps_max_wave_speed` (`PS_wavespeed.H`),
+`ps_mixture_pressure_from_cons` and `ps_augment_primitives`
+(`PS_ctoprim.H`), and `computeTemp` (`CAMR.cpp`). A demotion falls into the
+already-present corridor path with no new control flow; no state is
+constructed. Refusals are counted (`n_promote_refuse`). The cheap
+`ps_regime` still gates the relaxation, mass-transfer and flash operators
+and the diagnostic face classifier; those do not issue the aborting query.
+
+This is prevention at the promotion event, i.e. the design's own principle
+that birth states are defined at creation, applied to birth by
+accumulation. Its structural limit is stated plainly: it can quarantine a
+corrupt minority phase under a healthy host, but it cannot help a corrupt
+majority phase, because the host query is unconditional by design — a phase
+at $\alpha \ge \tfrac12$ is asserted to have a state, and slaving a corrupt
+majority to the minority would be repair downstream of a state that should
+never have been created.
+
+Measured on the 2-D reproducer: restarted from the post-shock pipe-break
+checkpoint that reproduces the abort, the run clears it and continues 31
+steps past with zero no-root events; refusals fire at about 235 per step on
+the coarse level at the restart, hold at 200–280 through the former abort
+window, and decay to zero within about 33 steps as the inherited-corrupt
+cells, quarantined Corridor and host-slaved, heal; a smaller second wave
+from the evolving plume is handled without abort. A pre-shock restart shows
+zero refusals throughout, so the check is provably inert on the healthy
+path, and the tracked minority-liquid cell agrees with the check-off
+baseline to better than 0.5 % ($\rho_1 \approx 904$ kg/m³, $e_1 \approx
+-8.7\times10^{4}$ J/kg). On the 1-D battery all 21 cases are bit-identical
+with the check on and off — no legitimate 1-D promotion is unreachable, and
+a mis-wired site would have demoted a good phase and broken bit-identity.
+Constructed promotion (setting $\mathcal{E}_k$ from the closure at the
+crossing) was held in reserve pending this counter; with refusals decaying
+to zero it is not needed and does not exist.
+
+Floor regime gating (`CAMR.ps_floor_indep`, default 1). `ps_apply_floor`
+raises a phase's $e_k$ to satisfy `CAMR.ps_pres_floor` /
+`CAMR.ps_temp_floor` (both default 0 = off; the pipe-break decks set
+$10^{5}$ Pa and 216.6 K). Its per-phase leg now skips a non-Independent
+phase: a corridor phase is host-slaved and its $e_k$ is never
+branch-queried, so flooring it only manufactures drift in $\mathcal{E}_k$
+with no face-level consumer. The mixture-energy resync is unaffected.
+Skips are counted (`n_floor_skip`). The conservation-budget diagnostic
+(`CAMR.ps_floor_budget=1`) tests each skipped corridor phase for a root on
+its own branch and tallies the energy the pressure floor would have added:
+on the pipe-break reproducer about 99.9 % of skipped legs carry a
+physically reachable own-branch state (coarse level 60 k–110 k reachable
+per step against 60–140 unreachable, fine level about 18.5 k against 1),
+and the avoided manufacture is about $4\times10^{5}$ J per step on the
+coarse level, steady. The floor was injecting spurious, non-conservative
+energy onto physical low-pressure corridor states whose host-slaved $P_k$
+it does not even feed; removing it moves the plume solution by 5–8 %
+globally and under 0.5 % at the tracked cell, with no analytic reference to
+call that better or worse but with less manufactured energy. The unreachable
+remainder ($\le 0.13$ %) is the bounded, non-growing inherited-corrupt
+population that checked promotion handles. The 1-D suite leaves both floors
+at zero, so the gating is inert there by construction.
+
+Both `=0` opt-outs are kept, non-aborting, until one full production run
+has completed on the defaults (open decision: retire to single path).
+
+### 4.6 Face states: the corridor closure as implemented
+
+`PS_hllc.H::face_from_state` is the live per-face constructor. Both phases
+Independent: each phase's branch-locked query supplies $(P_k, c_k)$. A
+corridor or absent minority phase takes the host's $P_k$ and $c_k$ — this
+deletes the $c = 1$ m/s fallback that manufactured a sound-speed
+discontinuity at exactly the transition cells, and the $e_{\rm mix}$
+substitution into a branch-locked EOS. Its density and energy, however, are
+the stored quotients: $\rho_k = m_k/\alpha_k$ (clamped from below at the
+EOS density floor, counted) and $e_k = \mathcal{E}_k/m_k$. Two facts decide
+that. First, $\alpha_k \rho_k = m_k$ identically, so the mass fraction $Y_k$
+entering the frozen mixture sound speed is exact whatever the quotient's
+conditioning; any closure that replaces $\rho_k$ replaces an exact quantity
+with a modelled one. Second, the relaxed-$\alpha$ star state (chapter 2)
+partitions strain by $B_k = \rho_k c_k^2$; with $c$ slaved the partition
+works because $\rho_1/\rho_2$ still carries real phase-density information
+(B12: $\rho_1/\rho_2 = 10.6$, measured reflection ratio 0.0097). For an
+absent phase every downstream contribution is multiplied by $m_k = 0$; the
+host placeholders exist only so that no expression is undefined.
+
+Rejected: continuous corridor closure at $(P_{\rm mix}, T_{\rm host})$ —
+re-deriving a corridor phase's $\rho_k, e_k$ from its own branch at the
+host's temperature (or, in a variant, at its own quotient temperature),
+everywhere the face consumes them. Why: the model retains thermal
+non-equilibrium, $T_1 \ne T_2$, with finite-rate thermal relaxation, so
+dragging a corridor liquid to the hot vapour host's temperature asserts an
+equilibrium the model rejects; on B12 the liquid density collapses
+936→471 kg/m³ and the reflection ratio goes from 0.0097 to $-0.79$. The
+own-temperature variant reads $T$ from the very quotient the closure exists
+to avoid (circular; clean on B12, corrupt on the 2-D accumulation) and
+over-compresses the liquid to 1282 kg/m³, ratio 0.58. There is no clean
+thermal anchor for a corridor phase: sharing $P$ with the host is right,
+sharing $T$ is wrong. A further trap: slaving $\rho_k$ as well as $c_k$
+sets $B_1 = B_2$ on corridor faces, and the relaxed partition degenerates
+algebraically to equal strain, undoing chapter 2 on exactly the faces it
+was built for (B12 regresses to ratio 1). The one thing kept from this work
+is the checked $(P,T)\to(\rho,e,c)$ query `EOS::PYT2REc_phase_checked`,
+which reports no-root past the spinodal instead of substituting an
+ideal-gas extrapolation. The corridor's whole weight rests on prevention at
+promotion (§4.5) instead.
+
+A residual inconsistency is recorded rather than fixed: `face_from_state`
+and `ps_phase_speeds_from_state` still fall back to $e_{\rm mix} + \tfrac12
+u^2$ for the phase energy when $m_k \le 10^{-12}$, silently, while the
+ctoprim and flux paths follow Contract 3; it is an open cleanup item.
+
+### 4.7 Operator gating
+
+The presence regimes replace the guard population that decided which
+operator may act (six smallness cuts, a metastable guard and its
+band, the slaved-trace-phase closure, the $c=1$ fallback and the
+$e_{\rm mix}$ substitution are all gone):
+
+| cell type | mechanical | thermal | mass transfer | flash |
+|:--|:--|:--|:--|:--|
+| one phase Absent or Corridor (single-phase cell) | nothing to relax | — | — | fires on metastability: the nucleator |
+| both phases relaxable (§4.5) | always — instantaneous $P_1 = P_2$ is the model closure | if the coexistence gate holds (§5.3) | if the coexistence gate holds | no (mid-range is mass transfer's job) |
+
+The metastable guard's two jobs are inherited structurally. "Do not drag an
+un-nucleated metastable cell to the dome": such a cell is single-phase and
+is never relaxed at all. "Dilute-phase overheat": dilute phases are
+corridor phases and never receive independent thermodynamics. The question
+the guard could not answer — a nucleated cell mid-conversion, where the
+guard on throttled the star velocity to 41 and off over-developed it to 91
+— is answered by presence: an Independent phase always equilibrates
+mechanically, and the rates carry the physics.
+
+### 4.8 Initialisation
+
+Single-phase initial conditions are exactly single-phase: $\alpha_1 \in
+\{0,1\}$, $m_{\rm trace} = \mathcal{E}_{\rm trace} = 0$. Genuinely
+two-phase initial conditions seed both phases at their saturation states
+through the equilibrium flash. No case carries a trace seed, and the 28 bad
+cells at step 0 of §4.1 cannot exist.
+
+### 4.9 AMR interaction
+
+Coarse–fine interpolation, `avgDown` and reflux at pure/mixed boundaries
+manufacture sub-$\alpha_{\rm cond}$ slivers. The corridor absorbs them
+(transport-only), the fold after every transfer cleans true dust at
+$\alpha_{\rm vanish}$, and the fold audit measures the churn by cause. The
+regression target is the diagonal cross-critical case `Exec/CO2_XC2D`,
+whose two-level result along a ray through the contact differs from a
+uniform 256-cell reference by $|\Delta\alpha_1| = 8.5\times10^{-8}$ at the
+contact (zero in the interior) and relative $|\Delta\mathcal{E}_1| \approx
+1.9\times10^{-4}$ localised at the coarse–fine band edge, non-growing; the
+design must not grow these.
+
+Reflux (`CAMR.ps_bl_reflux`, default 2; `CAMR::reflux` in `CAMR.cpp`).
+The mixture-conserved slots reflux through the stock AMReX flux register.
+The wave-propagation phase-energy defect is a one-sided per-cell source,
+not a flux difference, so it is carried by a purpose-built fluctuation
+register (`PS_FluctuationRegister.H`, Berger–LeVeque form: deposit only on
+the low-neighbour-fine branch with the sign the one-sided update requires)
+and applied to $\mathcal{E}_1, \mathcal{E}_2$ at reflux. $\alpha_1$ has no
+flux at all; refluxing it with an uncoordinated operator shifts $\rho_1 =
+m_1/\alpha_1$ and spikes $P_1$. It is therefore co-moved with its own
+already-refluxed mass in capacity form,
+
+$$\Delta\alpha_1 = \frac{\Delta m_1}{\rho_1^{\rm pre}}, \qquad
+\rho_1^{\rm pre} = \frac{m_1^{\rm pre}}{\alpha_1^{\rm pre}},$$
+
+which leaves $\rho_1$ exactly invariant through the reflux. Without the
+co-move, reflux corrects $m_k$ but not $\alpha$ at the coarse–fine layer,
+$\rho_k$ drifts, the coarse–fine interpolation hands the broken
+decomposition to fine ghost cells, and the phase energy leaves its band at
+the boundary; the abort step is invariant under the error-buffer and regrid
+interval and is removed exactly by the co-move, which is flux-mode
+independent. With it the cross-critical case runs to its configured stop
+time, the battery is bit-identical (single level), and the AMR blowdown
+case conserves mass to $1.6\times10^{-8}$.
+
+Stated as it is: the co-move fires only when $\alpha_1^{\rm pre} >
+10^{-8}$ and $\rho_1^{\rm pre} > 10^{-10}$, caps $|\Delta\alpha_1| \le
+0.05$ per reflux, and clamps the result into $[10^{-8}, 1-10^{-8}]$; both
+limiters are counted (`reflux_cap`, `reflux_clamp`). In the measured 2-D
+runs the clamp fires (6144 and 3328 activations) and the rate cap never
+does. The clamp contradicts the presence representation's "$\alpha$ free in
+$[0,1]$ so Absent is reachable": a coarse cell with a corridor-small
+$\alpha_1$ whose refluxed mass would take it to zero is held at $10^{-8}$
+instead (a cell already at exactly 0 or 1 is skipped and stays exact). This
+is an open decision ([DECIDE-17]); it is reported, not fixed, because
+removing a clamp is a solver-threshold decision.
+
+### 4.10 Rejected alternatives
+
+Rejected: invariant-domain-preserving limiting (define the admissible set
+$A$ — $\alpha \in [0,1]$, $\rho_k$ in the EOS domain, $T_k \in [T_{\rm
+triple}, T_{\rm crit}]$, the two redundancy identities — and choose limiter
+and $\Delta t$ so every operator maps $A \to A$, in the Guermond–Popov
+manner, with star-state positivity enforced by derivable wave-speed
+widening). Why, in three parts. (a) The fiction is born admissible and
+lives admissible: the trace state of §4.1 (a "liquid" that is a copy of the
+vapour) satisfies every box constraint; what is wrong with it — the liquid
+branch has no root there — is invisible to bounds on $(\alpha, \rho_k,
+T_k)$, and the measured trajectory to the pole-adjacent states runs through
+admissible states nearly the whole way. Enforcing exactly this $A$ at
+evaluation time (the density and two-sided pressure guards) was measured
+at a $500\times$ severity reduction and insufficient; IDP enforces the same
+set at update time, cleaner and provable, containing the same fiction. It
+would prevent the mixture-mass blow-up ($m_1 + m_2$: 149.5→962 does leave
+$A$), i.e. survival, which is the metric the ground rules forbid optimising.
+(b) An $A$ that would exclude those states is not derivable: ruling out
+1643.8 kg/m³ liquid in a vapour cell needs a disequilibrium bound ($P_k$
+within a factor $K$ of $P_{\rm mix}$, or $\rho_k$ near its saturation
+locus), and that is the old $K = 100$ guard with a derivation that stops at
+"relaxation makes phases nearly equilibrated" — a chosen threshold, now
+written into the definition of the admissible set. (c) The theory needs
+$A$ convex; the per-phase energy constraints of a branch-locked cubic and
+the hyperbolicity constraint $c_k^2 > 0$ with metastable branches and the
+van der Waals loop are not, so one buys an IDP-flavoured scheme without the
+theorem, at the price of rebuilding the correction-flux path of the
+best-measured component in the project (the hyperbolic core beats its
+reference, 0.0350 vs 0.0622 frozen-limit mean). What was harvested from the
+direction regardless: the assert-don't-repair discipline
+(`ps_validate_state` at stage boundaries) and the derivable wave-speed
+widening as a theorem-backed replacement for the star-state fallback if its
+counter ever shows it firing.
+
+Rejected: fold at $\alpha_{\rm cond}$ with no corridor. Why: §4.2 —
+numerically forced phase conversion at every stage, and fronts slower than
+$\alpha_{\rm cond}$ per step never propagate.
+
+Rejected: continuous corridor face closure. Why: §4.6.
+
+Rejected: constructed promotion (set $\mathcal{E}_k$ from the host closure
+at the $\alpha_{\rm cond}$ crossing, booking the difference against the
+host). Why: it is an operator firing at a threshold, moving conserved phase
+energy on a 74 %-corridor field, and its only justification was a refusal
+count that measured non-zero-then-decaying-to-zero; validate-and-refuse is
+sufficient (§4.5).
+
+Rejected: regularising the vanishing-phase limit continuously in the model
+(a formulation in which the absent phase's state converges to the host's as
+$\alpha \to 0$). Why: subsumed — the discrete regularisation (Absent is a
+state that is simply occupied, not a limit to be guarded) achieves the same
+end without a continuous closure that, per §4.6, has no defensible thermal
+anchor.
+
+### 4.11 Dials
+
+| key | default | meaning |
+|:--|:--|:--|
+| `CAMR.ps_alpha_cond` | 2e-2 | conditioning bound (§4.3) |
+| `CAMR.ps_alpha_birth` | 4e-2 | flash seed level |
+| `CAMR.ps_presence_vanish` | 1e-8 | death edge and vanish-fold threshold (the older `ps_alpha_vanish` key aborts) |
+| `CAMR.ps_presence_rho_deg` | 0.5 kg/m³ | promotion / corridor-reap density floor |
+| `CAMR.ps_presence_e_deg_lo`, `_hi` | −2e6, 2e7 J/kg | energy-reap band |
+| `CAMR.ps_relax_hyst` | 1 | relaxation-gate hysteresis band |
+| `CAMR.ps_promote_checked` | 1 | energy-reachability check at promotion; 0 = A/B opt-out |
+| `CAMR.ps_floor_indep` | 1 | per-phase floor leg only for Independent phases; 0 = A/B opt-out |
+| `CAMR.ps_floor_budget` | 0 | diagnostic: reachability census of skipped floor legs |
+| `CAMR.ps_tfloor_fold` | 0 (off) | temperature-triggered fold, own key |
+| `CAMR.ps_bl_reflux` | 2 | 0 off; 1 phase-energy fluctuation reflux; 2 adds the $\alpha$ co-move |
+
+The `CAMR.ps_presence` selector is no longer read: the legacy
+floor-and-copy path is deleted and presence semantics are the only
+semantics. `CAMR.ps_star_relaxed=0` and `CAMR.ps_rk_model` abort as
+retired.
+
+## 5. Sources: mechanical, thermal, mass transfer, flash, extinction
+
+The formal statement of the source terms is `doc/camr_ps_model.tex` §4;
+this chapter gives the arguments behind the choices, the numbers that fixed
+them, and the limits of the model as they are currently understood. Code:
+`PS_relaxation.H` (dispatch, mode kernels, folds), `PS_sources.H` (flash
+driver and the split mass-transfer source for the non-default modes),
+`hem_pelanti_shyue.H` (the per-cell kernels).
+
+### 5.1 The reaction chain and the coupled operator
+
+Per reaction step, after the hydro update and the identity resyncs:
+
+$$\text{folds (§4.4)} \;\to\; \text{floor} \;\to\;
+\underbrace{\text{X3}}_{P_1=P_2\ \text{constraint}\ +\ \text{thermal}\ +\ \text{mass transfer}}
+\;\to\; \underbrace{\text{flash}}_{\text{nucleation}}
+\;\to\; \text{mechanical reproject after the flash}.$$
+
+The default relaxation is the coupled operator X3 (`CAMR.ps_relax_mode=5`;
+`hem::ps_x3_relax_cell`, grid wrapper `ps_x3_grid_relax_cell`). It treats
+the cell as a constrained system: mechanical equilibrium $P_1 = P_2$ is a
+DAE constraint imposed by the $\alpha$-adjusting projector at every path
+evaluation (and $T_1 = T_2$ joins it when $\theta \le 0$), while the thermal
+and mass-transfer legs are simultaneous finite rates integrated by backward
+Euler on that manifold. The two unknowns per sub-step are the heat $q$ moved
+between the phase energies and the mass $\delta m$ moved between the phase
+masses; the residuals are $q - \Delta t\,r_T$ and $\delta m - \Delta t\,r_M$
+with the rates evaluated at the projected trial state, solved by a damped
+$2\times2$ Newton whose inadmissible trials backtrack toward the last
+admissible iterate. The kernel builds its own $\Delta t$ ladder: a cold
+start at one large constant step stalls the coupled Newton on strong-flash
+states, while a step that halves on non-convergence and grows on success
+converges in about twenty sub-steps everywhere; the fixed point is
+$\Delta t$-independent, so sub-stepping reshapes only the transient. A
+sub-step cap of 64 and a bail-out that keeps the partial, admissible,
+conservative progress are both counted (`[PS-X3]`, cause-split: entry
+refusals, gate stands, Newton failures, dead rates, sub-step cap, and the
+constraint's own entry and path projection failures).
+
+Admissibility along the path: both phases valid on their branches, finite
+Gibbs energies, $c_k > 0$, and $\alpha_1 P_1 + \alpha_2 P_2 > 0$.
+Conservation is by construction — antisymmetric transfers and a conservative
+projector — so mixture mass, momentum and total energy never move. The 0-D
+fixed point is $q = \delta m = 0$ with $P_1 = P_2$, $T_1 = T_2$, $g_1 =
+g_2$: the full-equilibrium flash of the cell's invariants. Measured, the
+fixed point is route- and basin-independent (spreads at the projector's
+tolerance floor) and matches the HEM flash to $|P - P_{\rm HEM}|/P_{\rm HEM}
+\le 3.4\times10^{-5}$ (`CAMR.ps_x3_test=1` runs the harness); the
+order-dependence and two-basin defects of the sequential chain do not exist
+for it. The rates vanish at the fixed point ($\Gamma \to 0$ as $g_1 \to g_2$,
+$r_T \to 0$ as $T_1 \to T_2$), so the backward-Euler solution cannot cross
+it: non-overshoot is structural, at any $\Delta t$. Completeness of the
+thermal leg matches the theory-exact ratio $1/(1 + \Delta t/\theta)$ on the
+nose.
+
+X3 acts only where the presence gate of §4.5 says both phases are
+relaxable; gate stands are counted. At mode 5 X3 owns mass transfer, so the
+split mass-transfer source in `ps_apply_sources` is compiled out and
+`CAMR.ps_do_relax=0` together with `ps_mt_tau>0` aborts as a contradictory
+configuration (nobody would run the transfer).
+
+Why coupled rather than sequential: with three operators applied in turn,
+each with its own eligibility test and its own re-projection, the composite
+was measured order-dependent — catastrophically so on vapour-rich and
+off-dome states — and the sequential thermal leg's "exact" equilibrium
+target solve fails on order-one fronts, leaving 57–69 K median-maximum
+residuals; the B7 1811 K vapour runaway (relaxation channel +1449 K) was
+that defect, and collapses to +3 K under X3. The apparent score advantage of
+the sequential form on the deep-expansion cases at fast rates was traced to
+its failing thermal target leaving the expelled vapour about 60 K
+artificially hot, which props up the column pressure toward the equilibrium
+reference — the acceptance metric rewarding a defect.
+
+### 5.2 Mechanical relaxation
+
+Pressure equilibrium is instantaneous by model closure: $\alpha_1$ is the
+free variable and is driven until $P_1 = P_2$ (`hem::ps_pressure_relax_cell`,
+Newton on $\alpha_1$). It is a constraint, not a rate; a finite-rate
+mechanical leg was measured inert (2.1 % spread in B11's $u$ across five
+decades of its rate, 0.01 % on B2) and is deleted — `CAMR.ps_relax_mode=3`
+aborts. The interfacial work goes to the phase energies as
+
+$$e_1 \mapsto e_1 - \frac{P_I\,\Delta\alpha_1}{\alpha_1\rho_1}, \qquad
+e_2 \mapsto e_2 + \frac{P_I\,\Delta\alpha_1}{\alpha_2\rho_2}, \qquad
+P_I = \tfrac12(P_1 + P_2),$$
+
+equal and opposite in $\mathcal{E}_k$, the discrete form of $\mp
+P_I\,\partial_t\alpha_1$ in the phase-energy equations. The Newton step is
+capped at a fraction of $\min(\alpha_1, 1-\alpha_1)$ and — the relaxation
+domain barrier — restricted to the interval on which both $\rho_k(\alpha)$
+stay inside the EOS density domain, with probes and iterates projected onto
+it; $P_k(\rho_k)$ is undefined off-domain, so a Newton that steps past the
+edge is evaluating garbage, and an entry state outside the feasible interval
+returns false and is left to the folds. This is solver correctness, not a
+guard; it prevents at creation the mechanism in which the relaxation dilutes
+a low-mass phase's volume, drives $\rho_k$ off-domain, fails, and leaves the
+cell stuck while the hydro ratchets it further. The alternative
+impedance-weighted kernel (`CAMR.ps_mech_kernel=1`) remains selectable.
+
+### 5.3 Thermal relaxation, the coexistence gate and its consequences
+
+In X3 the thermal leg is the isochoric exchange rate
+
+$$\frac{dq}{dt} = \frac{T_1 - T_2}{\theta\,\bigl(\tfrac{1}{m_1 c_{v1}} + \tfrac{1}{m_2 c_{v2}}\bigr)},$$
+
+whose linearised $T_1 - T_2$ decay time is exactly $\theta$
+(`CAMR.ps_theta_tau`, default $10^{-7}$ s), with $c_v$ by centred
+difference; the rate model shapes the transient only, the fixed point
+$T_1 = T_2$ is rate-model-independent. The sequential modes use instead the
+exponential relaxation onto a precomputed isochoric $T_1 = T_2$ state,
+$\mathcal{E}_k^{n+1} = \mathcal{E}_k^{*} + (\mathcal{E}_k^{\rm eq} -
+\mathcal{E}_k^{*})(1 - e^{-\Delta t/\theta})$.
+
+Semantics of $\theta$: $\theta > 0$ is a finite backward-Euler rate;
+$\theta \le 0$ means instantaneous thermal equilibrium — $T_1 = T_2$ joins
+the $P_1 = P_2$ constraint set and the Newton collapses to one dimension in
+$\delta m$. It does not mean "thermal off". Rejected: mass transfer with the
+thermal rate set to zero and no thermal constraint. Why: evaporation draws
+latent heat from a phase that then cannot exchange heat with the other, the
+donor energy walks out of the reachable set, and B7 aborts with a no-root —
+the dilute-phase runaway wearing mass transfer. Mass transfer without a
+thermal leg is not a configuration.
+
+The coexistence gate. The thermal leg, the mass-transfer leg and the flash
+are all gated on a two-phase coexistence test: both phase temperatures
+strictly inside $(T_{\rm triple}, T_{\rm crit}) = (216.592, 304.13)$ K,
+from the EOS's own metadata. The gate exists for a measured reason:
+ungated thermal equilibration walks smeared cross-critical contacts toward
+the dome and collapses B4's star velocity (u-error 0.13→0.44 at
+$\theta = 10^{-4}$), and $g_1 \ne g_2$ between a liquid and a supercritical
+fluid is not a phase-change driving force (B10 over-develops without it).
+
+The self-lock. One predicate answering three different questions has a
+structural consequence. "These phases cannot exchange mass" does not imply
+"these phases must not exchange heat" — two materials in contact exchange
+heat whether or not either can turn into the other — but because the
+implementation is one test, once a cell's vapour leaves the band the only
+operator that could bring it back, thermal relaxation, is disabled by the
+same test that requires it to be back; mass transfer is off, and the flash
+is separately off because the cell is two-phase. The cell has zero
+conversion channels and the state is permanent, entered through a silent
+return. This explained three measurements that had had no explanation: a
+thermal-rate sweep flat to 0.2 % over four decades (the leg was behind the
+closed gate), mass transfer "firing 2–4 times per run", and the flash
+metastability margin making no difference — all three were measuring
+operators that never ran. Every one of 834 mass-transfer refusals on
+B2/B7/B9 was this gate, always closing on the vapour (below the triple point
+on B2/B9, above critical on B7).
+
+The sub-triple-point vapour question. The representative B9 cell is 98 %
+vapour by volume at 5.5 bar (both phases, by the mechanical closure) with a
+liquid at 269 K, whose saturation pressure is near 40 bar — a liquid held at
+a seventh of the pressure it needs, i.e. one that should be boiling
+explosively — beside a vapour at 198 K, 18 K below the triple point, with a
+Gibbs difference of $3.5\times10^{4}$ J/kg. The vapour is the far-field
+vapour the expansion cooled, and nothing warms it because the process that
+would — boiling, whose latent heat warms the vapour and raises the local
+pressure — is the one the gate declines to run. Three readings were
+weighed. (i) It is a mistake, so abort: in equilibrium CO₂ at 198 K and
+5.5 bar is dry ice, and a liquid–vapour model holding a "vapour" in the
+solid region holds a state it cannot describe. Against it: the state is not
+a numerical wreck — the branch-locked query returns a valid state, the
+liquid is an ordinary liquid, and what is unusual is only that the phases
+are far out of equilibrium with each other, which is the regime a
+six-equation model with finite rates exists for. (iii) It really is solid,
+so model the solid: a separate application question, because no state in
+any exact reference solution is below the triple point (the reference
+two-phase fans sit at 10.2–31.3 bar on B9 and 8.3–19.8 bar on B2 against
+$P_{\rm sat}(T_{\rm triple}) = 5.18$ bar), so a solid phase would change no
+number in the acceptance table. (ii) It is a real, temporary
+out-of-equilibrium state — supercooled vapour, the mirror of the superheated
+liquid the flash exists for; the EOS is required to continue a branch past
+its physical limit for exactly this reason, and the gate was imposing a
+bound the EOS does not, asymmetrically (metastable liquid above the dome has
+a whole operator, metastable vapour below the triple point was refused
+outright). This is the chosen answer, and it is measured: allowing the
+thermal leg to run through the band exit takes B9's $u$ error from 0.889 to
+0.450 with all three fields improving, and in the cells the gated form held
+at a 71 K split the two temperatures agree to seven figures. The
+sub-triple-point vapour is a consequence of the evaporation wave not forming
+(CAMR's two-phase cells sit at the 5.1–5.5 bar far-field pressure where the
+reference's sit at 8–31 bar), not its cause. The answer is not "remove the
+gate": with the gate removed and a one-step projection onto an enormous
+disequilibrium all three cases walk off the EOS domain, which is why it
+required the rate-based, non-overshooting step of §5.1 and §5.4 alongside.
+
+`CAMR.ps_coexist_action` (default 0) selects the response to a band exit
+in X3's gate: 0 stand, counted; 1 abort with the full cell context (reading
+(i), for diagnosis); 2 run the thermal leg for low-side-only exits; 3 run it
+for any exit; 4 a low-side exit overrides the supercritical veto. Exits are
+counted by side and outcome in `[PS-COEXIT-TH]`. Rejected: hard side tests
+as the rule (actions 2 and 4). Why: both fail the same way — a hard side
+test abandons a cell mid-equilibration and becomes a one-sided pump — and
+the premise behind 4 was false: B9's exits are low-side only when the
+thermal leg never fires; once it is active B9's first excursion is the
+vapour going supercritical at 315 K. Action 3 measured that B4's high-side
+veto is load-bearing (B4 $u$ 0.126→0.699, B10 0.120→0.486). At the X3
+default with the flash nucleator on, action 3 adds nothing measurable, so
+the default stands at 0 with the following clause.
+
+The runaway clause (always active, no dial). A high-side-only band exit in
+which the supercritical phase sits above $2\,T_{\rm crit}$ (608 K for CO₂;
+the factor is a compile-time constant, the temperature is EOS metadata)
+runs the thermal leg regardless, and is counted as its own cause
+(`n_exit_runaway`, exit-code bit 8). Why it exists: at a smeared jet contact
+a dilute warm vapour sliver ($m_2/m_1 = 0.0075$, $\rho_2 = 0.39$ kg/m³) is
+seeded by contact smearing at about $0.3\times10^{6}$ J/kg per step, and
+with its heat channel vetoed the pressure constraint compresses it
+adiabatically at about $1.2\times10^{6}$ J/kg per step until the EOS band
+ends at 5000 K ($16\,T_{\rm crit}$) — the veto meant to protect material
+cross-critical contacts was sheltering a runaway it was never meant to.
+Rejected: a mass-trace discriminator ($m_{\rm hot} \ll m_{\rm cold}$). Why:
+B4/B10's own smeared contact edges hold trace-mass cells at mass ratios
+0.0013 and about 0, below the sliver's 0.0075; mass cannot separate the
+runaway from the cells the veto protects. Temperature can, with wide
+margins: the hottest legitimate phase in the validated suite is B10's
+vapour at 400 K = $1.32\,T_{\rm crit}$, while the runaway ratchets through
+$2\,T_{\rm crit}$ on its way to 16. Measured: the battery is bit-identical
+at defaults (the threshold reaches no battery state); the flashing-front
+reference completes at bare defaults instead of aborting, with the
+sliver periodically drained back to the correctly vetoed sub-threshold
+hover; the vented-mass quantity of interest moves +3.0 % (the drained cells
+sit at the vent plane), and an independent thermal treatment (the
+sequential mode with $\theta = 10^{-5}$ s) lands within 1.3 % of the new
+value.
+
+Rejected: the Downar-Zapolski HRM correlation as the thermal rate
+(`ps_theta_model=1`, retired; the key aborts). Why: the correlation slows
+toward saturation, which is the right shape for phase change and the wrong
+one for heat exchange between phases in contact; B9 aborts under it.
+
+The $\theta$ wall — a model limit stated explicitly. With the thermal leg
+live, $\theta$ is a real parameter, and the measured working windows are
+disjoint by three orders of magnitude: B9 works for $\theta \le
+3\times10^{-6}$ s (best 0.4187 at $3\times10^{-6}$; $u$-error 0.0626/0.3912/
+0.1867 for $\rho/u/P$ at the optimum) and aborts at $10^{-5}$, while B4 and
+B10 need $\theta \ge 10^{-2}$ s (B4 0.6988 at $10^{-7}$ falling to 0.1276 at
+$10^{-2}$). No single $\theta$ serves both, and B9's edge is a cliff. The
+reason is physical: $\theta$ is the time for two phases sharing a cell to
+reach a common temperature, set by the interfacial area they share inside
+the cell, and the two groups are different objects. B9's cells are a genuine
+dispersed mixture — liquid and vapour finely intermixed, enormous area,
+equilibration genuinely fast. B4/B10's cells are a smeared material contact
+— liquid against supercritical fluid across one unresolved interface, "two-
+phase" only because a discontinuity was smeared over two or three cells;
+equilibration is conduction across one surface. Sharper still: B11's mixed
+cells do not exist in the exact solution at all (the exact answer is a
+contact), so any physics applied in them is spurious and the "right"
+$\theta$ there is infinity, whereas B9's mixed cells do exist in the HEM
+reference. The coexistence gate was therefore never a thermodynamic test; it
+is a binary proxy for cell morphology — $\theta = \infty$ at cross-critical
+cells, $\theta_{\rm global}$ elsewhere — that gets B4/B10 right for
+approximately the right reason and B9 wrong because B9's cells pass through
+the supercritical region transiently. The six-equation state carries no
+notion of sub-grid interfacial structure, and every relaxation rate is a
+property of exactly that. This is the coupling question at its root: not
+that the operators are applied in sequence, but that all of them have rates
+the model cannot know. A pointwise proxy was tested and does not separate
+the two: the HRM metastability measure $\psi = |P_{\rm sat}(T_1) -
+P|/(P_{\rm crit} - P_{\rm sat})$ spans 0.0007–3.36 on B11 and 0.0007–0.50
+on B9, overlapping (it discards the sign, which is the information wanted;
+the signed ratio $P/P_{\rm sat}(T_1)$ is untested). The morphology
+diagnostic `CAMR.ps_diag_morph=1` counts, per step, how many cells are
+treated as dispersed while carrying a grid-sharp interface; it is a counter,
+deliberately not a classifier, because a gradient test is orientation-
+dependent and would need a threshold. The candidate resolutions — a
+transported interfacial-area density (chapter on future work), a local
+morphology indicator, or accepting the split as a case property — are
+open. The suite therefore spans two regimes the model cannot serve at once,
+and the one global configuration is the honest interim record.
+
+### 5.4 Mass transfer
+
+Driving force and rate. Transfer is driven by the Gibbs free-energy
+difference $g_1 - g_2$, $g_k = h_k - T_k s_k$. In X3 the rate is statistical
+rate theory (Lund & Aursand eq. 5–7), a parameter-free kinetic prefactor
+times an interfacial-area closure:
+
+$$\Gamma_{\rm SRT} = \Sigma\,\rho_g\sqrt{\frac{M}{2\pi R_u T_g}}\,(g_1 - g_2),
+\qquad
+\Sigma = \frac{16}{\pi}\,\frac{(\alpha_{\rm recv} + \delta)\,\alpha_{\rm send}}{D},$$
+
+with $\rho_g$, $T_g$ the vapour's, the receiving phase chosen by the sign of
+$g_1 - g_2$, $D$ = `CAMR.ps_mt_srt_d` (default 0.1 m) and $\delta$ =
+`CAMR.ps_mt_srt_delta` (default 0.01). The prefactor is derived; the
+closure is not — it is Lund & Aursand's stratified-pipe assumption, with
+$D$ their pipe diameter and $\delta$ their "let it start from nothing" seed
+(their 0.01; note the resemblance to $\alpha_{\rm cond}$, arrived at
+independently). No relaxation time is chosen: the effective $\tau$ is the
+distance to equilibrium over the instantaneous physical rate,
+$\tau_{\rm asy} = |\delta m_{\rm eq}|/\Gamma_{\rm SRT}$, so a large driving
+force gives a large step and a small one a small step, and the morphology
+dependence that a hand-set $\tau$ would carry enters only through $D$. In
+X3 the backward-Euler residual uses $\Gamma_{\rm SRT}$ directly; the
+equilibrium target $\delta m_{\rm eq}$ is never solved for, which removes an
+equilibrium Newton that was measured at 82–86 % of a step and that fails on
+order-one driving forces (400 of 400 on the deep-expansion front states),
+silently transferring nothing exactly where the physics is strongest.
+
+Rejected: the HRM correlation as a mass-transfer time
+(`ps_mt_tau_model=1`, retired). Why: redundant by construction — in the
+exact-relaxation form $\delta m = (1 - e^{-\Delta t/\tau})\,\delta m_{\rm
+eq}$ the transfer already vanishes near equilibrium, so a state-dependent
+$\tau$ that also grows there double-counts the same physics; eight orders of
+magnitude of correlated $\tau$ moved B9 by 0.1 %.
+
+Carrier and target. Transferred mass carries the interface total enthalpy
+$H_I = h_I + \tfrac12|\mathbf{u}|^2$ with $h_I = (1-w)h_1 + w h_2$ for
+$w \ge 0$ ($w$ = `CAMR.ps_mt_h_weight`, default 0.5: the mean) or the
+donor's enthalpy for $w < 0$ (upwind). The carrier is frozen per sub-step.
+In the non-default exact-relaxation form the target $\delta m_{\rm eq}$
+must be computed on the same path and with the same carrier as the step
+(`CAMR.ps_mt_target=1`, default). The argument is Lund & Aursand's
+monotonicity premise: an ODE is component-wise monotonic if the source
+always points toward equilibrium, $s(q)(q^{\rm eq} - q) > 0$, and for such
+systems both backward Euler and their ASY1 form are provably
+non-overshooting. A target computed at fixed $\alpha$ with a mean carrier,
+while the step applies (E.1) with the runtime carrier, relaxes toward the
+equilibrium of a path the dynamics do not travel: along fixed $\alpha$,
+$\partial\rho_1/\partial m = 1/\alpha_1$, along (E.1) it is exactly zero, so
+the target's Gibbs sensitivity carries a $1/\alpha_1$ amplification the step
+does not have, $\delta m_{\rm eq}$ is systematically too small (worst at
+small $\alpha_1$, where the failing cells sit), and the guarantee is void.
+Making the target consistent restores a provable property with no
+morphology model anywhere. `=0` keeps the inconsistent target for A/B only;
+`=2` adds nested pressure relaxation inside the target solve, measured to
+make the outer Gibbs Newton non-smooth (26 % failures) and offered
+separately, not folded in.
+
+Volume co-moves with the mass (E.1). Under presence the transfer moves
+volume at the donor's own density:
+
+$$\Delta\alpha_1 = -\frac{\delta m}{\rho_1}.$$
+
+Proof that this is invariant-domain-preserving, at any rate. Let phase 1 be
+the donor ($\delta m > 0$). Then
+
+$$\rho_1' = \frac{m_1 - \delta m}{\alpha_1 - \delta m/\rho_1} = \rho_1$$
+
+exactly: the donor's intensive state is untouched by losing mass, which is
+what "mass leaves a phase" means, and it can never leave the EOS domain from
+below. The receiver's density
+
+$$\rho_2' = \frac{m_2 + \delta m}{\alpha_2 + \delta m/\rho_1}$$
+
+is the mediant of $\rho_2 = m_2/\alpha_2$ and $\rho_1$ with weights
+$(\alpha_2, \delta m/\rho_1)$ — a convex combination — so $\rho_2' \in
+[\min(\rho_1,\rho_2), \max(\rho_1,\rho_2)]$, inside the EOS domain whenever
+the current state is; it can never leave from above. Total volume and mass
+are conserved by construction. The proof is rate-independent: even
+$\delta m = m_1$ in one step lands $\alpha_1$ exactly on zero, because
+$m_1/\rho_1 = \alpha_1$ identically — the worst case is a clean landing on
+the extinction endpoint. Fixed-$\alpha$ transfer, by contrast, drives the
+donor's $\rho_k = m_k/\alpha_k$ toward zero and the receiver's without
+bound, distorting the donor's Gibbs energy and hence the next step's
+driving force in proportion to the rate — a positive feedback loop — and
+had to be defended by three per-step caps. In X3 the path is (E.1) with the
+donor density of the sub-step base state followed by the $P_1 = P_2$
+projection, which then moves $\alpha_1$ further as the constraint requires.
+Rejected: finding the arrival density by inverting $h(\rho_{\rm arr}, P_I)
+= h_I$. Why: (E.1) needs no inversion and carries the proof above; the
+inversion is its rejected alternative and has been re-derived once already.
+
+Transfer in the flash (§5.5) is the same operator run backwards: newborn
+mass is injected at the saturation density, $\delta m = \rho_{\rm
+sat}\,\Delta\alpha$, so birth and death are one operator with opposite
+sign.
+
+Extinction is presence death. With (E.1) a dying phase's $\alpha$ shrinks
+in proportion to its mass at fixed $\rho$; the finite-rate integration never
+reaches $m = 0$ in finite time, and instead the phase descends the ladder
+of §4.2 — Independent → Corridor at $\alpha_{\rm cond}$ → vanish fold at
+$\alpha_{\rm vanish}$ → Absent (exact zero) — with no new threshold. In the
+stiff limit the equilibrium endpoint is reached in one step and, if the
+cell equilibrium is single-phase, the fold retires the phase in the same
+stage. $m_k = 0$ with $\alpha_k = 0$ is a legal state: it is the Absent
+state. Stated as it is: the per-step brackets $|\delta m| \le 0.9\,m_{\rm
+donor}$ and $|\delta m| \le 2\,m_{\rm receiver}$ remain in both the X3 Newton
+box and the split source, and the write-back refuses non-positive masses;
+they function as brackets on the implicit solve, and extinction happens
+through the ladder rather than by a single step to zero. Rejected: mass
+transfer for a corridor donor in the dying direction (continue the transfer
+below $\alpha_{\rm cond}$ so the remnant completes its evaporation). Why:
+on B9, 43 corridor episodes were classified across five runs and none
+entered from Independent — every non-pinned episode is monotone rising, the
+front-propagation channel — so the dying corridor donor is unobserved; and
+the proposal's own justification was wrong about the code, since the
+equilibrium driver queries the corridor phase's own branch-locked quotients,
+exactly what the corridor forbids, while the genuine totals endpoint (the
+bracketed dome flash of $(\rho_{\rm mix}, e_{\rm mix})$) is a different
+target from the driver's $(P, g)$ endpoint (the latter converges with
+$\Delta T = 0.05$ K still standing), so adopting it for corridor donors
+only would put a discontinuity in the relaxation target at $\alpha_{\rm
+cond}$. Rejected, likewise, instant fold at $\alpha_{\rm cond}$ in the dying
+direction: a $\tau \to 0$ assumption smuggled into finite-rate operation.
+
+Vacuum death and the relaxation domain barrier. The six-equation state has
+two degenerate corners: $\alpha \to 0$ at finite $m$ (the trace fiction,
+closed by presence) and $m \to 0$ at finite $\alpha$ (a phase that owns
+volume with no thermodynamic state), which stiff mass transfer manufactures
+at a sharp birth front. The vacuum fold of §4.4 owns the second corner
+using backend metadata ($\rho_{\min}$), and the domain barrier of §5.2 stops
+the mechanical projector from creating it. Measured on the B9 zero-trace
+reproducer: at production stiffness ($\tau = 10^{-3}$ s) the run is clean
+with zero domain violations at every stage and completes in seconds; at
+$\tau \le 10^{-4}$ s the collapse remains but is attributed by instrument to
+the hyperbolic step itself at a fresh birth front (phase-energy identity
+broken by up to 28 % and mass identity by $10^{-3}$ before any repair can
+act) — every operator in this chapter is exonerated, and that front item
+belongs to chapter 3. On the 2-D production configuration these operators
+are invisible: relative $L_2(\rho)$ change $2.7\times10^{-6}$ against the
+pre-fold baseline, zero validator violations, zero vacuum folds needed; they
+engage only where the removed caps manufactured states.
+
+The split source (modes other than 5). `ps_apply_sources` runs
+`hem::ps_mass_transfer_finite_cell` when `CAMR.ps_mt_tau` > 0 and the mode
+is not 5: the exact relaxation $\delta m = (1 - e^{-\Delta t/\tau})\,\delta
+m_{\rm eq}$ with the constant $\tau$ (`ps_mt_tau_model=0`, default), the
+consistent target, the same carrier rule and (E.1) (`CAMR.ps_mt_update_alpha`,
+$-1$ = on under presence), followed by a mechanical reproject of the cells
+it changed (`CAMR.ps_src_p_reproject=1`). `ps_mt_form=1` selects the
+backward-Euler SRT form inside that source and `ps_mt_tau_model=2` the
+derived $\tau_{\rm asy}$; at mode 5 none of these keys has meaning.
+
+### 5.5 Flash: nucleation only
+
+The flash (`hem::ps_flash_source_cell`, driver in `PS_sources.H`) is not a
+conversion operator. It is the nucleator: the single operator that converts
+a single-phase metastable cell into a two-phase cell, and it declines
+everywhere else. Under presence the driver routes only cells with exactly
+one present phase, or a dominant phase with a non-Independent trace; a cell
+with both phases Independent is mass transfer's territory and is skipped.
+Enabled by `CAMR.ps_flash_tau` (default $10^{-7}$ s; $\le 0$ turns the
+source off), and by `CAMR.ps_flash_from_absent=1` (default), without which a
+cell whose trace phase is Absent — every genuinely single-phase cell, the
+population the nucleator exists for — is excluded by the mass guard and the
+flash fires zero times in the whole battery. With it on, the nucleator is
+selective by measurement: it fires only where metastable windows open
+(B2/B9/B7), and eight B-cases are bit-identical with it on.
+
+The kernel seeds the minority phase toward $\alpha_{\rm birth} =
+4\times10^{-2}$ (single-sourced from `PS_presence.H`):
+
+$$\alpha_{\rm new} \mapsto \alpha_{\rm new} + \beta\,(\alpha_{\rm birth} - \alpha_{\rm new}),
+\qquad \beta = \min\!\bigl(1 - e^{-\Delta t/\tau_f},\,0.2\bigr)\; w_T\, w_{\rm meta}\, w_\alpha ,$$
+
+returning without acting once the target is reached. The three windows are
+smooth ramps (smoothstep) rather than hard predicates, so two mirror cells
+straddling a threshold get flash rates differing only by round-off and no
+reflection asymmetry is seeded: $w_T$ is zero at or outside $(T_{\rm
+triple}, T_{\rm crit})$ and ramps to one over 5 % of the dome width;
+$w_{\rm meta}$ requires a meaningful undershoot of saturation — a
+liquid-dominant cell boils as $P$ falls below $(1 - 0.10)\,P_{\rm sat}(T)$,
+a vapour-dominant cell condenses as $P$ rises above $(1 + 0.10)\,P_{\rm
+sat}(T)$, the margin `CAMR.ps_flash_metastable_margin` (default 0.10)
+chosen so that static-contact cases with both sides at saturation (B3) do
+not false-trigger from marginal numerical dissipation; and $w_\alpha$ is the
+dominance ramp, active only for $\alpha_{\rm dom} > 1 - 0.10$
+(`CAMR.ps_flash_alpha_thr`, default 0.10), so a cell drifting toward the
+mid-range hands over to mass transfer without a switch. The per-step move
+is capped at 20 % of the remaining distance and the transferred mass at half
+the donor's.
+
+Birth state by saturation projection (`CAMR.ps_flash_project_sat`, $-1$ =
+auto, on under presence): the newborn mass is injected at the saturation
+density of the newborn's own phase at the dominant phase's temperature,
+$\delta m = \rho_{\rm sat}(T_{\rm dom})\,\Delta\alpha$ — (E.1) run backwards
+— and its energy is the EOS-consistent saturation energy at that density
+(`ps_flash_e_of_rhoT`), so the newborn phase lies on the equilibrium locus
+by construction. From Absent there is nothing to extend, so the absent path
+requires the projection and refuses (counted) if the saturation query fails
+rather than inventing a state. Transferring at the departing phase's table
+saturation enthalpy instead stacked two defects — the table's enthalpy
+convention is offset about $2\times10^{5}$ J/kg from this EOS's energy
+scale, and handing a from-absent seed the donor's enthalpy put its whole
+phase below its branch window, so the limiter collapsed every proposed
+flash to zero and the nucleator silently never fired; with the seeded
+phase's own saturation enthalpy the latent heat appears as the donor's
+energy drop, where the physics puts it. The energy carried when a trace
+phase already exists is selected by `CAMR.ps_flash_h_mode` (default `auto`:
+the mean interface enthalpy below $T_{\rm crit} - 30$ K, the dominant
+phase's own enthalpy above $T_{\rm crit} + 30$ K, blended between — latent
+heat is real subcritical and absent supercritical). After the flash the
+cells it changed are mechanically re-projected (`CAMR.ps_src_p_reproject=1`)
+because the closure assumes instantaneous pressure equilibrium and the
+flash disturbs it; without the reproject, cells stalled at the seed with
+$\alpha$ pinned and $P_1 = 5.7$ vs $P_2 = 25.6$ bar and the evaporation wave
+never formed.
+
+### 5.6 The rate closure: calibration and the open decision
+
+The morphology length $D$ is the one number in the source chain with no
+derivation. Two measurements on the DT7 two-phase shock tube (12 m tube,
+membrane at 6 m, saturated CO₂ at 298.15 K / gas fraction 0.2 on the left
+and 273.15 K / 0.8 on the right, profiles at 25 ms, against the report's HEM
+solution and its family of HRM relaxation times $\theta$) calibrate it:
+
+(a) The scheme's effective relaxation time maps linearly onto the report's
+$\theta$ axis, $\theta_{\rm eff} \approx 0.08\,D$ (s per m; $k$ =
+0.075–0.091 over the resolved rungs, verified over four decades of $D$
+including the topology change to the slow branch, where the star-pressure
+sag matches the report's $\theta = 1$ s curve to within 0.15 bar). The
+default $D = 0.1$ m therefore behaves as $\theta_{\rm eff} \approx 8$ ms.
+The dial moves wave structure only; the fast-branch star pressures stay
+within 47.63–47.69 bar of the 47.6 bar HEM anchor.
+
+(b) The Downar-Zapolski correlation,
+
+$$\theta = \theta_0\,\alpha_v^{-0.54}\,\psi^{-1.76}, \qquad
+\theta_0 = 3.84\times10^{-7}\ {\rm s}, \qquad
+\psi = \frac{|P_{\rm sat}(T) - P|}{P_{\rm crit} - P_{\rm sat}(T)},$$
+
+(the high-pressure parameter set, verified against Saha et al.), evaluated
+at that flow's own fan states ($\psi$ median 0.154, $\alpha_v$ 0.2–0.7),
+prescribes $\theta \approx 1.9\times10^{-5}$ s — about 400 times faster than
+the exhibited $8\times10^{-3}$ s. By the flashing-flow correlation the
+report leans on, the default is roughly 2.5 decades too slow on this
+problem, and since the residual metastability measured on our own profile is
+what our slow rate leaves behind, the true DZ-consistent rate is if anything
+faster. A DZ-defensible default would be $D \approx 2.5\times10^{-4}$ m.
+Changing it is an open decision gated by the acceptance battery, not yet
+taken; this is caveat (ii) of the model note. The same correlation checked
+against the B9 cells that define the $\theta$ wall predicts
+$2.5\times10^{-6}$ s in the evolved cells against the measured optimum of
+$3\times10^{-6}$ s — within 20 %, from a correlation fitted to flashing
+water with nothing tuned to this problem, which is strong independent
+evidence that the measured window is physical — but it is undefined for a
+supercritical phase and collapses the wrong way near critical, so it says
+nothing about the B4/B10 side of the wall.
+
+### 5.7 Other relaxation modes, and the two configurations
+
+`CAMR.ps_relax_mode=0` is mechanical only (instantaneous $P_1 = P_2$, no
+thermal leg, no transfer) and is what the frozen-limit tests use. Modes 1
+(isochoric $P$ and $T$ equilibrium), 2 (isochoric pressure equilibrium plus
+finite-rate thermal relaxation at $\theta$, with the split mass-transfer
+source of §5.4 when `ps_mt_tau` > 0) and 4 (the sequential chain:
+mechanical → thermal → flash → transfer with re-projections, plus a closing
+mechanical pass `CAMR.ps_mech_close=1`) remain selectable and are candidates
+for retirement; mode 3 aborts. An unrecognised mode aborts at the single
+read site rather than falling through to a different physics.
+
+Two configurations exist and are stated once here. The 1-D acceptance
+battery runs bare defaults: mode 5, $\theta = 10^{-7}$ s, flash on at
+$\tau_f = 10^{-7}$ s, `ps_flash_from_absent=1`, SRT transfer at $D = 0.1$
+m. The 2-D pipe-break production decks (`Exec/CO2_PipeBreak/inputs.satjet_demo2`,
+`_demo3`) pin mode 2 with $\theta = \tau_{\rm MT} = 10^{-3}$ s and the flash
+off (saturated reservoir, no nucleation), together with the pressure and
+temperature floors of §4.5. Whether the 2-D decks move to mode 5 during the
+next production run, so that modes 1/2 can be retired, is an open decision.
+
+### 5.8 What the two-pressure form buys
+
+The mechanical closure lets the two phases disagree about pressure for one
+step and settles the disagreement locally afterwards. Every robustness
+property above follows from that one choice. The hyperbolic step only ever
+sees ordinary single-phase fluids — each phase with its own pressure and
+sound speed, branch-locked, bracketable — and nothing evaluates "the
+mixture". The alternative needs the equilibrium (Wood) mixture sound speed,
+and with a real-fluid CO₂ EOS that object is fragile: selected as the
+mixture speed it aborts B9. The volume fraction stays out of the flux
+divergence, so $\alpha\,\nabla\!\cdot\!\mathbf{u}$ never appears spuriously
+and $\alpha$ cannot drift outside $[0,1]$ (this code once had $\alpha =
+1.13$ in a rarefaction wake with a second discretisation subtracting the
+error back off). The stiff part moves to where stiffness is cheap — a small
+algebraic projection per cell after the wave step, local, with no global
+coupling, that can refuse instead of returning nonsense (3491 kernel calls
+across B2/B4/B7/B9, zero structural constraint failures). And the
+assumption becomes a number that is watched: `[PS-PRES]` prints the
+residual. The counterweight, measured rather than argued: the projection
+converges (order about 0.5 in $u$ against the exact solution of the model
+it solves), and the mechanical rate swept across five decades moves the
+answers about 2 % — robustness bought at a small, measured price, while the
+error that dominates the acceptance table is model error in the
+interfacial-area closure, which refinement makes more visible, not less.
+
+### 5.9 Dials
+
+| key | default | meaning |
+|:--|:--|:--|
+| `CAMR.ps_relax_mode` | 5 | X3 coupled operator; 0 mechanical only; 1/2/4 legacy; 3 aborts |
+| `CAMR.ps_theta_tau` | 1e-7 s | thermal rate; $\le 0$ = instantaneous $T_1 = T_2$ constraint |
+| `CAMR.ps_coexist_action` | 0 | band-exit policy (runaway clause always active) |
+| `CAMR.ps_mt_srt_d` | 0.1 m | morphology length $D$ in $\Sigma$ (§5.6, open) |
+| `CAMR.ps_mt_srt_delta` | 0.01 | receiving-phase seed $\delta$ in $\Sigma$ |
+| `CAMR.ps_mt_h_weight` | 0.5 | carrier weight $w$; negative = upwind |
+| `CAMR.ps_mt_target` | 1 | consistent target for the split source; 0 legacy A/B; 2 nested $P$ |
+| `CAMR.ps_mt_update_alpha` | −1 (auto → on) | the (E.1) rule in the split source |
+| `CAMR.ps_mt_tau` | 1e-7 s | split-source rate, modes ≠ 5 only |
+| `CAMR.ps_mt_tau_model`, `ps_mt_form` | 0, 0 | split-source variants, modes ≠ 5 only |
+| `CAMR.ps_mech_kernel` | 0 | 1 = impedance-weighted mechanical kernel |
+| `CAMR.ps_mech_close` | 1 | closing mechanical pass, mode 4 |
+| `CAMR.ps_src_p_reproject` | 1 | re-project $P_1 = P_2$ after flash (and split transfer) |
+| `CAMR.ps_flash_tau` | 1e-7 s | flash rate; $\le 0$ = off |
+| `CAMR.ps_flash_from_absent` | 1 | nucleate from an Absent trace phase |
+| `CAMR.ps_flash_project_sat` | −1 (auto → on) | saturation-projection birth |
+| `CAMR.ps_flash_alpha_thr` | 0.10 | dominance threshold |
+| `CAMR.ps_flash_metastable_margin` | 0.10 | saturation undershoot required |
+| `CAMR.ps_flash_h_mode` | `auto` | flash energy carrier: `avg`, `dom`, `auto` |
+| `CAMR.ps_x3_test` | 0 | 0-D fixed-point acceptance harness |
+| `CAMR.ps_diag_morph` | 0 | dispersed-vs-sharp census (counter, not classifier) |
+
+Retired keys that abort when set: `ps_theta_model`, `ps_hrm_theta`,
+`ps_relax_mode=3`.
+
+### 5.10 References
+
+Relaxation and mass-transfer closure:
+
+- H. Lund and P. Aursand, "Splitting methods for relaxation two-phase flow
+  models", extended from ECCOMAS Young Investigators Conference, Aveiro,
+  2012 (`refs/lund-splitting-relaxation-twophase-flow.pdf`). Source of the
+  ASY1 form, the component-wise monotonicity / non-overshoot argument, the
+  SRT kinetic prefactor and the stratified interfacial-area closure with
+  $\delta = 0.01$.
+- P. Downar-Zapolski, Z. Bilicki, L. Bolle and J. Franco, "The
+  non-equilibrium relaxation model for one-dimensional flashing liquid
+  flow", Int. J. Multiphase Flow 22(3), 473–493 (1996). Origin of the HRM
+  correlation.
+- K. Saha, S. Som and M. Battistoni, "Investigation of homogeneous
+  relaxation model parameters and their implications for gasoline
+  injectors", J. Eng. Gas Turbines Power 138(5), 052208 (2016). Source of
+  the constants quoted in §5.6 (high-pressure set).
+- S. Brown, S. Martynov, C. Proust and H. Mahgerefteh, "A homogeneous
+  relaxation flow model for the full bore rupture of dense phase CO₂
+  pipelines", Int. J. Greenhouse Gas Control (2013),
+  doi:10.1016/j.ijggc.2013.05.020. HRM applied to this application;
+  delayed transition affects discharge rates more than decompression rates.
+- SINTEF report DT7 (2019-06), homogeneous relaxation model, §4.1
+  two-phase shock tube: the calibration case of §5.6.
+
+Interfacial-area and morphology (future-work context for §5.3):
+
+- G. Kocamustafaogullari and M. Ishii, "Foundation of the interfacial area
+  transport equation and its closure relations", Int. J. Heat Mass Transfer
+  (1995); T. Hibiki and M. Ishii, "Interfacial area transport equations for
+  gas–liquid flow", J. Comput. Multiphase Flows (2009); Yu et al.,
+  "Interfacial area transport equation for bubble coalescence and breakup:
+  developments and comparisons", Entropy 23(9), 1106 (2021).
+- F. Drui, A. Larat, S. Kokh and M. Massot, "Small-scale kinematics of
+  two-phase flows: identifying relaxation processes in separated- and
+  disperse-phase flow models", J. Fluid Mech.; P. Cordesse, S. Kokh, R. Di
+  Battista, F. Drui and M. Massot, "Derivation of a two-phase flow model
+  with two-scale kinematics, geometric variables and surface tension using
+  variational calculus", arXiv:1910.14557 (2019).
+- R. Saurel, F. Petitpas and R. A. Berry, "Simple and efficient relaxation
+  methods for interfaces separating compressible fluids, cavitating flows
+  and shocks in multiphase mixtures", J. Comput. Phys. 228(5), 1678–1712
+  (2009); R. Saurel and C. Pantano, "Diffuse-interface capturing methods
+  for compressible two-phase flows", Annu. Rev. Fluid Mech. (2018);
+  Adebayo, Tsoutsanis and Jenkins, "A review of diffuse interface-capturing
+  methods for compressible multiphase flows", Fluids 10(4), 93 (2025) —
+  checked specifically for a resolved-interface vs mixture criterion and
+  found to give none.
+
+AMR reflux of non-conservative slots (§4.9):
+
+- M. J. Berger and R. J. LeVeque, "Adaptive mesh refinement using
+  wave-propagation algorithms for hyperbolic systems", SIAM J. Numer. Anal.
+  35(6), 2298–2316 (1998).
+
+## 6. Boundary conditions
+
+The Pelanti–Shyue state has no boundary operator of its own in AMReX: ghost cells are filled by `CAMR_bcfill_hyp` (`Source/Utils/BCfill.cpp`) on every face flagged `ext_dir`, and the fill decides per face between two constructions. The default is the problem's `bcnormal` (single interior cell in, ghost state out); the alternative is the characteristic-invariant NSCBC of `Source/Hydro/PelantiShyue/PS_nscbc.H`, which reads a three-cell inward stencil. The choice is resolved once per run from ParmParse, force-added back to the table so `job_info` records the path that actually ran, and printed as a one-line banner (`CAMR bcfill: outflow (Inflow-flagged) BC per face ... xlo=.. xhi=.. σ = .. R+ order = ..`).
+
+### 6.1 Dispatch and the per-face keys
+
+`CAMR.ps_bc_use_nscbc` (default 0) is the global switch. Each face may override it with `CAMR.ps_bc_nscbc_{x,y,z}{lo,hi}`, whose sentinel −1 (unset) inherits the global value; any value other than −1, 0, 1 aborts. The face keys exist because one problem can need both constructions at once: the pipe-break rupture plane is a `bcnormal` construction (reservoir gap plus slip wall) that must stay on x-lo while the three far-field faces take NSCBC (`Exec/CO2_PipeBreak/inputs.satjet_demo3`). A silent deck resolves every face to the global value and is bit-identical to the single-switch behaviour.
+
+The ambient pressure the far field encodes is `prob.p_amb`, overridable per face by `CAMR.ps_bc_p_amb_{x,y,z}{lo,hi}` (sentinel ≤ 0 inherits). One global target cannot describe a problem whose two ends see different far fields; the measurement that forced the per-face target is in §6.3.
+
+NSCBC on a face is taken only when that face has at least three interior cells in the normal direction; otherwise the fill falls through to `bcnormal`. Inside the NSCBC branch the tangential indices of a corner ghost are clamped into the domain and the FAB, and the normal stencil depth is clamped to what the FAB holds, so the fill is a pure function of valid interior data and never reads a ghost another thread of the same launch may be writing. Without `USE_PS_HYDRO` every NSCBC enable is forced to 0.
+
+### 6.2 The default: interior copy
+
+`CAMR.ps_bc_copy_interior` (default 1 under `USE_PS_HYDRO`, 0 otherwise; read in each case's `prob.H::bcnormal`) makes the ghost a copy of the boundary cell. The boundary face then has zero left–right jump and the face solver returns the pure flux of the interior state — the same rule as the validated standalone driver's `applyBCs`, which is why the 1-D acceptance battery runs on it.
+
+The alternative `bcnormal` path (copy off) is a linearised Riemann-invariant fill with the ideal-gas sound speed $c=\sqrt{\gamma P/\rho}$ from `EOS::REY2Gam`, a fixed ghost density $\rho_g=\rho_{\rm int}$, and a `RYP2E` inversion for the ghost energy. Rejected as the PS default. Why: for real-fluid cross-critical CO$_2$ the ideal-gas $c$ is 5–20 % off the true one, and on B4 the mismatch produces a ~3 % spurious upflow once the right-going wave has left the domain; the `RYP2E` inversion at a subcritical $(\rho_g, P_g)$ inside the dome returns a saturation-mixture lever-rule energy, which is not a state of either branch. The copy has no such failure mode on a wave-contained case, and the oracle test (§6.3) bounds its error below $10^{-3}$ on the $0.12$-scale B4 QoI. Its known cost is that it does not absorb acoustics: an outgoing wave of amplitude $1.49\times10^{4}$ Pa is trapped indefinitely (reflection coefficient $R\approx1.00$ on the flush test), which is what NSCBC exists to fix. Note that the copy branch is compiled only for host builds (`#ifndef AMREX_USE_GPU`); a device build silently takes the linear-acoustic path — an unported path that does not fail loud (ch. 9).
+
+### 6.3 Characteristic outflow (NSCBC)
+
+The formal statement is `doc/camr_ps_model.tex` §7. The problem: the full Poinsot–Lele NSCBC integrates $\partial q/\partial t$ at the boundary from characteristic amplitudes computed with interior derivatives, which needs persistent boundary state or an ODE step per fill and sits awkwardly on a FillPatch ghost mechanism. The choice is the characteristic-invariant form of the same physics, which fits the ghost-cell pattern exactly. With $u_{\rm out}$ the outward normal velocity, the outgoing and incoming acoustic invariants at the boundary cell $N$ are
+
+$$R^{+} = u_{\rm out} + \frac{P}{\rho c},\qquad R^{-} = u_{\rm out} - \frac{P}{\rho c},$$
+
+with $\rho c$ the Wallis frozen impedance of the boundary cell's per-phase decomposition (`ps_phase_speeds_from_state` and `ps_cmix2` — the same combination the flux uses, so the boundary is impedance-consistent with the interior). $R^{+}$ leaves the domain and is extrapolated; $R^{-}$ enters and is set from the far field $(u_{\rm amb}=0,\ P=P_{\rm amb})$ with the Poinsot–Lele restoring pull,
+
+$$R^{-}_{\rm targ} = -\frac{P_{\rm amb}}{\rho c} - \sigma\,\frac{P_N - P_{\rm amb}}{\rho c},\qquad \sigma = 0.25,$$
+
+and the ghost primitives follow as $u_g = \tfrac12(R^{+}+R^{-}_{\rm targ})$, $P_g = \tfrac12\rho c\,(R^{+}-R^{-}_{\rm targ})$. The extrapolation of $R^{+}$ is second order (`CAMR.ps_bc_nscbc_order=2`, default): a minmod-limited backward slope from the three interior cells $N, N-1, N-2$, multiplied by the ghost layer offset; order 1 copies $R^{+}_N$ and reproduces the standalone driver's NONREFLECTING fill bit-for-bit, which is why it is kept as a runtime value. This is the only algorithmic difference from the linear `bcnormal` at $\sigma=0$, and it cuts residual reflection in gradient regions.
+
+The Mach dispatch is on the boundary cell: supersonic outflow copies (exact, no characteristic enters); supersonic inflow copies and is counted (`nscbc_zg sup`), because every characteristic enters and nothing is well-posed without a full ambient state; and one subsonic branch handles both flow signs, $-1<M<1$. A separate reversed-flow branch is rejected. Why: a branch that anchors the ghost energy to $P_{\rm amb}$ while copying the full interior velocity re-endorses the reversal it reacts to; measured on A1 with a far field at 50× the interior pressure it pumped a Mach-15 inflow jet and aborted. Deriving $u_g$ and $P_g$ from the same invariants cannot manufacture momentum.
+
+The ghost thermodynamics never inverts $(\rho, P)$. Each present phase is moved along its own isentrope by the common acoustic $\mathrm{d}P$,
+
+$$\mathrm{d}\rho_k = \frac{\mathrm{d}P}{c_k^2},\qquad \mathrm{d}e_k = \frac{P_k}{\rho_k^2}\,\mathrm{d}\rho_k,$$
+
+and the ghost mixture is assembled from the phases ($\rho_g = m_{1,g}+m_{2,g}$ exactly). The `UTEMP` slot is zero-gradient (diagnostic). Which integration is used depends on the size of the jump. If $|P_g - P_N|$ fits one substep — the cap being $\Delta P \le \eta\,\rho_k c_k^2$ for every present phase with `PACK_ETA` $\eta = 0.05$, i.e. $|\Delta\rho_k| \le 5\,\%$ of $\rho_k$ — the single linearised step is taken; every small-signal result (the suite under NSCBC, flush, recirculation) rides this branch. Otherwise the ghost is a choked expansion fan: the state marches from $P_N$ toward the face's $P_{\rm amb}$ in adaptive substeps capped by the same $\eta$, each substep (i) advancing each present phase along its isentrope with $(P_k, c_k)$ re-evaluated from the branch-locked EOS under the same host/slave rules as the wave speed, (ii) re-closing the mixture as an equilibrium (HEM) saturated state when its enthalpy at the current $P$ lies inside the dome (`_hem_reclose`: $T_{\rm sat}(P)$ by 60-step bisection on `EOS::Psat`, quality from the enthalpy lever, $\alpha$, $m_k$, $\rho$ assembled from $x$ and the saturation densities; counted `nscbc_flash`), (iii) accumulating
+
+$$\mathrm{d}u_{\rm out} = -\frac{\mathrm{d}P}{\bar\rho\, c_{\rm path}},\qquad c_{\rm path}^2 = \frac{\mathrm{d}P}{\mathrm{d}\rho_{\rm mix}}\ \text{along the marched path},$$
+
+with the frozen Wallis form as fallback on a degenerate substep, and (iv) terminating at $P_{\rm amb}$ or at the critical-flow throat, the state of maximal mass flux $G=\rho u$ along the path (the substep past the maximum is reverted). All ghost layers receive the fan-end state. A fan needing more than `FAN_NMAX` $=256$ substeps (the 100 bar-to-choke march needs ~100), or a phase leaving $[\rho_{\min},\rho_{\max}]$ mid-fan, refuses to a counted zero-gradient ghost (`nscbc_zg pack`). `CAMR.ps_bc_nscbc_flash=1` (default) enables the in-dome re-closure and the choke; 0 marches the phases to the linear target with no HEM and no choke (the frozen construction, kept for A/B); any other value aborts.
+
+Why the fan and not a larger linear step. Measured against a boundary-free reference (a 1-D supercritical tube venting to 1 bar, QoI the vented mass at 80 µs): the physical vent is an expansion fan along which $\rho c$ collapses as the fluid flashes; a frozen-$\rho c$ linear solve holds the vent plane at 41 bar where the truth reaches 6, venting a third too little (−34.8 % with frozen-composition isentropes). A value bound on the linearised step (refuse above $|\Delta\rho_k| > 0.2\rho_k$) is rejected: it trips on every fill of that case and the zero-gradient fallback turns the vent into a mirror (−100 %), silently. Re-dressing the ghost's composition at the wrong end state $(u,P)$ is rejected: measured −44.8 %. Terminating the fan at $|u| \ge c_{\rm frozen}$ is rejected: the frozen Wallis $c$ collapses at the first flash sliver and freezes the fan just under the dome edge (−26.7 %, plane still ~40 bar); the critical-flow condition with the path's own equilibrium slope is what the reference's sonic plane measures. With the shipped construction the deficit is −4.1 % against the healthy-run reference (vented mass 2.2474 against 2.3428), zero refusals of any cause, and the boundary cell drops into the reference's choked 6–16 bar band. The fan is choked on every blowdown fill.
+
+What the small-signal branch buys, measured on the flush test (incident acoustic amplitude $1.49\times10^{4}$ Pa, residual $\max|P-P_0|$ after the waves exit): interior copy $1.49\times10^{4}$ ($R\approx1.00$); NSCBC at $\sigma=0.25$, $2.42\times10^{3}$ ($R\approx0.16$); NSCBC at $\sigma=0$, $1.03\times10^{1}$ ($R\approx7\times10^{-4}$). $\sigma=0$ is the construction's absorption design point; $\sigma=0.25$ is the price of anchoring the boundary pressure to $P_{\rm amb}$ over time.
+
+The B4 measurement and what it settles. B4 (cross-critical, 100 bar left / 50 bar right) scores a $u$ rel-L2 of 0.3809 under NSCBC against 0.1261 under interior copy at $N=64$, and the excess does not converge away ($0.3683$ at $N=512$ against $0.0446$; excess ratio $1.27$ between $N=512$ and $N=64$) — a resolution-independent $O(1)$ injection. The whole excess lives at the x-lo liquid boundary ($u\approx-4$ m/s of spurious suction, $\Delta P\approx-2.1\times10^{6}$ Pa); x-hi is clean to $2\times10^{-11}$. Its mechanism is not the invariant construction: $R^{-}_{\rm targ}$ encodes the far field unconditionally, and a single $P_{\rm amb}=5\times10^{6}$ Pa equals B4's right pressure while sitting 50 bar under its left, so the liquid boundary is commanded to a wrong far field. Setting $\sigma=0$ makes it worse ($0.4392$, the base target is still wrong); setting `ps_bc_p_amb_xlo=1.0e7` with x-hi inheriting reproduces the interior-copy $0.1261/0.0635/0.0493$ at every printed digit and every $N$. So the construction has no residual defect on this class, and the legacy fill scores identically ($0.3809$) because both boundaries are single-phase there. What remains open is a convenience, not a formulation question: a suite-class case with two unequal far fields must be told both pressures per face (there is no "far field = this face's initial state" mode), and the A1-under-NSCBC configuration remains a robustness case (score $3.87$, the compression fan integrating a 50× jump) rather than an accuracy case.
+
+Refusal accounting. The zero-gradient fallbacks are split by cause and printed on the `[PS-GUARD]` line at the `ps_diag_mass` cadence: `nscbc_zg c` (non-finite impedance), `sup` (supersonic inflow), `slots` (six-equation slots inconsistent with the mixture, $|m_1+m_2-\rho| > \rho/2$, or an assembled $\rho_g \le 10^{-6}$), `pack` (fan refusal). `nscbc_flash` counts re-closures (a closure doing its job, not a fallback). The `lin` counter slot is dead — the one-shot bound it counted no longer exists — and is scheduled for removal.
+
+Rejected: the legacy ghost construction (linearised mixture-entropy invariant plus `RYP2E`, selected by `ps_bc_nscbc_v2=0`). Why: it aborts A1 (the reversed-flow pump), never absorbs acoustics (flush $R\approx1.15$, worse than zero-gradient, and asymmetric between inflow- and outflow-directed faces), and its one virtue — an accidental HEM flash from the in-dome lever rule, −7.6 % on the vent — is strictly dominated by the deliberate fan. The code is deleted; a set `CAMR.ps_bc_nscbc_v2` key aborts. Rejected: the end-state energy-lever variant `ps_bc_nscbc_flash=2` (−44.8 %); a set value aborts.
+
+### 6.4 The pipe-break rupture plane
+
+The 2-D pipe-break (`Exec/CO2_PipeBreak/prob.H`) realises the break entirely in `bcnormal` on x-lo: a reservoir inlet across the gap $|y-y_c| \le$ `gap_half` (0.05 m), a reflecting slip wall elsewhere, and a smoothstep lip taper of width `gap_taper` (0.02 m) between them. A hard reservoir|wall switch is rejected: it is an infinite-shear lip that separates and craters the corner pressure to vacuum, collapsing $\mathrm{d}t$. The two-phase reservoir (`prob.res_alpha1` $=0.05$ at `T_res`) is built as an on-dome saturated mixture at $P_{\rm sat}(T_{\rm res})$ with the liquid fraction tapered as $\alpha_1\,s(y)$ toward pure saturated vapour at the gap edge (`res_dome_taper=1`); the earlier linear state blend of reservoir against wall ghost is rejected because it lands taper-edge cells off the dome, where the stiff cubic rings.
+
+The inflow velocity is characteristic (`prob.res_char_inflow=1`): pressure and composition come from the reservoir, and the normal velocity from the interior's outgoing $u-c$ invariant,
+
+$$u_b = u_{\rm int} + \frac{P_{\rm sat} - P_{\rm int}}{\rho c},\qquad u_b \ge 0,$$
+
+so the leaving acoustic characteristic passes instead of reflecting (a full-state Dirichlet inlet over-specifies a subsonic inflow and produces intermittent inlet pressure flares). $P_{\rm int}$ and $\rho c$ are taken from the same two-phase reconstruction the solver uses — $P_{\rm mix}=\alpha_1 P_1+\alpha_2 P_2$ and the Wood impedance $1/(\rho c^2) = \alpha_1/(\rho_1 c_1^2)+\alpha_2/(\rho_2 c_2^2)$ via `REY2PCs_liquid/_vapor` — with the single-fluid equilibrium surface only as fallback on a degenerate phase pair. Rejected: `REY2P`/`REY2Gam` on the mixture $(\rho, e)$. Why: it is a different thermodynamic surface from the one the fluxes see, reading ~20 % low in $c$ (154 against 185 m/s at the reservoir state) and up to 30 % off in $P$, which biases the invariant every step.
+
+The invariant is capped at `prob.res_mach_max` (default 1.0) times the reservoir mixture Wood speed `res_cfrozen`, precomputed in `probinit` and printed at start-up. The cap exists because the $u-c$ relation is only outgoing while $M<1$, and because the boundary pins the static pressure at $P_{\rm sat}$ while the jet expands downstream, so $P_{\rm sat}-P_{\rm int}$ stays persistently positive and the relation is a one-way integrator: measured +0.15–0.22 m/s of inflow velocity every step with no sign reversal, ratcheting the inlet from $M=1.01$ to $1.27$ over 150 steps and injecting a stagnation pressure of ~84 bar against a 41.6 bar reservoir. Physically the reservoir vents through a gap, so the inlet plane is the throat and at most sonic. `res_mach_max` $\le 0$ disables the cap for A/B. The proper replacement, a genuine stagnation inlet (impose $h_0, s_0$, take one outgoing invariant, let the static $P$ fall as $u$ rises), is recorded as future work; the cap is the well-posed stand-in.
+
+### 6.5 Boundary dials
+
+| key | default | meaning |
+|:--|:--|:--|
+| `CAMR.ps_bc_use_nscbc` | 0 | global NSCBC enable (forced 0 without `USE_PS_HYDRO`) |
+| `CAMR.ps_bc_nscbc_{x,y,z}{lo,hi}` | −1 (inherit) | per-face enable, 0/1 |
+| `CAMR.ps_bc_p_amb_{x,y,z}{lo,hi}` | −1 (inherit `prob.p_amb`) | per-face far-field pressure [Pa] |
+| `CAMR.ps_bc_nscbc_sigma` | 0.25 | Poinsot–Lele restoring pull on $R^-$ |
+| `CAMR.ps_bc_nscbc_order` | 2 | $R^+$ extrapolation: 1 copy, 2 minmod slope (other values forced to 2) |
+| `CAMR.ps_bc_nscbc_flash` | 1 | 1 choked fan with HEM re-closure; 0 frozen fan (A/B); else abort |
+| `CAMR.ps_bc_copy_interior` | 1 (PS) / 0 | `bcnormal` ghost = interior copy; 0 = linear-acoustic fill |
+| `prob.res_char_inflow` | 0 | pipe-break: characteristic inflow velocity (needs `res_dome_taper=1`) |
+| `prob.res_mach_max` | 1.0 | pipe-break: cap $u_b \le$ `res_mach_max` $\cdot c_{\rm frozen}$; ≤ 0 disables |
+| `CAMR.ps_bc_nscbc_v2` | — | retired; a set key aborts |
+
+In-code constants: `PACK_ETA` $=0.05$ (per-substep $|\Delta\rho_k|/\rho_k$; one step reproduces the small-signal arithmetic bit-for-bit), `FAN_NMAX` $=256$, ghost pressure floor $\max(10^{-3}P_{\rm amb}, 1\ \text{Pa})$, `P_FLOOR_PA` $=1$ Pa on re-closed phase pressures, $c_k$ floored to 1 m/s on a non-finite EOS return.
+
+## 7. Equation-of-state backends and the EOS contract
+
+### 7.1 What the model asks of an EOS
+
+The wave structure and the relaxation never ask the equation of state about a mixture. They ask, per phase and per face side, for a small set of entries, and every backend under `Source/EOS/` supplies the same free-function set in `namespace EOS`. There is no shared interface header: `Source/EOS/Make.package` carries only `PhysicsConstants.H`, and each backend ships its own `EOS.H`. The contract is documentary, enforced by the build only in the sense that a missing entry is a link error under `USE_PS_HYDRO`. The six requirements:
+
+1. Pressure and sound speed from $(\rho_k, e_k)$ on a nominated branch: `REY2PCs_liquid` / `REY2PCs_vapor` (fused $P$ and $c$ from one solve), `REY2P_liquid` / `REY2P_vapor`, `REY2Cs_liquid` / `REY2Cs_vapor`. The six-equation model already knows which phase it is asking about, and auto-detection harms it: a nominal vapour sitting at compressed-liquid density would return the liquid root, and the relaxation would drive the mixture toward an unphysical equilibrium with an inconsistent pressure.
+2. Metastable continuation past the saturation dome. A branch-locked query returns the single-phase branch continued beyond its physical limit rather than refusing, because that is what a phase held out of equilibrium by finite-rate transfer is.
+3. A truthful refusal at the domain edge. Continuation is not invention: if no temperature on the branch at that density reproduces $e$, the query says so instead of returning the nearest reachable state. Two entries: `REY2PTS_phase_try` returns `false`, and the aborting entries stop the run with a reproducible diagnostic.
+4. Temperature and entropy from the same solve: `REY2PTS_phase` returns $P, T, s$ together, because the mass-transfer driving force needs the Gibbs energy $g = h - Ts$ and three re-entries would triple the cost.
+5. Domain metadata: `rho_min`, `rho_max`, `has_density_pole`, `T_crit`, `T_triple`, `P_crit`, `P_triple`. A cubic has a hard-sphere pole and the validator needs to know where it is; every phase-boundary test in the presence machinery goes through these accessors, never a hard-coded critical or triple number (the multicomponent rule).
+6. Saturation properties for the flash and for two-phase initial data: `Psat(T)`, `co2_sat_LV(T, ρ_L, e_L, ρ_V, e_V)`.
+
+The anti-requirement is load-bearing: the hydraulic path must not ask the EOS about a mixture state. For a two-phase cell $(\rho_{\rm mix}, e_{\rm mix})$ pairs the light phase's volume with the heavy phase's mass, need not be a state of any single fluid, and the inversion can have no root. The one remaining mixture query on the PS path is the plotfile derive `ps_mixture_pressure_from_cons`; the `hydro_ctoprim` mixture inversion is skipped under PS (its outputs are dead there), and the per-phase pressure reference in `PS_ctoprim.H`, `PS_hllc.H` and `ps_physical_flux_from_state` is the host phase's own pressure.
+
+### 7.2 Branch lock and "no root is a verdict"
+
+Phase identity is not determined, it is asserted by the slot: slot 1 is liquid and slot 2 is vapour from initialisation until removal, so a phase-locked query needs no inference. The only genuine determination is the mixture query `state_from_rho_e`, used outside the solution path, which classifies against the dome-clamped saturation locus (monotone in $T$ over $[T_{\rm triple}, T_c]$) rather than a density heuristic.
+
+The branch-locked inversion (`hem::state_from_rho_e_phase_try` in `Source/EOS/PR/hem_pr_state.H`) is bracketed. $e_{\rm PR}(T)$ at fixed molar volume is monotone in $T$, so a sign change of $e(T)-e_{\rm target}$ over $[T_{\min}, T_{\max}] = [1, 5000]$ K is necessary and sufficient for a root; the bracket ends are probed first, and no sign change is reported as "not a state on this branch" with the nearest bound attached for the diagnostic. Inside a proven bracket the solve is Illinois (bracketed false position), derivative-free and unable to leave the bracket. Rejected: an unbracketed Newton whose failure returned whatever $T$ the iteration stopped at — typically the 1 K clamp — marked valid. Why: it was the single largest silent-repair site in the code (20 414 hits in a 106-step $N=64$ run that passed every gate), and the states it laundered were the ones later aborting downstream. Rejected: substituting the nearest reachable state on a refusal. Why: handing back a plausible state for an impossible input is the same laundering in a different coat; there is no dial to make the abort quiet. The consequence is that a run stops on the first input that is not a state, printing $\rho$, $e$, the branch, the reachable bound and the gap, plus a `probe_pr` reproduce line. On the acceptance battery this changed no printed digit on ten of eleven cases; the eleventh had been passing on a floored $T = 1$ K vapour 29.75 MJ/kg outside its reachable range.
+
+Callers with a validity channel (`PsPhaseAPI`, whose `ph.valid` the flash source and the coexistence gate already test) use the `_try` entry and report; callers without one get the abort. GERG's bisections carry the same endpoint check: a root exists in $[T_{\rm trip}, T_{\max}]$ iff $e$ lies strictly between the endpoint energies at that $\rho$, and both sides abort — including $e < e(T_{\rm trip})$. PR deliberately extrapolates below the triple point; GERG has no extrapolation and declares sub-triple states out of domain, so B7 under GERG aborts on a known out-of-domain vapour state that had previously been scored on invented $T = T_{\rm trip}$ endpoint states.
+
+The 1 K bracket end is where the pressure floor is probed: `[PS-FLOOR]` under `USE_PS_DIAG` separates floors in use from bracket-end probes (A1 has 0 in use against 120 618 probe-only; B2 has 117 455 in use), and `CAMR.ps_strict_eos=<bits>` turns repairs into aborts (1 Newton no-root, 2 pressure floor, 4 the 1 K clamp).
+
+### 7.3 The four backends
+
+Selected at build time by `Eos_Model := <name>` in the Exec `GNUmakefile`; the name is appended to the executable suffix. Naming: `<EOS>` is analytic, `<EOS>Tab` is table-accelerated. `GammaLaw` is refused with `USE_PS_HYDRO=TRUE` (`Exec/Make.CAMR` `$(error ...)`): it implements none of the per-phase entries.
+
+| backend | model | (ρ,e)→T inversion | notes |
+|:--|:--|:--|:--|
+| PR | Peng–Robinson, pure CO$_2$: $T_c = 304.13$ K, $P_c = 7.3773\times10^{6}$ Pa, $\omega = 0.22394$ (`co2_fluid()`); device-inline | bracketed Illinois on $[1, 5000]$ K | the reference and development backend; host-side 4-slot exact-match ring caches for the auto and per-branch queries (~2× on CPU; bypassed on device) |
+| PRTab | PR plus Catmull–Rom C$^1$ bicubic tables of $T(\log_{10}\rho, e)$ and $s(\log_{10}\rho, e)$ on three branches (auto, liquid, vapour) and a Hermite dome-refinement patch; the state is then rebuilt analytically from $T$ (`state_from_T_v`) | table lookup, exact PR fallback on any range or out-of-distribution rejection | table-terminal: fixed cost per query |
+| GERG | GERG-2008 pure-CO$_2$ Helmholtz (~22-term residual) behind a guard layer (`gerg_co2_guard.H`) that makes every entry total, branch-guarded, monotone-regularised and Newton-free | fixed-count 64-step bisection on $[T_{\rm trip}, T_{\max}] = [216.592, 1100]$ K | chosen over Span–Wagner for GPU safety: fixed operation sequence, no non-analytic critical-region terms |
+| GERGTab | GERG plus Catmull–Rom bicubic tables of the same bisection with validity masks at the seams; `GERGTab/EOS.H` is a nine-line shim including `GERG/EOS.H` under `USE_GERGTAB_EOS` | table seed, then two damped-Newton polish steps on the analytic surface, exact bisection if the residual guard fails | seed-only: the converged answer is the analytic one |
+
+PR domain metadata: `rho_pole()` $= M/b$ with $b = \Omega_b R T_c/P_c = 2.6666\times10^{-5}$ m$^3$/mol, giving 1650.4 kg/m$^3$; `rho_max()` $= 0.98\,\rho_{\rm pole} \approx 1617$ kg/m$^3$ so the clamp lands where the cubic is still conditioned; `rho_min()` $= 10^{-6}$ kg/m$^3$; `T_triple()` $= 216.592$ K, `P_triple()` $= 5.1795\times10^{5}$ Pa; `Psat(T)` is the Span–Wagner reduced-vapour-pressure fit, returning $5.18\times10^{5}$ Pa at and below the triple point and $P_c$ at and above $T_c$. Warm-starting the Newton from the cache's most recent $T$ is off by default (`CAMR.eos_warmstart`, default 0) because it costs bit-for-bit run-to-run independence; `CAMR.eos_warmstart_fixed` selects a fixed-iteration seeded variant. The ring caches are function-local statics and are not thread-safe: a `USE_OMP=TRUE` build is refused by `#error`.
+
+GERG guard layer: $T$ clamped to $[T_{\rm trip}, T_{\max}]$; $\rho$ clamped to $[10^{-6}, 1500]$ kg/m$^3$ (the published validity edge); single-phase branch evaluation on the raw surface through the stable and metastable range, and past the precomputed branch edge (where $\partial P/\partial\rho|_T$ falls below `CSQ_FLOOR` $= 2500$ m$^2$/s$^2$ inside the dome) a monotone C$^1$ linear continuation $P = P_{\rm edge} + \text{CSQ\_FLOOR}\,(\rho - \rho_{\rm edge})$ with $e$, $s$ on the raw surface; a soft positive floor `P_FLOOR` $= 10^{3}$ Pa (a log1p-exp blend of width `P_FLOOR`, so states above ~10 `P_FLOOR` are untouched); two-phase assembly from splined saturation densities; classification by spline compare, never by falling back to another EOS surface.
+
+The extension sound speed is the one GERG design decision with a refutation attached. The problem: the extension hard-set $c = \sqrt{\text{CSQ\_FLOOR}} = 50$ m/s while the raw surface just inside the edge reports the true isentropic $c$ (174 m/s vapour, 210–360 liquid) — a 3.5× to 7× discontinuity in $c$ at an infinitesimal density change. $c$ feeds the Wood mixture speed and thence the wave speeds, so cells straddling the edge switch their upwind dissipation on and off; measured on the pipe-break jet, cells past the vapour edge carried mean $|\nabla^2 P| = 4.41$ bar at $c_{\rm mix} = 45$ m/s against 0.30 bar and 170 m/s on the raw branch, 92 % of the strongly oscillating cells were past the edge, and the finest-level oscillation grew 4.3 → 26.3 bar over 25 steps while coarser levels stayed flat. The choice (`CAMR.gerg_ext_c=1`, default): the constructed extension surface has $c_v$ and $\partial P/\partial T|_\rho$ frozen at the edge, so its own isentropic speed is not free but follows from
+
+$$c^2 = \Big(\frac{\partial P}{\partial\rho}\Big)_T + \frac{T\,(\partial P/\partial T)_\rho^2}{\rho^2 c_v},$$
+
+verified to reproduce the raw surface's $c$ to $1.3\times10^{-14}$ over 3133 states and landing on the edge value to $4.4\times10^{-7}$; the thermal term is capped at its edge value, because uncapped the liquid extension's $c$ grows as $1/\rho^2$ (342 → 847 m/s at $\rho/\rho_{\rm edge} = 0.4$). With the cap $c$ decays smoothly into the vapour extension (174 → 122 → 83 → 65 → 50). Measured: the finest-level growth is arrested (4.59 → 4.69 bar over the same window), $P_{\min}$ improves, $\mathrm{d}t$ is unchanged, and the 1-D references are bit-identical because no cell in any of them sits in an extension. Rejected: $c = c_{\rm edge}$ throughout the extension (freezing $\gamma$). Why: catastrophic within two steps — pressure collapsed to `P_FLOOR` domain-wide and $\rho \to 10^{15}$ at the lip — and it was toolchain-dependent (tolerated by one compiler, not by another), so a single-toolchain validation missed it. Do not reintroduce. The flag is read twice: `gerg_co2_guard.H` is AMReX-free and defaults from the `GERG_EXT_C` environment variable for the standalone probe harnesses, and `EOS::gerg_ext_c_init()` (called from `CAMR::read_params`) overrides it from `CAMR.gerg_ext_c` and force-adds the value so every `job_info` records which surface produced the plotfile. ParmParse wins when both are present; this is the one surviving `getenv` in `Source/`. On device the flag is the compiled-in default (on).
+
+### 7.4 Table fidelity
+
+Pointwise relative L2 difference on the base level of the pipe-break case at matched physical time (comparing at matched step is misleading; the PR and PRTab $\mathrm{d}t$ histories drift apart by 10 % within 400 steps):
+
+| pair | 0.06 ms | 0.29 ms | 0.58 ms | 1.53 ms | 2.40 ms |
+|:--|--:|--:|--:|--:|--:|
+| PR / PRTab, pressure | 4.4e-6 | 4.4e-6 | 5.2e-4 | 7.5e-3 | 5.6e-3 |
+| PR / PRTab, density | 1.9e-7 | 8.3e-7 | 5.9e-4 | 1.1e-2 | 1.1e-2 |
+| GERG / GERGTab, pressure | 1.5e-13 | 9.2e-5 | 1.3e-3 | 1.6e-3 | 1.4e-3 |
+| GERG / GERGTab, density | 3.0e-13 | 5.9e-4 | 2.9e-3 | 4.8e-3 | 5.8e-3 |
+
+The two signatures are different and both are what the designs predict. PRTab shows a flat, genuine interpolation error for the first ~50 steps ($4.4\times10^{-6}$ in $P$, $3.3\times10^{-6}$ in $T$, $1.9\times10^{-7}$ in $\rho$, constant to three digits) — the table meeting its accuracy budget — after which chaotic divergence in the shear flow takes over and saturates at ~1 % $\rho$, 0.6 % $P$, 3.6 % $\alpha_1$. GERGTab agrees with GERG at round-off ($10^{-13}$) until a seed difference flips an iteration exit, then saturates at ~0.6 % $\rho$, 0.14 % $P$, 3 % $\alpha_1$. $\alpha_1$ is the most sensitive field in both pairs, as expected of the field with the sharpest interfaces.
+
+| | steps to 2.5 ms | front speed | $u_{\rm inlet}$ | $P_{\rm inlet}$ | $T_{\min}$ |
+|:--|--:|--:|--:|--:|--:|
+| PR | 523 | 283.95 m/s | 227.7 | 30.27 bar | 216.59 K |
+| PRTab | 469 | 283.58 m/s | 227.7 | 30.29 bar | 216.59 K |
+| GERG | 453 | 285.37 m/s | 213.9 | 32.20 bar | 217.31 K |
+| GERGTab | 453 | 284.51 m/s | 213.9 | 32.20 bar | 216.91 K |
+
+Front speed agrees to 0.13 % (PR pair) and 0.30 % (GERG pair); inlet velocity to four figures in both. Both table backends are fit for use; the residual differences are chaotic-divergence amplitude, not bias. On the 1-D B4 case GERGTab against GERG is $3.8\times10^{-8} / 1.5\times10^{-5} / 2.4\times10^{-7}$ max-relative in $\rho/u/P$ with a 1.5× host speedup; PRTab against PR is $10^{-6}$–$6\times10^{-6}$ single-phase and ~0.4–0.5 % in pressure on the cross-critical B-cases (the dome patch region). Note the GERG run in the 2-D table used a different refinement tag threshold from the other three (0.1 against 0.01), so level-2 counts are not comparable between GERG and GERGTab, only fractions.
+
+### 7.5 Build, dials and known deviations
+
+Tables are generated files and are git-ignored; the build `$(error)`s with the instruction if they are absent. `make tables` (PRTab; compiles `tools/gen_table.cpp` as an AMReX-free `HEM_NO_AMREX` build of the PR solve and runs `tools/build_table.py`, needing g++ and python3 with numpy and scipy) and `make gergtab-tables` (GERGTab; `tools/gen_gergtab.cpp`, 256-point grids, host g++). `make clean-tables` / `make clean-gergtab-tables` remove them. The temporary build directory is shared across `Eos_Model` values and `make` does not track `-D` changes, so switching backends without `make clean` can leave stale objects; verify by output.
+
+| key | default | backend | meaning |
+|:--|:--|:--|:--|
+| `CAMR.eos_table` | 1 | PRTab, GERGTab | use the table for the forward solve; 0 = analytic (a single Tab build reproduces its analytic parent) |
+| `CAMR.eos_table_auto` | 1 | PRTab, GERGTab | table on the auto (mixture) path too; 0 = analytic there, table on the per-phase path |
+| `CAMR.eos_table_branch` | 1 | PRTab | branch-locked calls use the liquid/vapour tables; 0 = the auto table (single-phase only) |
+| `CAMR.eos_mlp`, `eos_mlp_auto` | — | tables | deprecated aliases; setting both alias and key aborts |
+| `CAMR.eos_diag` | 0 | tables | table-vs-analytic error census, dumped at exit |
+| `CAMR.eos_warmstart` | 0 | PR | seed the branch Newton from the cache's most recent $T$ (CPU-only optimisation, breaks run-to-run bit independence) |
+| `CAMR.eos_warmstart_fixed` | 0 | PR | fixed-iteration seeded variant |
+| `CAMR.gerg_ext_c` | 1 | GERG, GERGTab | continuous extension sound speed; 0 = legacy 50 m/s (reproduction and bisection only; not a tuning knob) |
+
+Known deviations, recorded so they are not rediscovered. `Source/Hydro/PelantiShyue/hem_pelanti_shyue.H` still carries CO$_2$ constants of its own — `co2_P_sat_wagner` with $T_c = 304.13$ K, $P_c = 7.3773\times10^{6}$ Pa and a hard-coded 216.6 K triple point, a 20-point `co2_sat_state` saturation-density table, a literal `T_triple = 216.592` K in the sub-triple diagnostic, and `PsPhaseAPI` accessor defaults (`t_crit()` 304.13, `p_crit()` $7.3773\times10^{6}$, `t_triple()` 216.6) used only when the backend leaves the field unset — all duplicates of `EOS::` accessors and slated for removal. The four `EOS.H` files duplicate the whole entry set with no shared header; a shared-header question is open. PRTab's `hem_pr_state.H` and `hem_saturation_amrex.H` are eight-line forwarders to `PR/`, not copies (its README's "own copies" wording is wrong), and its README records a seam defect in the dome patch (the patch index clamp discards the last Hermite cell on the high edges). PR's `RYP2E` in-dome returns a saturation-mixture lever-rule energy; it is not a branch state and must not be written into a phase slot (the NSCBC pack lesson).
+
+## 8. Guards, contracts, diagnostics and validation instruments
+
+### 8.1 The contracts
+
+Six rules govern every survivor in this chapter. They are the difference between a floor that hides a defect and a floor that names one.
+
+| # | contract | status |
+|:--|:--|:--|
+| 1 | The EOS is a total function: a state, or "not a state" with the bound it missed. Never a substitute. | done (§7.2) |
+| 2 | ABSENT means no state exists; an absent phase is never queried. | honoured via `PsPhaseAPI.valid` and the presence regimes (ch. 4); the mixture-query audit leaves one plotfile derive |
+| 3 | Phase-state construction is checked, never repaired: `ps_phase_quot` returns an `exists` flag and callers branch on it. | live at the face, ctoprim and flux sites; promotion checked by default |
+| 4 | Every remaining floor is named, bounded, counted — or deleted. | the inventory in §8.3 is the list |
+| 5 | Operators declare preconditions and refuse. | the relaxation gates and the flash/MT refusal tables (§8.6) |
+| 6 | Validity propagates (`PsPhase` has a valid flag; `hem::State` does not). | partial |
+
+A seventh, "branch selection", is retracted: phase identity is asserted by the slot, not inferred (§7.2).
+
+### 8.2 Two categories of guard
+
+The organising principle separates what is derivable from what is structural. Category A, fluid and EOS constants — triple point, critical point, covolume, validity box — are derived from the fluid or the EOS and never tuned; each backend declares them once as domain metadata (`rho_min`, `rho_max`, `has_density_pole`, `T_crit`, `T_triple`, `P_crit`, `P_triple`), populated from first principles: $M/b$ for a cubic, the published validity edge for GERG. Category B, structural guards against singularities in the formulation — $\rho_k = m_k/\alpha_k$, $e_k = E_k/m_k$, mixture mass stored twice, branch-locked calls outside their domain — are fluid-independent and recur identically for any fluid. Fix B once, structurally; derive A per fluid.
+
+The seven guards of the original design, as they stand in the code:
+
+| # | guard | derived from | as implemented |
+|:--|:--|:--|:--|
+| G1 | $\rho_k$ inside $[\rho_{\min}, \rho_{\max}]$ | EOS domain metadata | lower bound only (`ps_guard::clamp_phase_density`, also catches NaN); the upper clamp is removed and the bounds are kept as validator V6 diagnostics |
+| G2 | $T_k$ inside $[T_{\min}, T_{\max}]$ | EOS domain | the EOS bracket itself (§7.2); `ps_temp_floor` is an opt-in energy-raising floor, default off |
+| G3 | $P_k$ sane | mechanical equilibrium $P_1 \approx P_2 \approx P_{\rm mix}$ | lower bound only, `P_FLOOR_PA` $= 1$ Pa, substitution by the host phase's pressure; the upper cap is removed |
+| G4 | $|E_k| \le e_{\rm scale}\,C$ | EOS domain | `ps_phase_e_cap` $= 10^{9}$ J/kg on the split credibility test in the energy resync |
+| G5 | one small-$\alpha$ threshold | conditioning of $m_k/\alpha_k$ | absorbed into presence: $\alpha_{\rm cond} = 2\times10^{-2}$ (ch. 4) replaces the slaved-trace-phase guard, which is dead |
+| G6 | coexistence gate on $[T_{\rm triple}, T_{\rm crit}]$ | EOS domain | the X3 eligibility question, through `eos.t_triple()`/`t_crit()`, with the runaway clause |
+| G7 | `URHO == m1+m2`, `UE1+UE2 == UEDEN` | conservation | `ps_resync_mixture_mass`, `ps_resync_phase_energy`; validator V4/V5 |
+
+Two removals carry refutations. Rejected: the per-phase pressure ratio cap (reject $P_k$ above 100× the mixture value) and the upper density clamp at $\rho_{\max}$ before every EOS call. Why: both were containment for pole-adjacent trace states ($\alpha_1 \sim 10^{-5}$, $\rho_1$ at 99.6 % of $M/b$, $P_1 = 2.62\times10^{10}$ Pa), and a discrete reject/accept predicate that flips cell-to-cell on trace-fiction cells injects grid-scale pressure noise — bisected on the pipe-break: roughness 1.06 with the cap, 0.12 without. The clamp was worse than the cap in kind: it replaced an off-domain evaluation whose garbage the low-bound test discarded with an on-domain evaluation whose garbage passed as trustworthy. The cure for the state they contained is presence: $\rho_k$ is never formed from a vanishing $\alpha_k$, so the pole-adjacent evaluation no longer exists. `[PS-GUARD] rej_high` and `rho_clamp_hi` stay as wired-to-zero tallies so a reintroduction is visible. Rejected: the slaved trace phase below $\alpha = 10^{-2}$ (same $P$, $T$, $c$ as the host). Why: superseded by the presence regimes, which do the same thing with a checked construction and a continuous corridor; `slaved_phase` has no caller.
+
+### 8.3 The guard inventory
+
+One row per surviving guard: where it lives, what it does, why it is allowed to. "Counted" means it reports on the `[PS-GUARD]`, `[PS-FOLD]` or `[PS-FLOOR]` line.
+
+| where | what | justification |
+|:--|:--|:--|
+| `PS_guards.H` `sanitize_phase_pressure` (called in `PS_ctoprim.H`, `PS_hllc.H`, `PS_umeth.cpp`) | an Independent minority phase's $P_k < 1$ Pa or NaN is replaced by the host phase's pressure; counted `rej_low`, `ctop_sub` | cubics return negative $P$ for deeply compressed or dome-adjacent states and $\sqrt{\gamma P/\rho}$ NaNs on it; substitution by the host, not clamping to the floor, avoids manufacturing a pressure gradient. The host itself can only be floored (`ctop_host_floor`) |
+| `PS_guards.H` `clamp_phase_density` (`PS_umeth.cpp`, `PS_nscbc.H`) | $\rho_k$ below `EOS::rho_min()` or NaN raised to $\rho_{\min}$; counted `rho_clamp_lo` | matches the archive's density-floor semantics; lower bound only |
+| `PS_hllc.H`, `PS_ctoprim.H` | a non-finite or non-positive $c_k$ from the EOS is set to 1 m/s | the wave-speed estimate needs a positive number; the state that produced it is already reported by V7 |
+| `PS_umeth.cpp` flux sanitiser | a non-finite flux component is zeroed; counted `flux_sanit` | every input is already finite-guarded, so a hit means the arithmetic itself produced $\infty\cdot0$ — a class the input guards cannot see |
+| `CAMR.cpp` reflux co-move | $|\Delta\alpha_1| \le 0.05$ per coarse–fine cell and $\alpha_1$ held in $[\alpha_{\min}, 1-\alpha_{\min}]$; counted `reflux_cap`, `reflux_clamp` | the coarse–fine correction moves conserved slots; $\alpha_1$ co-moves with a rate limit so one reflux cannot flip a cell's phase |
+| `CAMR.cpp` `clean_state` | $\alpha_1$ held to its definitional range $[0,1]$; a negative or non-finite partial mass set to 0 (phase becomes ABSENT); counted `mass_neg` with the mass created, `mass_nonfinite`; a non-finite $\alpha_1$ aborts (`[PS-STATE]`) | 0 and 1 are legal and mean the phase is absent; nothing is floored to a non-zero value. Measured: mass created is $6\times10^{-15}$–$7\times10^{-13}$ kg/m$^3$ per run, round-off. A non-finite $\alpha$ was once replaced by 0.5, inventing a half-and-half cell out of a NaN; it is not repaired |
+| `CAMR.cpp` `computeTemp` | the reported `UTEMP` is floored at $T_{\rm triple}$ under PS | a diagnostic slot only; named as a surviving silent floor that also masks a legitimately sub-triple per-phase $T$ |
+| `PS_relaxation.H` `ps_resync_mixture_mass` (`CAMR.ps_resync_mass`, default 1) | `URHO` re-derived from $m_1+m_2$ after hydro / coarse–fine, on cells whose phase pair is finite, positive and well-posed | mixture mass is stored twice and the wave-propagation update advances the copies apart (drift only across the hydro interval, bit-stable through every reaction stage; 0.4 % peak, growing to 100 % in a runaway). Global conservation identifies the phase pair as trustworthy: $\sum(m_1+m_2)$ grew smoothly (95.29 → 96.11 kg/m) while $\sum$`URHO` gained 35 % from nowhere. Rescaling the phases onto a corrupt `URHO` is rejected: it would amplify 41 kg/m$^3$ to $1.7\times10^{6}$ |
+| `PS_relaxation.H` `ps_resync_phase_energy` (`CAMR.ps_phase_e_cap`, default $10^{9}$ J/kg) | `UE1`, `UE2` rescaled at fixed ratio to sum to `UEDEN` after coarse–fine interpolation or regrid; if either $|UE_k|/m_k$ exceeds the cap the split is discarded for a mass-fraction split of `UEDEN` | `UEDEN` is the conserved, refluxed quantity; independent interpolation of each slot breaks the identity. Measured: $|UE_1|/m_1 = 1.4\times10^{15}$ J/kg arriving on an $\alpha_1 = 1.6\times10^{-5}$ cell, which a fixed-ratio rescale preserves exactly; the cap is three orders above the physical $10^{5}$–$10^{6}$ J/kg |
+| `PS_relaxation.H` `ps_apply_vanish_fold` | a phase with $\alpha_k < \alpha_{\rm vanish} = 10^{-8}$ is folded into the survivor (mass and energy conserved), plus the corridor reaps on $\rho_k < \rho_{\rm deg} = 0.5$ kg/m$^3$ and $e_k \notin [-2\times10^{6}, 2\times10^{7}]$ J/kg; counted `[PS-FOLD]` with masses moved | phase death is part of the model's discrete state (ch. 4), not a repair; $\rho_{\rm deg}$ splits the smallest legitimate Independent density in the battery (1.406 kg/m$^3$) from the crash value (0.076) |
+| `PS_relaxation.H` `ps_apply_tfloor_fold` (`CAMR.ps_tfloor_fold`, default 0) | opt-in: a phase colder than the threshold is folded away | a trace phase in an expansion fan can cool below any physical $T$; deliberately not bound to `ps_temp_floor`, whose semantics are the opposite (raise $e_k$ to keep the phase) |
+| `PS_relaxation.H` `ps_apply_floor` (`CAMR.ps_pres_floor`, `CAMR.ps_temp_floor`, both default 0) | opt-in, 2-D decks only: raise $e_k$ so $P_k \ge$ the floor (and $T_k \ge$ the floor) at fixed $\rho_k$; Independent phases only (`CAMR.ps_floor_indep`, default 1); `UEDEN` re-synced | a positivity net for the near-vacuum crater of a strong vent. It adds energy non-conservatively and is measured to be the largest cost in the 2-D step (ch. 9); gating it on Independent is justified by the budget diagnostic (`CAMR.ps_floor_budget`), which found ~99.9 % of the corridor legs it skips carry a reachable own-branch state, so the floor was injecting ~$4\times10^{5}$ J/step of spurious energy on physical low-$P$ corridor states whose host-slaved $P_k$ it does not feed |
+| `PS_promote.H` checked promotion (`CAMR.ps_promote_checked`, default 1) | a corridor phase is promoted to Independent only if its $(\rho_k, e_k)$ is reachable on its own branch; counted `[PS-PROMOTE] promote_refuse` | closes the abort channel where inherited-corrupt cells were promoted to full EOS clients; provably inert on the healthy path (refusals 0, 21/21 1-D cases bit-identical) |
+| `hem_pelanti_shyue.H` X3 eligibility | thermal and mass-transfer legs stand when either phase temperature lies outside $[T_{\rm triple}, T_{\rm crit}]$ (`CAMR.ps_coexist_action`, default 0); the runaway clause runs them anyway when a hi-side-only exit has $\max(T_1, T_2) > 2\,T_{\rm crit}$; counted `[PS-COEXIT-TH]` by cause | a liquid/supercritical-vapour contact is not a coexisting pair (the B10 over-flash). The factor 2 sits above the hottest legitimate phase in the validated envelope (400 K $= 1.32\,T_c$) and below the ratcheting sliver, which a standing gate compresses every step with its heat channel vetoed |
+| `hem_pelanti_shyue.H` X3 sub-stepping | 64 sub-steps per cell; counted `subcap` | the coupled Newton stalls on a cold start at one large $\mathrm{d}t$, so the kernel builds its own ladder; the cap bounds the ladder |
+| `hem_pelanti_shyue.H` flash | fires only in nominally single-phase cells ($\alpha_1 > 0.9$ or $< 0.1$, `ps_flash_alpha_thr` $= 0.10$), with smooth windows in $T$ (band $0.05\,(T_c - T_{\rm trip})$ inside the dome), in metastability (band `ps_flash_metastable_margin` $= 0.10$ around $(1\mp0.1)P_{\rm sat}$) and in $\alpha$; the per-step blend $1 - e^{-\mathrm{d}t/\tau}$ is capped at 0.2; refusals counted by cause `[PS-FLASH-REF]` | every window is a smooth function of state (the continuity invariant); the 10 % margin keeps saturated static contacts (B3) from false-triggering on wave-propagation dissipation; the 20 % cap bounds one step's phase creation |
+| `PS_nscbc.H` | `PACK_ETA` $= 0.05$, `FAN_NMAX` $= 256$, ghost pressure floor, the four zero-gradient refusals (§6.3) | the boundary refuses loudly rather than manufacturing a state |
+| EOS bracket fences | PR $[1, 5000]$ K; GERG $[216.592, 1100]$ K, $\rho \in [10^{-6}, 1500]$; no root aborts | §7.2 |
+
+Scheduled for removal (dead or unreachable, retained only so a reintroduction would be visible): `ps_guard::slaved_phase` and `ALPHA_SLAVE_THR` (no caller); `count_reject_high` / `rej_high` (the upper cap is gone); `count_rho_hi` / `rho_clamp_hi` (the upper clamp is gone); `count_nscbc_zg_lin` (the one-shot bound is gone); and the `def`/`E*` columns of `[PS-FACE]` (`face_diag::n_seen`, `n_drop`, `max_def`, `max_estar`, never incremented). `ps_dilute_energy_closure` (`CAMR.ps_dilute_closure`, default 0) is dormant.
+
+### 8.4 Settings forced under PS
+
+The base CAMR pipeline defaults would corrupt the PS state, so four are auto-overridden with a once-only warning when `ps_hydro != 0`. This is the only statement of them.
+
+| setting | default | forced | why |
+|:--|:--|:--|:--|
+| `CAMR.difmag` | 0.1 | 0 (`Hydro_umdrv.cpp`) | the artificial-viscosity pass touches every slot, breaking the `flx[UALPHA1] = 0` invariant and the wave-propagation phase-energy defect assumption |
+| `CAMR.allow_negative_energy`, `allow_small_energy` | 0 | 1 (`CAMR.cpp::reset_internal_energy`, `CAMR_construct_hydro_source.cpp`) | liquid CO$_2$ has a physical $e \approx -130$ kJ/kg on the PR scale; the positive-$e$ assert trips at $t=0$ and the reset path would floor `UEINT`/`UEDEN` through `RTY2E(small_T)` |
+| `CAMR.dual_energy_update_E_from_e` | 1 | 0 | an $e$-derived `UEDEN` write would corrupt the $m_1E_1 + m_2E_2$ accounting |
+| `CAMR.dual_energy_eta2` | $10^{-4}$ | 0 | selects the pure `UEINT = UEDEN − ρ·ke` reset, which is idempotent for PS state |
+| `CAMR.dual_energy_eta1` | 1.0 | 0 at ctoprim | `hydro_ctoprim` takes $(\text{UEDEN} - \text{ke})/\rho$ unconditionally, no `UEINT` fallback that would amplify round-off between the two |
+
+### 8.5 The post-hydro stage chain
+
+After each hydro advance (and coarse–fine correction) the reaction sequence `apply_ps_reaction` in `CAMR_advance.cpp` runs, in order: mass resync (`URHO` from the phases), phase-energy resync, the vanish fold, the temperature fold, the positivity floor, `clean_state`, relaxation (`CAMR.ps_do_relax`), `clean_state`, and the sources (flash). Folds run before floors, matching the standalone's `clamp_cons6`: with the floor first, a cell whose phase had just been folded away was never repaired (measured: 1132 cells at the 0.01 bar pressure floor, 76 % with $\alpha_1$ driven to $10^{-6}$). The validator and the mass probe fire at the labelled stage boundaries A (enter, post-hydro), A2 (post mass resync), B (post floor/fold/clean), C (post relaxation), D (post sources), which is what lets a jump in any invariant name the operator responsible.
+
+### 8.6 Diagnostics and validation instruments
+
+Nothing is on by default: a default build with every diagnostic off is bit-identical to one without them, and the counting that is always on (host builds only, compiled out under `AMREX_USE_GPU`) costs a few compares. The rule behind the split-by-cause tallies is that a guard which is never reached and a guard which is reached but never trips look identical from outside and need different fixes; `seen` is counted alongside `reject` for that reason.
+
+| flag / line | what it reports |
+|:--|:--|
+| `CAMR.ps_validate` (0/1/2) `[PS-VALIDATE]` | the invariant sweep at every stage: V1 finiteness of $\{\alpha_1, m_1, m_2, \rho, UE_1, UE_2, E\}$; V2 $\alpha_1 \in [0,1]$; V3 $m_k \ge 0$; V4 `URHO == m1+m2` and V5 `UE1+UE2 == UEDEN` to $10^{-10}$ relative (post-resync drift is $\sim2\times10^{-16}$; the post-hydro drift $\eta \sim 3\times10^{-4}$ trips at stage A by design); V6 $\rho_k \in [\rho_{\min}, \rho_{\max}]$; V7 $(\rho_k, e_k)$ reachable on phase $k$'s branch through the validity channel (never an aborting query); V8 the split-amplification ratio $(|UE_1|+|UE_2|)/|UE_1+UE_2|$ (healthy ~1.4, runaway 26; printed, not gated); V9 the extrema of $e_1$ and $e_2$ with locations. V6 and V7 are bucketed BULK ($\alpha_k \ge 10^{-2}$) and TRACE, because a trace violation is expected and a bulk one is a defect; the first V7 offender is printed in `probe_pr` form. Mode 2 aborts on the first bulk violation |
+| `CAMR.ps_diag_mass=1` `[PS-MASS]`, `[PS-GUARD]`, `[PS-FOLD]` | worst relative drift between `URHO` and $m_1+m_2$, count over $10^{-3}$, max partial-mass sum, max phase specific energies (the probe that localised the 0.4 % drift to the hydro interval in one run); the guard counters by cause (`seen`/`rej_low`/`rej_high`, `rho_clamp_lo/hi`, `slaved`, `flux_sanit`, `reflux_cap/clamp`, `ctop_seen/sub/host_floor`, the four `nscbc_zg` causes and `nscbc_flash`), then reset; fold counts and masses moved (vanish, tfloor, vacuum, corridor density and energy reaps, hysteresis events), printed only when non-zero. Same cadence: `[PS-RELAXFB]` (faces where the relaxed star construction fell back to the B.14 form; zero on the 1-D suite, persistent non-zero in production is a finding), `[PS-PROMOTE]` (promotion refusals and Independent-gated floor skips), `[PS-FLCAUSE]` (fluctuation refusals by cause and star side) |
+| `CAMR.ps_pres_diag=1` `[PS-PRES]`, `[PS-GATE]`, `[PS-DT]`, `[PS-DM x3]`, `[PS-X3]` | post-thermal $|P_1 - P_2|/\max$ residual split by whether the thermal leg ran and moved, ran and stood, or was gate-skipped; presence-gate refusals per sweep; thermal completeness $|T_1 - T_2|$ before and after (the measurement that showed the mode-4 target solve leaving 57–69 K residuals while X3 hits $1/(1+\mathrm{d}t/\theta)$); the mass-transfer census; and the X3 operator's outcome by cause (`ok`, `gate_stood`, `entry_refused`, `dead`, `newton_nonconv`, `tiny_nonconv`, `subcap`, and the $P_1 = P_2$ constraint's failures by `input`/`eos`/`slope`/`maxiter`), with a banner if every cell is structurally dead |
+| `CAMR.ps_coexit_diag=1` `[PS-COEXIT-TH]` | thermal-leg band exits `lo`/`hi`/`both`, continued, refused, runaway (the counting itself is always on) |
+| `CAMR.ps_flash_ev_diag>=2` `[PS-FLASH-REF]`; `CAMR.ps_mt_diag` `[PS-MTCAUSE]` | the flash kernel's and the mass-transfer kernel's refusal tables by cause, so "zero events" decomposes instead of staying a mystery; `seen` minus `eqsolve` must be fully accounted for |
+| ungated `[ps_flash]`, `[ps_mt]` | cumulative cells flashed / with finite-rate mass transfer, printed when the count increases |
+| ungated aborts `[PS-STATE]`, `[PS-EOS]`, `[GERG-EOS]`, `[PS-X3]` | non-finite $\alpha$; no-root inversion with $\rho$, $e$, branch, reachable bound and a `probe_pr` line; band exit under `ps_coexist_action=1` |
+| `CAMR.ps_strict_eos=<bits>` `[PS-STRICT]` | EOS repairs become aborts: 1 Newton no-root, 2 pressure floor, 4 the 1 K clamp |
+| `CAMR.ps_ptg_selftest`, `ps_relax_sweep`, `ps_x3_test` | 0-D self-tests run after initialisation, then exit (`main.cpp`): the P–T–Gibbs relaxation fixed point; a corner sweep of the relaxation; and the X3 acceptance harness — six reference states, fixed point route-independent and basin-independent at the projector's tolerance floor, and equal to the HEM flash of the cell invariants to $|P - P_{\rm HEM}|/P_{\rm HEM} \le 3.4\times10^{-5}$ |
+| `make USE_PS_DIAG=TRUE` (`-DCAMR_PS_DIAG`; wired in the `CO2_RiemannSuite` GNUmakefile only) | compile-gated so a default build is byte-identical (the B9 stiff leg is chaotically sensitive to unexecuted added code): `[PS-FLOOR]` under `CAMR.ps_floor_diag` (EOS calls, 1 K clamps, non-convergences locked and detected, pressure floors in use and probe-only, mass repairs with mass moved), `[DT-DIAG]` under `ps_dt_diag` (which cell sets the timestep), `[CELL i]` under `ps_cell_diag`, and the census machinery |
+
+Investigation-only diagnostics slated for removal, listed once: `ps_face_diag` `[PS-FACE]`/`[PS-W21]`, `ps_diag_alpha` `[PS-DIAG]`, `ps_prdiag` (isochoric modes 1/2 only), `ps_eovs_diag`, `ps_prehydro_diag`, `ps_t2_diag`, `ps_psat_diag`, `ps_diag_morph`, `ps_relax_verbose`, `ps_llf_diag`, `ps_harvest*`, `ps_dilute_probe`, `ps_m2_test`, `ps_asy1_probe`, `ps_floor_budget` (its verdict is recorded in §8.3), and the deprecated `eos_mlp` aliases.
+
+The health line. On a healthy run at the shipped defaults these read zero: `[PS-VALIDATE]` `nonfinite`, `alpha_oob`, `m_neg`, `rho_domain bulk`, `reachable bulk` (trace buckets may be non-zero at fronts; `massid`/`energyid` non-zero only at stage A); `[PS-GUARD]` `rej_high`, `rho_clamp_hi`, `slaved`, `nscbc_zg lin` (dead tallies — a non-zero is a bug), `flux_sanit`; `[PS-PROMOTE] promote_refuse`; `[PS-RELAXFB]` on the 1-D suite; `mass_neg_kg` at round-off ($\lesssim10^{-12}$ kg/m$^3$); every non-convergence counter in `[PS-FLOOR]`; `[PS-X3] dead` with `ok > 0`. `[PS-FOLD]` and `[PS-COEXIT-TH]` are expected to fire and are read for what they moved, not whether. The acceptance basis behind all of it: no stored CAMR output has authority; what counts are independently computed exact solutions, the conservation identities V4/V5, and the floor/no-root census with a target of zero.
+
+## 9. GPU portability and dormant features
+
+### 9.1 The device/host split
+
+The flux path is device-ready; the per-cell relaxation and source path is host-only. Per file, by construction pattern (`ParallelFor` = device kernels; `LoopOnCpu`/`MFIter` = host loops; `PsPhaseAPI`/`std::function` = the host callback EOS interface):
+
+| file | pattern | verdict |
+|:--|:--|:--|
+| `PS_umeth.cpp` (wave propagation, fluxes, deposits) | `ParallelFor`, one-shot host `ParmParse` reads cached before the kernel and captured by value; EOS through `AMREX_GPU_HOST_DEVICE` `EOS::REY2P*_liquid/_vapor` | device-ready |
+| `PS_hllc.H`, `PS_wavespeed.H`, `PS_presence.H`, `PS_promote.H` | device-annotated per-face / per-cell arithmetic; presence constants in one by-value POD read once on the host | device-ready |
+| `PS_nscbc.H` | device-annotated; `Params` by value from `BCfill.cpp` | device-ready (the `bcnormal` interior-copy branch is host-only, §6.2) |
+| `PS_ctoprim.H` | `ParallelFor`; the cached branch-locked EOS path is host-only | mostly device |
+| `PS_relaxation.H`, `PS_sources.H`, `hem_pelanti_shyue.H` | `LoopOnCpu`/`MFIter` host loops; `PsPhaseAPI` `std::function` callbacks; function-local static knob reads | host-only |
+| `PS_validate.H`, `PS_zerod_test.H`, the counters | diagnostics | host-only by design, compiled out or run on a host copy |
+
+The former device mirror of the relaxation kernels (`PS_relax_device.H`) no longer exists: after the finite-rate mechanical mode went it covered only two non-production modes, while the production X3 operator has no twin and the acceptance path is CPU-only. A GPU port starts from X3, not from a copy of the modes it replaced. The EOS ring caches are host-only (device queries bypass them); the GERG extension-sound-speed flag is the compiled-in default on device; and the `USE_OMP=TRUE` build is refused because those caches are not thread-safe.
+
+The decision that shapes the port: the standalone reference solver stays host-only, so there is no requirement to keep device kernels byte-shared with it. A CAMR device kernel is a frozen production variant — every knob's production choice hard-coded, the few numeric parameters passed as plain arguments, EOS through a device functor forwarding to `EOS::REY2PTS_phase` and bypassing the caches — and its correctness gate is a bit-match against the host kernel run with the production settings, on host, before any GPU build. The port is deferred to a GPU-capable environment.
+
+### 9.2 Where the time goes
+
+Measured on the 2-D pipe-break case (three-level AMR, exclusive self-time over five steps, total 7.3 s): `ps_apply_floor` 54 % (`RYP2E` plus a `REY2T` bisection, run at three sites — the reaction sequence, `post_regrid` and `avgDown`); `ps_source_masstransfer` 16 % (Gibbs $g = h - Ts$ per mixed cell); `wp_face_riemann` 8 % (per-face sound speeds); `ctoprim` 3 %; `ps_apply_relaxation` 0.9 %. The assumed hotspot, relaxation, is negligible; the `post_regrid`/`avgDown` cost that looked like AMReX bookkeeping was almost entirely floor EOS work. The floor's temperature solve has since been replaced by a single direct EOS evaluation and its per-phase leg gated on Independent (§8.3), so the 54 % is an upper bound on the current tree and the port worklist is ordered floor, then mass transfer and flash, then the flux pass. The presence branches make face construction more branchy than a floor-everything path; the divergence cost at front cells is bounded by the front-cell fraction and unmeasured, and belongs on a GPU-build checklist rather than being asserted away.
+
+### 9.3 Invariants a port must keep
+
+No `getenv`, `ParmParse` or function-local statics inside per-cell or per-face code: host-read once, captured by value in one params struct (the `PsPres` pattern). EOS in new per-cell code goes through the device-callable surface, never `PsPhaseAPI`. No cross-cell reductions or atomics in the solution path: determinism and the reflection-symmetry invariant of the 2-D case (mirror asymmetry $\sim4\times10^{-11}$) depend on it; the wave-propagation deposit is already a race-free per-cell gather, and any device counter would be a deterministic `ReduceOps` sum, never `atomicAdd`. Host-only diagnostics never migrate into kernels; when enabled under a GPU build they take a device-to-host copy. Unported paths fail loud — the one known exception is the `bcnormal` interior copy (§6.2).
+
+### 9.4 Dormant and experimental features
+
+Transverse acoustic coupling, `CAMR.ps_wp_transverse=2` (default 0; 1 is the contact-only LeVeque transverse correction of the wave-propagation scheme, exact no-op for 1-D-aligned flow). Mode 2 adds an analytic acoustic eigen-projection of each normal fluctuation into the transverse direction. It is stable and symmetric to machine precision, but it does not fix what it was built for: the pipe-break's fine-resolution checkerboard is a $y$-direction odd–even in the $x$-velocity, a shear mode, and an acoustic operator carries transverse momentum passively and gives it no dissipation; the shear/contact field is linearly degenerate ($\lambda = u$) so upwinding gives none either. Its effectiveness numbers (transverse odd–even roughly halved at coarse resolution) were taken before a defect in the eigenvector was fixed (the energy component used a loop index in place of the sound speed) and have never been re-measured; only the stability half of the gate has been re-run. It stays experimental and off.
+
+Targeted transverse-shear dissipation, `CAMR.ps_shear_diss` (default 0, coefficient ~0.2–0.5 when used): a conservative flux-form damping of the transverse velocity's odd–even, gated by a Jameson sensor $s = |\Delta_{LR} - \tfrac12(\Delta_{LL}+\Delta_{RR})| / (|\Delta_{LR}| + \tfrac12|\Delta_{LL}| + \tfrac12|\Delta_{RR}| + \varepsilon)$, with the consistent energy flux partitioned by mass fraction into `UE1`/`UE2`, $\alpha$ untouched, skipped within two cells of a domain edge. Coarse test: a monotone ~3× knock-down at coefficient 0.5 with symmetry at $3\times10^{-15}$. The production decks set it to 0 and use physical viscosity (`CAMR.ps_mu`) instead: a dissipation band-aid tuned to a grid mode is the kind of threshold the ground rules forbid, and the wavelength test (the mode shrinks 0.094 → 0.026 m from 256 to 512 cells) shows it is a numerical odd–even, not a physical Kelvin–Helmholtz billow, so it is legitimately damped by whatever mechanism the model already has. Dormant.
+
+Also dormant, default off: `ps_dilute_closure` (thermal-equilibrium closure of a vanishing phase's energy, superseded by presence), `ps_tfloor_fold`, `ps_pres_floor`/`ps_temp_floor` in 1-D, the mode-4 relaxation chain and its `ps_mech_close`/`ps_mt_tau` knobs (kept for A/B behind the canonical mode 5), and `eos_warmstart`.

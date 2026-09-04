@@ -155,7 +155,7 @@ only builds `Sod` and `SodPlusSphere` (GammaLaw).
 | `full_suite.py` + `err_vs_analytic.py` | Case table (`CASES`) and CAMR-vs-standalone matched runs; `PS_FROZEN=1` mode | Frozen-limit ranking vs exact | standalone binary `ppm_1d_ps_wp` |
 | `hem_limit.py` | τ-sweep on B4/B9 towards the HEM limit | Approach rate to equilibrium (VALIDATION tests 1–3) | `exact_{B4,B9}_pr.csv` |
 | `inputs.dt7_shocktube` + `dt7_shocktube.py` (N=1000, ~70 min; N=248 quick) | SINTEF DT7-4.1 saturated two-phase shock tube, 12 m, 25 ms | P*, shock position, θ-family match against digitized Fig. 4 | `fig4_digitized_curves.csv` (untracked) |
-| `flashing_front.py` (probe #31) | 1-D supercritical tube venting to 1 bar | Vented mass at 80 µs vs boundary-free reference (2.2753; v2 pin 2.2474) | self-contained |
+| `flashing_front.py` (probe #31) | 1-D supercritical tube venting to 1 bar | Vented mass at 80 µs vs the boundary-free reference 2.3428 (healthy run; 2.2753 was the aborting-reference value, superseded); v2 pin 2.2474 | self-contained |
 | `gen_convergence.py` / `conv_montage.py` | N=128/256/512 for all cases | Self-convergence ratio, L1 vs exact | `ANALYTIC` profiles |
 | 0-D self-tests (`CAMR.ps_ptg_selftest`, `ps_relax_sweep`, `ps_x3_test`) | run after init, exit | Fixed-point / route- and basin-independence of the X3 relaxation | self-contained |
 
@@ -175,7 +175,7 @@ plan stages, not cases.)
 | **`CO2_TBlowdown`** — closed 1-D pipe, 100 bar/320 K supercritical → 1 bar vent through NSCBC (`inputs.base` shared physics, `max_step=300`, σ=0.25, wp) | `inputs-sym-{x,y}-{lo,hi}` (vent on each face; NSCBC dispatch on all faces), `inputs-x-amr` (level-1 `ptag`, C-F/reflux) | Orientation invariance of the sliced profiles; AMR completion to `stop_time`; `ps_validate=1` zero violations; probe-#27 vented-mass QoI | **No** — survival + validator only; the profile comparison is by hand |
 | **`CO2_PipeBreak`** — 2×1 m, 256×128 base, `max_level=2`, saturated reservoir 40 bar/280 K α₁=0.05, choked characteristic inlet, 20 bar ambient; **mode 2, θ=MT τ=1e-3, flash off, μ=2** (note: a different relaxation configuration from the 1-D defaults) | `inputs.satjet_demo2` (505 steps to 2.5 ms, ~50 min on 6 ranks; chk every 50), `inputs.satjet_demo3` (atag 0.01, `n_error_buf 4`, per-face NSCBC on xhi/ylo/yhi) | Mirror symmetry max\|ρ(y)−ρ(1−y)\| (satjet ~4e-11), min P / min-max ρ / min T / no NaN, `[ps_mt]` active; step-3669 abort cleared by 3b/3c (`chk_sj2_03650→3700`); demo3 step-50 centerline `max\|d²α₁\|` 1.18e-3→1.06e-3, spurious extrema 4→2 | `symchk.py`, `chkplt.py`, `imgamr.py` exist; **no acceptance script**; BASELINE.md rungs 1–4 cite `inputs.scjet`/`inputs.satjet`, which no longer exist |
 | `CO2_ADV2D` — periodic smooth diagonal α advection | `inputs` (OOA vs translated IC), `inputs-fb-rk2` (static fine box, `ps_bl_reflux`) | L1(α) order of accuracy (wp 6.80e-4 at 64²); mass and ρE conservation to round-off via `sum_interval` | scorer lives in the standalone repo |
-| `CO2_XC2D` — diagonal cross-critical contact, `max_level=1` | `inputs` | Ray-diff of AMR vs uniform-256 (Δα₁ 8.5e-8 at contact, rel ΔUE1 1.9e-4 at the C-F edge) | README protocol; **known red** (aborts at coarse step 22 under wp/AMR, item WP-CF-2D) |
+| `CO2_XC2D` — diagonal cross-critical contact, `max_level=1` | `inputs` | Ray-diff of AMR vs uniform-256 (Δα₁ 8.5e-8 at contact, rel ΔUE1 1.9e-4 at the C-F edge) | README protocol; runs to `stop_time` with the default `ps_bl_reflux=2` (aborts at coarse step 22 only without the co-move); ray-diff numbers predate wp and need re-measuring |
 | `CO2_B4` — 1-D-in-x cross-critical with AMR box | `inputs`, `inputs-cf-contact` (+3 superseded) | C-F reflux on a fan crossing the interface (wp .044/.132/.054) | no |
 | `CO2_Sod` — single-fluid PR, no PS | `inputs-x` | PR backend hello-world, survival | no |
 | GammaLaw legacy `Sod`, `SodPlusSphere`, `DoubleRamp`, `ReReTest`, `MovingEBCases` | upstream decks | upstream CI smoke (Sod, SodPlusSphere only) | CI |
@@ -298,7 +298,41 @@ PRIMER and the two derivations.
   re-recorded on the Mac with the rebuilt 2-D exe before any 2-D-affecting
   edit: `Exec/regen_refs.sh 2d PRE && Exec/regen_refs.sh windows PRE`.
 
-### 3.5 Two configurations, stated once
+### 3.5 Phase-1 findings (2026-09-04) — add to the §4.2/§4.3 lists
+
+Found while writing `docs/` against the code:
+
+- `ps_presence_relax_gate` hysteresis branch and the `ps_bc_copy_interior`
+  copy branch are inside `#if !defined(AMREX_USE_GPU)`: a device build
+  silently runs the strict gate / the linear-acoustic `bcnormal` path. Rule 9
+  says unported paths fail loud → make both abort under GPU (mechanical, but
+  behaviour-changing on GPU only: `[DECIDE-25]`).
+- `GERG_EXT_C` is read by `getenv` as a fallback as well as by
+  `CAMR.gerg_ext_c` — the last env knob (rule 20). Remove the getenv.
+- `computeTemp` (`CAMR.cpp`) clamps α to [1e-6, 1−1e-6] and gates its
+  per-phase query at a private ε = 1e-3 inside the corridor — a surviving
+  trace-floor copy; add to the `[DECIDE-16]` threshold table.
+- `USE_PS_DIAG` is wired only in `Exec/CO2_RiemannSuite/GNUmakefile`; move
+  to `Exec/Make.CAMR` so 2-D decks can use it.
+- tex/code mismatches beyond §3.2: tex §4.4 α_birth 2e-2 (code 4e-2 —
+  fixed in the revised tex), tex §4.3 "default `ps_mt_tau_model=2`" (code 0;
+  X3 evaluates Γ_SRT with no τ), tex §5 α_cond derived from η_max 5.2e-4
+  (code uses the 2-D 9.6e-4). The revised tex keeps its `file:line` anchors
+  and ~12 dated sentences — a Phase-2 tidy.
+- `DESIGN_ps_extinction` says the per-step MT caps (0.9·m_donor, 2·m_receiver,
+  refuse-to-extinguish) retire under E.1; they are still in both the split
+  source and the X3 Newton box. Documented as-is.
+- `ps_cmix_model`, `ps_theta_model`, `ps_hrm_theta`, `ps_presence` are simply
+  unread (no abort trap), unlike the tex "retired keys" list claims → they
+  join the `ps_retired_keys()` table.
+- The XC2D "known red" entry in earlier versions of this plan was wrong: the
+  step-22 abort occurs only with `ps_bl_reflux=0`; corrected above.
+- PR's coexistence gate switches mass transfer off below ~20 bar when the
+  trace phase alone crosses T_triple (100 % of cells with zero flash rate at
+  8–12 bar under PR vs 16 % under GERG) — recorded in MODEL ch. 7/DECISIONS as
+  an open physics observation, not a cleanup item.
+
+### 3.6 Two configurations, stated once
 
 The 1-D acceptance battery runs bare defaults (`ps_relax_mode=5`,
 `ps_flash_from_absent=1`, τ = 1e-7); the 2-D pipe-break decks pin
@@ -552,7 +586,7 @@ is resolved for free by refactor item 1 if you accept `[DECIDE-13]`).
 | `CO2_PipeBreak/inputs.satjet_demo2`, `inputs.satjet_demo3` (pin `CAMR.ps_lw_skip_contact = 2` in demo3 per OUTSTANDING §1; fix banners) | — |
 | `CO2_TBlowdown/inputs.base`, `inputs-sym-{x,y}-{lo,hi}`, `inputs-x-amr`; `inputs-x` collapsed to `FILE = inputs.base` + prefix, `max_step`/`stop_time` made consistent | — |
 | `CO2_ADV2D/inputs`, `inputs-fb-rk2` | — |
-| `CO2_XC2D/inputs` (known red; README says so) | — |
+| `CO2_XC2D/inputs` (ray-diff numbers to be re-measured under wp) | — |
 | `CO2_B4/inputs`, `inputs-cf-contact` (the measured C-F reflux regression) | `CO2_B4/inputs-fixedbox`, `inputs-stalled`, `inputs-nearstalled`, `inputs-flashtest` (superseded experiments; B3/B11 cover the stalled contact) |
 | `CO2_Sod/inputs-x` — or delete the case if single-fluid PR is not a supported configuration (`[DECIDE-20]`) | — |
 | upstream `Sod`, `SodPlusSphere` (CI) | `DoubleRamp`, `ReReTest`, `MovingEBCases` — upstream demos with no test value on this branch; keep untouched if you intend to merge back to `development` (`[DECIDE-21]`) |
@@ -693,7 +727,7 @@ Tag `pre-cleanup-2026-09-04` first.
 | Phase | Content | Gate | Needs |
 |---|---|---|---|
 | 0 | Tag; write `docs/GROUND_RULES.md` and this plan into `docs/`; fix the `.gitignore`; track `characterization/`, `fig4_digitized_curves.csv`; vendor the exact references; `regen_refs.sh`; `characterize.py --defaults`; record `PRE` fingerprints (1-D) and the two 2-D restart windows | gate green, fingerprints stored | **DONE 09-04** except the 2-D windows (need MPI on the Mac: `Exec/regen_refs.sh windows PRE`) and `GROUND_RULES.md` (Phase 1) — commits `66588de…b5b5a8b` |
-| 1 | Docs: write MODEL_AND_ALGORITHM (incl. the eight WORKLOG-only items), DESIGN_DECISIONS, VERIFICATION, RUNNING, FUTURE_WORK, tex revision; new README.md; module READMEs; then delete the 31 source files | doc-only | `[DECIDE-11]`, `[DECIDE-14]` |
+| 1 | Docs: write MODEL_AND_ALGORITHM (incl. the eight WORKLOG-only items), DESIGN_DECISIONS, VERIFICATION, RUNNING, FUTURE_WORK, tex revision; new README.md; module READMEs; then delete the 31 source files | doc-only | **DONE 09-04** (docs commit + separate deletion commit; revert the deletion with `git revert <sha>` if anything is missed — everything is also at tag `pre-cleanup-2026-09-04`) |
 | 2 | Stale-comment fix list §4.2 + comment policy pass, file by file (hem, PS_relaxation, PS_umeth, PS_hllc, PS_nscbc, PS_sources, PS_guards, PS_ctoprim, PS_presence/promote, EOS, core) | bit-identical fingerprint after each file (comment-only edits must produce an identical binary; `cmp` the exe as the fastest check) | none |
 | 3 | Dead code (a): the provably unreachable list; retired-key table; Make.package/README inventories | IDENTICAL fingerprints, identical restart windows | none |
 | 4 | Duplication/refactor §4.4 items 2–9, 11 (helpers, counters, constants at unchanged values, EOS contract header, file splits) | IDENTICAL | `[DECIDE-15]`, `[DECIDE-16]` |
@@ -736,6 +770,7 @@ paced by the run in phase 8.
 | 22 | Run-data triage rows (§5.3) | as tabled |
 | 23 | Standalone `suite/exact_*.csv` committed on your side before vendoring | **DECIDED 09-04: vendor.** Note: only `profiles/*.csv` were committed in the standalone; the `exact_*.csv` were untracked there, so the CAMR copy (`refs/exact/`, commit `60db9d7`) is now the only version-controlled one — commit them in co2-eos-cfd too |
 | 24 | B4-flatness reference configuration (margin 0.10 vs 0) | **DECIDED 09-04: 0.10** (code default); drop the dead env in check 2 in Phase 6 |
+| 25 | GPU builds silently take the strict relax gate and the `bcnormal` outflow path (`#if !GPU` branches) — abort instead? | yes (rule 9) |
 
 ---
 
@@ -747,11 +782,12 @@ paced by the run in phase 8.
   on the rebuilt exe, else it is a reflux issue.
 - W-D5: corridor face-state identity in 2-D (0.05–0.11) never re-measured;
   `[PS-W21]` 2-D saturation.
-- NSCBC-2: B4 NSCBC u-error 0.38 vs bcnormal 0.126 — property of the invariant
-  formulation, open question.
+- NSCBC on B4: the u-error 0.38 vs 0.126 is a far-field-target artefact (per-face
+  `ps_bc_p_amb_xlo` reproduces interior-copy to every digit) — closed, recorded in
+  DESIGN_DECISIONS; what remains open is a "far field = this face's IC" mode.
 - tex caveat (ii): SRT morphology length D = 0.1 m placeholder vs DZ-defensible
   2.5e-4 m; DT7 gives θ_eff ≈ 0.08·D.
 - F0.4: the flash kernel seeds gradually through the corridor rather than at
   α_birth — measure before redesigning.
-- XC2D known red (WP-CF-2D at coarse step 22).
+- XC2D ray-diff protocol never re-measured under wp (the step-22 abort only occurs with `ps_bl_reflux=0`).
 - Σ transport (FUTURE_WORK), 3-D jet reconnaissance, solid phase — parked.

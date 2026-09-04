@@ -1,64 +1,24 @@
-# CO2_XC2D — 2D diagonal cross-critical CO2 Riemann (AMR C-F gap probe)
+# Exec/CO2_ADV2D — smooth diagonal two-phase advection (order of accuracy)
 
-A genuinely 2D two-phase test built to make the Pelanti–Shyue AMR
-coarse-fine consistency gap (task #2 / #218) **measurable**.  Same two
-cross-critical states as `CO2_B4`, but the α-contact is the anti-diagonal
-`(x-xlo)/Lx + (y-ylo)/Ly = 2*x_diaph`, so the y-face WP-α transport and
-the y-face phase-energy defect — identically zero in the 1-D-in-x B4 —
-are genuinely active.
+A smooth periodic volume-fraction field $\alpha_1(x,y) = \bar\alpha + a\,\sin(2\pi k_x x)\sin(2\pi k_y y)$
+($\bar\alpha = 0.5$, $a = 0.25$, $k = 1$; `prob.alpha_pow = 3` gives the steeper $\sin^3\sin^3$ profile) is advected
+diagonally at uniform velocity $(u_0, v_0) = (100, 100)$ m/s and uniform pressure $P_0 = 80$ bar, phase 1 on the
+liquid branch at 270 K and phase 2 on the vapour branch at 330 K. With no pressure gradient there is no acoustic wave
+and the exact solution is the translated initial condition, so the $L_1(\alpha_1)$ error at `stop_time` against it
+gives a clean convergence rate for the non-conservative slot, and the partial mass $\alpha_1\rho_1$ ($\rho_1 \ne
+\rho_2$) gives a conserved-field companion. Relaxation, mass transfer and flash are off (pinned to 0) so the test is
+pure hydro. Periodic in both directions.
 
-## Why it exists
+    make -j8 COMP=gnu DIM=2 USE_MPI=TRUE Eos_Model=PR
+    for N in 32 64 128; do mpiexec -np 4 ./CAMR2d.gnu.MPI.PS.PR.ex inputs amr.n_cell="$N $N" amr.plot_file=plt_$N; done
 
-The WP-α per-cell source (`dsdt[UALPHA1]`) and the WP phase-energy
-defect (`dsdt[UE1]/[UE2]`) are NOT captured by CAMR's flux register, so
-they are not refluxed at coarse-fine boundaries.  The mixture-conserved
-slots (URHO, UM1RHO1, UM2RHO2, momentum, UEDEN) ARE refluxed, and the
-defect is a zero-sum split correction (defect_UE1+defect_UE2=0) so
-UEDEN and UE1+UE2 stay consistent through reflux.  The un-synchronized
-part therefore lives only in the NON-conserved α₁ field and the
-phase-energy SPLIT (UE1 vs UE2 individually) at the C-F boundary layer.
-`avgDown` re-syncs everything UNDER the fine grid, so the residual is a
-one-coarse-cell-layer effect at the C-F boundary.
+| Deck | Purpose |
+|---|---|
+| `inputs` | Single-level OOA sweep, `stop_time = 1e-3` s, CFL 0.4, wp at `ps_wp_order = 2`; add `CAMR.ps_wp_limiter = none` for the unlimited Lax–Wendroff correction when measuring the design second-order rate (the van Leer limiter clips smooth extrema). |
+| `inputs-fb-rk2` | Static level-1 box $[0.375, 0.625]^2$ on a 32² base, `stop_time = 5e-4`, `CAMR.sum_interval = 20`, `ps_bl_reflux = 1`: the profile advects through the fixed coarse-fine interface every step, so total mass and $\rho E$ must be conserved to round-off in the printed sums. |
 
-## Build
-
-Same variant as CO2_B4 (2D, gnu, PS hydro, RealFluidCO2, non-MPI here):
-
-    export AMREX_HOME=<path-to-amrex>
-    make -j8 USE_MPI=FALSE NO_MPI_CHECKING=TRUE
-
-(The AMReX objects can be seeded from a warm CO2_B4 build to skip the
-AMReX compile.)
-
-## Runs used to quantify the gap (2026-07 session, task #2)
-
-    EXE=./CAMR2d.gnu.TPROF.PS.ex
-    # 2-level AMR (128 base + 1 level, HLLC, Godunov, relax off):
-    $EXE inputs amr.max_level=1 max_step=40 amr.plot_int=40 amr.plot_file=plt_amr_
-    # uniform-fine reference at the AMR finest resolution, same time:
-    $EXE inputs amr.max_level=0 amr.n_cell="256 256" \
-        stop_time=1.4334906e-4 amr.plot_int=100000 amr.plot_file=plt_ref256_
-
-Extract a ray through the diagonal contact and diff (AMReX fextract +
-numpy); see the session notes:
-
-    fextract -d 0 -y 0.5 -v "alpha_1 alpha1_rho1_E1 pressure" -s ray.dat <plt>
-
-## Result
-
-Comparing 2-level AMR vs uniform-256 reference at t=1.4335e-4 along the
-y=0.5 ray (refined band x∈[0.314,0.566]):
-
-| quantity | interior (|x-0.5|>0.2) | at contact / C-F edge |
-|---|---|---|
-| \|Δα₁\|            | 0            | 8.5e-8  (at contact x≈0.50) |
-| rel \|ΔUE1\|       | ~1e-7 (roundoff) | ~1.9e-4 (at C-F edge x≈0.566) |
-
-The error is zero in the interior and concentrates at the contact /
-C-F boundary — the signature of the un-refluxed WP-α source and
-phase-energy defect.  Magnitude is small (α ~1e-7, phase split ~1e-4)
-even with the y-face terms fully active, confirming a low-priority
-C-F *accuracy* effect rather than a conservation violation.  This ray
-diff is the regression target for any future reflux fix (options A/B/C
-in the task #2 notes): a correct fix should drive the C-F-localized
-\|ΔUE1\| / \|Δα₁\| down toward the interior roundoff floor.
+What to check: $L_1(\alpha_1)$ at 64² is 6.80e-4 with the second-order correction (5.78e-3 at first order — a bare
+`ps_flux = wp` without `ps_wp_order = 2` silently runs first order, 7.9× worse); the ratio between successive grids
+approaches 4 on the unlimited runs; the fine-box run's mass and $\rho E$ sums drift at round-off only. The scorer that
+differences the plotfile against the translated IC is `suite/adv2d_ooa.py` in the standalone repository; the numbers
+are recorded in `docs/VERIFICATION.md`.

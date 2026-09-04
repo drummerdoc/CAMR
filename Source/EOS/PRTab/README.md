@@ -1,55 +1,29 @@
-# PRTab EOS backend — tabulated Peng-Robinson CO₂
+# Source/EOS/PRTab — tabulated Peng–Robinson CO₂ backend
 
-**Status:** shipped, default-on table path (`CAMR.eos_table = 1`).
-`Eos_Model := PRTab` in the Exec GNUmakefile selects it.
+The PR backend with the bracketed inversion $T(\rho,e)$ replaced by bicubic table lookups, re-closed on the analytic
+PR surface: the table predicts $T$, the state is rebuilt from $(T,v)$ on the predicted branch (`hem::state_from_T_v`,
+or `state_from_T_x` inside the dome), so every returned quantity is PR-consistent. Same `namespace EOS` contract and
+branch-locked per-phase surface as `../PR` (`REY2*_phase`, `PYT2RE_*`, `co2_sat_LV`, `T_crit`, `T_triple`, …; see
+`../PR/README.md`); saturation curve and derivative closures come from the PR machinery. `Eos_Model := PRTab`.
 
-> Historical note: this directory began life as an MLPx2 (neural-net
-> inference) scoping skeleton that forwarded everything to PR.  The MLP
-> plan was retired and the directory was rebuilt around bicubic table
-> interpolation; the MLPx2 backend itself was deleted from the tree.
-> This README describes what is actually here now.
+| File | Purpose |
+|---|---|
+| `EOS.H` | The contract; every hot function routes through `prtab_state_from_rho_e[_phase]`, the one place the table is consulted. |
+| `prtab_bicubic.H` | Catmull–Rom bicubic in $(\log_{10}\rho, e)$ over three tables (auto, liquid, vapour) plus a clamped Hermite refinement patch over the dome box, C0+C1 at its seam; declares the generated arrays `extern`. |
+| `hem_pr_state.H`, `hem_saturation_amrex.H` | Include-forwarders (8 and 4 lines) to `../PR`: one physical definition, no include shadowing (both directories name their header `EOS.H`, so `../PR` must not be on the include path). |
+| `tools/gen_table.cpp`, `tools/build_table.py` | AMReX-free PR sampler and the assembler writing `prtab_table_data.cpp` / `prtab_table_params.H` (git-ignored). |
 
-## What this is
+Build: `make tables` once per checkout (`g++`, `python3` with numpy/scipy; default grid 256×256, patch 96² nodes,
+refinement tolerance $2\times10^{-3}$), then build as usual; `Exec/Make.CAMR` refuses to build without the generated
+files; `make clean-tables` removes them. Guards fall back to the exact PR solve rather than extrapolate: whitened
+$(\rho,e)$ outside 4σ of the sampled box, $\rho$ below the table extent, predicted $T \notin [150,1200]$ K, or a
+degenerate saturation pair near $T_c$. Dials (host runtime; on device the table is always on): `CAMR.eos_table`
+(default 1; 0 = pure PR, one build gives both A/B arms; alias `eos_mlp` aborts if both are set),
+`CAMR.eos_table_branch` (default 1: branch-locked calls use the metastable liquid/vapour tables; 0 = the auto table,
+single-phase cases only), `CAMR.eos_table_auto` (default 1; 0 = analytic PR on the auto path only), `CAMR.eos_diag`
+(default 0; 1 = per-call-site table-vs-PR error accumulation to `prtab_diag.txt` at exit, host and serial only).
 
-A drop-in `namespace EOS` backend with the same extended PS contract as
-`Source/EOS/PR`, where the expensive part of the forward solve — the
-Newton inversion T(ρ, e) — is replaced by bicubic table lookups:
-
-* **Base tables** (`TBL_T`, `TBL_TL`, `TBL_TV`): Catmull-Rom bicubic in
-  (log₁₀ρ, e) over the full domain, one table per branch lock (auto /
-  liquid / vapor).
-* **Dome-refinement patch**: a Hermite bicubic patch (values + gradients,
-  `prtab_patchT`) over the saturation-dome box where the base grid is too
-  coarse, with its boundary row pinned to the base surface for a C0+C1
-  seam.  (Known defect at HEAD: the patch index clamp discards the last
-  Hermite cell, breaking the seam on the high edges — AUDIT 2026-08-24
-  A5.)
-* **Guards**: out-of-distribution and range fences around the predicted T;
-  any rejection falls back to the exact PR solve in `hem_pr_state.H`
-  (PRTab carries its own copies of `hem_pr_state.H` /
-  `hem_saturation_amrex.H` so it never include-shadows the PR backend).
-
-Everything the tables do not cover (saturation curve, per-phase entry
-points, derivative closures) is served by the same device-inline PR
-machinery the PR backend uses.
-
-## Dials
-
-* `CAMR.eos_table` (default **1**): use the tables for the forward solve;
-  0 = pure PR.  (`CAMR.eos_mlp` is a deprecated alias for the same knob;
-  do not use both.)
-* `CAMR.eos_table_auto` (default 1): allow the auto (branch-unlocked)
-  table; alias `eos_mlp_auto`.
-
-## Building the tables
-
-The generated sources (`prtab_table_data.cpp`, `prtab_table_params.H`)
-are git-ignored.  Generate them once per checkout:
-
-    cd Exec/<case> && make tables
-
-which compiles `tools/gen_table.cpp` (an AMReX-free HEM_NO_AMREX build of
-the PR solve), samples the branch grids, and runs `tools/build_table.py`
-to assemble the tables and the dome patch.  `make clean-tables` removes
-them.  The Make.CAMR PRTab block fails early with a clear message if the
-tables are absent.
+Fidelity vs PR on the 2-D pipe-break (matched time, base level): flat interpolation error $4.4\times10^{-6}$ in $P$,
+$3.3\times10^{-6}$ in $T$, $1.9\times10^{-7}$ in $\rho$ (rel-L2) for ~50 steps, then chaotic shear-layer divergence
+saturating at ~1 % $\rho$, 0.6 % $P$, 0.8 % $T$, 3.6 % $\alpha_1$ by 1.5 ms; front speed 283.58 vs 283.95 m/s (0.13
+%), inlet velocity and pressure to four figures. Fit for use; `docs/MODEL_AND_ALGORITHM.md` ch. 7.
