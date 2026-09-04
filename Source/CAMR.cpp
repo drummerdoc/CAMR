@@ -541,10 +541,7 @@ CAMR::init()
   // to the interpolation.  Retire-candidate: see docs/DESIGN_DECISIONS.md
   // §7 O-8.
   {
-    static int dg = -1;
-    if (dg < 0) { int t = 0; amrex::ParmParse pp("CAMR");
-                  pp.query("ps_diag_alpha", t); dg = t; }
-    if (dg != 0) {
+    if (ps_diag_alpha() != 0) {
       amrex::Print() << "[PS-DIAG] L" << level
                      << " post-C-F-interp(init): alpha1 in ["
                      << S_new.min(UALPHA1, 0) << ", " << S_new.max(UALPHA1, 0)
@@ -822,10 +819,7 @@ CAMR::post_timestep(int /*iteration*/)
     // clean_state, to attribute a drive toward a pure phase to the reflux.
     // Retire-candidate: see docs/DESIGN_DECISIONS.md §7 O-8.
     {
-      static int dg = -1;
-      if (dg < 0) { int t = 0; amrex::ParmParse pp("CAMR");
-                    pp.query("ps_diag_alpha", t); dg = t; }
-      if (dg != 0 && level < finest_level) {
+      if (ps_diag_alpha() != 0 && level < finest_level) {
         amrex::Print() << "[PS-DIAG] L" << level << " post-reflux+avgdown: alpha1 in ["
                        << S_new_crse.min(UALPHA1, 0) << ", "
                        << S_new_crse.max(UALPHA1, 0) << "]\n";

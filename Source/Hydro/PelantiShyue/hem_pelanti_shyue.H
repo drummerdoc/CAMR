@@ -34,65 +34,32 @@
 #include <limits>
 #include <cstdlib>
 #include <cstring>
-#include <string>            // ps_knob_str
+#include <string>            // ps_dial_string
 #include <AMReX.H>           // amrex::Abort (dial-contract violations)
-#include <AMReX_ParmParse.H> // CAMR.* runtime dials
 #include "PS_constants.H"   // ps_const:: shared numeric floors
+#include "PS_dials.H"       // ps_dial_int / ps_dial_real / ps_dial_string
+#include "PS_counters.H"    // PsCounters: the diagnostic-counter store
 
 namespace hem {
 
 // ---------------------------------------------------------------------
 //  Runtime dials.  Every dial is a CAMR.* ParmParse key read once per
-//  process into a function-local static, so the configuration lands in
+//  process into a function-local static through ps_dial_* (PS_dials.H),
+//  which adds the resolved value back so the configuration lands in
 //  job_info.  Safe because every kernel here is host-only.
 // ---------------------------------------------------------------------
-inline int ps_knob_int(const char* key, int def)
-{ int v = def; amrex::ParmParse pp("CAMR"); pp.query(key, v); return v; }
-inline double ps_knob_real(const char* key, double def)
-{ double v = def; amrex::ParmParse pp("CAMR"); pp.query(key, v); return v; }
-inline std::string ps_knob_str(const char* key, const char* def)
-{ std::string v(def); amrex::ParmParse pp("CAMR"); pp.query(key, v); return v; }
 
 using V6 = std::array<double, 6>;
 
 
 // ---------------------------------------------------------------------
-//  Diagnostic counters.
+//  Diagnostic counters live in PsCounters (PS_counters.H); the accessors
+//  here are the kernels' one-line handles on its hem section.  The four
+//  *_count fields are cumulative over the run.
 // ---------------------------------------------------------------------
-inline int& ps_pressure_relax_count()     { static int n = 0; return n; }
-inline int& ps_mass_transfer_count()      { static int n = 0; return n; }
-
-// ---- Mass-transfer cost/convergence instrumentation (CAMR.ps_mt_diag) ----
-//  Answers whether the equilibrium Newton converges cheaply or burns
-//  max_iter on most cells.
-//  seen      : cells entering ps_mass_transfer_finite_cell
-//  gated     : returned early on the alpha-floor tests
-//  eqsolve   : reached the implicit equilibrium solve
-//  eqfail    : that solve returned false (no commit)
-//  iters     : total Gibbs-Newton iterations across all cells
-//  itmax     : worst single-cell iteration count
-struct PsMtStats {
-    long seen = 0, gated = 0, eqsolve = 0, eqfail = 0, iters = 0, itmax = 0;
-    long pr_iters = 0;      // inner pressure-relax Newton iterations
-    // One-step path error of the finite-rate transfer as the dimensionless
-    // contraction ratio |dm'|/|dm| (a second solve from the post-step state).
-    // ratio < 1 = damped ringing; ratio >= 1 = a genuinely non-contracting
-    // cell.  Filled only under CAMR.ps_mt_diag >= 2 (costs a second
-    // equilibrium solve per transferring cell).
-    long   cr_samples = 0;      // cells where the ratio was formed
-    long   cr_nonctr  = 0;      // of those, normalised ratio >= 1
-    long   cr_refused = 0;      // re-solve refused: ratio not formed, not zeroed
-    long   cr_relaxed = 0;      // frac ~ 1 (expected residual 0): excluded from
-                                //   the normalised max, reported separately
-    double cr_worst   = 0.0;    // largest raw |dm'|/|dm|
-    double cr_worst_n = 0.0;    // largest normalised |dm'|/|dm_eq - dm|
-    double cr_worst_r = 0.0;    // fully-relaxed regime: largest |dm'|/|dm_eq|
-    void reset() { seen = gated = eqsolve = eqfail = iters = itmax = 0;
-                   pr_iters = 0;
-                   cr_samples = cr_nonctr = cr_refused = cr_relaxed = 0;
-                   cr_worst = 0.0; cr_worst_n = 0.0; cr_worst_r = 0.0; }
-};
-inline PsMtStats& ps_mt_stats() { static PsMtStats s; return s; }
+inline long& ps_pressure_relax_count()    { return ps_counters().pressure_relax_count; }
+inline long& ps_mass_transfer_count()     { return ps_counters().mass_transfer_count; }
+inline PsMtStats& ps_mt_stats()           { return ps_counters().mt_stats; }
 
 // ---- Mass-transfer early-return cause split ([PS-MTCAUSE]) ---------------
 //  Every early exit of the split mass-transfer kernel between entry and the
@@ -119,50 +86,22 @@ enum PsMtCause {
     PS_MT_NCAUSE      = 14
 };
 
-inline long& ps_mt_cause(int c) { static long n[PS_MT_NCAUSE] = {0}; return n[c]; }
-inline void  ps_mt_cause_reset() { for (int c = 0; c < PS_MT_NCAUSE; ++c) ps_mt_cause(c) = 0; }
+static_assert(PS_MT_NCAUSE == PS_COUNTERS_MT_NCAUSE,
+              "PsCounters::mt_cause extent must match PsMtCause");
+inline long& ps_mt_cause(int c) { return ps_counters().mt_cause[c]; }
+inline void  ps_mt_cause_reset() { ps_counters().reset_mt_cause(); }
 
-//  Which side of the coexistence gate closed, and the extremes seen there.
-//  Sentinels a real query cannot produce keep "never written" distinguishable
-//  from "written with a physical value".
-struct PsMtCoexist {
-    long n_p1_lo = 0, n_p1_hi = 0, n_p2_lo = 0, n_p2_hi = 0;
-    double T1_min =  1.0e300, T1_max = -1.0e300;   // over gate-closing cells
-    double T2_min =  1.0e300, T2_max = -1.0e300;
-    double a1_at_min = -1.0;                       // alpha_1 at the coldest cell
-    //  Gibbs driving force in the refused cells (p1.g, p2.g are already
-    //  formed at the gate).  grel compares against tol_g_rel = 1e-4, the
-    //  screen these cells would meet next had the gate not closed.
-    double gd_min   =  1.0e300, gd_max   = -1.0e300;   // signed g1-g2 [J/kg]
-    double grel_min =  1.0e300, grel_max = -1.0e300;   // |g1-g2|/max(|g1|,|g2|,1)
-    //  Liquid metastability on the flash's own criterion, P_1 / Psat(T_1):
-    //  < 1 is a liquid stretched below saturation (superheated).
-    double pr1_min  =  1.0e300, pr1_max  = -1.0e300;
-    long   n_pr1    = 0;                               // cells where it was formed
-    void reset() { n_p1_lo = n_p1_hi = n_p2_lo = n_p2_hi = 0;
-                   T1_min = T2_min =  1.0e300;
-                   T1_max = T2_max = -1.0e300;
-                   a1_at_min = -1.0;
-                   gd_min = grel_min = pr1_min =  1.0e300;
-                   gd_max = grel_max = pr1_max = -1.0e300;
-                   n_pr1 = 0; }
-};
-inline PsMtCoexist& ps_mt_coexist() { static PsMtCoexist c; return c; }
+//  Which side of the coexistence gate closed, and the extremes seen there
+//  (PsMtCoexist, PS_counters.H).
+inline PsMtCoexist& ps_mt_coexist() { return ps_counters().mt_coexist; }
 
 #define PS_MT_REFUSE(cause_, ret_) do { ++hem::ps_mt_cause(cause_); return ret_; } while (0)
 
 
 // ---- iso-pressure-relaxation instrumentation (CAMR.ps_relax_diag) -------
-//  Same question as PsMtStats, for ps_iso_pressure_relax_cell: does the
-//  Newton converge, or fall through to the validity-guarded bracketing
-//  scan (65 samples x 2 per-phase EOS inversions, plus up to 60 bisections)?
-struct PsPrStats {
-    long seen = 0, trivial = 0, nt_iters = 0, nt_ok = 0;
-    long fb = 0, fb_samples = 0, fb_bisect = 0, fb_ok = 0, refused = 0;
-    void reset() { seen = trivial = nt_iters = nt_ok = 0;
-                   fb = fb_samples = fb_bisect = fb_ok = refused = 0; }
-};
-inline PsPrStats& ps_pr_stats() { static PsPrStats s; return s; }
+//  PsPrStats (PS_counters.H): does the Newton converge, or fall through to
+//  the validity-guarded bracketing scan?
+inline PsPrStats& ps_pr_stats() { return ps_counters().pr_stats; }
 
 
 // ---------------------------------------------------------------------
@@ -324,11 +263,18 @@ inline bool ps_apply_vanish_fold(V6& U, double alpha_vanish)
 //    the one undialled number in the chain (docs/MODEL_AND_ALGORITHM.md §5.6).
 //  CAMR.ps_mt_srt_delta (0.01): receiving-phase seed delta in Sigma
 //    (Lund & Aursand's value), so transfer can start from nothing.
-inline int    ps_dial_flash_from_absent() { static const int    v = ps_knob_int ("ps_flash_from_absent", 1);  return v; }
-inline int    ps_dial_flash_project_sat() { static const int    v = ps_knob_int ("ps_flash_project_sat", -1); return v; }
-inline double ps_dial_mt_h_weight()       { static const double v = ps_knob_real("ps_mt_h_weight",      0.5); return v; }
-inline double ps_dial_mt_srt_d()          { static const double v = ps_knob_real("ps_mt_srt_d",         0.1); return v; }
-inline double ps_dial_mt_srt_delta()      { static const double v = ps_knob_real("ps_mt_srt_delta",    0.01); return v; }
+//  CAMR.ps_mt_no_dome_gate (0): 1 disables the coexistence gate globally
+//    (non-CO2 or mock EOS); read here for both the split kernel and
+//    ps_mass_transfer_relax_cell.
+//  CAMR.ps_mt_form (0): the form of the finite-rate step, documented at
+//    its use in ps_mass_transfer_finite_cell.
+inline int    ps_dial_flash_from_absent() { static const int    v = ps_dial_int ("ps_flash_from_absent", 1);  return v; }
+inline int    ps_dial_flash_project_sat() { static const int    v = ps_dial_int ("ps_flash_project_sat", -1); return v; }
+inline double ps_dial_mt_h_weight()       { static const double v = ps_dial_real("ps_mt_h_weight",      0.5); return v; }
+inline double ps_dial_mt_srt_d()          { static const double v = ps_dial_real("ps_mt_srt_d",         0.1); return v; }
+inline double ps_dial_mt_srt_delta()      { static const double v = ps_dial_real("ps_mt_srt_delta",    0.01); return v; }
+inline int    ps_dial_mt_no_dome_gate()   { static const int    v = ps_dial_int ("ps_mt_no_dome_gate",  0);  return v; }
+inline int    ps_dial_mt_form()           { static const int    v = ps_dial_int ("ps_mt_form",          0);  return v; }
 
 //  Diagnostic dials, one read each (all default off).
 //  CAMR.ps_pres_diag (0): [PS-X3]/[PS-DT]/[PS-GATE] presence-era reports.
@@ -336,11 +282,11 @@ inline double ps_dial_mt_srt_delta()      { static const double v = ps_knob_real
 //  CAMR.ps_mt_diag (0): PsMtStats; >= 2 adds the contraction ratio.
 //  CAMR.ps_flash_ev_diag (0): [PS-FLASH-EV] flash-event hook.
 //  CAMR.ps_relax_diag (-1): per-cell relaxation trace; -1 = off.
-inline int ps_diag_pres()       { static const int v = ps_knob_int("ps_pres_diag",     0); return v; }
-inline int ps_diag_prdiag()     { static const int v = ps_knob_int("ps_prdiag",        0); return v; }
-inline int ps_diag_mt()         { static const int v = ps_knob_int("ps_mt_diag",       0); return v; }
-inline int ps_diag_flash_ev()   { static const int v = ps_knob_int("ps_flash_ev_diag", 0); return v; }
-inline int ps_diag_relax_cell() { static const int v = ps_knob_int("ps_relax_diag",   -1); return v; }
+inline int ps_diag_pres()       { static const int v = ps_dial_int("ps_pres_diag",     0); return v; }
+inline int ps_diag_prdiag()     { static const int v = ps_dial_int("ps_prdiag",        0); return v; }
+inline int ps_diag_mt()         { static const int v = ps_dial_int("ps_mt_diag",       0); return v; }
+inline int ps_diag_flash_ev()   { static const int v = ps_dial_int("ps_flash_ev_diag", 0); return v; }
+inline int ps_diag_relax_cell() { static const int v = ps_dial_int("ps_relax_diag",   -1); return v; }
 
 
 
@@ -491,8 +437,8 @@ inline PsState ps_state_from_cons(const V6& U, const PsPhaseAPI& eos,
     //   phase's pressure, so a trace phase's off-domain P_k cannot pollute
     //   P_mix through the alpha_k P_k term.
     static const int p_mode =
-        (ps_knob_str("ps_p_mode", "vol") == "mass") ? 1 : 0;  // default = vol
-    static const double p_clip_threshold = ps_knob_real("ps_p_clip", 0.0);
+        (ps_dial_string("ps_p_mode", "vol") == "mass") ? 1 : 0;  // default = vol
+    static const double p_clip_threshold = ps_dial_real("ps_p_clip", 0.0);
     if (p_clip_threshold > 0.0 && alpha1 < p_clip_threshold) {
         st.P_mix = st.p2.P;
     } else if (p_clip_threshold > 0.0 && alpha2 < p_clip_threshold) {
@@ -515,7 +461,7 @@ inline PsState ps_state_from_cons(const V6& U, const PsPhaseAPI& eos,
     //   maj    : c of the majority phase;  max / min: the two bounds.
     if (st.p1.c <= 0.0 || st.p2.c <= 0.0) return st;
     static const int c_mode = []{
-        const std::string v = ps_knob_str("ps_c_mode", "wood");
+        const std::string v = ps_dial_string("ps_c_mode", "wood");
         if (v == "wallis") return 1;
         if (v == "max")    return 2;
         if (v == "vol")    return 3;
@@ -527,7 +473,7 @@ inline PsState ps_state_from_cons(const V6& U, const PsPhaseAPI& eos,
     const double c2 = st.p2.c;
     // CAMR.ps_y_floor (0 = off): floor on the mass fractions in the wallis
     // formula so a trace phase keeps contributing to c_frozen.
-    static const double y_floor = ps_knob_real("ps_y_floor", 0.0);
+    static const double y_floor = ps_dial_real("ps_y_floor", 0.0);
     if (c_mode == 0) {
         const double inv_rc2 = alpha1 / (rho1 * c1 * c1)
                              + alpha2 / (rho2 * c2 * c2);
@@ -588,7 +534,7 @@ inline PsState ps_state_from_cons(const V6& U, const PsPhaseAPI& eos,
 // the flux anyway, and the cell re-enters relaxation when it grows.
 inline double ps_single_phase_threshold_default() {
     static const double t =
-        ps_knob_real("ps_single_phase_threshold", 5.0e-3);
+        ps_dial_real("ps_single_phase_threshold", 5.0e-3);
     return t;
 }
 
@@ -896,7 +842,7 @@ inline bool ps_iso_pressure_relax_cell(V6& U, const PsPhaseAPI& eos,
         // CAMR.ps_pr_fd1 (0): central FD (4 inversions); 1 = one-sided
         // difference reusing r (2 inversions), which changes the Newton
         // trajectory but not the root.
-        static const bool fd_one_sided = ps_knob_int("ps_pr_fd1", 0) != 0;
+        static const bool fd_one_sided = ps_dial_int("ps_pr_fd1", 0) != 0;
         const double rp = residual(e1 + de);
         double drde;
         if (fd_one_sided) {
@@ -1238,9 +1184,8 @@ inline bool ps_mass_transfer_relax_cell(
 
     // Coexistence gate (see PsMassTransferParams::dome_gate).
     // CAMR.ps_mt_no_dome_gate (0): 1 disables the gate globally (non-CO2 or
-    // mock EOS); read again in ps_mass_transfer_finite_cell.
-    static const bool mt_no_dome_gate_k =
-        ps_knob_int("ps_mt_no_dome_gate", 0) != 0;
+    // mock EOS); accessor shared with ps_mass_transfer_finite_cell.
+    const bool mt_no_dome_gate_k = ps_dial_mt_no_dome_gate() != 0;
     if (mt_p.dome_gate && !mt_no_dome_gate_k) {
         const double T_lo = eos.t_triple(), T_hi = eos.t_crit();  // fluid props from EOS
         if (s0.p1.T <= T_lo || s0.p1.T >= T_hi ||
@@ -1311,9 +1256,9 @@ inline bool ps_mass_transfer_relax_cell(
     // vapour crawl at step_frac * m_2 per Newton step.
     // CAMR.ps_mt_step_frac (-1 = use dm_step_frac): the cap fraction.
     static const bool sign_aware =
-        ps_knob_int("ps_mt_bootstrap", 1) != 0;
+        ps_dial_int("ps_mt_bootstrap", 1) != 0;
     static const double step_frac_knob =
-        ps_knob_real("ps_mt_step_frac", -1.0);
+        ps_dial_real("ps_mt_step_frac", -1.0);
     const double step_frac = (step_frac_knob > 0.0)
                             ? step_frac_knob : mt_p.dm_step_frac;
 
@@ -1419,7 +1364,7 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
     // CAMR.ps_mt_alpha_thr (5e-3): transfer only in genuinely mixed cells,
     // alpha_1 in (thr, 1 - thr); at trace alpha the fixed-alpha rho_k =
     // m_k/alpha_k is hypersensitive to dm.
-    static const double alpha_mt_thr = ps_knob_real("ps_mt_alpha_thr", 5.0e-3);
+    static const double alpha_mt_thr = ps_dial_real("ps_mt_alpha_thr", 5.0e-3);
     if (alpha1 <= alpha_mt_thr || alpha1 >= 1.0 - alpha_mt_thr)
         PS_MT_REFUSE(PS_MT_A_MTTHR, true);
 
@@ -1449,9 +1394,8 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
 
     // Coexistence gate: both T_k inside (T_triple, T_crit), else the cell
     // is left to pressure relaxation and the exit is recorded by side
-    // (see ps_mass_transfer_relax_cell for the dial).
-    static const bool mt_no_dome_gate =
-        ps_knob_int("ps_mt_no_dome_gate", 0) != 0;
+    // (CAMR.ps_mt_no_dome_gate, documented at its accessor).
+    const bool mt_no_dome_gate = ps_dial_mt_no_dome_gate() != 0;
     if (!mt_no_dome_gate) {
         const double T_trip = eos.t_triple(), T_crit = eos.t_crit();  // fluid props from EOS
         const bool cx_p1_lo = (p1.T <= T_trip), cx_p1_hi = (p1.T >= T_crit);
@@ -1502,7 +1446,7 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
     // relaxed and re-projecting inside every Gibbs iteration makes the
     // outer residual non-smooth, which is both the cost and the failures.
     // Function scope so the contraction re-solve uses identical settings.
-    static const int nest_pr = ps_knob_int("ps_mt_nest_pr", 0);
+    static const int nest_pr = ps_dial_int("ps_mt_nest_pr", 0);
     double dm_eq_saved = 0.0;   // equilibrium-endpoint transfer, for the diagnostic
 
     // The (E.1) decision is taken before the equilibrium solve so the
@@ -1543,7 +1487,7 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
     // ---- finite-rate mass-transfer amount dm ----------------------------
     // CAMR.ps_mt_explicit (0): 1 selects the explicit forward-Euler forms
     // at the end of this chain (comparison only; they overshoot at sharp fronts).
-    static const bool mt_explicit = ps_knob_int("ps_mt_explicit", 0) != 0;
+    static const bool mt_explicit = ps_dial_int("ps_mt_explicit", 0) != 0;
     // CAMR.ps_mt_form (0): the form of the finite-rate step.
     //   0 exact relaxation toward the equilibrium target,
     //     dm = (1 - exp(-dt/tau)) dm_eq -- the exact solution of
@@ -1556,7 +1500,7 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
     //     the target Newton fails on order-one driving forces; Gamma -> 0
     //     at g1 = g2 makes non-overshoot structural.  tau_g and
     //     target_mode are unused on this branch.
-    static const int mt_form = ps_knob_int("ps_mt_form", 0);
+    const int mt_form = ps_dial_mt_form();
     if (mt_form == 1) {
         // Gibbs screen: Gamma is proportional to |g1 - g2|, so below the
         // solver tolerance the transfer is negligible.
@@ -1886,42 +1830,10 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
 //  solution cannot cross it at any dt.  0-D acceptance harness:
 //  CAMR.ps_x3_test (PS_zerod_test.H).
 // =====================================================================
-//  [PS-DM]: census of |dm| transferred by the mass-transfer channel per
-//  sweep, populated by both the split source and the X3 wrapper so the
-//  magnitudes are comparable.  Counting only.
-struct PsDmCensus {
-    long   n   = 0;       // cells with nonzero transfer this sweep
-    double sum = 0.0;     // sum of |dm| [kg/m^3]
-    double mx  = 0.0;     // max |dm|
-    void add(double a) { if (a > 0.0) { ++n; sum += a; if (a > mx) mx = a; } }
-    void reset() { n = 0; sum = 0.0; mx = 0.0; }
-};
-inline PsDmCensus& ps_dm_census() { static PsDmCensus c; return c; }
-
-//  [PS-X3]: the coupled operator's outcome, cause-split, including the
-//  P1 = P2 constraint's failures split into entry (structural: the cell
-//  cannot be put on the manifold, with the projector's PSR_* cause) and
-//  path (expected: the line search probing inadmissible trials).
-//  Counting only.
-struct PsX3Stats {
-    long n_calls = 0;        // cells entering the kernel
-    long n_entry_refused = 0;// failed an entry gate or the entry recon
-    long n_gate_stood = 0;   // eligibility question said "not mine"
-    long n_ok = 0;           // full dt integrated
-    long n_newton = 0;       // sub-steps that failed to converge (rc=1)
-    long n_dead = 0;         // structurally-dead rate evaluation (rc=2)
-    long n_subcap = 0;       // hit the 64-sub-step cap
-    long n_tiny_nonconv = 0; // tiny-increment commits whose residual was
-                             //   still unmet (> 1 % of the step scale)
-    long n_proj_entry = 0;   // entry projection failures
-    long n_proj_path = 0;    // path projection failures (line search)
-    long n_pr_input = 0, n_pr_eos = 0, n_pr_slope = 0, n_pr_maxiter = 0;
-    void reset() { n_calls = n_entry_refused = n_gate_stood = n_ok = 0;
-                   n_newton = n_dead = n_subcap = n_tiny_nonconv = 0;
-                   n_proj_entry = n_proj_path = 0;
-                   n_pr_input = n_pr_eos = n_pr_slope = n_pr_maxiter = 0; }
-};
-inline PsX3Stats& ps_x3_stats() { static PsX3Stats s; return s; }
+//  [PS-DM] census (PsDmCensus) and [PS-X3] outcome counters (PsX3Stats),
+//  both in PS_counters.H.
+inline PsDmCensus& ps_dm_census() { return ps_counters().dm_census; }
+inline PsX3Stats&  ps_x3_stats()  { return ps_counters().x3_stats; }
 
 struct PsX3Params {
     double theta      = 1.0e-3;   // thermal relaxation time [s]
@@ -2336,8 +2248,8 @@ inline void co2_sat_state(double T, double& rho_L, double& rho_V)
     rho_V = rhoV_tab[lo] + w * (rhoV_tab[hi] - rhoV_tab[lo]);
 }
 
-inline int& ps_flash_source_count() { static int n = 0; return n; }
-inline int& ps_triple_point_count() { static int n = 0; return n; }
+inline long& ps_flash_source_count() { return ps_counters().flash_source_count; }
+inline long& ps_triple_point_count() { return ps_counters().triple_point_count; }
 
 // True when (T, P) lies below the CO2 sublimation line, where the EOS
 // extrapolates analytically past the solid region.  The response is
@@ -2394,10 +2306,10 @@ enum PsFlashRefuse {
     PS_FLR_S1_MASS = 17, PS_FLR_S1_AFLOOR = 18,
     PS_FLR_S1_PH1 = 19,  PS_FLR_S1_PH2 = 20,  PS_FLR_NCAUSE = 21
 };
-inline long& ps_flash_refuse_count(int c)
-{ static long n[PS_FLR_NCAUSE] = {0}; return n[c]; }
-inline void ps_flash_refuse_reset()
-{ for (int c = 0; c < PS_FLR_NCAUSE; ++c) ps_flash_refuse_count(c) = 0; }
+static_assert(PS_FLR_NCAUSE == PS_COUNTERS_FLR_NCAUSE,
+              "PsCounters::flash_refuse extent must match PsFlashRefuse");
+inline long& ps_flash_refuse_count(int c) { return ps_counters().flash_refuse[c]; }
+inline void  ps_flash_refuse_reset()      { ps_counters().reset_flash_refuse(); }
 #define PS_FLASH_REFUSE(c) \
     do { ++ps_flash_refuse_count(c); return false; } while (0)
 
@@ -2430,7 +2342,7 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
     // acts only for alpha_dom > 1 - thr, mid-range cells belong to
     // mass transfer.
     static const double flash_alpha_thr =
-        ps_knob_real("ps_flash_alpha_thr", 0.10);
+        ps_dial_real("ps_flash_alpha_thr", 0.10);
     const bool liq_dominant = (alpha_1 > 1.0 - flash_alpha_thr);
     const bool vap_dominant = (alpha_1 <       flash_alpha_thr);
     if (!liq_dominant && !vap_dominant) PS_FLASH_REFUSE(PS_FLR_NOT_DOM);
@@ -2492,7 +2404,7 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
     // static contacts with both sides at saturation do not false-trigger
     // from marginal numerical dissipation.
     static const double meta_margin =
-        ps_knob_real("ps_flash_metastable_margin", 0.10);
+        ps_dial_real("ps_flash_metastable_margin", 0.10);
     const bool flash_liq = liq_dominant;
     const bool flash_vap = vap_dominant;
     const double bw_P = meta_margin * P_sat_here;   // pressure ramp band
@@ -2582,7 +2494,7 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
     //           right supercritical, under-couples subcritical;
     //   "auto": avg below T_c - 30 K, dom above T_c + 30 K, linear between.
     static const int h_mode = []{
-        const std::string v = ps_knob_str("ps_flash_h_mode", "auto");
+        const std::string v = ps_dial_string("ps_flash_h_mode", "auto");
         if (v == "avg") return 1;
         if (v == "dom") return 0;
         return 2;   // "auto" default

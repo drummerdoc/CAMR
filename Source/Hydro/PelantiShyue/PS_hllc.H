@@ -32,6 +32,7 @@
 #include "PS_promote.H"
 #include "PS_constants.H"
 #include "PS_util.H"
+#include "PS_counters.H"
 #include <AMReX_GpuQualifiers.H>
 #include <cmath>
 
@@ -214,6 +215,8 @@ enum PsFlCause {
     PS_FL_ST_ESTAR   = 9,   // star: a phase energy came out non-finite
     PS_FL_NCAUSE     = 10
 };
+static_assert(PS_FL_NCAUSE == PS_COUNTERS_FL_NCAUSE,
+              "PsCounters::fl_cause extent must match PsFlCause");
 
 // -------------------------------------------------------------------
 //  wave_speeds: Davis outer speeds and the HLLC contact speed for a face.
@@ -283,12 +286,9 @@ void ps_star_masses(const Face& fK, amrex::Real r_K,
     m2s = fK.m_2 * r_K;
 }
 
-#if !defined(AMREX_USE_GPU)
-//  Host-only counter of faces where the relaxed-alpha construction fell
-//  back to the equal-strain form; reported as [PS-RELAXFB] and reset with
-//  the face audit in CAMR_advance.cpp.
-namespace face_diag { inline long& n_relax_fb() { static long n = 0; return n; } }
-#endif
+//  PsCounters::relax_fb counts the faces where the relaxed-alpha
+//  construction fell back to the equal-strain form; reported as
+//  [PS-RELAXFB] and reset with the face audit in CAMR_advance.cpp.
 
 // ===================================================================
 //  ps_star_state: the HLLC star vector U_star (NVAR layout) on side K
@@ -400,7 +400,7 @@ bool ps_star_state(int idir, const Face& fK, const amrex::Real UK[NVAR],
 #if !defined(AMREX_USE_GPU)
     if (!relaxed_done &&
         fK.alpha_1 > Real(0.0) && fK.alpha_1 < Real(1.0)) {
-        ++face_diag::n_relax_fb();   // equal-strain fallback, counted
+        ++ps_counters().relax_fb;    // equal-strain fallback, counted
     }
 #endif
     amrex::ignore_unused(relaxed_done);
@@ -442,40 +442,20 @@ bool ps_star_state(int idir, const Face& fK, const amrex::Real UK[NVAR],
 //  [PS-W21] under CAMR.ps_face_diag, see CAMR_advance.cpp).  Face
 //  classes: 0 = every (side, phase) Independent; 1 = at least one
 //  Corridor, no Absent; 2 = at least one Absent (a presence front).
+//  Storage is the face section of PsCounters (PS_counters.H):
+//    fl_seen / fl_fail / max_incmis, per class: faces seen by
+//      fluctuations(), faces refused, and the largest per-fluctuation
+//      identity mismatch |Δ(UE1+UE2) − ΔUEDEN|;
+//    mis_i / mis_j / mis_k / mis_dir: location of max_incmis, the face's
+//      high-side cell (i,j,k) and idir as ps_wp_face sees it; -9999 =
+//      nothing recorded;
+//    fl_cause: refusals per cause (PsFlCause), not keyed by class;
+//    fl_side: per side whose star state refused (0 = L, 1 = R);
+//    max_w21_mass / max_w21_energy: worst relative residual of the
+//      correction-flux sum identities before the derived assignments in
+//      PS_umeth.cpp; must read round-off.
+//  Reset by PsCounters::reset_face().
 // -------------------------------------------------------------------
-#if !defined(AMREX_USE_GPU)
-namespace face_diag {
-// Per class: faces seen by fluctuations(), faces refused, and the largest
-// per-fluctuation identity mismatch |Δ(UE1+UE2) − ΔUEDEN|.
-inline long&   n_fl_seen(int c) { static long n[3] = {0,0,0};   return n[c]; }
-inline long&   n_fl_fail(int c) { static long n[3] = {0,0,0};   return n[c]; }
-inline double& max_incmis(int c){ static double v[3] = {0,0,0}; return v[c]; }
-//  Location of max_incmis: the face's high-side cell (i,j,k) and idir as
-//  ps_wp_face sees it; -9999 = nothing recorded.
-inline int& mis_i(int c)  { static int v[3] = {-9999,-9999,-9999}; return v[c]; }
-inline int& mis_j(int c)  { static int v[3] = {-9999,-9999,-9999}; return v[c]; }
-inline int& mis_k(int c)  { static int v[3] = {-9999,-9999,-9999}; return v[c]; }
-inline int& mis_dir(int c){ static int v[3] = {-1,-1,-1}; return v[c]; }
-//  Refusals per cause (PsFlCause), not keyed by class; and per side whose
-//  star state refused (0 = L, 1 = R).
-inline long& n_fl_cause(int c) { static long n[PS_FL_NCAUSE] = {0}; return n[c]; }
-inline long& n_fl_side(int s_)  { static long n[2] = {0,0}; return n[s_]; }
-//  Worst relative residual of the correction-flux sum identities before
-//  the derived assignments in PS_umeth.cpp; must read round-off.
-inline double& max_w21_mass()   { static double v = 0.0; return v; }
-inline double& max_w21_energy() { static double v = 0.0; return v; }
-inline void reset() {
-    for (int c = 0; c < 3; ++c) {
-        n_fl_seen(c) = 0; n_fl_fail(c) = 0; max_incmis(c) = 0.0;
-        mis_i(c) = -9999; mis_j(c) = -9999; mis_k(c) = -9999; mis_dir(c) = -1;
-    }
-    for (int c = 0; c < PS_FL_NCAUSE; ++c) n_fl_cause(c) = 0;
-    n_fl_side(0) = 0; n_fl_side(1) = 0;
-    n_relax_fb() = 0;
-    max_w21_mass() = 0.0; max_w21_energy() = 0.0;
-}
-}
-#endif
 
 //  wp_face_class: audit class of a face from the regimes of both phases
 //  on both sides (0 all Independent, 1 Corridor present, 2 Absent present).
@@ -528,12 +508,12 @@ bool fluctuations(int idir, const amrex::Real UL[NVAR], const amrex::Real UR[NVA
 
 #if !defined(AMREX_USE_GPU)
     const int fcls_fl = wp_face_class(UL, UR, pr);
-    ++face_diag::n_fl_seen(fcls_fl);
+    ++ps_counters().fl_seen[fcls_fl];
 #endif
 #if !defined(AMREX_USE_GPU)
-#define PS_W0_FL_FAIL(c) do { ++face_diag::n_fl_fail(fcls_fl); \
-                              ++face_diag::n_fl_cause(c); } while (0)
-#define PS_W0_FL_SIDE(s_) (++face_diag::n_fl_side(s_))
+#define PS_W0_FL_FAIL(c) do { ++ps_counters().fl_fail[fcls_fl]; \
+                              ++ps_counters().fl_cause[c]; } while (0)
+#define PS_W0_FL_SIDE(s_) (++ps_counters().fl_side[s_])
 #else
 #define PS_W0_FL_FAIL(c)  ((void)0)
 #define PS_W0_FL_SIDE(s_) ((void)0)
@@ -578,12 +558,13 @@ bool fluctuations(int idir, const amrex::Real UL[NVAR], const amrex::Real UR[NVA
         const double misP = std::abs(double(f.Ap[UE1]) + double(f.Ap[UE2])
                                      - double(f.Ap[UEDEN]));
         const double mis = std::max(misM, misP);
-        if (mis > face_diag::max_incmis(fcls_fl)) {
-            face_diag::max_incmis(fcls_fl) = mis;
-            face_diag::mis_i(fcls_fl)   = fi;
-            face_diag::mis_j(fcls_fl)   = fj;
-            face_diag::mis_k(fcls_fl)   = fk;
-            face_diag::mis_dir(fcls_fl) = idir;
+        PsCounters& pc = ps_counters();
+        if (mis > pc.max_incmis[fcls_fl]) {
+            pc.max_incmis[fcls_fl] = mis;
+            pc.mis_i[fcls_fl]      = fi;
+            pc.mis_j[fcls_fl]      = fj;
+            pc.mis_k[fcls_fl]      = fk;
+            pc.mis_dir[fcls_fl]    = idir;
         }
     }
 #endif

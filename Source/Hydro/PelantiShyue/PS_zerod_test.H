@@ -423,7 +423,7 @@ inline int ps_asy1_probe()
     // The step form CAMR.ps_mt_form selects (0 exact-relaxation, 1 BE-SRT)
     // is recorded in the banner so a log is attributable without its inputs.
     amrex::Print() << "\n===== PS ASY1 0-D non-overshoot probe (tau_model=2, upwind carrier)"
-                   << "  [ps_mt_form=" << hem::ps_knob_int("ps_mt_form", 0)
+                   << "  [ps_mt_form=" << hem::ps_dial_mt_form()
                    << "] =====\n";
 
     struct PCase { const char* nm; double a1, r1, T1, r2, T2; };

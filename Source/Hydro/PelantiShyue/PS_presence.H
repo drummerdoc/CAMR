@@ -29,8 +29,10 @@
 #ifdef USE_PS_HYDRO
 
 #include <AMReX_REAL.H>
-#include <AMReX_ParmParse.H>
 #include <AMReX_GpuQualifiers.H>
+
+#include "PS_counters.H"
+#include "PS_dials.H"      // ps_dial_int / ps_dial_real (host-side read)
 
 struct PsPres {
     // alpha_vanish [-] = 1e-8: death edge.  At this alpha the reconstructed
@@ -87,12 +89,10 @@ amrex::Real ps_cmix2(amrex::Real Y1, amrex::Real Y2,
 // nothing rather than garbage; ps_validate_state reports it.
 enum class PsRegime : int { Absent = 0, Corridor = 1, Independent = 2 };
 
-// Demotion counter: evaluations in which a volume-Independent phase was
-// refused for density degeneracy.  ps_regime is called from gates,
-// quotients and validators, so this counts evaluations, not cells.
-#if !defined(AMREX_USE_GPU)
-inline long& ps_pres_f1_demote() { static long n = 0; return n; }
-#endif
+// Demotion counter (PsCounters::pres_f1_demote): evaluations in which a
+// volume-Independent phase was refused for density degeneracy.  ps_regime
+// is called from gates, quotients and validators, so this counts
+// evaluations, not cells.
 
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
 PsRegime ps_regime(amrex::Real alpha, amrex::Real m, const PsPres& pr) noexcept
@@ -106,7 +106,7 @@ PsRegime ps_regime(amrex::Real alpha, amrex::Real m, const PsPres& pr) noexcept
     // requires a non-degenerate density quotient (division-free test).
     if (!(m > pr.rho_deg * alpha)) {
 #if !defined(AMREX_USE_GPU)
-        ++ps_pres_f1_demote();
+        ++ps_counters().pres_f1_demote;
 #endif
         return PsRegime::Corridor;
     }
@@ -149,16 +149,15 @@ inline const PsPres& ps_presence_params()
 {
     static const PsPres p = []() {
         PsPres v;
-        amrex::ParmParse pp("CAMR");
-        pp.query("ps_alpha_cond",       v.alpha_cond);
-        pp.query("ps_alpha_birth",      v.alpha_birth);
-        pp.query("ps_presence_vanish",  v.alpha_vanish);
-        pp.query("ps_presence_rho_deg", v.rho_deg);
-        pp.query("ps_promote_checked", v.promote_checked);
-        pp.query("ps_floor_indep",     v.floor_indep);
-        pp.query("ps_floor_budget",    v.floor_budget);
-        pp.query("ps_presence_e_deg_lo", v.e_deg_lo);
-        pp.query("ps_presence_e_deg_hi", v.e_deg_hi);
+        v.alpha_cond      = ps_dial_real("ps_alpha_cond",        v.alpha_cond);
+        v.alpha_birth     = ps_dial_real("ps_alpha_birth",       v.alpha_birth);
+        v.alpha_vanish    = ps_dial_real("ps_presence_vanish",   v.alpha_vanish);
+        v.rho_deg         = ps_dial_real("ps_presence_rho_deg",  v.rho_deg);
+        v.promote_checked = ps_dial_int ("ps_promote_checked",   v.promote_checked);
+        v.floor_indep     = ps_dial_int ("ps_floor_indep",       v.floor_indep);
+        v.floor_budget    = ps_dial_int ("ps_floor_budget",      v.floor_budget);
+        v.e_deg_lo        = ps_dial_real("ps_presence_e_deg_lo", v.e_deg_lo);
+        v.e_deg_hi        = ps_dial_real("ps_presence_e_deg_hi", v.e_deg_hi);
         // ps_presence_vanish is also the fold threshold and must stay > 0.
         return v;
     }();

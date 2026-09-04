@@ -17,3 +17,5 @@ CEXE_headers += PS_FluctuationRegister.H
 CEXE_headers += PS_retired_keys.H
 CEXE_headers += PS_constants.H
 CEXE_headers += PS_util.H
+CEXE_headers += PS_counters.H
+CEXE_headers += PS_dials.H

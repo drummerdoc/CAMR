@@ -32,9 +32,11 @@
 #include "EOS.H"
 #include "hem_pelanti_shyue.H"
 #include "PS_presence.H"   // PsPres, ps_regime, the fold thresholds
-#include "PS_promote.H"    // ps_promote_diag counters (floor skips)
+#include "PS_promote.H"    // ps_regime_reach (checked promotion)
 #include "PS_constants.H"  // ps_const:: shared numeric floors
 #include "PS_util.H"       // ps_kinetic_energy, ps_pack_v6 / ps_unpack_v6
+#include "PS_counters.H"   // PsCounters (fold audit, floor and sweep counters)
+#include "PS_dials.H"      // ps_dial_int / ps_dial_real (CAMR.* reads)
 #include <AMReX_Array4.H>
 #include <AMReX_GpuQualifiers.H>
 #include <AMReX_Print.H>
@@ -49,86 +51,12 @@
 
 
 // ---------------------------------------------------------------------
-//  Per-sweep relaxation counters, host-only.  Every early return of the
-//  mode-0 entry path and every kernel failure is tallied by cause, and an
-//  alpha written outside [0,1] is counted, never clamped, so an upstream
-//  defect (a flux writing alpha > 1) stays visible.  Reset at the start
-//  of each ps_apply_relaxation sweep, reported at its end under
-//  ps_relax_verbose.  Plain ints: the sweep is single-threaded per rank.
-//  Function-local static so the header stays include-safe.
-//  Retire-candidate: see docs/DESIGN_DECISIONS.md §5.
+//  Per-sweep counters (PsRelaxDiag, PsPresDiag: PS_counters.H), stored
+//  in PsCounters; reset at the start of each ps_apply_relaxation sweep
+//  and reported at its end.
 // ---------------------------------------------------------------------
-struct PsRelaxDiag {
-    int n_calls        = 0;   // cells visited
-    int n_skip_nan     = 0;   // alpha_in not finite
-    int n_skip_lo      = 0;   // alpha_in < alpha_floor (near-pure phase 2)
-    int n_skip_hi_ok   = 0;   // alpha_in in (1 - alpha_floor, 1]
-    int n_skip_hi_bad  = 0;   // alpha_in > 1 (impossible: an upstream defect)
-    int n_skip_mk      = 0;   // m_1 or m_2 non-positive
-    //  One counter for the presence-gate refusal at all five relax entry
-    //  sites: identical predicate on identical inputs, so a per-mode
-    //  split would only re-encode ps_relax_mode.
-    int n_gate_presence = 0;
-    int n_failed       = 0;   // kernel returned false; split by cause:
-    int n_fail_eos     = 0;   //   no root / off-domain EOS state
-    int n_fail_slope   = 0;   //   singular dP/dalpha
-    int n_fail_maxiter = 0;   //   no convergence within max_iter
-    int n_fail_input   = 0;   //   bad input on entry
-    int n_alpha_low    = 0;   // alpha_1 written < alpha_floor
-    int n_alpha_high   = 0;   // alpha_1 written > 1 - alpha_floor
-    int n_alpha_gt_one = 0;   // alpha_1 written > 1
-    int n_alpha_lt_zero= 0;   // alpha_1 written < 0
-    double alpha_min_seen    = 1.0;   // range of relax-written alpha
-    double alpha_max_seen    = 0.0;
-    double alpha_in_max_seen = 0.0;   // range of alpha_in (catches flux overshoot)
-    double alpha_in_min_seen = 1.0;
-};
-
-inline PsRelaxDiag& ps_relax_diag() {
-    static PsRelaxDiag d;
-    return d;
-}
-
-// ---------------------------------------------------------------------
-//  Per-sweep thermal-leg instruments, host-only, reset and reported with
-//  the sweep.  [PS-PRES]: the |P1-P2| residual at chain exit, split by
-//  whether the thermal leg moved a T by > 1 K, ran and stood, or was
-//  gate-skipped; the post-thermal states cost two branch-locked solves,
-//  so they are formed only under CAMR.ps_pres_diag.  [PS-DT]: |T1-T2| at
-//  entry and exit of the leg (completeness), fed by mode 4 and by X3.
-//  [PS-COEXIT-TH]: the leg's band exits by side and outcome; counting is
-//  always on, the report is gated by ps_coexit_diag, and the response is
-//  whatever ps_coexist_action selects.  Docs/MODEL_AND_ALGORITHM.md §8.6.
-// ---------------------------------------------------------------------
-struct PsPresDiag {
-    // thermal leg ran and moved a T by > 1 K
-    long   n_run_moved = 0;
-    double dp_moved_max = 0.0, dp_moved_sum = 0.0;
-    // thermal leg ran, no T moved by > 1 K
-    long   n_run_still = 0;
-    double dp_still_max = 0.0, dp_still_sum = 0.0;
-    // gate-skipped: residual is post-mechanical, read off q1/q2 (no extra solves)
-    long   n_skipped = 0;
-    double dp_skip_max = 0.0, dp_skip_sum = 0.0;
-    long   n_postinval = 0;   // post-thermal state invalid: residual unmeasurable
-    // [PS-DT] |T1-T2| at thermal-leg entry and exit, cells whose leg ran
-    long   n_dt = 0;
-    double dtpre_max = 0.0,  dtpre_sum = 0.0;
-    double dtpost_max = 0.0, dtpost_sum = 0.0;
-    // band exits by side: lo = some T <= T_triple, hi = some T >= T_crit
-    long   n_exit_lo = 0, n_exit_hi = 0, n_exit_both = 0;
-    long   n_exit_continued = 0;   // exit, thermal leg ran anyway
-    long   n_exit_refused   = 0;   // exit, thermal leg stood
-    // hi-side-only exit beyond 2 T_crit: the runaway clause ran the leg
-    // (subset of n_exit_continued)
-    long   n_exit_runaway   = 0;
-    void reset() { *this = PsPresDiag{}; }
-};
-
-inline PsPresDiag& ps_pres_diag_data() {
-    static PsPresDiag d;
-    return d;
-}
+inline PsRelaxDiag& ps_relax_diag()     { return ps_counters().relax; }
+inline PsPresDiag&  ps_pres_diag_data() { return ps_counters().pres; }
 
 // CAMR.ps_pres_diag: see hem::ps_diag_pres (the single read site).
 inline int ps_pres_diag() {
@@ -138,10 +66,7 @@ inline int ps_pres_diag() {
 // CAMR.ps_coexit_diag (0): 1 prints [PS-COEXIT-TH] each sweep.
 // Retire-candidate: see docs/DESIGN_DECISIONS.md §5.
 inline int ps_coexit_diag() {
-    static const int v = []() -> int {
-        int val = 0; amrex::ParmParse pp("CAMR");
-        pp.query("ps_coexit_diag", val); return val;
-    }();
+    static const int v = ps_dial_int("ps_coexit_diag", 0);
     return v;
 }
 
@@ -228,10 +153,8 @@ ps_make_camr_eos_api()
 //  because it is never relaxed, and a nucleated cell always equilibrates.
 //  See docs/MODEL_AND_ALGORITHM.md §4.5 and §4.7.
 // -----------------------------------------------------------------
-//  Gate passes granted through the hysteresis band (counts evaluations).
-#if !defined(AMREX_USE_GPU)
-inline long& ps_pres_f3_hyst() { static long n = 0; return n; }
-#endif
+//  Gate passes granted through the hysteresis band are counted per
+//  evaluation in PsCounters::pres_f3_hyst.
 
 //  CAMR.ps_relax_hyst (1): a phase in the upper corridor (alpha >=
 //  alpha_cond/2) with a non-degenerate density quotient still counts as
@@ -241,9 +164,7 @@ inline long& ps_pres_f3_hyst() { static long n = 0; return n; }
 inline int ps_relax_hyst()
 {
     static const int v = []() -> int {
-        int val = 1;
-        amrex::ParmParse pp("CAMR");
-        pp.query("ps_relax_hyst", val);
+        const int val = ps_dial_int("ps_relax_hyst", 1);
         if (val != 0 && val != 1) {
             amrex::Abort("CAMR.ps_relax_hyst must be 0 or 1");
         }
@@ -270,7 +191,7 @@ bool ps_presence_relax_gate(amrex::Real a1, amrex::Real m1, amrex::Real m2,
         const bool q1 = i1 || band(a1, m1);
         const bool q2 = i2 || band(a2, m2);
         if (q1 && q2 && (band(a1, m1) || band(a2, m2))) {
-            ++ps_pres_f3_hyst();
+            ++ps_counters().pres_f3_hyst;
             return true;
         }
     }
@@ -776,12 +697,7 @@ ps_x3_grid_relax_cell(int i, int j, int k,
 // pressure jump rather than by a tuned damper.  Docs §5.2.
 inline int ps_mech_kernel()
 {
-    static const int v = []() -> int {
-        int val = 0;
-        amrex::ParmParse pp("CAMR");
-        pp.query("ps_mech_kernel", val);
-        return val;
-    }();
+    static const int v = ps_dial_int("ps_mech_kernel", 0);
     return v;
 }
 
@@ -798,9 +714,7 @@ inline int ps_mech_kernel()
 inline int ps_relax_mode()
 {
     static const int m = []() -> int {
-        int v = 5;
-        amrex::ParmParse pp("CAMR");
-        pp.query("ps_relax_mode", v);
+        const int v = ps_dial_int("ps_relax_mode", 5);
         if (v != 0 && v != 1 && v != 2 && v != 3 && v != 4 && v != 5) {
             amrex::Abort("CAMR.ps_relax_mode = " + std::to_string(v) +
                          " is not a mode (valid: 0,1,2,4,5)");
@@ -825,12 +739,7 @@ inline int ps_relax_mode()
 // -----------------------------------------------------------------
 inline int ps_coexist_action()
 {
-    static const int a = []() -> int {
-        int v = 0;
-        amrex::ParmParse pp("CAMR");
-        pp.query("ps_coexist_action", v);
-        return v;
-    }();
+    static const int a = ps_dial_int("ps_coexist_action", 0);
     return a;
 }
 
@@ -842,12 +751,7 @@ inline int ps_coexist_action()
 //  Retire-candidate: see docs/DESIGN_DECISIONS.md §5.
 inline int ps_mech_close()
 {
-    static const int v = []() -> int {
-        int val = 1;
-        amrex::ParmParse pp("CAMR");
-        pp.query("ps_mech_close", val);
-        return val;
-    }();
+    static const int v = ps_dial_int("ps_mech_close", 1);
     return v;
 }
 
@@ -862,12 +766,7 @@ inline int ps_mech_close()
 // visible in the acceptance table.  Docs/MODEL_AND_ALGORITHM.md §5.3.
 inline amrex::Real ps_theta_tau()
 {
-    static const amrex::Real v = []() -> amrex::Real {
-        amrex::Real val = amrex::Real(1.0e-7);
-        amrex::ParmParse pp("CAMR");
-        pp.query("ps_theta_tau", val);
-        return val;
-    }();
+    static const amrex::Real v = ps_dial_real("ps_theta_tau", amrex::Real(1.0e-7));
     return v;
 }
 
@@ -887,9 +786,17 @@ inline amrex::Real ps_theta_tau()
 // -----------------------------------------------------------------
 inline int ps_diag_morph()
 {
-    static const int v = []() -> int {
-        int x = 0; amrex::ParmParse pp("CAMR");
-        pp.query("ps_diag_morph", x); return x; }();
+    static const int v = ps_dial_int("ps_diag_morph", 0);
+    return v;
+}
+
+// CAMR.ps_diag_alpha (0): report the alpha_1 range at labelled points
+// (CAMR_advance.cpp, CAMR.cpp) so a drive toward a pure phase can be
+// attributed to mass transfer, advection/C-F, interpolation or reflux.
+// Retire-candidate: see docs/DESIGN_DECISIONS.md §7 O-8.
+inline int ps_diag_alpha()
+{
+    static const int v = ps_dial_int("ps_diag_alpha", 0);
     return v;
 }
 
@@ -989,12 +896,7 @@ ps_report_morphology(amrex::MultiFab& S_new, const char* label, int level,
 // Retire-candidate: see docs/DESIGN_DECISIONS.md §5.
 inline int ps_prehydro_diag()
 {
-    static const int v = []() -> int {
-        int val = 0;
-        amrex::ParmParse pp("CAMR");
-        pp.query("ps_prehydro_diag", val);
-        return val;
-    }();
+    static const int v = ps_dial_int("ps_prehydro_diag", 0);
     return v;
 }
 
@@ -1082,10 +984,7 @@ ps_report_temps(amrex::MultiFab& S_new, const char* label,
 // -----------------------------------------------------------------
 inline int ps_psat_diag()
 {
-    static const int v = []() -> int {
-        int val = 0; amrex::ParmParse pp("CAMR");
-        pp.query("ps_psat_diag", val); return val;
-    }();
+    static const int v = ps_dial_int("ps_psat_diag", 0);
     return v;
 }
 
@@ -1154,10 +1053,7 @@ ps_report_psat(amrex::MultiFab& S_new, const char* label, int nghost = 0)
 // -----------------------------------------------------------------
 inline int ps_t2_diag()
 {
-    static const int v = []() -> int {
-        int val = 0; amrex::ParmParse pp("CAMR");
-        pp.query("ps_t2_diag", val); return val;
-    }();
+    static const int v = ps_dial_int("ps_t2_diag", 0);
     return v;
 }
 
@@ -1231,27 +1127,21 @@ ps_report_T2stage(amrex::MultiFab& S_new, const char* label,
 // =====================================================================
 inline int ps_harvest()
 {
-    static const int v = []() -> int {
-        int val = 0; amrex::ParmParse pp("CAMR");
-        pp.query("ps_harvest", val); return val; }();
+    static const int v = ps_dial_int("ps_harvest", 0);
     return v;
 }
 // CAMR.ps_harvest_trace (0): 1 also records the trace phase of a near-pure
 // cell, whose rho = m/alpha and e = UE/m are numerical noise; audit only.
 inline int ps_harvest_trace()
 {
-    static const int v = []() -> int {
-        int val = 0; amrex::ParmParse pp("CAMR");
-        pp.query("ps_harvest_trace", val); return val; }();
+    static const int v = ps_dial_int("ps_harvest_trace", 0);
     return v;
 }
 // CAMR.ps_harvest_afloor (1e-4): a phase is recorded only where its own
 // volume fraction exceeds this; matches the aggregator's MINALPHA.
 inline amrex::Real ps_harvest_afloor()
 {
-    static const amrex::Real v = []() -> amrex::Real {
-        amrex::Real val = amrex::Real(1.0e-4); amrex::ParmParse pp("CAMR");
-        pp.query("ps_harvest_afloor", val); return val; }();
+    static const amrex::Real v = ps_dial_real("ps_harvest_afloor", amrex::Real(1.0e-4));
     return v;
 }
 
@@ -1271,11 +1161,12 @@ struct PsHarvestReservoir
     void configure()
     {
         if (configured) return;
+        dlr  = ps_dial_real("ps_harvest_dlr", dlr);
+        de   = ps_dial_real("ps_harvest_de",  de);
+        base = ps_dial_string("ps_harvest_file", base.c_str());
+        // flush_stride is a long: read directly, no int helper applies.
         amrex::ParmParse pp("CAMR");
-        pp.query("ps_harvest_dlr", dlr);
-        pp.query("ps_harvest_de",  de);
         pp.query("ps_harvest_flush", flush_stride);
-        pp.query("ps_harvest_file", base);
         configured = true;
     }
 
@@ -1368,12 +1259,7 @@ ps_harvest_states(amrex::MultiFab& S_new, int nghost = 0)
 // 0 = silent and cheap.  Retire-candidate: see docs/DESIGN_DECISIONS.md §5.
 inline int ps_relax_verbose()
 {
-    static const int v = []() -> int {
-        int val = 0;
-        amrex::ParmParse pp("CAMR");
-        pp.query("ps_relax_verbose", val);
-        return val;
-    }();
+    static const int v = ps_dial_int("ps_relax_verbose", 0);
     return v;
 }
 
@@ -1384,12 +1270,7 @@ inline int ps_relax_verbose()
 // pressure nowhere else (small_pres is unused there).
 inline amrex::Real ps_pres_floor()
 {
-    static const amrex::Real v = []() -> amrex::Real {
-        amrex::Real val = amrex::Real(0.0);
-        amrex::ParmParse pp("CAMR");
-        pp.query("ps_pres_floor", val);
-        return val;
-    }();
+    static const amrex::Real v = ps_dial_real("ps_pres_floor", amrex::Real(0.0));
     return v;
 }
 
@@ -1399,12 +1280,7 @@ inline amrex::Real ps_pres_floor()
 // where the branch EOS is extrapolated and T oscillates.
 inline amrex::Real ps_temp_floor()
 {
-    static const amrex::Real v = []() -> amrex::Real {
-        amrex::Real val = amrex::Real(0.0);
-        amrex::ParmParse pp("CAMR");
-        pp.query("ps_temp_floor", val);
-        return val;
-    }();
+    static const amrex::Real v = ps_dial_real("ps_temp_floor", amrex::Real(0.0));
     return v;
 }
 
@@ -1428,9 +1304,7 @@ ps_resync_mixture_mass(amrex::MultiFab& S_new, int nghost = 0)
     BL_PROFILE("PS::ps_resync_mixture_mass()");
     using amrex::Real;
     // CAMR.ps_resync_mass (1): 0 disables the resync, for A/B.
-    static const int enabled = []{
-        int v = 1; amrex::ParmParse pp("CAMR");
-        pp.query("ps_resync_mass", v); return v; }();
+    static const int enabled = ps_dial_int("ps_resync_mass", 1);
     if (enabled == 0) return;
     for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
         const amrex::Box bx = mfi.growntilebox(nghost);
@@ -1470,9 +1344,7 @@ ps_resync_phase_energy(amrex::MultiFab& S_new, int nghost = 0)
     // CAMR.ps_phase_e_cap (1e9 J/kg): credibility bound on |UE_k|/m_k.
     // Physical CO2 runs 1e5-1e6 J/kg including kinetic energy, so three
     // orders of headroom; <= 0 disables the test.
-    static const Real e_cap = []() -> Real {
-        double v = 1.0e9; amrex::ParmParse pp("CAMR");
-        pp.query("ps_phase_e_cap", v); return Real(v); }();
+    static const Real e_cap = ps_dial_real("ps_phase_e_cap", Real(1.0e9));
     for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
         const amrex::Box bx = mfi.growntilebox(nghost);
         amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
@@ -1525,17 +1397,13 @@ ps_resync_phase_energy(amrex::MultiFab& S_new, int nghost = 0)
 // -----------------------------------------------------------------
 inline int ps_dilute_closure()
 {
-    static const int v = []() -> int {
-        int val = 0; amrex::ParmParse pp("CAMR");
-        pp.query("ps_dilute_closure", val); return val; }();
+    static const int v = ps_dial_int("ps_dilute_closure", 0);
     return v;
 }
 // CAMR.ps_dilute_alpha0 (0.02): width of the dilute weight.
 inline amrex::Real ps_dilute_alpha0()
 {
-    static const amrex::Real v = []() -> amrex::Real {
-        amrex::Real val = amrex::Real(0.02); amrex::ParmParse pp("CAMR");
-        pp.query("ps_dilute_alpha0", val); return val; }();
+    static const amrex::Real v = ps_dial_real("ps_dilute_alpha0", amrex::Real(0.02));
     return v;
 }
 
@@ -1620,9 +1488,7 @@ ps_dilute_energy_closure(amrex::MultiFab& S_new, int nghost = 0)
 // -----------------------------------------------------------------
 inline int ps_eovs_diag()
 {
-    static const int v = []() -> int {
-        int val = 0; amrex::ParmParse pp("CAMR");
-        pp.query("ps_eovs_diag", val); return val; }();
+    static const int v = ps_dial_int("ps_eovs_diag", 0);
     return v;
 }
 inline void
@@ -1754,7 +1620,7 @@ ps_apply_floor(amrex::MultiFab& S_new, int nghost = 0)
                 if (l_floor_pr.floor_indep != 0 &&
                     ps_regime(alk, mk, l_floor_pr) != PsRegime::Independent) {
 #if !defined(AMREX_USE_GPU)
-                    ++ps_promote_diag::n_floor_skip();
+                    ++ps_counters().floor_skip;
                     if (l_floor_pr.floor_budget != 0) {
                         //  Budget probe (CAMR.ps_floor_budget): is the skipped
                         //  phase reachable on its own branch, and how much
@@ -1765,18 +1631,18 @@ ps_apply_floor(amrex::MultiFab& S_new, int nghost = 0)
                                                           : hem::Phase3::Vapor;
                         Real Pb, Tb, Sb;
                         if (EOS::REY2PTS_phase_try(rhod, ekd, Y, brd, Pb, Tb, Sb))
-                            ++ps_promote_diag::n_floor_reach();
+                            ++ps_counters().floor_reach;
                         else
-                            ++ps_promote_diag::n_floor_unreach();
+                            ++ps_counters().floor_unreach;
                         //  Energy the pressure floor would have manufactured.
                         if (pfloor > Real(0.0)) {
                             Real e_pf; EOS::RYP2E(rhod, Y, pfloor, e_pf);
                             if (std::isfinite(e_pf) && ekd < e_pf)
-                                ps_promote_diag::floor_e_avoided() +=
+                                ps_counters().floor_e_avoided +=
                                     mk * (e_pf - ekd);
                         }
-                        if (ekd < ps_promote_diag::floor_min_e())
-                            ps_promote_diag::floor_min_e() = ekd;
+                        if (ekd < ps_counters().floor_min_e)
+                            ps_counters().floor_min_e = ekd;
                     }
 #endif
                     continue;
@@ -1842,21 +1708,12 @@ ps_apply_floor(amrex::MultiFab& S_new, int nghost = 0)
 
 
 // -----------------------------------------------------------------
-//  Fold-mass audit: every fold event and the phase mass it moved, by
-//  cause, so phase-removal churn is visible ([PS-FOLD]).  Host-only
-//  statics; read and reset with the [PS-MASS] report in CAMR_advance.cpp.
-//  Docs/MODEL_AND_ALGORITHM.md §4.4.
+//  Fold-mass audit (PsFoldAudit, PS_counters.H): every fold event and
+//  the phase mass it moved, by cause, so phase-removal churn is visible
+//  ([PS-FOLD]).  Read and reset with the [PS-MASS] report in
+//  CAMR_advance.cpp.  Docs/MODEL_AND_ALGORITHM.md §4.4.
 // -----------------------------------------------------------------
-#if !defined(AMREX_USE_GPU)
-struct PsFoldAudit {
-    long   n_vanish = 0, n_tfloor = 0, n_vacuum = 0;
-    long   n_cdeg = 0, n_edeg = 0;    // corridor-density and energy reaps
-    double m_vanish = 0.0, m_tfloor = 0.0, m_vacuum = 0.0;   // |phase mass folded|
-    double m_cdeg = 0.0, m_edeg = 0.0;
-    void reset() { *this = PsFoldAudit{}; }
-};
-inline PsFoldAudit& ps_fold_audit() { static PsFoldAudit a; return a; }
-#endif
+inline PsFoldAudit& ps_fold_audit() { return ps_counters().fold; }
 
 // -----------------------------------------------------------------
 //  ps_apply_tfloor_fold — grid driver for hem::ps_apply_tfloor_fold.  A
@@ -1881,12 +1738,7 @@ ps_apply_tfloor_fold(amrex::MultiFab& S_new, int nghost = 0)
     // cells at rho_mix = 120 kg/m3 to a pure phase — a state no
     // single-phase CO2 can occupy (saturated vapour ~14, saturated liquid
     // ~1225 kg/m3) and no energy adjustment can repair.
-    static const amrex::Real fold_T = []() -> amrex::Real {
-        amrex::Real v = amrex::Real(0.0);
-        amrex::ParmParse pp("CAMR");
-        pp.query("ps_tfloor_fold", v);
-        return v;
-    }();
+    static const amrex::Real fold_T = ps_dial_real("ps_tfloor_fold", amrex::Real(0.0));
     const amrex::Real tfloor = fold_T;
     if (tfloor <= amrex::Real(0.0)) return;
     BL_PROFILE("PS::ps_apply_tfloor_fold()");

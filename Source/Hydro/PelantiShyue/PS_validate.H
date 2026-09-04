@@ -36,18 +36,16 @@
 #include "PS_presence.H"      // ps_phase_quot
 #include "PS_relaxation.H"    // ps_make_camr_eos_api (V7 validity channel)
 #include "PS_util.H"          // ps_kinetic_energy
+#include "PS_dials.H"         // ps_dial_int (CAMR.ps_validate)
 #include <AMReX_MultiFab.H>
-#include <AMReX_ParmParse.H>
 #include <AMReX_ParallelDescriptor.H>
 #include <AMReX_Print.H>
 #include <cmath>
 
+// CAMR.ps_validate (0): the tripwire's mode.
 inline int ps_validate_mode()
 {
-    static const int v = []() -> int {
-        int val = 0; amrex::ParmParse pp("CAMR");
-        pp.query("ps_validate", val); return val;
-    }();
+    static const int v = ps_dial_int("ps_validate", 0);
     return v;
 }
 

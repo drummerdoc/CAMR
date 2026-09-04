@@ -32,8 +32,8 @@
 #include "PS_relaxation.H"          // ps_make_camr_eos_api()
 #include "PS_constants.H"           // ps_const::ALPHA_ROUNDOFF
 #include "PS_util.H"                // ps_pack_v6 / ps_unpack_v6, ps_kinetic_energy
+#include "PS_dials.H"               // ps_dial_int / ps_dial_real (CAMR.* reads)
 #include <AMReX_MultiFab.H>
-#include <AMReX_ParmParse.H>
 #include <AMReX_Print.H>
 #include <AMReX_BLProfiler.H>
 #include <cmath>
@@ -74,12 +74,11 @@ inline const PsSourceDials& ps_source_dials()
 {
     static const PsSourceDials d = []() {
         PsSourceDials v;
-        amrex::ParmParse pp("CAMR");
-        pp.query("ps_flash_tau",           v.flash_tau);
-        pp.query("ps_mt_tau",              v.mt_tau);
-        pp.query("ps_mt_gref",             v.mt_gref);
-        pp.query("ps_triple_point_action", v.triple_point_action);
-        pp.query("ps_src_p_reproject",     v.src_p_reproject);
+        v.flash_tau           = ps_dial_real("ps_flash_tau",           v.flash_tau);
+        v.mt_tau              = ps_dial_real("ps_mt_tau",              v.mt_tau);
+        v.mt_gref             = ps_dial_real("ps_mt_gref",             v.mt_gref);
+        v.triple_point_action = ps_dial_int ("ps_triple_point_action", v.triple_point_action);
+        v.src_p_reproject     = ps_dial_int ("ps_src_p_reproject",     v.src_p_reproject);
         return v;
     }();
     return d;
@@ -189,8 +188,8 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
             });
         }
         // Cumulative flash count, printed only when it changes.
-        static int s_prev_flash = 0;
-        const int nf = hem::ps_flash_source_count();
+        static long s_prev_flash = 0;
+        const long nf = hem::ps_flash_source_count();
         if (nf > s_prev_flash) {
             amrex::Print() << "[ps_flash] cumulative cells flashed = " << nf << "\n";
             s_prev_flash = nf;
@@ -241,12 +240,7 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
         // CAMR.ps_mt_update_alpha (-1): density-preserving transfer
         // dalpha_1 = -dm/rho_1 (the (E.1) rule); -1 auto (resolves to 1),
         // 0 force off, 1 force on.  Host-read once, captured by value.
-        static const int mt_upd_key = []() {
-            int v = -1;
-            amrex::ParmParse pp("CAMR");
-            pp.query("ps_mt_update_alpha", v);
-            return v;
-        }();
+        static const int mt_upd_key = ps_dial_int("ps_mt_update_alpha", -1);
         const int l_mt_upd = (mt_upd_key >= 0) ? mt_upd_key : 1;
         // ps_mt_diag >= 2 also enables the contraction-ratio measurement in
         // the kernel (a second equilibrium solve per transferring cell).
@@ -260,8 +254,7 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
         // geometry via CAMR.ps_mt_srt_d / ps_mt_srt_delta).  1 (the HRM
         // correlation) is retired; any value other than 0 or 2 aborts.
         static const int mt_tau_model = []() -> int {
-            int v = 0; amrex::ParmParse pp("CAMR");
-            pp.query("ps_mt_tau_model", v);
+            const int v = ps_dial_int("ps_mt_tau_model", 0);
             if (v != 0 && v != 2) {
                 amrex::Abort("CAMR.ps_mt_tau_model must be 0 or 2 (1 is retired)");
             }
@@ -272,9 +265,7 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
         // premise and the non-overshoot property; 0 = fixed-alpha target with
         // mean carrier (A/B only); 2 = as 1 plus nested pressure relaxation
         // (makes the outer Gibbs Newton non-smooth).  See docs/DESIGN_DECISIONS.md R-6.
-        static const int mt_target = []() -> int {
-            int v = 1; amrex::ParmParse pp("CAMR");
-            pp.query("ps_mt_target", v); return v; }();
+        static const int mt_target = ps_dial_int("ps_mt_target", 1);
         const int l_mt_target = mt_target;
         for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
             const amrex::Box bx = mfi.growntilebox(nghost);
@@ -434,8 +425,8 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
             st.reset();
         }
 
-        static int s_prev_mt = 0;
-        const int nmt = hem::ps_mass_transfer_count();
+        static long s_prev_mt = 0;
+        const long nmt = hem::ps_mass_transfer_count();
         if (nmt > s_prev_mt) {
             amrex::Print() << "[ps_mt] cumulative cells with finite-rate MT = "
                            << nmt << "\n";
@@ -507,8 +498,8 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                 }
             });
         }
-        static int s_prev_tp = 0;
-        const int ntp = hem::ps_triple_point_count();
+        static long s_prev_tp = 0;
+        const long ntp = hem::ps_triple_point_count();
         if (ntp > s_prev_tp) {
             amrex::Print() << "[ps_triple_point] cells below CO2 triple point "
                            << "(cumulative) = " << ntp << "\n";

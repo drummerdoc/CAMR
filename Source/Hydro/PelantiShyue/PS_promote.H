@@ -28,33 +28,22 @@
 #ifdef USE_PS_HYDRO
 
 #include "PS_presence.H"
+#include "PS_counters.H"
 #include "EOS.H"
 #include <AMReX_GpuQualifiers.H>
 
-//  Host-only diagnostic counters, reported and reset in CAMR_advance.cpp:
-//    n_promote_refuse : would-be-Independent phases demoted to Corridor
-//                       for energy-unreachability ([PS-PROMOTE]).
-//    n_floor_skip     : per-phase floor legs skipped on a non-Independent
-//                       phase (CAMR.ps_floor_indep).
-#if !defined(AMREX_USE_GPU)
-namespace ps_promote_diag {
-    inline long& n_promote_refuse() { static long n = 0; return n; }
-    inline long& n_floor_skip()     { static long n = 0; return n; }
-    //  Floor-budget accumulators (CAMR.ps_floor_budget): of the corridor
-    //  phases whose floor leg is skipped, how many carry a reachable vs
-    //  unreachable own-branch state; the pressure-floor energy not added;
-    //  and the most-negative skipped e_k.
-    inline long&   n_floor_reach()   { static long n = 0; return n; }
-    inline long&   n_floor_unreach() { static long n = 0; return n; }
-    inline double& floor_e_avoided() { static double x = 0.0; return x; }
-    inline double& floor_min_e()     { static double x = 0.0; return x; }
-    inline void  reset() {
-        n_promote_refuse() = 0; n_floor_skip() = 0;
-        n_floor_reach() = 0; n_floor_unreach() = 0;
-        floor_e_avoided() = 0.0; floor_min_e() = 0.0;
-    }
-}
-#endif
+//  Host-only diagnostic counters (PsCounters, PS_counters.H), reported
+//  and reset in CAMR_advance.cpp:
+//    promote_refuse : would-be-Independent phases demoted to Corridor
+//                     for energy-unreachability ([PS-PROMOTE]).
+//    floor_skip     : per-phase floor legs skipped on a non-Independent
+//                     phase (CAMR.ps_floor_indep).
+//    floor_reach / floor_unreach / floor_e_avoided / floor_min_e: the
+//                     floor-budget accumulators (CAMR.ps_floor_budget): of
+//                     the corridor phases whose floor leg is skipped, how
+//                     many carry a reachable vs unreachable own-branch
+//                     state; the pressure-floor energy not added; and the
+//                     most-negative skipped e_k.
 
 //  Demote an Independent classification to Corridor iff (rho, e) has no
 //  root on the requested branch; pass-through when the phase is not
@@ -73,7 +62,7 @@ PsRegime ps_regime_reach(PsRegime rg, amrex::Real rho, amrex::Real e,
     if (EOS::REY2PTS_phase_try(rho, e, Yq, br, Pq, Tq, Sq))
         return PsRegime::Independent;
 #if !defined(AMREX_USE_GPU)
-    ++ps_promote_diag::n_promote_refuse();
+    ++ps_counters().promote_refuse;
 #endif
     return PsRegime::Corridor;
 }

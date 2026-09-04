@@ -9,8 +9,9 @@
 #include <cmath>
 #include <AMReX_ParallelDescriptor.H>        // reductions in the PS-MASS probe
 #ifdef USE_PS_HYDRO
-#include "Hydro/PelantiShyue/PS_guards.H"    // guard audit counters
-#include "Hydro/PelantiShyue/PS_hllc.H"      // face-audit counters
+#include "Hydro/PelantiShyue/PS_counters.H"  // PsCounters (guard / face / fold audits)
+#include "Hydro/PelantiShyue/PS_dials.H"     // ps_dial_int (CAMR.* reads)
+#include "Hydro/PelantiShyue/PS_hllc.H"      // PS_FL_NCAUSE / PS_FL_OK (face-audit labels)
 #include "Hydro/PelantiShyue/PS_umeth.H"    // dial accessors
 #endif
 
@@ -130,9 +131,7 @@ CAMR::CAMR_advance (Real time,
     //     second order; needed to keep do_mol=1 second order with
     //     relaxation/sources on).
     static const int ps_do_relax_cached = []() -> int {
-        int v = 1;
-        amrex::ParmParse pp("CAMR");
-        pp.query("ps_do_relax", v);
+        const int v = ps_dial_int("ps_do_relax", 1);   // resolved value -> job_info
 #ifdef USE_PS_HYDRO
         //  At mode 5 the X3 kernel inside ps_apply_relaxation owns mass
         //  transfer and the split MT source in ps_apply_sources is gated
@@ -147,27 +146,16 @@ CAMR::CAMR_advance (Real time,
                          "re-enable ps_do_relax.");
         }
 #endif
-        //  Add the resolved value so job_info records it even when the deck
-        //  is silent.
-        pp.add("ps_do_relax", v);
         return v;
     }();
-    static const int ps_strang_cached = []() -> int {
-        int v = 0;
-        amrex::ParmParse pp("CAMR");
-        pp.query("ps_strang", v);
-        pp.add("ps_strang", v);   // resolved value -> job_info
-        return v;
-    }();
-    // CAMR.ps_diag_alpha (0): report the alpha_1 range at labelled points so
-    // a drive toward a pure phase can be attributed to mass transfer (jump
-    // across the relax bracket) or to advection/C-F (high on entry).
+    static const int ps_strang_cached = ps_dial_int("ps_strang", 0);
+    // CAMR.ps_diag_alpha (accessor in PS_relaxation.H): report the alpha_1
+    // range at labelled points so a drive toward a pure phase can be
+    // attributed to mass transfer (jump across the relax bracket) or to
+    // advection/C-F (high on entry).
     // Retire-candidate: see docs/DESIGN_DECISIONS.md §7 O-8.
     auto diag_a1 = [&](const amrex::MultiFab& S, const char* label) {
-        static int dg = -1;
-        if (dg < 0) { int t = 0; amrex::ParmParse pp("CAMR");
-                      pp.query("ps_diag_alpha", t); dg = t; }
-        if (dg == 0) return;
+        if (ps_diag_alpha() == 0) return;
         amrex::Print() << "[PS-DIAG] L" << level << " step "
                        << parent->levelSteps(level) << " " << label
                        << ": alpha1 in [" << S.min(UALPHA1, 0) << ", "
@@ -186,8 +174,7 @@ CAMR::CAMR_advance (Real time,
     // gate.
     auto cell_probe = [&](const amrex::MultiFab& S, const char* label) {
 #ifdef USE_PS_HYDRO
-        static const int icd = []() { int v = -1; amrex::ParmParse pp("CAMR");
-                                      pp.query("ps_cell_diag", v); return v; }();
+        static const int icd = ps_dial_int("ps_cell_diag", -1);
         if (icd < 0) return;
         for (amrex::MFIter mfi(S); mfi.isValid(); ++mfi) {
             const amrex::Box& pbx = mfi.validbox();
@@ -217,9 +204,8 @@ CAMR::CAMR_advance (Real time,
         // Invariant tripwire (CAMR.ps_validate, 0 = off), independent of
         // the ps_diag_mass gate.
         ps_validate_state(S, label);
-        static int dgm = -1;
-        if (dgm < 0) { int t = 0; amrex::ParmParse pp("CAMR");
-                       pp.query("ps_diag_mass", t); dgm = t; }
+        // CAMR.ps_diag_mass (0): the probe's gate.
+        static const int dgm = ps_dial_int("ps_diag_mass", 0);
         if (dgm == 0) return;
         amrex::Real worst = 0.0, mmax = 0.0, e1max = 0.0, e2max = 0.0;
         amrex::Long nbad = 0;
@@ -260,11 +246,12 @@ CAMR::CAMR_advance (Real time,
         // from "reached, never trips".  Reported then reset, so the numbers
         // are per interval.
         {
-            amrex::Long gs = ps_guard::n_seen();
-            amrex::Long gl = ps_guard::n_reject_low();
+            PsCounters& pc = ps_counters();
+            amrex::Long gs = pc.guard_seen;
+            amrex::Long gl = pc.guard_reject_low;
             amrex::ParallelDescriptor::ReduceLongSum(gs);
             amrex::ParallelDescriptor::ReduceLongSum(gl);
-            amrex::Long rl = ps_guard::n_rho_clamp_lo();
+            amrex::Long rl = pc.rho_clamp_lo;
             amrex::ParallelDescriptor::ReduceLongSum(rl);
             amrex::Print() << "[PS-GUARD] L" << level << " step "
                            << parent->levelSteps(level) << " " << label
@@ -273,9 +260,9 @@ CAMR::CAMR_advance (Real time,
                            << " | rho_clamp_lo = " << rl;
             //  Ctoprim reference audit (PS_guards.H); ctop_sub = 0 over a
             //  run means no cell reached the host-phase reference.
-            amrex::Long ck_ = ps_guard::n_ctop_seen();
-            amrex::Long cs_ = ps_guard::n_ctop_sub();
-            amrex::Long cf_ = ps_guard::n_ctop_host_floor();
+            amrex::Long ck_ = pc.ctop_seen;
+            amrex::Long cs_ = pc.ctop_sub;
+            amrex::Long cf_ = pc.ctop_host_floor;
             amrex::ParallelDescriptor::ReduceLongSum(ck_);
             amrex::ParallelDescriptor::ReduceLongSum(cs_);
             amrex::ParallelDescriptor::ReduceLongSum(cf_);
@@ -284,9 +271,9 @@ CAMR::CAMR_advance (Real time,
                            << "  ctop_host_floor = " << cf_;
             //  The counted limiters (flux non-finite sanitisation, reflux α
             //  co-move cap and clamp) report and reset at the same cadence.
-            amrex::Long fs_ = ps_guard::n_flux_sanit();
-            amrex::Long rc_ = ps_guard::n_reflux_cap();
-            amrex::Long rk_ = ps_guard::n_reflux_clamp();
+            amrex::Long fs_ = pc.flux_sanit;
+            amrex::Long rc_ = pc.reflux_cap;
+            amrex::Long rk_ = pc.reflux_clamp;
             amrex::ParallelDescriptor::ReduceLongSum(fs_);
             amrex::ParallelDescriptor::ReduceLongSum(rc_);
             amrex::ParallelDescriptor::ReduceLongSum(rk_);
@@ -295,12 +282,12 @@ CAMR::CAMR_advance (Real time,
                            << "  reflux_clamp = " << rk_;
             //  NSCBC ghost-fill zero-gradient fallbacks by cause
             //  (PS_guards.H); all zero unless NSCBC is enabled on a face.
-            amrex::Long nc_ = ps_guard::n_nscbc_zg_c();
-            amrex::Long ns_ = ps_guard::n_nscbc_zg_sup();
-            amrex::Long nt_ = ps_guard::n_nscbc_zg_slots();
-            amrex::Long np_ = ps_guard::n_nscbc_zg_pack();
-            amrex::Long nf_ = ps_guard::n_nscbc_flash();
-            amrex::Long nm_ = ps_guard::n_nscbc_pmix_fail();
+            amrex::Long nc_ = pc.nscbc_zg_c;
+            amrex::Long ns_ = pc.nscbc_zg_sup;
+            amrex::Long nt_ = pc.nscbc_zg_slots;
+            amrex::Long np_ = pc.nscbc_zg_pack;
+            amrex::Long nf_ = pc.nscbc_flash;
+            amrex::Long nm_ = pc.nscbc_pmix_fail;
             amrex::ParallelDescriptor::ReduceLongSum(nc_);
             amrex::ParallelDescriptor::ReduceLongSum(ns_);
             amrex::ParallelDescriptor::ReduceLongSum(nt_);
@@ -313,11 +300,7 @@ CAMR::CAMR_advance (Real time,
                            << ",pack=" << np_ << ")"
                            << " nscbc_flash=" << nf_
                            << " pmix_fail=" << nm_ << "\n";
-            ps_guard::reset_ctop_counts();
-            ps_guard::reset_counts();
-            ps_guard::reset_rho_counts();
-            ps_guard::reset_b13_counts();
-            ps_guard::reset_nscbc_counts();
+            pc.reset_guards();
             // Face audit, gated on CAMR.ps_face_diag (0); the counters
             // themselves cost a few compares per face.  The [PS-FACE] and
             // [PS-W21] lines are retire-candidates: see
@@ -326,17 +309,15 @@ CAMR::CAMR_advance (Real time,
             // print under ps_diag_mass alone; their counters reset at the
             // same cadence either way.
             {
-                static const int fd = []() {
-                    int v = 0; amrex::ParmParse pp("CAMR");
-                    pp.query("ps_face_diag", v); return v; }();
+                static const int fd = ps_dial_int("ps_face_diag", 0);
                 if (fd != 0) {
                     static const char* cn[3] = {"II", "C ", "A "};
                     amrex::Print() << "[PS-FACE] L" << level << " step "
                                    << parent->levelSteps(level) << " " << label;
                     for (int c = 0; c < 3; ++c) {
-                        amrex::Long fs = PS_HLLC::face_diag::n_fl_seen(c);
-                        amrex::Long ff = PS_HLLC::face_diag::n_fl_fail(c);
-                        amrex::Real fm = PS_HLLC::face_diag::max_incmis(c);
+                        amrex::Long fs = pc.fl_seen[c];
+                        amrex::Long ff = pc.fl_fail[c];
+                        amrex::Real fm = pc.max_incmis[c];
                         const amrex::Real fm_loc = fm;   // pre-reduce
                         amrex::ParallelDescriptor::ReduceLongSum(fs);
                         amrex::ParallelDescriptor::ReduceLongSum(ff);
@@ -345,10 +326,8 @@ CAMR::CAMR_advance (Real time,
                         //  with no location cannot be attributed).  MAXLOC by
                         //  hand: the lowest rank whose local max equals the
                         //  global max broadcasts its (i,j,k,idir).
-                        int mloc[4] = { PS_HLLC::face_diag::mis_i(c),
-                                        PS_HLLC::face_diag::mis_j(c),
-                                        PS_HLLC::face_diag::mis_k(c),
-                                        PS_HLLC::face_diag::mis_dir(c) };
+                        int mloc[4] = { pc.mis_i[c], pc.mis_j[c],
+                                        pc.mis_k[c], pc.mis_dir[c] };
                         if (fm > 0.0) {
                             const int np_ = amrex::ParallelDescriptor::NProcs();
                             int owner = (fm_loc == fm)
@@ -373,7 +352,7 @@ CAMR::CAMR_advance (Real time,
                 //  to the B.14 form: zero on the 1-D suite; persistent
                 //  non-zero in production is a finding.
                 {
-                    amrex::Long nrf = PS_HLLC::face_diag::n_relax_fb();
+                    amrex::Long nrf = pc.relax_fb;
                     amrex::ParallelDescriptor::ReduceLongSum(nrf);
                     if (nrf > 0) {
                         amrex::Print() << "[PS-RELAXFB] L" << level
@@ -386,8 +365,8 @@ CAMR::CAMR_advance (Real time,
                 //  Checked-promotion refusals and floor legs skipped on
                 //  non-Independent phases.  Printed only when non-zero.
                 {
-                    amrex::Long npr = ps_promote_diag::n_promote_refuse();
-                    amrex::Long nfs = ps_promote_diag::n_floor_skip();
+                    amrex::Long npr = pc.promote_refuse;
+                    amrex::Long nfs = pc.floor_skip;
                     amrex::ParallelDescriptor::ReduceLongSum(npr);
                     amrex::ParallelDescriptor::ReduceLongSum(nfs);
                     if (npr > 0 || nfs > 0) {
@@ -404,10 +383,10 @@ CAMR::CAMR_advance (Real time,
                     //  and the most negative skipped e_k.
                     //  Retire-candidate: see docs/DESIGN_DECISIONS.md §7 O-8.
                     {
-                        amrex::Long nre = ps_promote_diag::n_floor_reach();
-                        amrex::Long nun = ps_promote_diag::n_floor_unreach();
-                        amrex::Real eav = ps_promote_diag::floor_e_avoided();
-                        amrex::Real emn = ps_promote_diag::floor_min_e();
+                        amrex::Long nre = pc.floor_reach;
+                        amrex::Long nun = pc.floor_unreach;
+                        amrex::Real eav = pc.floor_e_avoided;
+                        amrex::Real emn = pc.floor_min_e;
                         amrex::ParallelDescriptor::ReduceLongSum(nre);
                         amrex::ParallelDescriptor::ReduceLongSum(nun);
                         amrex::ParallelDescriptor::ReduceRealSum(eav);
@@ -422,7 +401,7 @@ CAMR::CAMR_advance (Real time,
                                 << " J  min_skip_e = " << emn << " J/kg\n";
                         }
                     }
-                    ps_promote_diag::reset();
+                    pc.reset_promote();
                 }
                 //  Refusal-cause breakdown for the wp fluctuation path;
                 //  printed only when something refused.
@@ -434,12 +413,12 @@ CAMR::CAMR_advance (Real time,
                     amrex::Long tot = 0;
                     amrex::Long cv[PS_HLLC::PS_FL_NCAUSE];
                     for (int c = 0; c < PS_HLLC::PS_FL_NCAUSE; ++c) {
-                        cv[c] = PS_HLLC::face_diag::n_fl_cause(c);
+                        cv[c] = pc.fl_cause[c];
                         amrex::ParallelDescriptor::ReduceLongSum(cv[c]);
                         if (c != PS_HLLC::PS_FL_OK) tot += cv[c];
                     }
-                    amrex::Long sL = PS_HLLC::face_diag::n_fl_side(0);
-                    amrex::Long sR = PS_HLLC::face_diag::n_fl_side(1);
+                    amrex::Long sL = pc.fl_side[0];
+                    amrex::Long sR = pc.fl_side[1];
                     amrex::ParallelDescriptor::ReduceLongSum(sL);
                     amrex::ParallelDescriptor::ReduceLongSum(sR);
                     if (tot > 0) {
@@ -459,8 +438,8 @@ CAMR::CAMR_advance (Real time,
                 //  limiting it is round-off.  Face-audit line, under
                 //  ps_face_diag with [PS-FACE].
                 if (fd != 0) {
-                    double wm = PS_HLLC::face_diag::max_w21_mass();
-                    double we = PS_HLLC::face_diag::max_w21_energy();
+                    double wm = pc.max_w21_mass;
+                    double we = pc.max_w21_energy;
                     amrex::ParallelDescriptor::ReduceRealMax(wm);
                     amrex::ParallelDescriptor::ReduceRealMax(we);
                     amrex::Print() << "[PS-W21] L" << level << " step "
@@ -469,16 +448,16 @@ CAMR::CAMR_advance (Real time,
                                    << ": residual before fixup  mass="
                                    << wm << "  energy=" << we << "\n";
                 }
-                PS_HLLC::face_diag::reset();
+                pc.reset_face();
             }
             // Fold-mass audit (same cadence/reset as the guard audit).
             {
-                PsFoldAudit& fa = ps_fold_audit();
+                PsFoldAudit& fa = pc.fold;
                 long nv = fa.n_vanish, nt = fa.n_tfloor, nx = fa.n_vacuum;
                 amrex::Real mv = fa.m_vanish, mt = fa.m_tfloor, mx = fa.m_vacuum;
                 long nc = fa.n_cdeg, ne = fa.n_edeg;
                 amrex::Real mc = fa.m_cdeg, me = fa.m_edeg;
-                long nf1 = ps_pres_f1_demote(), nf3 = ps_pres_f3_hyst();
+                long nf1 = pc.pres_f1_demote, nf3 = pc.pres_f3_hyst;
                 amrex::ParallelDescriptor::ReduceLongSum(nv);
                 amrex::ParallelDescriptor::ReduceLongSum(nt);
                 amrex::ParallelDescriptor::ReduceLongSum(nx);
@@ -502,8 +481,7 @@ CAMR::CAMR_advance (Real time,
                                    << " | f1_demote_ev=" << nf1
                                    << " | f3_hyst_ev=" << nf3 << "\n";
                 }
-                ps_pres_f1_demote() = 0;
-                ps_pres_f3_hyst()   = 0;
+                pc.reset_presence();
                 fa.reset();
             }
         }
@@ -562,8 +540,7 @@ CAMR::CAMR_advance (Real time,
 #ifdef CAMR_PS_DIAG
         {   // CAMR.ps_floor_diag (0): per-step census of the EOS repairs.
             // Not nested in ps_diag_mass.
-            static const int fc = []() { int v = 0; amrex::ParmParse pp("CAMR");
-                                         pp.query("ps_floor_diag", v); return v; }();
+            static const int fc = ps_dial_int("ps_floor_diag", 0);
             if (fc != 0) {
                 amrex::Print() << "[PS-FLOOR] step " << parent->levelSteps(level)
                     << "  eos_calls=" << hem::floor_census::n_calls()
@@ -572,10 +549,10 @@ CAMR::CAMR_advance (Real time,
                     << "  nonconv_detect=" << hem::floor_census::n_T_nonconv_det()
                     << "  P_floor_inuse=" << hem::floor_census::n_P_floor()
                     << "  P_floor_probe=" << hem::floor_census::n_P_floor_probe()
-                    << "  mass_neg=" << ps_guard::n_mass_neg()
-                    << "  mass_neg_kg=" << ps_guard::m_mass_neg()
-                    << "  mass_nonfinite=" << ps_guard::n_mass_nonfinite() << "\n";
-                ps_guard::reset_mass_counts();
+                    << "  mass_neg=" << ps_counters().mass_neg
+                    << "  mass_neg_kg=" << ps_counters().mass_neg_kg
+                    << "  mass_nonfinite=" << ps_counters().mass_nonfinite << "\n";
+                ps_counters().reset_mass();
                 hem::floor_census::reset();
             }
         }

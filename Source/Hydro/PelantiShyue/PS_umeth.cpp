@@ -45,6 +45,7 @@
 #include "PS_wavespeed.H"
 #include "PS_constants.H"
 #include "PS_util.H"
+#include "PS_dials.H"
 
 #include <AMReX_ParmParse.H>
 
@@ -287,8 +288,7 @@ ps_wp_face(int idir, int i, int j, int k, int iL, int jL, int kL,
         //  CAMR.ps_llf_diag (0): print each face where the LLF fallback
         //  fired, with lam decomposed on the left state that sets it.
         {
-            static const int lld = []() { int v = 0; amrex::ParmParse pp("CAMR");
-                                          pp.query("ps_llf_diag", v); return v; }();
+            static const int lld = ps_dial_int("ps_llf_diag", 0);
             if (lld != 0 && in_valid) {
                 const Real a1d = UL[UALPHA1];
                 const Real m1d = UL[UM1RHO1], m2d = UL[UM2RHO2];
@@ -701,14 +701,12 @@ PS_umeth(const Box& bx,
     //  non-conserved slots (ps_wp_face); 0 = pure-diffusion split, kept for
     //  A/B only (refuted; docs/DESIGN_DECISIONS.md H-6, O-9).
     const int llf_id = []() -> int {
-        static int c = -1;
-        if (c < 0) { int v = 1; amrex::ParmParse pp("CAMR");
-                     pp.query("ps_llf_identity", v);
-                     if (v != 0 && v != 1) {
-                         amrex::Abort("CAMR.ps_llf_identity must be 0 or 1");
-                     }
-                     pp.add("ps_llf_identity", v);
-                     c = v; }
+        static const int c = []() -> int {
+            const int v = ps_dial_int("ps_llf_identity", 1);
+            if (v != 0 && v != 1) {
+                amrex::Abort("CAMR.ps_llf_identity must be 0 or 1");
+            }
+            return v; }();
         return c;
     }();
 
@@ -723,16 +721,12 @@ PS_umeth(const Box& bx,
     // item (docs/DESIGN_DECISIONS.md O-4).
     auto ps_wp_order_cached = []() -> int
     {
-        static int cached = -1;
-        if (cached < 0) {
-            int v = 1;
-            amrex::ParmParse pp("CAMR");
-            pp.query("ps_wp_order", v);
+        static const int cached = []() -> int {
+            const int v = ps_dial_int("ps_wp_order", 1);
             if (v != 1 && v != 2) {
                 amrex::Abort("CAMR.ps_wp_order must be 1 or 2");
             }
-            cached = v;
-        }
+            return v; }();
         return cached;
     };
     const int wp_order = ps_wp_order_cached();
@@ -743,19 +737,12 @@ PS_umeth(const Box& bx,
     // Any other string aborts.
     auto ps_wp_unlimited_cached = []() -> int
     {
-        static int cached = -1;
-        if (cached < 0) {
-            std::string s = "vanleer";
-            amrex::ParmParse pp("CAMR");
-            pp.query("ps_wp_limiter", s);
-            if (s == "vanleer") {
-                cached = 0;
-            } else if (s == "none" || s == "unlimited") {
-                cached = 1;
-            } else {
-                amrex::Abort("CAMR.ps_wp_limiter must be vanleer, none or unlimited");
-            }
-        }
+        static const int cached = []() -> int {
+            const std::string s = ps_dial_string("ps_wp_limiter", "vanleer");
+            if (s == "vanleer") return 0;
+            if (s == "none" || s == "unlimited") return 1;
+            amrex::Abort("CAMR.ps_wp_limiter must be vanleer, none or unlimited");
+            return 0; }();
         return cached;
     };
     const int wp_unlimited = ps_wp_unlimited_cached();
@@ -765,9 +752,7 @@ PS_umeth(const Box& bx,
     // docs/DESIGN_DECISIONS.md L-1, O-9).
     auto ps_wp_projscale_cached = []() -> int
     {
-        static const int cached = []() {
-            int v = 1; amrex::ParmParse pp("CAMR");
-            pp.query("ps_wp_proj_scale", v); return v; }();
+        static const int cached = ps_dial_int("ps_wp_proj_scale", 1);
         return cached;
     };
     const int wp_proj_scale = ps_wp_projscale_cached();
@@ -783,8 +768,7 @@ PS_umeth(const Box& bx,
     auto ps_lw_skip_contact_cached = []() -> int
     {
         static const int cached = []() {
-            int v = 2; amrex::ParmParse pp("CAMR");
-            pp.query("ps_lw_skip_contact", v);
+            const int v = ps_dial_int("ps_lw_skip_contact", 2);
             if (v != 0 && v != 1 && v != 2) {
                 amrex::Abort("CAMR.ps_lw_skip_contact accepts 0 (off), 1 "
                     "(blanket contact-wave skip), or 2 (regime-gated: skip "
@@ -801,16 +785,12 @@ PS_umeth(const Box& bx,
     // 2-D/3-D only.
     auto ps_wp_transverse_cached = []() -> int
     {
-        static int cached = -1;
-        if (cached < 0) {
-            int v = 0;
-            amrex::ParmParse pp("CAMR");
-            pp.query("ps_wp_transverse", v);
+        static const int cached = []() -> int {
+            const int v = ps_dial_int("ps_wp_transverse", 0);
             if (v != 0 && v != 1 && v != 2) {
                 amrex::Abort("CAMR.ps_wp_transverse must be 0, 1 or 2");
             }
-            cached = v;
-        }
+            return v; }();
         return cached;
     };
 #if (AMREX_SPACEDIM >= 2)
@@ -824,13 +804,9 @@ PS_umeth(const Box& bx,
     // transverse-shear dissipation (ps_shear_diss_face); negative → 0.
     auto ps_shear_diss_cached = []() -> amrex::Real
     {
-        static amrex::Real cached = -1.0;
-        if (cached < amrex::Real(0.0)) {
-            amrex::Real v = 0.0;
-            amrex::ParmParse pp("CAMR");
-            pp.query("ps_shear_diss", v);
-            cached = (v > amrex::Real(0.0)) ? v : amrex::Real(0.0);
-        }
+        static const amrex::Real cached = []() -> amrex::Real {
+            const amrex::Real v = ps_dial_real("ps_shear_diss", 0.0);
+            return (v > amrex::Real(0.0)) ? v : amrex::Real(0.0); }();
         return cached;
     };
 #if (AMREX_SPACEDIM >= 2)
@@ -843,11 +819,9 @@ PS_umeth(const Box& bx,
     // CAMR.ps_mu (0 = inviscid): dynamic viscosity [Pa s] for
     // ps_viscous_face; the pipe-break decks run an effective 2 Pa s.
     auto ps_mu_cached = []() -> amrex::Real {
-        static amrex::Real cached = -1.0;
-        if (cached < amrex::Real(0.0)) {
-            amrex::Real v = 0.0; amrex::ParmParse pp("CAMR");
-            pp.query("ps_mu", v); cached = (v > amrex::Real(0.0)) ? v : amrex::Real(0.0);
-        }
+        static const amrex::Real cached = []() -> amrex::Real {
+            const amrex::Real v = ps_dial_real("ps_mu", 0.0);
+            return (v > amrex::Real(0.0)) ? v : amrex::Real(0.0); }();
         return cached;
     };
 #if (AMREX_SPACEDIM >= 2)
@@ -1079,14 +1053,14 @@ PS_umeth(const Box& bx,
                                   + std::abs(Ft[UE2]);
                     if (sR > Real(0.0)) {
                         const double q = std::abs(double(dR)) / double(sR);
-                        if (q > PS_HLLC::face_diag::max_w21_mass()) {
-                            PS_HLLC::face_diag::max_w21_mass() = q;
+                        if (q > ps_counters().max_w21_mass) {
+                            ps_counters().max_w21_mass = q;
                         }
                     }
                     if (sE > Real(0.0)) {
                         const double q = std::abs(double(dE)) / double(sE);
-                        if (q > PS_HLLC::face_diag::max_w21_energy()) {
-                            PS_HLLC::face_diag::max_w21_energy() = q;
+                        if (q > ps_counters().max_w21_energy) {
+                            ps_counters().max_w21_energy = q;
                         }
                     }
                 }

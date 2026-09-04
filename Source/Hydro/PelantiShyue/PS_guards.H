@@ -20,7 +20,8 @@
 //  by the presence representation (ch. 4).
 //
 //  Device-clean: no ParmParse, no statics in the guard functions; the
-//  counters are host-only and compile to no-ops under AMREX_USE_GPU.
+//  count_*() wrappers increment the PsCounters store (PS_counters.H) on
+//  host builds and compile to no-ops under AMREX_USE_GPU.
 //  Reported on the [PS-GUARD] line at the ps_diag_mass cadence.
 //  Inventory and justification per guard: docs/MODEL_AND_ALGORITHM.md §8.3.
 // =====================================================================
@@ -31,6 +32,8 @@
 #include <AMReX_Extension.H>
 #include <cmath>
 
+#include "PS_counters.H"
+
 namespace ps_guard {
 
 // ---------------------------------------------------------------------
@@ -38,11 +41,8 @@ namespace ps_guard {
 //  `reject_low` per substitution (there is no upper cap).
 // ---------------------------------------------------------------------
 #if !defined(AMREX_USE_GPU)
-inline long& n_seen()        { static long n = 0; return n; }
-inline long& n_reject_low()  { static long n = 0; return n; }
-inline void  count_seen()        { ++n_seen(); }
-inline void  count_reject_low()  { ++n_reject_low(); }
-inline void  reset_counts() { n_seen() = 0; n_reject_low() = 0; }
+inline void  count_seen()        { ++ps_counters().guard_seen; }
+inline void  count_reject_low()  { ++ps_counters().guard_reject_low; }
 #else
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_seen()        noexcept {}
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_reject_low()  noexcept {}
@@ -109,18 +109,11 @@ amrex::Real sanitize_stock_pressure(amrex::Real P_stock) noexcept
 //  clean_state repairs: a negative or non-finite partial mass is set to
 //  zero, which makes that phase Absent (a representable state) rather than
 //  a fictitious sliver; a non-finite alpha is not repaired, it aborts.
-//  m_mass_neg bounds as well as counts: the summed mass created by zeroing.
-inline long& n_mass_neg()       { static long n = 0; return n; }
-inline long& n_mass_nonfinite() { static long n = 0; return n; }
-inline void  count_mass_neg()       { ++n_mass_neg(); }
-inline double& m_mass_neg()         { static double m = 0.0; return m; }
-inline void  add_mass_neg(double dm) { m_mass_neg() += dm; }
-inline void  count_mass_nonfinite() { ++n_mass_nonfinite(); }
-inline void  reset_mass_counts() { n_mass_neg() = 0; n_mass_nonfinite() = 0;
-                                   m_mass_neg() = 0.0; }
-inline long& n_rho_clamp_lo() { static long n = 0; return n; }
-inline void  count_rho_lo()   { ++n_rho_clamp_lo(); }
-inline void  reset_rho_counts() { n_rho_clamp_lo() = 0; }
+//  mass_neg_kg bounds as well as counts: the summed mass created by zeroing.
+inline void  count_mass_neg()       { ++ps_counters().mass_neg; }
+inline void  add_mass_neg(double dm) { ps_counters().mass_neg_kg += dm; }
+inline void  count_mass_nonfinite() { ++ps_counters().mass_nonfinite; }
+inline void  count_rho_lo()   { ++ps_counters().rho_clamp_lo; }
 #else
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_rho_lo() noexcept {}
 #endif
@@ -147,14 +140,9 @@ amrex::Real clamp_phase_density(amrex::Real rho,
 //  following step's [PS-GUARD] line.
 // ---------------------------------------------------------------------
 #if !defined(AMREX_USE_GPU)
-inline long& n_flux_sanit()   { static long n = 0; return n; }
-inline long& n_reflux_cap()   { static long n = 0; return n; }
-inline long& n_reflux_clamp() { static long n = 0; return n; }
-inline void  count_flux_sanit()   { ++n_flux_sanit(); }
-inline void  count_reflux_cap()   { ++n_reflux_cap(); }
-inline void  count_reflux_clamp() { ++n_reflux_clamp(); }
-inline void  reset_b13_counts() { n_flux_sanit() = 0; n_reflux_cap() = 0;
-                                  n_reflux_clamp() = 0; }
+inline void  count_flux_sanit()   { ++ps_counters().flux_sanit; }
+inline void  count_reflux_cap()   { ++ps_counters().reflux_cap; }
+inline void  count_reflux_clamp() { ++ps_counters().reflux_clamp; }
 #else
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_flux_sanit()   noexcept {}
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_reflux_cap()   noexcept {}
@@ -181,22 +169,12 @@ AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_reflux_clamp() noexcept {}
 //            stencil P was set to 1 Pa; counted, never silent.
 // ---------------------------------------------------------------------
 #if !defined(AMREX_USE_GPU)
-inline long& n_nscbc_zg_c()     { static long n = 0; return n; }
-inline long& n_nscbc_zg_sup()   { static long n = 0; return n; }
-inline long& n_nscbc_zg_slots() { static long n = 0; return n; }
-inline long& n_nscbc_zg_pack()  { static long n = 0; return n; }
-inline long& n_nscbc_flash()    { static long n = 0; return n; }
-inline long& n_nscbc_pmix_fail(){ static long n = 0; return n; }
-inline void  count_nscbc_zg_c()     { ++n_nscbc_zg_c(); }
-inline void  count_nscbc_zg_sup()   { ++n_nscbc_zg_sup(); }
-inline void  count_nscbc_zg_slots() { ++n_nscbc_zg_slots(); }
-inline void  count_nscbc_zg_pack()  { ++n_nscbc_zg_pack(); }
-inline void  count_nscbc_flash()    { ++n_nscbc_flash(); }
-inline void  count_nscbc_pmix_fail(){ ++n_nscbc_pmix_fail(); }
-inline void  reset_nscbc_counts() { n_nscbc_zg_c() = 0;
-                                    n_nscbc_zg_sup() = 0; n_nscbc_zg_slots() = 0;
-                                    n_nscbc_zg_pack() = 0; n_nscbc_flash() = 0;
-                                    n_nscbc_pmix_fail() = 0; }
+inline void  count_nscbc_zg_c()     { ++ps_counters().nscbc_zg_c; }
+inline void  count_nscbc_zg_sup()   { ++ps_counters().nscbc_zg_sup; }
+inline void  count_nscbc_zg_slots() { ++ps_counters().nscbc_zg_slots; }
+inline void  count_nscbc_zg_pack()  { ++ps_counters().nscbc_zg_pack; }
+inline void  count_nscbc_flash()    { ++ps_counters().nscbc_flash; }
+inline void  count_nscbc_pmix_fail(){ ++ps_counters().nscbc_pmix_fail; }
 #else
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_nscbc_zg_c()     noexcept {}
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_nscbc_zg_sup()   noexcept {}
@@ -219,14 +197,9 @@ AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_nscbc_pmix_fail() noexcept {
 //                      it cannot be substituted) floored to P_FLOOR_PA.
 // ---------------------------------------------------------------------
 #if !defined(AMREX_USE_GPU)
-inline long& n_ctop_seen()       { static long n = 0; return n; }
-inline long& n_ctop_sub()        { static long n = 0; return n; }
-inline long& n_ctop_host_floor() { static long n = 0; return n; }
-inline void  count_ctop_seen()       { ++n_ctop_seen(); }
-inline void  count_ctop_sub()        { ++n_ctop_sub(); }
-inline void  count_ctop_host_floor() { ++n_ctop_host_floor(); }
-inline void  reset_ctop_counts() { n_ctop_seen() = 0; n_ctop_sub() = 0;
-                                   n_ctop_host_floor() = 0; }
+inline void  count_ctop_seen()       { ++ps_counters().ctop_seen; }
+inline void  count_ctop_sub()        { ++ps_counters().ctop_sub; }
+inline void  count_ctop_host_floor() { ++ps_counters().ctop_host_floor; }
 #else
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_ctop_seen()       noexcept {}
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_ctop_sub()        noexcept {}
