@@ -89,8 +89,9 @@ documents, not as orphaned files. None were bulk-deleted. Consolidation targets:
   2900, rather than re-running the case.
 - **demo3 C-F artifact** — the vertically-symmetric centerline hash / density
   streak a few cells right of xlo, stopping at a 2->1 refinement interface.
-  Candidate `n_error_buf=4` edit (offered; Marc to fold in with the atag change).
-  Investigate whether it is a reflux/refinement-buffer artifact.
+  `n_error_buf` widened 2->4 (with atag 0.005->0.01) in `inputs.satjet_demo3`,
+  commit `18c264d` — the candidate fix has LANDED. Open: confirm the DEMO3A run
+  clears the artifact; if not, it is a reflux (not refinement-buffer) issue.
 
 ## 7. Untracked files to triage (not md/comments; left in place)
 
