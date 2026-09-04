@@ -54,9 +54,6 @@ struct PsPres {
     // EOS's scale spans about [-1.5e5, 4e6].
     amrex::Real e_deg_lo     = amrex::Real(-2.0e6);
     amrex::Real e_deg_hi     = amrex::Real( 2.0e7);
-    // Always 1; presence semantics are the only semantics.  CAMR.ps_presence
-    // is not read.  Retire-candidate: see docs/DESIGN_DECISIONS.md O-8.
-    int         enabled      = 1;
     // CAMR.ps_promote_checked (1): a would-be-Independent phase is demoted
     // to Corridor when its (rho_k, e_k) has no root on its own branch
     // (PS_promote.H); 0 = A/B opt-out.  On because it is provably inert on
@@ -155,26 +152,6 @@ inline const PsPres& ps_presence_params()
         amrex::ParmParse pp("CAMR");
         pp.query("ps_alpha_cond",       v.alpha_cond);
         pp.query("ps_alpha_birth",      v.alpha_birth);
-        {   // Retired key: ps_star_relaxed=0 selected the equal-strain star
-            // branch; the relaxed-alpha star state is the only path.
-            int sr = 1;
-            pp.query("ps_star_relaxed", sr);
-            if (sr == 0) {
-                amrex::Abort("CAMR.ps_star_relaxed=0 requests the DELETED "
-                    "B.14 star-state branch (selector retired at acceptance "
-                    "2026-08-31, DESIGN_ps_star_relaxed.md [DECIDE-6]).  "
-                    "The relaxed-alpha construction is the only path; "
-                    "remove the key.");
-            }
-        }
-        // Retired key: ps_rk_model is superseded by the relaxed-alpha star state.
-        if (pp.contains("ps_rk_model")) {
-            amrex::Abort("CAMR.ps_rk_model is RETIRED (2026-08-31).  The D7 "
-                "dial changed the mass partition without the matching energy "
-                "partition and was inert on corridor faces; "
-                "CAMR.ps_star_relaxed (DESIGN_ps_star_relaxed.md) supersedes "
-                "it.  Remove the key from this deck.");
-        }
         pp.query("ps_presence_vanish",  v.alpha_vanish);
         pp.query("ps_presence_rho_deg", v.rho_deg);
         pp.query("ps_promote_checked", v.promote_checked);

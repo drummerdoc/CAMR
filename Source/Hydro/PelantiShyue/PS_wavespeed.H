@@ -80,15 +80,12 @@ ps_phase_speeds_from_state(const Real U[NVAR], const PsPres& pr) noexcept
     const Real uz     = Real(0.0);
 #endif
     Real alpha_1 = ps_finite_or(U[UALPHA1], Real(1.0));
-    // alpha_floor and rho_floor are unused.  Retire-candidate: see docs/DESIGN_DECISIONS.md O-8.
-    constexpr Real alpha_floor = Real(1.0e-6);
     if (alpha_1 < Real(0.0)) alpha_1 = Real(0.0);
     if (alpha_1 > Real(1.0)) alpha_1 = Real(1.0);
     const Real alpha_2 = Real(1.0) - alpha_1;
 
     const Real m1 = amrex::max(ps_finite_or(U[UM1RHO1], Real(0.0)), Real(0.0));
     const Real m2 = amrex::max(ps_finite_or(U[UM2RHO2], Real(0.0)), Real(0.0));
-    constexpr Real rho_floor = Real(1.0e-6);
     // Absent phase: mixture density as a placeholder (multiplied by m_k = 0
     // downstream); otherwise the stored quotient, lower-clamped (G1).
     const PsRegime rg1 = ps_regime(alpha_1, m1, pr);

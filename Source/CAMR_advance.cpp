@@ -262,24 +262,15 @@ CAMR::CAMR_advance (Real time,
         {
             amrex::Long gs = ps_guard::n_seen();
             amrex::Long gl = ps_guard::n_reject_low();
-            amrex::Long gh = ps_guard::n_reject_high();
             amrex::ParallelDescriptor::ReduceLongSum(gs);
             amrex::ParallelDescriptor::ReduceLongSum(gl);
-            amrex::ParallelDescriptor::ReduceLongSum(gh);
             amrex::Long rl = ps_guard::n_rho_clamp_lo();
-            amrex::Long rh = ps_guard::n_rho_clamp_hi();
             amrex::ParallelDescriptor::ReduceLongSum(rl);
-            amrex::ParallelDescriptor::ReduceLongSum(rh);
             amrex::Print() << "[PS-GUARD] L" << level << " step "
                            << parent->levelSteps(level) << " " << label
                            << ": phase-P seen = " << gs
                            << "  rej_low = " << gl
-                           << "  rej_high = " << gh
-                           << " | rho_clamp_lo = " << rl
-                           << "  rho_clamp_hi = " << rh;
-            amrex::Long sl = ps_guard::n_slaved();
-            amrex::ParallelDescriptor::ReduceLongSum(sl);
-            amrex::Print() << " | slaved = " << sl;
+                           << " | rho_clamp_lo = " << rl;
             //  Ctoprim reference audit (PS_guards.H); ctop_sub = 0 over a
             //  run means no cell reached the host-phase reference.
             amrex::Long ck_ = ps_guard::n_ctop_seen();
@@ -305,19 +296,16 @@ CAMR::CAMR_advance (Real time,
             //  NSCBC ghost-fill zero-gradient fallbacks by cause
             //  (PS_guards.H); all zero unless NSCBC is enabled on a face.
             amrex::Long nc_ = ps_guard::n_nscbc_zg_c();
-            amrex::Long nl_ = ps_guard::n_nscbc_zg_lin();
             amrex::Long ns_ = ps_guard::n_nscbc_zg_sup();
             amrex::Long nt_ = ps_guard::n_nscbc_zg_slots();
             amrex::Long np_ = ps_guard::n_nscbc_zg_pack();
             amrex::Long nf_ = ps_guard::n_nscbc_flash();
             amrex::ParallelDescriptor::ReduceLongSum(nc_);
-            amrex::ParallelDescriptor::ReduceLongSum(nl_);
             amrex::ParallelDescriptor::ReduceLongSum(ns_);
             amrex::ParallelDescriptor::ReduceLongSum(nt_);
             amrex::ParallelDescriptor::ReduceLongSum(np_);
             amrex::ParallelDescriptor::ReduceLongSum(nf_);
             amrex::Print() << " | nscbc_zg(c=" << nc_
-                           << ",lin=" << nl_
                            << ",sup=" << ns_
                            << ",slots=" << nt_
                            << ",pack=" << np_ << ")"
@@ -325,7 +313,6 @@ CAMR::CAMR_advance (Real time,
             ps_guard::reset_ctop_counts();
             ps_guard::reset_counts();
             ps_guard::reset_rho_counts();
-            ps_guard::reset_slaved();
             ps_guard::reset_b13_counts();
             ps_guard::reset_nscbc_counts();
             // Face audit, gated on CAMR.ps_face_diag (0); the counters
@@ -341,18 +328,10 @@ CAMR::CAMR_advance (Real time,
                     amrex::Print() << "[PS-FACE] L" << level << " step "
                                    << parent->levelSteps(level) << " " << label;
                     for (int c = 0; c < 3; ++c) {
-                        amrex::Long ns = PS_HLLC::face_diag::n_seen(c);
-                        amrex::Long nd = PS_HLLC::face_diag::n_drop(c);
-                        amrex::Real md = PS_HLLC::face_diag::max_def(c);
-                        amrex::Real me = PS_HLLC::face_diag::max_estar(c);
                         amrex::Long fs = PS_HLLC::face_diag::n_fl_seen(c);
                         amrex::Long ff = PS_HLLC::face_diag::n_fl_fail(c);
                         amrex::Real fm = PS_HLLC::face_diag::max_incmis(c);
                         const amrex::Real fm_loc = fm;   // pre-reduce
-                        amrex::ParallelDescriptor::ReduceLongSum(ns);
-                        amrex::ParallelDescriptor::ReduceLongSum(nd);
-                        amrex::ParallelDescriptor::ReduceRealMax(md);
-                        amrex::ParallelDescriptor::ReduceRealMax(me);
                         amrex::ParallelDescriptor::ReduceLongSum(fs);
                         amrex::ParallelDescriptor::ReduceLongSum(ff);
                         amrex::ParallelDescriptor::ReduceRealMax(fm);
@@ -374,8 +353,6 @@ CAMR::CAMR_advance (Real time,
                             }
                         }
                         amrex::Print() << " | " << cn[c]
-                                       << " def:" << ns << "/" << nd
-                                       << " maxdef=" << md << " maxE*=" << me
                                        << " fl:" << fs << "/" << ff
                                        << " incmis=" << fm;
                         if (fm > 0.0) {

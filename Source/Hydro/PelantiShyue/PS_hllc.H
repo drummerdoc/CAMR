@@ -86,9 +86,6 @@ Face face_from_state(int idir, const amrex::Real U[NVAR],
     f.m_2 = amrex::max(_finite_or(U[UM2RHO2], Real(0.0)), Real(0.0));
     f.rho_mix = amrex::max(f.m_1 + f.m_2, Real(1.0e-6));
 
-    // alpha_floor is unreferenced (there is no alpha floor on this path).
-    // Retire-candidate: see docs/DESIGN_DECISIONS.md §7 (O-8).
-    constexpr Real alpha_floor = Real(1.0e-6);
     Real a1 = _finite_or(U[UALPHA1], Real(1.0));
     // Bounds only; out-of-range values are ps_validate_state's to report.
     if (a1 < Real(0.0)) a1 = Real(0.0);
@@ -96,15 +93,8 @@ Face face_from_state(int idir, const amrex::Real U[NVAR],
     f.alpha_1 = a1;
     f.alpha_2 = Real(1.0) - a1;
 
-    // rho_floor is unreferenced.
-    // Retire-candidate: see docs/DESIGN_DECISIONS.md §7 (O-8).
-    constexpr Real rho_floor = Real(1.0e-6);
-    // pr.enabled is hard-wired 1; the Independent branch is never taken.
-    // Retire-candidate: see docs/DESIGN_DECISIONS.md §7 (O-8).
-    const PsRegime rg1 = pr.enabled ? ps_regime(f.alpha_1, f.m_1, pr)
-                                    : PsRegime::Independent;
-    const PsRegime rg2 = pr.enabled ? ps_regime(f.alpha_2, f.m_2, pr)
-                                    : PsRegime::Independent;
+    const PsRegime rg1 = ps_regime(f.alpha_1, f.m_1, pr);
+    const PsRegime rg2 = ps_regime(f.alpha_2, f.m_2, pr);
     // Independent: m/alpha is well-conditioned (alpha >= alpha_cond) and
     // is clamped into the EOS domain (G1, PS_guards.H).  Corridor: the
     // ratio is noise but enters the star-state q_k denominator, where
@@ -460,12 +450,6 @@ bool ps_star_state(int idir, const Face& fK, const amrex::Real UK[NVAR],
 // -------------------------------------------------------------------
 #if !defined(AMREX_USE_GPU)
 namespace face_diag {
-// n_seen / n_drop / max_def / max_estar are never written.
-// Retire-candidate: see docs/DESIGN_DECISIONS.md §7 (O-8).
-inline long&   n_seen(int c)    { static long n[3] = {0,0,0};   return n[c]; }
-inline long&   n_drop(int c)    { static long n[3] = {0,0,0};   return n[c]; }
-inline double& max_def(int c)   { static double v[3] = {0,0,0}; return v[c]; }
-inline double& max_estar(int c) { static double v[3] = {0,0,0}; return v[c]; }
 // Per class: faces seen by fluctuations(), faces refused, and the largest
 // per-fluctuation identity mismatch |Δ(UE1+UE2) − ΔUEDEN|.
 inline long&   n_fl_seen(int c) { static long n[3] = {0,0,0};   return n[c]; }
@@ -487,7 +471,6 @@ inline double& max_w21_mass()   { static double v = 0.0; return v; }
 inline double& max_w21_energy() { static double v = 0.0; return v; }
 inline void reset() {
     for (int c = 0; c < 3; ++c) {
-        n_seen(c) = 0; n_drop(c) = 0; max_def(c) = 0.0; max_estar(c) = 0.0;
         n_fl_seen(c) = 0; n_fl_fail(c) = 0; max_incmis(c) = 0.0;
         mis_i(c) = -9999; mis_j(c) = -9999; mis_k(c) = -9999; mis_dir(c) = -1;
     }

@@ -50,8 +50,6 @@ ps_augment_primitives(int i, int j, int k,
 
     // alpha is clamped to its definitional box [0, 1] only, so ps_regime
     // sees the true small-alpha values and Absent is reachable here.
-    // alpha_floor is unused.  Retire-candidate: see docs/DESIGN_DECISIONS.md O-8.
-    constexpr amrex::Real alpha_floor = amrex::Real(1.0e-6);
     amrex::Real a1 = alpha_1;
     if (a1 < amrex::Real(0.0)) a1 = amrex::Real(0.0);
     if (a1 > amrex::Real(1.0)) a1 = amrex::Real(1.0);
@@ -59,10 +57,7 @@ ps_augment_primitives(int i, int j, int k,
     const PsRegime rg1 = ps_regime(a1, m1rho1, pr);
     const PsRegime rg2 = ps_regime(a2, m2rho2, pr);
 
-    // rho_floor is declared and unused.  Retire-candidate: see docs/DESIGN_DECISIONS.md O-8.
-    constexpr amrex::Real rho_floor = amrex::Real(1.0e-6);
     const amrex::Real rho_mix_c = u(i,j,k, URHO);
-    amrex::ignore_unused(rho_floor);
 
     // Per-phase kinetic energy uses the mixture velocity, already in q.
     const amrex::Real ux = q(i,j,k, QU);
@@ -269,66 +264,6 @@ ps_phase_temp_from_cons(const amrex::Real U[NVAR], int phase, amrex::Real T_mix)
     if (!std::isfinite(Tq) || Tq <= T_lo || Tq >= T_hi) return T_mix;
     return Tq;
 }
-
-// ---------------------------------------------------------------------
-//  ps_flash_rate_from_cons: a stored-state flash-rate proxy, kept as a
-//  record of why the stored-state approach fails (the flash_rate derive
-//  reads the mass actually transferred instead).
-//  Retire-candidate: see docs/DESIGN_DECISIONS.md X-27 and O-8.
-// ---------------------------------------------------------------------
-#if 0
-AMREX_GPU_HOST_DEVICE
-AMREX_FORCE_INLINE
-amrex::Real
-ps_flash_rate_from_cons(const amrex::Real U[NVAR], amrex::Real tau_g, amrex::Real g_ref)
-{
-    using amrex::Real;
-    if (!(tau_g > Real(0.0)) || !(g_ref > Real(0.0))) return Real(0.0);
-    constexpr Real a_thr    = Real(5.0e-3);   // mixed-cell band (matches MT alpha_mt_thr)
-    constexpr Real T_triple = Real(216.592);  // CO2 triple / crit (dome gate, matches EOS)
-    constexpr Real T_crit   = Real(304.128);
-
-    Real a1 = U[UALPHA1];
-    if (!std::isfinite(a1) || a1 <= a_thr || a1 >= Real(1.0) - a_thr) return Real(0.0);
-    const Real a2 = Real(1.0) - a1;
-    const Real m1 = U[UM1RHO1], m2 = U[UM2RHO2];
-    if (!(m1 > Real(0.0)) || !(m2 > Real(0.0))) return Real(0.0);
-    const Real rho_mix = U[URHO];
-    if (!(rho_mix > Real(0.0))) return Real(0.0);
-    const Real inv_r = Real(1.0) / rho_mix;
-    const Real ux = U[UMX] * inv_r;
-#if (AMREX_SPACEDIM >= 2)
-    const Real uy = U[UMY] * inv_r;
-#else
-    const Real uy = Real(0.0);
-#endif
-#if (AMREX_SPACEDIM == 3)
-    const Real uz = U[UMZ] * inv_r;
-#else
-    const Real uz = Real(0.0);
-#endif
-    const Real ke = Real(0.5) * (ux*ux + uy*uy + uz*uz);
-    const Real rho1 = ps_guard::clamp_phase_density(m1 / a1, EOS::rho_min(), EOS::rho_max());
-    const Real rho2 = ps_guard::clamp_phase_density(m2 / a2, EOS::rho_min(), EOS::rho_max());
-    const Real e1 = U[UE1] / m1 - ke;
-    const Real e2 = U[UE2] / m2 - ke;
-
-    // Per-phase Gibbs from the branch-locked EOS state (h - T s).
-    hem::State s1 = EOS::co2_state_from_rho_e_phase_cached(rho1, e1, hem::Phase3::Liquid);
-    hem::State s2 = EOS::co2_state_from_rho_e_phase_cached(rho2, e2, hem::Phase3::Vapor);
-    if (!(s1.P > Real(0.0)) || !(s2.P > Real(0.0))) return Real(0.0);
-    if (!std::isfinite(s1.h) || !std::isfinite(s1.s) ||
-        !std::isfinite(s2.h) || !std::isfinite(s2.s)) return Real(0.0);
-    // Coexistence gate: both phase temperatures in the saturable range.
-    if (s1.T <= T_triple || s1.T >= T_crit ||
-        s2.T <= T_triple || s2.T >= T_crit) return Real(0.0);
-
-    const Real g1 = s1.h - s1.T * s1.s;
-    const Real g2 = s2.h - s2.T * s2.s;
-    const Real mdot = (rho_mix / tau_g) * (g1 - g2) / g_ref;   // + = evaporation
-    return std::isfinite(mdot) ? mdot : Real(0.0);
-}
-#endif // 0
 
 #endif // USE_PS_HYDRO
 #endif // PS_CTOPRIM_H

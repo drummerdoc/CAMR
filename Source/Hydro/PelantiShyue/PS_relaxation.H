@@ -164,11 +164,8 @@ ps_make_camr_eos_api()
     api.T_triple_K = double(EOS::T_triple());
     // The backend density domain bounds the mechanical kernels' alpha walk
     // so neither phase can be stepped off it (docs §5.2).
-    // Retire-candidate (the enabled fork): see docs/DESIGN_DECISIONS.md §7.
-    if (ps_presence_params().enabled != 0) {
-        api.rho_dom_lo = double(EOS::rho_min());
-        api.rho_dom_hi = double(EOS::rho_max());
-    }
+    api.rho_dom_lo = double(EOS::rho_min());
+    api.rho_dom_hi = double(EOS::rho_max());
     // Saturation pressure for the flash metastability window.
     api.Psat_of_T  = [](double T) { return double(EOS::Psat(amrex::Real(T))); };
     // Molar mass for the SRT kinetic prefactor.
@@ -2110,16 +2107,7 @@ inline void
 ps_apply_vanish_fold(amrex::MultiFab& S_new, int nghost = 0)
 {
     // The threshold is the presence death edge, CAMR.ps_presence_vanish
-    // (PS_presence.H).  CAMR.ps_alpha_vanish aborts: replaced by ps_presence_vanish.
-    static const bool s_retired_key_checked = []() {
-        amrex::ParmParse pp("CAMR");
-        if (pp.contains("ps_alpha_vanish")) {
-            amrex::Abort("CAMR.ps_alpha_vanish is retired and was already "
-                         "inert; the live knob is CAMR.ps_presence_vanish");
-        }
-        return true;
-    }();
-    amrex::ignore_unused(s_retired_key_checked);
+    // (PS_presence.H).
     const PsPres& prS3 = ps_presence_params();
     const amrex::Real a_v = prS3.alpha_vanish;
     if (a_v <= amrex::Real(0.0)) return;
@@ -2274,10 +2262,8 @@ ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
     //  0 for instantaneous mechanical relaxation, 5 for the coupled source.
     //  Docs/MODEL_AND_ALGORITHM.md §5.2.
     if (relax_mode == 3) {
-        amrex::Abort("CAMR.ps_relax_mode=3 was deleted 2026-08-17: the "
-                     "finite-rate mechanical leg was measured inert "
-                     "(WORKLOG probe P-A).  Use 0 for instantaneous "
-                     "mechanical relaxation, or 5 for the coupled source.");
+        amrex::Abort("CAMR.ps_relax_mode=3 is retired: use 5 (coupled X3) "
+                     "or 0 (mechanical only)");
     }
 
     for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {

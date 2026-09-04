@@ -89,16 +89,12 @@ ps_physical_flux_from_state(int idir, const Real U[NVAR], Real F[NVAR],
 
     // Derive per-phase primitives.
     Real alpha_1 = ps_finite_or(U[UALPHA1], Real(1.0));
-    constexpr Real alpha_floor = Real(1.0e-6);
     if (alpha_1 < Real(0.0)) alpha_1 = Real(0.0);
     if (alpha_1 > Real(1.0)) alpha_1 = Real(1.0);
     const Real alpha_2 = Real(1.0) - alpha_1;
 
     const Real m1 = amrex::max(ps_finite_or(U[UM1RHO1], Real(0.0)), Real(0.0));
     const Real m2 = amrex::max(ps_finite_or(U[UM2RHO2], Real(0.0)), Real(0.0));
-    constexpr Real rho_floor = Real(1.0e-6);
-    // alpha_floor / rho_floor are unreferenced.
-    // Retire-candidate: see docs/DESIGN_DECISIONS.md §7 (O-8).
     // Phase state is a checked construction (ps_regime + ps_phase_quot),
     // never a repaired quotient.
     const PsRegime rg1 = ps_regime(alpha_1, m1, pr);
@@ -635,12 +631,7 @@ int ps_flux_selector()
         amrex::ParmParse pp("CAMR");
         pp.query("ps_flux", s);
         if (!(s == "wp" || s.empty())) {
-            amrex::Abort(("CAMR.ps_flux='" + s + "' is retired (2026-08-26): "
-                          "the llf and hllc split paths were deleted; wp "
-                          "(Berger-LeVeque fluctuation interior) is the only "
-                          "interior flux.  Set CAMR.ps_flux=wp (with "
-                          "CAMR.ps_wp_order=2, the acceptance order) or unset "
-                          "the key.").c_str());
+            amrex::Abort("CAMR.ps_flux must be 'wp'");
         }
         pp.add("ps_flux", std::string("wp"));
         return 2;   // wp's selector value
@@ -699,46 +690,10 @@ PS_umeth(const Box& bx,
 {
     BL_PROFILE("PS_umeth()");
 
-    //  Retired keys abort by presence.  ps_recon: wp works from raw cell
-    //  averages; ps_alpha_limiter: replaced by the correction's van Leer
-    //  limiter (ps_wp_limiter).  docs/DESIGN_DECISIONS.md §6.
-    static const bool s_recon_retired = []() {
-        amrex::ParmParse pp("CAMR");
-        if (pp.contains("ps_recon")) {
-            amrex::Abort("CAMR.ps_recon is retired (2026-08-27): "
-                         "reconstruction left with the llf/hllc split "
-                         "paths; the wp interior works from raw cell "
-                         "averages (2nd order via BL-2 correction "
-                         "fluxes, CAMR.ps_wp_order=2).  Remove the key.");
-        }
-        if (pp.contains("ps_alpha_limiter")) {
-            amrex::Abort("CAMR.ps_alpha_limiter is retired (2026-08-27): "
-                         "the split-path WP-alpha transport kernel it "
-                         "served was deleted 2026-08-26; wp's BL-2 "
-                         "correction carries its own van Leer limiter.  "
-                         "Remove the key.");
-        }
-        return true;
-    }();
-    amrex::ignore_unused(s_recon_retired);
-
-    // Flux selector: always 2 (wp) or an abort; read here so the retired-key
-    // gate runs and job_info records the flux.
-    const int use_hllc = ps_flux_selector();
-
-    //  Retired key ps_pk_energy_flux: replaced by the mixture-pressure
-    //  phase-energy flux (H-3).
-    static const bool s_pk_ef_retired = []() {
-        amrex::ParmParse pp("CAMR");
-        if (pp.contains("ps_pk_energy_flux")) {
-            amrex::Abort("CAMR.ps_pk_energy_flux is retired (2026-08-26): "
-                         "the two-pressure energy flux left with the "
-                         "finite-rate mechanical-relaxation program; the "
-                         "mixture-P (#211) form is the only form.");
-        }
-        return true;
-    }();
-    amrex::ignore_unused(s_pk_ef_retired);
+    // Flux selector: always wp or an abort; read here so the value gate
+    // runs and job_info records the flux.  (Retired keys abort at startup:
+    // PS_retired_keys.H.)
+    ps_flux_selector();
 
     //  CAMR.ps_llf_identity (1): identity-consistent LLF fallback on the
     //  non-conserved slots (ps_wp_face); 0 = pure-diffusion split, kept for
@@ -884,19 +839,6 @@ PS_umeth(const Box& bx,
     amrex::ignore_unused(ps_mu_cached);
 #endif
 
-    // Retired key ps_ctu: transverse coupling is ps_wp_transverse.
-    static const bool s_ps_ctu_retired = []() {
-        amrex::ParmParse pp("CAMR");
-        if (pp.contains("ps_ctu")) {
-            amrex::Abort("CAMR.ps_ctu is retired (2026-08-26): the CTU "
-                         "scaffold was deleted with the llf/hllc split "
-                         "paths; wp (Berger-LeVeque fluctuation interior) "
-                         "is the only interior flux.  Remove the key.");
-        }
-        return true;
-    }();
-    amrex::ignore_unused(s_ps_ctu_retired);
-
     // Banner (once per rank per run).
     {
         static bool banner_shown = false;
@@ -930,8 +872,8 @@ PS_umeth(const Box& bx,
 #endif
 
     // ========== wave-propagation interior ===============================
-    //  The selector value 2 is wp; ps_flux_selector() admits nothing else.
-    if (use_hllc == 2) {
+    //  wp is the only interior; ps_flux_selector() admits nothing else.
+    {
         const bool o2 = (wp_order == 2);            // correction fluxes
         const bool tv = (wp_transverse != 0);       // transverse term
         const bool unlim = (wp_unlimited != 0);     // bypass van Leer
@@ -1319,14 +1261,8 @@ PS_umeth(const Box& bx,
         //  first-order UE1/UE2 phase-split coarse-fine fix-up is not done
         //  (gaps ~1e-4, resolution-dominated).  docs §4.9.
         amrex::ignore_unused(do_bl_fluct);
-        return;
-    } // ===== end wave-propagation interior (use_hllc==2) =====
-
-    // Unreachable: ps_flux_selector() admits only wp, which returns above.
-    // Retire-candidate: see docs/DESIGN_DECISIONS.md §7 (O-5, O-8).
-    amrex::ignore_unused(AMREX_D_DECL(fcorr1, fcorr2, fcorr3));
-    amrex::Abort("PS_umeth: unreachable — ps_flux_selector() admitted a "
-                 "non-wp flux; the single-path invariant is broken.");
+        amrex::ignore_unused(AMREX_D_DECL(fcorr1, fcorr2, fcorr3));
+    } // ===== end wave-propagation interior =====
 }
 
 #else  // !USE_PS_HYDRO

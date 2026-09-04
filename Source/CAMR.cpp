@@ -25,6 +25,7 @@
 #include "PS_guards.H"
 #include "PS_wavespeed.H"      // ps_guard counters (clean_state repairs)
 #include "PS_promote.H"       // checked promotion (ps_regime_reach)
+#include "PS_retired_keys.H"  // ps_abort_on_retired_keys (read_params)
 #endif
 
 bool CAMR::signalStopJob = false;
@@ -109,6 +110,12 @@ CAMR::read_params()
 #endif
                       "\n";
   }
+
+#ifdef USE_PS_HYDRO
+  // Retired CAMR.ps_* keys abort here, before any PS accessor reads the
+  // table (PS_retired_keys.H).
+  ps_abort_on_retired_keys();
+#endif
 
   pp.query("v", verbose);
   pp.query("sum_interval", sum_interval);
@@ -1544,64 +1551,6 @@ CAMR::computeTemp(amrex::MultiFab& S, int ng)
                      Sarr(i,j,k,UE1) / m1 - ke, /*liquid=*/true,  l_pr);
            rg2 = ps_regime_reach(rg2, m2 / a2,
                      Sarr(i,j,k,UE2) / m2 - ke, /*liquid=*/false, l_pr);
-#if defined(USE_PR_EOS) && !defined(AMREX_USE_GPU)
-           //  [PS-TQUERY] probe: prints the presence context when the
-           //  branch-locked query is refused; changes no value or control
-           //  flow.  Retire-candidate: see docs/DESIGN_DECISIONS.md §7 O-8.
-           auto probe = [&](int ph, amrex::Real rk, amrex::Real ek,
-                            const char* where) {
-             amrex::Real Pp, Tp, Sp;
-             const hem::Phase3 br = (ph == 1) ? hem::Phase3::Liquid
-                                              : hem::Phase3::Vapor;
-             if (EOS::REY2PTS_phase_try(rk, ek, massfrac, br, Pp, Tp, Sp)) return;
-             static int n_rep = 0;
-             if (n_rep >= 8) return;
-             ++n_rep;
-             const amrex::Real ak = (ph == 1) ? a1 : a2;
-             const PsRegime rk_ = (ph == 1) ? rg1 : rg2;
-             amrex::AllPrint()
-               << "[PS-TQUERY] refused  cell (" << i << "," << j << "," << k
-               << ")  phase " << ph << (ph == 1 ? " LIQUID" : " VAPOR")
-               << "  via " << where << "\n"
-               << "            rho_k = " << rk << "   e_k = " << ek << "\n"
-               << "            alpha_k = " << ak
-               << "   alpha_cond = " << l_pr.alpha_cond
-               << "   alpha_k - alpha_cond = " << (ak - l_pr.alpha_cond) << "\n"
-               << "            regime_k = " << int(rk_)
-               << " (0=Absent 1=Corridor 2=Independent)"
-               << "   VERDICT: "
-               << (rk_ == PsRegime::Independent
-                     ? "INDEPENDENT -> query was allowed, state is a real defect"
-                     : "CORRIDOR -> query was FORBIDDEN, this is a gate hole")
-               << "\n"
-               << "            alpha_1 = " << a1 << "  alpha_2 = " << a2
-               << "  m_1 = " << m1 << "  m_2 = " << m2
-               << "  rg1 = " << int(rg1) << "  rg2 = " << int(rg2) << "\n";
-             const PsPhaseQuot pq1 = ps_phase_quot(a1, m1, Sarr(i,j,k,UE1), ke, l_pr);
-             const PsPhaseQuot pq2 = ps_phase_quot(a2, m2, Sarr(i,j,k,UE2), ke, l_pr);
-             amrex::Real Pa, Ta, Sa;
-             const bool ok1 = pq1.exists && EOS::REY2PTS_phase_try(
-                 pq1.rho, pq1.e, massfrac, hem::Phase3::Liquid, Pa, Ta, Sa);
-             const bool ok2 = pq2.exists && EOS::REY2PTS_phase_try(
-                 pq2.rho, pq2.e, massfrac, hem::Phase3::Vapor,  Pa, Ta, Sa);
-             amrex::AllPrint()
-               << "            SPLIT  UE1 = " << Sarr(i,j,k,UE1)
-               << "   UE2 = " << Sarr(i,j,k,UE2)
-               << "   UEDEN = " << Sarr(i,j,k,UEDEN)
-               << "   sum-UEDEN = "
-               << (Sarr(i,j,k,UE1) + Sarr(i,j,k,UE2) - Sarr(i,j,k,UEDEN)) << "\n"
-               << "                   e_1 = " << (pq1.exists ? pq1.e : amrex::Real(0))
-               << " (reachable " << (ok1 ? "Y" : "N") << ")"
-               << "   e_2 = " << (pq2.exists ? pq2.e : amrex::Real(0))
-               << " (reachable " << (ok2 ? "Y" : "N") << ")"
-               << "   e_mix = " << (Sarr(i,j,k,UEINT) / Sarr(i,j,k,URHO)) << "\n"
-               << "                   physical liquid CO2 ~ -1.3e5 J/kg;"
-               << "  vapour at 300 K ~ +4e5 J/kg\n";
-           };
-#else
-           auto probe = [](int, amrex::Real, amrex::Real, const char*) {};
-#endif
-           amrex::ignore_unused(probe);
            if (rg1 == PsRegime::Independent && rg2 == PsRegime::Independent) {
              // Quotients formed once, checked.  If they do not exist the
              // cell is a state defect owned by ps_validate_state; no
@@ -1610,8 +1559,6 @@ CAMR::computeTemp(amrex::MultiFab& S, int ng)
              const PsPhaseQuot q1 = ps_phase_quot(a1, m1, Sarr(i,j,k,UE1), ke, l_pr);
              const PsPhaseQuot q2 = ps_phase_quot(a2, m2, Sarr(i,j,k,UE2), ke, l_pr);
              if (q1.exists && q2.exists) {
-               probe(1, q1.rho, q1.e, "both-INDEPENDENT branch");
-               probe(2, q2.rho, q2.e, "both-INDEPENDENT branch");
                const amrex::Real Tps = a1 * Tph(1, q1.rho, q1.e)
                                      + a2 * Tph(2, q2.rho, q2.e);
                if (std::isfinite(Tps)) Sarr(i, j, k, UTEMP) = Tps;
@@ -1625,7 +1572,6 @@ CAMR::computeTemp(amrex::MultiFab& S, int ng)
              const amrex::Real Eh = (hk == 1) ? Sarr(i,j,k,UE1) : Sarr(i,j,k,UE2);
              const PsPhaseQuot qh = ps_phase_quot(ah, mh, Eh, ke, l_pr);
              if (qh.exists) {
-               probe(hk, qh.rho, qh.e, "one-CORRIDOR branch (host query)");
                const amrex::Real Th = Tph(hk, qh.rho, qh.e);
                if (std::isfinite(Th)) Sarr(i, j, k, UTEMP) = Th;
              }

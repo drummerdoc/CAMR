@@ -120,8 +120,7 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
         // saturation density.  CAMR.ps_flash_project_sat: -1 auto (resolves
         // to 1), 0 force off, 1 force on; documented at its accessor.
         const int fl_proj_key = hem::ps_dial_flash_project_sat();
-        const int l_fl_proj = (fl_proj_key >= 0) ? fl_proj_key
-                              : (ps_presence_params().enabled != 0 ? 1 : 0);
+        const int l_fl_proj = (fl_proj_key >= 0) ? fl_proj_key : 1;
         for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
             const amrex::Box bx = mfi.growntilebox(nghost);
             amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
@@ -267,8 +266,7 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
             pp.query("ps_mt_update_alpha", v);
             return v;
         }();
-        const int l_mt_upd = (mt_upd_key >= 0) ? mt_upd_key
-                                               : (l_pr.enabled != 0 ? 1 : 0);
+        const int l_mt_upd = (mt_upd_key >= 0) ? mt_upd_key : 1;
         // ps_mt_diag >= 2 also enables the contraction-ratio measurement in
         // the kernel (a second equilibrium solve per transferring cell).
         const int mt_diag_lvl = hem::ps_diag_mt();
@@ -566,38 +564,6 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
         }
         BL_PROFILE_VAR_STOP(ps_src_tp);
     }
-    // [PS-HRM] report: nothing writes these counters.
-    // Retire-candidate: see docs/DESIGN_DECISIONS.md O-8.
-    {
-        hem::PsHrmRange& r = hem::ps_hrm_range();
-        long nfb = 0;
-        for (int c = 1; c < hem::PS_HRM_NCAUSE; ++c) nfb += hem::ps_hrm_cause(c);
-        if (r.n > 0 || nfb > 0) {
-            const int rx = hem::ps_diag_prdiag();
-            if (rx != 0) {
-                static const char* hn[hem::PS_HRM_NCAUSE] = {
-                    "ok","supercrit","psat_bad","denom","psi_zero","alpha_zero","nonfin" };
-                amrex::Print() << "[PS-HRM] used=" << r.n;
-                if (r.n > 0) {
-                    amrex::Print() << "  theta=[" << r.th_min << ", " << r.th_max << "] s"
-                                   << "  psi=["   << r.psi_min << ", " << r.psi_max << "]";
-                }
-                if (nfb > 0) {
-                    amrex::Print() << "   FALLBACK=" << nfb << " (";
-                    for (int c = 1; c < hem::PS_HRM_NCAUSE; ++c) {
-                        if (hem::ps_hrm_cause(c) > 0) {
-                            amrex::Print() << " " << hn[c] << "=" << hem::ps_hrm_cause(c);
-                        }
-                    }
-                    amrex::Print() << " )";
-                }
-                amrex::Print() << std::endl;
-            }
-            r.reset();
-            hem::ps_hrm_reset();
-        }
-    }
-
 }
 
 #endif // PS_SOURCES_H

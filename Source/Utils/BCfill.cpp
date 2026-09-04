@@ -69,9 +69,6 @@ struct PCHypFillExtDir
     const int* domlo = geomdata.Domain().loVect();
     const int* domhi = geomdata.Domain().hiVect();
     const auto& prob_lo = geomdata.ProbLo();
-#ifdef USE_PS_HYDRO
-    const auto& prob_hi = geomdata.ProbHi();
-#endif
     const auto& dx = geomdata.CellSize();
     const amrex::Real x[AMREX_SPACEDIM] = {AMREX_D_DECL(
       prob_lo[0] + static_cast<amrex::Real>(iv[0] + 0.5) * dx[0],
@@ -151,7 +148,6 @@ struct PCHypFillExtDir
           params.P_amb = (pf > amrex::Real(0.0)) ? pf : lprobparm->p_amb;
         }
         params.sigma        = nscbc_sigma;
-        params.L_ref        = prob_hi[idir] - prob_lo[idir];
         params.nscbc_order  = nscbc_order;
         params.flash        = nscbc_flash;
         amrex::Real s_ghost[NVAR];
@@ -240,14 +236,6 @@ CAMR_bcfill_hyp(
     pp.query("ps_bc_use_nscbc",   u);
     pp.query("ps_bc_nscbc_sigma", sg);
     pp.query("ps_bc_nscbc_order", od);
-    // ps_bc_nscbc_v2 has no replacement: the characteristic construction
-    // is the only form.  A set key aborts whatever its value.
-    if (pp.contains("ps_bc_nscbc_v2")) {
-      amrex::Abort("CAMR.ps_bc_nscbc_v2 is retired (2026-08-27): the "
-                   "legacy ghost construction was deleted; the v2 "
-                   "characteristic construction (choked fan + HEM "
-                   "flash) is the only form.  Remove the key.");
-    }
     int fl = 1;
     pp.query("ps_bc_nscbc_flash", fl);
     if (fl != 0 && fl != 1) {

@@ -35,21 +35,17 @@ namespace ps_guard {
 
 // ---------------------------------------------------------------------
 //  Phase-pressure guard counters, split by bound: `seen` per call,
-//  `reject_low` per substitution.  count_reject_high / n_reject_high are
-//  unreachable (no upper cap).  Retire-candidate: see docs/DESIGN_DECISIONS.md O-8.
+//  `reject_low` per substitution (there is no upper cap).
 // ---------------------------------------------------------------------
 #if !defined(AMREX_USE_GPU)
 inline long& n_seen()        { static long n = 0; return n; }
 inline long& n_reject_low()  { static long n = 0; return n; }
-inline long& n_reject_high() { static long n = 0; return n; }
 inline void  count_seen()        { ++n_seen(); }
 inline void  count_reject_low()  { ++n_reject_low(); }
-inline void  count_reject_high() { ++n_reject_high(); }
-inline void  reset_counts() { n_seen() = 0; n_reject_low() = 0; n_reject_high() = 0; }
+inline void  reset_counts() { n_seen() = 0; n_reject_low() = 0; }
 #else
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_seen()        noexcept {}
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_reject_low()  noexcept {}
-AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_reject_high() noexcept {}
 #endif
 
 // ---------------------------------------------------------------------
@@ -99,22 +95,6 @@ amrex::Real sanitize_stock_pressure(amrex::Real P_stock) noexcept
 }
 
 // ---------------------------------------------------------------------
-//  Volume-fraction mixture rule: P_mix = a1 P1 + a2 P2 when both phases
-//  are usable, else P_stock wholesale.  Falling back wholesale rather than
-//  mixing a substituted phase keeps the timestep estimator and plotfile
-//  derives decoupled from an unhealthy per-phase inversion.
-// ---------------------------------------------------------------------
-AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-amrex::Real mixture_pressure(amrex::Real a1, amrex::Real P1,
-                             amrex::Real a2, amrex::Real P2,
-                             amrex::Real P_stock) noexcept
-{
-    const bool ok1 = phase_pressure_ok(P1, P_stock);
-    const bool ok2 = phase_pressure_ok(P2, P_stock);
-    return (ok1 && ok2) ? (a1 * P1 + a2 * P2) : P_stock;
-}
-
-// ---------------------------------------------------------------------
 //  G1: per-phase density, lower bound only.  The bound is the backend's
 //  declared EOS::rho_min() (Category A metadata), so nothing here is tuned
 //  or CO2-specific; rho_max() stays metadata for the validator's V6 check.
@@ -123,8 +103,7 @@ amrex::Real mixture_pressure(amrex::Real a1, amrex::Real P1,
 //  an on-domain evaluation whose garbage passes as trustworthy, and the
 //  clamped/unclamped decision flips cell-to-cell (the pepper mechanism).
 //  The clamp acts at evaluation time: the stored (alpha_k, m_k) pair is
-//  left alone.  count_rho_hi / n_rho_clamp_hi are unreachable.
-//  Retire-candidate: see docs/DESIGN_DECISIONS.md O-8.
+//  left alone.
 // ---------------------------------------------------------------------
 #if !defined(AMREX_USE_GPU)
 //  clean_state repairs: a negative or non-finite partial mass is set to
@@ -139,13 +118,10 @@ inline void  add_mass_neg(double dm) { m_mass_neg() += dm; }
 inline void  count_mass_nonfinite() { ++n_mass_nonfinite(); }
 inline void  reset_mass_counts() { n_mass_neg() = 0; n_mass_nonfinite() = 0;
                                    m_mass_neg() = 0.0; }
-inline long& n_rho_clamp_hi() { static long n = 0; return n; }
 inline long& n_rho_clamp_lo() { static long n = 0; return n; }
-inline void  count_rho_hi()   { ++n_rho_clamp_hi(); }
 inline void  count_rho_lo()   { ++n_rho_clamp_lo(); }
-inline void  reset_rho_counts() { n_rho_clamp_hi() = 0; n_rho_clamp_lo() = 0; }
+inline void  reset_rho_counts() { n_rho_clamp_lo() = 0; }
 #else
-AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_rho_hi() noexcept {}
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_rho_lo() noexcept {}
 #endif
 
@@ -157,22 +133,6 @@ amrex::Real clamp_phase_density(amrex::Real rho,
     if (!(rho >= rho_min)) { count_rho_lo(); return rho_min; }  // also catches NaN
     return rho;
 }
-
-// ---------------------------------------------------------------------
-//  G5: slaved trace phase, threshold ALPHA_SLAVE_THR = 1e-2 (eta/eps at
-//  eta_max ~ 5e-4, eps = 5 %).  Superseded by the presence regimes
-//  (PS_presence.H, alpha_cond); slaved_phase has no caller.
-//  Retire-candidate: see docs/DESIGN_DECISIONS.md O-8.
-// ---------------------------------------------------------------------
-constexpr amrex::Real ALPHA_SLAVE_THR = amrex::Real(1.0e-2);
-
-#if !defined(AMREX_USE_GPU)
-inline long& n_slaved() { static long n = 0; return n; }
-inline void  count_slaved() { ++n_slaved(); }
-inline void  reset_slaved() { n_slaved() = 0; }
-#else
-AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_slaved() noexcept {}
-#endif
 
 // ---------------------------------------------------------------------
 //  Silent-limiter counters:
@@ -216,27 +176,23 @@ AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_reflux_clamp() noexcept {}
 //    flash : the flash-aware ghost closure fired (the ghost's mixture
 //            enthalpy fell inside the dome and it was re-closed as a
 //            saturated mixture); a diagnostic count, not a fallback.
-//  count_nscbc_zg_lin is unreachable.  Retire-candidate: see docs/DESIGN_DECISIONS.md O-8.
 // ---------------------------------------------------------------------
 #if !defined(AMREX_USE_GPU)
 inline long& n_nscbc_zg_c()     { static long n = 0; return n; }
-inline long& n_nscbc_zg_lin()   { static long n = 0; return n; }
 inline long& n_nscbc_zg_sup()   { static long n = 0; return n; }
 inline long& n_nscbc_zg_slots() { static long n = 0; return n; }
 inline long& n_nscbc_zg_pack()  { static long n = 0; return n; }
 inline long& n_nscbc_flash()    { static long n = 0; return n; }
 inline void  count_nscbc_zg_c()     { ++n_nscbc_zg_c(); }
-inline void  count_nscbc_zg_lin()   { ++n_nscbc_zg_lin(); }
 inline void  count_nscbc_zg_sup()   { ++n_nscbc_zg_sup(); }
 inline void  count_nscbc_zg_slots() { ++n_nscbc_zg_slots(); }
 inline void  count_nscbc_zg_pack()  { ++n_nscbc_zg_pack(); }
 inline void  count_nscbc_flash()    { ++n_nscbc_flash(); }
-inline void  reset_nscbc_counts() { n_nscbc_zg_c() = 0; n_nscbc_zg_lin() = 0;
+inline void  reset_nscbc_counts() { n_nscbc_zg_c() = 0;
                                     n_nscbc_zg_sup() = 0; n_nscbc_zg_slots() = 0;
                                     n_nscbc_zg_pack() = 0; n_nscbc_flash() = 0; }
 #else
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_nscbc_zg_c()     noexcept {}
-AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_nscbc_zg_lin()   noexcept {}
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_nscbc_zg_sup()   noexcept {}
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_nscbc_zg_slots() noexcept {}
 #endif
@@ -267,19 +223,6 @@ AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_ctop_seen()       noexcept {
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_ctop_sub()        noexcept {}
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_ctop_host_floor() noexcept {}
 #endif
-
-// Which phase (if either) is slaved: 0 = neither, 1 = phase 1, 2 = phase 2;
-// both below the threshold means no unique host.  No caller (see G5 above).
-AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-int slaved_phase(amrex::Real alpha_1, amrex::Real alpha_2,
-                 amrex::Real thr = ALPHA_SLAVE_THR) noexcept
-{
-    if (thr <= amrex::Real(0.0)) return 0;
-    const bool s1 = (alpha_1 < thr), s2 = (alpha_2 < thr);
-    if (s1 == s2) return 0;              // both or neither: no unique host
-    count_slaved();
-    return s1 ? 1 : 2;
-}
 
 } // namespace ps_guard
 

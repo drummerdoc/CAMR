@@ -46,8 +46,6 @@ struct Params {
     // aborts on any other value.
     int         flash   = 1;
     PsPres      pres{};                              // presence params (by value)
-    // L_ref is never read.  Retire-candidate: see docs/DESIGN_DECISIONS.md §7 (O-8).
-    amrex::Real L_ref   = amrex::Real(1.0);
     // R+ extrapolation: 1 = copy R+_N (reproduces the standalone driver's
     // NONREFLECTING fill bit-for-bit); 2 = minmod slope over three cells.
     int         nscbc_order = 2;
@@ -111,28 +109,6 @@ _cell_primitives(const amrex::Real s[NVAR],
     EOS::REY2P(rho, e_spec, Y, P);
     if (!std::isfinite(P) || P < Real(1.0)) P = Real(1.0);
 }
-
-// Wallis frozen sound speed at a cell via ps_frozen_cmix_from_state;
-// only s and pr are read.  No caller.
-// Retire-candidate: see docs/DESIGN_DECISIONS.md §7 (O-8).
-AMREX_GPU_HOST_DEVICE
-AMREX_FORCE_INLINE
-amrex::Real
-_wallis_c_at_cell(const amrex::Real s[NVAR],
-                  amrex::Real       rho_mix,
-                  amrex::Real       e_mix,
-                  amrex::Real       ux,
-                  amrex::Real       uy,
-                  amrex::Real       uz,
-                  amrex::Real       P_mix,
-                  amrex::Real       Y[NUM_SPECIES],
-                  const PsPres&     pr) noexcept
-{
-    using amrex::Real;
-    amrex::ignore_unused(rho_mix, e_mix, ux, uy, uz, P_mix, Y);
-    return ps_frozen_cmix_from_state(s, pr);
-}
-
 
 // ---------------------------------------------------------------------
 //  _hem_reclose: equilibrium (HEM) saturated re-closure of the marching
@@ -202,7 +178,14 @@ _hem_reclose(amrex::Real P,
 }
 
 // ---------------------------------------------------------------------
-//  _outflow_face_v2: the ghost construction (outflow_face forwards here).
+//  outflow_face: the ghost state at an outflow face on any of the six
+//  boundaries (the entry point BCfill.cpp calls).  s_N, s_Nm1, s_Nm2 are
+//  the interior states walking inward from the boundary (the caller
+//  reads them in that order); idir is the normal direction; sgn is the
+//  AMReX convention (+1 low side, -1 high side); layer_offset is the
+//  ghost layer (1 = nearest).  Invariants and the fan work in the
+//  outward frame u_out = -sgn·u_n and convert back before writing
+//  s_ghost.
 //  One subsonic characteristic branch serves both flow signs: for
 //  -1 < M < 1 R+ still leaves the domain, R- is imposed from the far
 //  field, and u_g and P_g come from the same invariants, so the pressure
@@ -217,15 +200,15 @@ _hem_reclose(amrex::Real P,
 AMREX_GPU_HOST_DEVICE
 AMREX_FORCE_INLINE
 void
-_outflow_face_v2(const amrex::Real s_N  [NVAR],
-                 const amrex::Real s_Nm1[NVAR],
-                 const amrex::Real s_Nm2[NVAR],
-                 amrex::Real       dx_normal,
-                 int               idir,
-                 int               sgn,
-                 int               layer_offset,
-                 Params const&     p,
-                 amrex::Real       s_ghost[NVAR]) noexcept
+outflow_face(const amrex::Real s_N  [NVAR],
+             const amrex::Real s_Nm1[NVAR],
+             const amrex::Real s_Nm2[NVAR],
+             amrex::Real       dx_normal,
+             int               idir,
+             int               sgn,
+             int               layer_offset,
+             Params const&     p,
+             amrex::Real       s_ghost[NVAR]) noexcept
 {
     using amrex::Real;
     amrex::ignore_unused(dx_normal);   // the invariant form needs no length
@@ -566,53 +549,6 @@ _outflow_face_v2(const amrex::Real s_N  [NVAR],
     // Final sanitisation: any non-finite slot reverts to N.
     for (int n = 0; n < NVAR; ++n)
         if (!std::isfinite(s_ghost[n])) s_ghost[n] = s_N[n];
-}
-
-
-// ---------------------------------------------------------------------
-//  outflow_face: the ghost state at an outflow face on any of the six
-//  boundaries (the entry point BCfill.cpp calls; forwards to
-//  _outflow_face_v2).  s_N, s_Nm1, s_Nm2 are the interior states walking
-//  inward from the boundary (the caller reads them in that order);
-//  idir is the normal direction; sgn is the AMReX convention (+1 low
-//  side, -1 high side); layer_offset is the ghost layer (1 = nearest).
-//  Invariants and the fan work in the outward frame u_out = -sgn·u_n
-//  and convert back before writing s_ghost.  The forwarder is a
-//  retire-candidate: see docs/DESIGN_DECISIONS.md §7 (O-8).
-// ---------------------------------------------------------------------
-AMREX_GPU_HOST_DEVICE
-AMREX_FORCE_INLINE
-void
-outflow_face(const amrex::Real s_N  [NVAR],
-             const amrex::Real s_Nm1[NVAR],
-             const amrex::Real s_Nm2[NVAR],
-             amrex::Real       dx_normal,
-             int               idir,
-             int               sgn,
-             int               layer_offset,
-             Params const&     p,
-             amrex::Real       s_ghost[NVAR]) noexcept
-{
-    _outflow_face_v2(s_N, s_Nm1, s_Nm2, dx_normal, idir, sgn,
-                     layer_offset, p, s_ghost);
-}
-
-
-//  outflow_face on the high x-face (idir=0, sgn=-1).  No caller.
-//  Retire-candidate: see docs/DESIGN_DECISIONS.md §7 (O-8).
-AMREX_GPU_HOST_DEVICE
-AMREX_FORCE_INLINE
-void
-right_x_outflow(const amrex::Real s_N  [NVAR],
-                const amrex::Real s_Nm1[NVAR],
-                const amrex::Real s_Nm2[NVAR],
-                amrex::Real       dx,
-                int               layer_offset,
-                Params const&     p,
-                amrex::Real       s_ghost[NVAR]) noexcept
-{
-    outflow_face(s_N, s_Nm1, s_Nm2, dx, /*idir=*/0, /*sgn=*/-1,
-                  layer_offset, p, s_ghost);
 }
 
 }  // namespace PS_NSCBC

@@ -148,38 +148,6 @@ struct PsMtCoexist {
 };
 inline PsMtCoexist& ps_mt_coexist() { static PsMtCoexist c; return c; }
 
-// ---------------------------------------------------------------------
-//  Cause and range records for the Downar-Zapolski HRM relaxation-time
-//  correlation, theta = theta_0 alpha_v^-0.54 psi^-1.76 with
-//  psi = |Psat(T_1) - P| / (P_crit - Psat(T_1)).  Nothing in this file
-//  writes them (the keys ps_theta_model / ps_hrm_theta abort on read); the
-//  correlation's assessment is docs/MODEL_AND_ALGORITHM.md §5.3, §5.6.
-//  Retire-candidate: see docs/DESIGN_DECISIONS.md §7.
-// ---------------------------------------------------------------------
-enum PsHrmCause {
-    PS_HRM_OK        = 0,
-    PS_HRM_SUPERCRIT = 1,   // T_1 >= T_crit: Psat does not exist
-    PS_HRM_PSAT_BAD  = 2,   // Psat non-finite or non-positive
-    PS_HRM_DENOM     = 3,   // P_crit - Psat <= 0 (at or past the critical point)
-    PS_HRM_PSI_ZERO  = 4,   // P == Psat exactly: psi = 0, theta singular
-    PS_HRM_ALPHA_ZERO= 5,   // alpha_v == 0: no vapour to relax with
-    PS_HRM_NONFIN    = 6,   // the result came out non-finite
-    PS_HRM_NCAUSE    = 7
-};
-inline long& ps_hrm_cause(int c) { static long n[PS_HRM_NCAUSE] = {0}; return n[c]; }
-inline void  ps_hrm_reset() { for (int c = 0; c < PS_HRM_NCAUSE; ++c) ps_hrm_cause(c) = 0; }
-//  Range of theta actually produced -- the whole question is whether it spans
-//  the orders of magnitude the wall demands, so it is reported, not assumed.
-struct PsHrmRange {
-    double th_min = 1.0e300, th_max = -1.0e300;
-    double psi_min = 1.0e300, psi_max = -1.0e300;
-    long   n = 0;
-    void reset() { th_min = psi_min = 1.0e300; th_max = psi_max = -1.0e300; n = 0; }
-};
-inline PsHrmRange& ps_hrm_range() { static PsHrmRange r; return r; }
-
-
-
 #define PS_MT_REFUSE(cause_, ret_) do { ++hem::ps_mt_cause(cause_); return ret_; } while (0)
 
 
@@ -194,7 +162,6 @@ struct PsPrStats {
                    fb = fb_samples = fb_bisect = fb_ok = refused = 0; }
 };
 inline PsPrStats& ps_pr_stats() { static PsPrStats s; return s; }
-inline int& ps_temperature_relax_count()  { static int n = 0; return n; }
 
 
 // ---------------------------------------------------------------------
@@ -430,24 +397,6 @@ inline bool ps_apply_tfloor_fold(V6& U, const PsPhaseAPI& eos,
         return true;
     }
     return false;
-}
-
-
-// Conserved vector from primitives.  Retire-candidate: see
-// docs/DESIGN_DECISIONS.md §7.
-inline V6 ps_cons_from_prim(double alpha1, double rho1, double rho2,
-                            double u, double e1, double e2)
-{
-    const double alpha2  = 1.0 - alpha1;
-    const double rho_mix = alpha1 * rho1 + alpha2 * rho2;
-    V6 U;
-    U[0] = alpha1;
-    U[1] = alpha1 * rho1;
-    U[2] = alpha2 * rho2;
-    U[3] = rho_mix * u;
-    U[4] = alpha1 * rho1 * (e1 + 0.5 * u * u);
-    U[5] = alpha2 * rho2 * (e2 + 0.5 * u * u);
-    return U;
 }
 
 
