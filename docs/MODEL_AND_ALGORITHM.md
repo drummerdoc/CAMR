@@ -9,7 +9,7 @@ P_I\,\partial_t\alpha_1$, and a volume fraction $\alpha_1$ that is advected
 phase has its own branch-locked real-fluid equation of state (liquid for phase 1, vapour for phase
 2), its own pressure $P_k$ and temperature; the mixture pressure is $P=\alpha_1P_1+\alpha_2P_2$ and
 mechanical equilibrium $P_1=P_2$ is imposed as an instantaneous constraint after every hyperbolic
-step. The formal statement of the equations, sources and closures is `doc/camr_ps_model.tex` §1–§4;
+step. The formal statement of the equations, sources and closures is `docs/camr_ps_model.tex` §1–§4;
 this document gives the argument behind the discretisation.
 
 The conserved state is CAMR's stock array extended by five slots (`Source/Utils/IndexDefines.H`,
@@ -331,7 +331,7 @@ discontinuity moving at $S_K$, $m_k^*(S_K-S_M)=m_k(S_K-u_K)$ whatever the volume
 does (`ps_star_masses`, single-sourced). What is free is how the two phases share the volume and the
 compression work, and this is where the construction departs from the standard form.
 
-The statement in `doc/camr_ps_model.tex` §6.2 — equal volumetric strain for both phases,
+The statement in `docs/camr_ps_model.tex` §6.2 — equal volumetric strain for both phases,
 $\rho_k^*=r_K\rho_k$, $\alpha^*=\alpha$ frozen across the acoustic waves, $E_k^* = E_k +
 (S_M-u)(S_M+P/q_k)$ with $q_k=\rho_k(S_K-u_K)$ — is stale and describes only the degenerate fallback
 of the code; the tex needs to be brought into line with what follows. That equal-strain form is the
@@ -747,7 +747,7 @@ The six-equation model stores two phases in every cell. This chapter is
 about what the code does in a cell where one of them does not physically
 exist, why that question has to be answered in the representation rather
 than in a guard, and what the answer costs. The formal statement is
-`doc/camr_ps_model.tex` §5; the parameters live in
+`docs/camr_ps_model.tex` §5; the parameters live in
 `Source/Hydro/PelantiShyue/PS_presence.H`, the promotion check in
 `PS_promote.H`, and the folds in `PS_relaxation.H`.
 
@@ -1237,7 +1237,7 @@ retired.
 
 ## 5. Sources: mechanical, thermal, mass transfer, flash, extinction
 
-The formal statement of the source terms is `doc/camr_ps_model.tex` §4;
+The formal statement of the source terms is `docs/camr_ps_model.tex` §4;
 this chapter gives the arguments behind the choices, the numbers that fixed
 them, and the limits of the model as they are currently understood. Code:
 `PS_relaxation.H` (dispatch, mode kernels, folds), `PS_sources.H` (flash
@@ -1916,7 +1916,7 @@ The alternative `bcnormal` path (copy off) is a linearised Riemann-invariant fil
 
 ### 6.3 Characteristic outflow (NSCBC)
 
-The formal statement is `doc/camr_ps_model.tex` §7. The problem: the full Poinsot–Lele NSCBC integrates $\partial q/\partial t$ at the boundary from characteristic amplitudes computed with interior derivatives, which needs persistent boundary state or an ODE step per fill and sits awkwardly on a FillPatch ghost mechanism. The choice is the characteristic-invariant form of the same physics, which fits the ghost-cell pattern exactly. With $u_{\rm out}$ the outward normal velocity, the outgoing and incoming acoustic invariants at the boundary cell $N$ are
+The formal statement is `docs/camr_ps_model.tex` §7. The problem: the full Poinsot–Lele NSCBC integrates $\partial q/\partial t$ at the boundary from characteristic amplitudes computed with interior derivatives, which needs persistent boundary state or an ODE step per fill and sits awkwardly on a FillPatch ghost mechanism. The choice is the characteristic-invariant form of the same physics, which fits the ghost-cell pattern exactly. With $u_{\rm out}$ the outward normal velocity, the outgoing and incoming acoustic invariants at the boundary cell $N$ are
 
 $$R^{+} = u_{\rm out} + \frac{P}{\rho c},\qquad R^{-} = u_{\rm out} - \frac{P}{\rho c},$$
 
