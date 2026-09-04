@@ -241,4 +241,16 @@ ACCEPTED on the evidence.
 
 [DECIDE-3] flip CAMR.ps_lw_skip_contact default 0 -> 2 (recommended); the
 selector stays for A/B and retires to single-path later, per the
-ps_star_relaxed pattern.  Awaiting Marc.
+ps_star_relaxed pattern.
+
+## 12. LANDED 2026-09-04 — [DECIDE-3] flip committed
+
+Marc approved the flip; `CAMR.ps_lw_skip_contact` default is now 2
+(softened taper).  Committed `ffb6eca` together with the verify_canonical
+check-4 re-baseline (rp=1 0.774 -> 0.752: not common-mode, rp=0 held at
+0.849, only the reproject leg moved and toward LOWER error; liveness delta
+grew to 0.098; A/C mean 0.0350 exact, C1 exact, B12 R=0.0097 unchanged).
+Full 1-D gate: ALL CHECKS PASS.  Modes 0/1 remain selectable; single-path
+retirement of the selector is deferred (parallels DECIDE-10 in the corridor
+note).  NOTE: the flip is a default and inputs.satjet_demo3 does not set
+the key explicitly, so a 2-D run must rebuild the 2-D exe to pick it up.
