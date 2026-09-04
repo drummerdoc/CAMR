@@ -1198,23 +1198,39 @@ PS_umeth(const Box& bx,
                 //  the demo3 jet edge (alpha 0.05 Independent vs 1e-6 Corridor)
                 //  IS a regime change -> skipped.  Dropping the WHOLE contact
                 //  wave preserves the W2-2 linear identities.
-                bool skip_contact = (wp_lw_skip == 1);
-                if (wp_lw_skip == 2) {
+                //  C2 contact-wave keep-weight (DESIGN_ps_contact_lw.md).
+                //  Applied as ONE scalar on the whole contact wave (l=1), so
+                //  the W2-2 linear identities are preserved (scaling a wave by
+                //  a scalar keeps W[URHO]=W[UM1RHO1]+W[UM2RHO2] etc.).
+                //    mode 0: wc_keep=1 (full contact correction, baseline).
+                //    mode 1: wc_keep=0 (blanket drop).
+                //    mode 2: SOFTENED regime taper ([DECIDE-B]) -- scale the
+                //      contact correction smoothly DOWN with the alpha jump
+                //      across the face, normalized by alpha_cond (reuses the
+                //      presence constant; NO new threshold).  |dalpha|=0
+                //      (uniform trace / single-phase) -> 1 (A/C preserved);
+                //      |dalpha|>=alpha_cond (material interface) -> 0 (skipped);
+                //      smoothstep between -> no on/off kink at the alpha_cond
+                //      contour (the mode-2 hard-switch artifact).
+                Real wc_keep = Real(1.0);
+                if (wp_lw_skip == 1) {
+                    wc_keep = Real(0.0);
+                } else if (wp_lw_skip == 2) {
                     const int li = i - ((idir==0)?1:0);
                     const int lj = j - ((idir==1)?1:0);
                     const int lk = k - ((idir==2)?1:0);
-                    const Real a1L = uin_arr(li,lj,lk, UALPHA1);
-                    const Real a1R = uin_arr(i, j, k,  UALPHA1);
-                    const PsRegime r1L = ps_regime(a1L, uin_arr(li,lj,lk,UM1RHO1), l_pres);
-                    const PsRegime r1R = ps_regime(a1R, uin_arr(i, j, k, UM1RHO1), l_pres);
-                    const PsRegime r2L = ps_regime(Real(1.0)-a1L, uin_arr(li,lj,lk,UM2RHO2), l_pres);
-                    const PsRegime r2R = ps_regime(Real(1.0)-a1R, uin_arr(i, j, k, UM2RHO2), l_pres);
-                    skip_contact = (r1L != r1R) || (r2L != r2R);
+                    const Real da = std::abs(uin_arr(li,lj,lk,UALPHA1)
+                                          - uin_arr(i, j, k, UALPHA1));
+                    Real t = da / amrex::max(l_pres.alpha_cond, Real(1.0e-30));
+                    if (t < Real(0.0)) t = Real(0.0);
+                    if (t > Real(1.0)) t = Real(1.0);
+                    wc_keep = Real(1.0) - t*t*(Real(3.0) - Real(2.0)*t);
                 }
                 Real Ft[NVAR];
                 for (int n = 0; n < NVAR; ++n) Ft[n] = Real(0.0);
                 for (int l = 0; l < 3; ++l) {
-                    if (skip_contact && l == 1) continue;
+                    const Real wl = (l == 1) ? wc_keep : Real(1.0);
+                    if (l == 1 && wl <= Real(0.0)) continue;   // full drop
                     const Real sl = wv(i,j,k, 3*NVAR + l);
                     if (std::abs(sl) < Real(1.0e-30)) continue;
                     const int ni = i - ((idir==0) ? ((sl>Real(0.0))?1:-1) : 0);
@@ -1330,7 +1346,7 @@ PS_umeth(const Box& bx,
                         }
                     }
                     for (int n = 0; n < NVAR; ++n) {
-                        Ft[n] += coef0 * phi * wv(i, j, k, l*NVAR + n);
+                        Ft[n] += wl * coef0 * phi * wv(i, j, k, l*NVAR + n);
                     }
                 }
                 // W2-1 (DESIGN_ps_wp_front.md §7, Marc-approved 2026-08-10):

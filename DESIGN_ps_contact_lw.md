@@ -180,3 +180,42 @@ predicate; escalate only if the 2-D result demands it.
 **Remaining acceptance:** the 2-D demo3 near-orifice hash must drop under
 mode 2 (needs the 2-D exe rebuild + a short run).  Then DECIDE-3 (default
 0 -> flip to 2 once that confirms).  Gated default 0 throughout.
+
+
+---
+
+## 10. MODE 2 SOFTENED to a taper ([DECIDE-B], 2026-09-05)
+
+The hard regime-differ predicate (§9) removed the oscillatory centerline
+zigzag but imprinted a monotone KINK in the front at the alpha_cond
+contour (the correction switched fully off on the one regime-crossing
+face).  Marc chose (B): soften the switch.
+
+Implemented: the contact wave (l=1) correction is scaled by ONE scalar
+per face, wc_keep in [0,1] (whole-wave scaling preserves the W2-2
+identities):
+    wc_keep = 1 - smoothstep( |alpha_L - alpha_R| / alpha_cond )
+  - |dalpha| = 0 (single-phase, uniform trace): wc_keep = 1 -> full
+    correction -> A/C untouched.
+  - |dalpha| >= alpha_cond (strong material interface): wc_keep = 0.
+  - smoothstep between -> NO on/off switch, so no alpha_cond kink.
+Normalized by alpha_cond, so it reuses the presence constant and adds NO
+new threshold (the blend width IS alpha_cond).  Level-based tapering was
+rejected: A/C's uniform trace sits below alpha_cond, so a level band
+would wrongly skip it; the JUMP-based taper keeps uniform regions at
+weight 1 regardless of level.
+
+MEASURED (1-D): A/C mean = 0.0350 (mode 0 0.0350, mode 1 blanket 0.0374,
+hard mode 2 0.0351) -- the softened taper preserves A/C EXACTLY (uniform
+single-phase -> weight 1).  verify_canonical default (mode 0) ALL PASS,
+bit-identical.
+
+OPEN (needs the 2-D demo3 A/B, Marc's rebuild): confirm the softened
+taper (a) removes the alpha_cond kink AND (b) still suppresses the
+original centerline zigzag.  RISK: at the demo3 front |dalpha|/alpha_cond
+~ 0.15-0.4, so wc_keep ~ 0.65-0.94 -- a GENTLE reduction; it may not damp
+the zigzag as hard as the boolean did (which acted via the coupled
+evolution).  If too gentle, the single tuning knob is the normalization
+(a fraction of alpha_cond sharpens the taper, trading back toward the
+kink).  Measure, then tune if needed.  DECIDE-3 (default flip) still
+waits on this 2-D result.
