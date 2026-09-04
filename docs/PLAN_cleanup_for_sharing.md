@@ -373,7 +373,19 @@ these go into Phase 3/4, which are physics questions):
   says (fix the doc or the code — physics question); `CAMR_derpres` ignores
   `ps_hydro` while the sound-speed derives gate on it.
 
-### 3.7 Two configurations, stated once
+### 3.7 Phase-3 notes (2026-09-04)
+
+- `ps_mt_tau_model` is only read by the split MT source (modes ≠ 5), so the
+  new abort on value 1 fires only there — consistent with the dial's scope.
+- The 0-D self-tests (`ps_ptg_selftest`, `ps_relax_sweep`, `ps_x3_test`) PASS
+  but the TPROF build trips a TinyProfiler stack assertion at exit because
+  they `exit` from inside a profiled region; the non-TPROF build is clean.
+  Phase 4: return through `amrex::Finalize` instead of exiting early.
+- `ps_promote_diag::reset()` used to sit under `ps_face_diag`, so with
+  `ps_face_diag=0` the promote counters were never reset; they now reset on
+  every `ps_diag_mass` print.
+
+### 3.8 Two configurations, stated once
 
 The 1-D acceptance battery runs bare defaults (`ps_relax_mode=5`,
 `ps_flash_from_absent=1`, τ = 1e-7); the 2-D pipe-break decks pin
@@ -483,7 +495,14 @@ These are wrong today and must be corrected even if nothing else changes:
 
 ### 4.3 Dead code and selector retirement
 
-**Liveness protocol (rule 4), applied to every item below before deletion:**
+**Liveness protocol (rule 4), applied to every item below before deletion.**
+Note (Phase 3 finding): the production `-O3` build lets gcc contract `a*b+c` into
+FMA, and any change to inlining or struct layout can flip those choices, moving
+two-phase cases at 1e-16 with no semantic change. The bit-identical test is
+therefore run on a contraction-free build — `make TINY_PROFILE=FALSE
+XTRA_CXXFLAGS="-ffp-contract=off" …` (exe `CAMR1d.gnu.PS.PR.ex`) — against the
+`PRE_nc_*` fingerprints; the production build's fingerprints are checked for
+round-off-only drift.
 (i) `characterize.py record PRE` on the 1-D exe, plus the `exact_suite.py`
 table; (ii) remove; rebuild; check the exe timestamp; (iii)
 `characterize.py compare PRE POST` must say IDENTICAL for every case, and the
@@ -770,7 +789,7 @@ Tag `pre-cleanup-2026-09-04` first.
 | 0 | Tag; write `docs/GROUND_RULES.md` and this plan into `docs/`; fix the `.gitignore`; track `characterization/`, `fig4_digitized_curves.csv`; vendor the exact references; `regen_refs.sh`; `characterize.py --defaults`; record `PRE` fingerprints (1-D) and the two 2-D restart windows | gate green, fingerprints stored | **DONE 09-04** except the 2-D windows (need MPI on the Mac: `Exec/regen_refs.sh windows PRE`) and `GROUND_RULES.md` (Phase 1) — commits `66588de…b5b5a8b` |
 | 1 | Docs: write MODEL_AND_ALGORITHM (incl. the eight WORKLOG-only items), DESIGN_DECISIONS, VERIFICATION, RUNNING, FUTURE_WORK, tex revision; new README.md; module READMEs; then delete the 31 source files | doc-only | **DONE 09-04** (docs commit + separate deletion commit; revert the deletion with `git revert <sha>` if anything is missed — everything is also at tag `pre-cleanup-2026-09-04`) |
 | 2 | Stale-comment fix list §4.2 + comment policy pass, file by file (hem, PS_relaxation, PS_umeth, PS_hllc, PS_nscbc, PS_sources, PS_guards, PS_ctoprim, PS_presence/promote, EOS, core) | bit-identical fingerprint after each file (comment-only edits must produce an identical binary; `cmp` the exe as the fastest check) | **DONE 09-04** (`ad7532f…6d0b258`): 48 files, 26,714→23,095 lines (comment lines roughly halved); proof = comment-strip diff empty per file, stripped-exe disassembly identical except three `__LINE__` immediates, fingerprints IDENTICAL in both configurations. Deck banners deferred to Phase 6. Abort-message strings still carry dates/task numbers (they are code → Phase 3 `ps_retired_keys()` table) |
-| 3 | Dead code (a): the provably unreachable list; retired-key table; Make.package/README inventories | IDENTICAL fingerprints, identical restart windows | none |
+| 3 | Dead code (a): the provably unreachable list; retired-key table; Make.package/README inventories | IDENTICAL fingerprints, identical restart windows | **DONE 09-04** (`8724fa6`, `8b84541`, `133a000`, `33d6b5c`) + `[DECIDE-26]` groups 1–2 (`693d051`, `dacb85b`). Proof: contraction-free build (`TINY_PROFILE=FALSE XTRA_CXXFLAGS=-ffp-contract=off`) IDENTICAL on 21/21 cases in both configurations against `PRE_nc_*`; the production -O3 build drifts at 1e-16 on four two-phase cases purely from FMA-contraction choices (verified by rebuilding both sides contraction-free). 2-D restart windows still pending the Mac run. |
 | 4 | Duplication/refactor §4.4 items 2–9, 11 (helpers, counters, constants at unchanged values, EOS contract header, file splits) | IDENTICAL | `[DECIDE-15]`, `[DECIDE-16]` |
 | 5 | Refactor item 1 (one cell state) | IDENTICAL expected; if not, present the diff as `[DECIDE-13]` | `[DECIDE-13]`, `[DECIDE-18]` |
 | 6 | Exec: decks, scripts, data, gate fixes (§5, §6) | gate green from a clean clone with no `CO2_STANDALONE` | `[DECIDE-19..22]`, `[DECIDE-24]` |
@@ -812,7 +831,7 @@ paced by the run in phase 8.
 | 23 | Standalone `suite/exact_*.csv` committed on your side before vendoring | **DECIDED 09-04: vendor.** Note: only `profiles/*.csv` were committed in the standalone; the `exact_*.csv` were untracked there, so the CAMR copy (`refs/exact/`, commit `60db9d7`) is now the only version-controlled one — commit them in co2-eos-cfd too |
 | 24 | B4-flatness reference configuration (margin 0.10 vs 0) | **DECIDED 09-04: 0.10** (code default); drop the dead env in check 2 in Phase 6 |
 | 25 | GPU builds silently take the strict relax gate and the `bcnormal` outflow path (`#if !GPU` branches) — abort instead? | yes (rule 9) |
-| 26 | Which of the §3.6 candidate defects to fix in Phase 3/4 | fix the rule-17/20 ones (silent aliases/maps → abort; uncounted P=1 Pa in NSCBC), the health-line gating, the GPU stubs, the GERG alias precedence, Make.package; leave the physics questions (eta1 branch, dt≤0 conventions, derpres) as documented |
+| 26 | Which of the §3.6 candidate defects to fix in Phase 3/4 — **DECIDED 09-04: groups 1 and 2 fixed** (`693d051`, `dacb85b`); group 3 (physics/convention) left as documented | fix the rule-17/20 ones (silent aliases/maps → abort; uncounted P=1 Pa in NSCBC), the health-line gating, the GPU stubs, the GERG alias precedence, Make.package; leave the physics questions (eta1 branch, dt≤0 conventions, derpres) as documented |
 
 ---
 
