@@ -91,12 +91,12 @@ CAMR_estdt_hydro(
 
 #ifdef CAMR_PS_DIAG
 // --------------------------------------------------------------------
-//  Diagnostic (CAMR.ps_dt_diag, default 0 = off): report WHICH cell and
-//  WHICH state sets the hydro dt.  Host-side, serial, reads only.
-//  Added after the N>=96 presence-path investigation (FINDINGS Addenda
-//  10b-10e): dt = dx/(c+|u|) with c from a SINGLE-FLUID EOS call on the
-//  MIXTURE state, which is not a characteristic speed of the 7-equation
-//  system.  This reporter is what exposed that.
+//  Diagnostic (CAMR.ps_dt_diag, default 0 = off): report which cell and
+//  which state sets the hydro dt.  Host-side, serial, reads only.
+//  Why it exists: dt = dx/(c+|u|) uses c from a single-fluid EOS call on
+//  the mixture state, which is not a characteristic speed of the
+//  six-equation system; this reporter shows which cell that choice binds.
+//  See docs/MODEL_AND_ALGORITHM.md §8.6.
 // --------------------------------------------------------------------
 struct CAMR_dt_diag_t {
   amrex::Real dt, rho, eint, pres, gam, c, ux, a1, m1, m2;

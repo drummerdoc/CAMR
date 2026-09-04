@@ -4,7 +4,7 @@
 #include "CAMR_Constants.H"
 #ifdef USE_PS_HYDRO
 #include "PS_ctoprim.H"
-#include "PS_umeth.H"                // dial accessors (AUDIT C.4)
+#include "PS_umeth.H"                // dial accessors
 #endif
 
 #include <atomic>
@@ -25,17 +25,12 @@ CAMR::construct_hydro_source (const MultiFab& S,
             amrex::Print() << "... Computing MOL-based hydro advance" << std::endl;
 #ifdef USE_PS_HYDRO
         } else if (ps_hydro != 0) {
-            // Pelanti-Shyue path: report the actual PS flux (CAMR.ps_flux).
-            // "Godunov-based" (non-PS branch below) is the generic
-            // single-step-unsplit driver label and does NOT mean a Godunov
-            // flux; for PS runs name the real flux.  (Reconstruction retired
-            // 2026-08-27 with ps_recon — the wp interior works from raw cell
-            // averages, 2nd order via the BL-2 correction fluxes.)
-            //  AUDIT C.4: resolved selection via the single-read accessor.
+            // Pelanti-Shyue path: name the resolved flux (CAMR.ps_flux, via
+            // its single-read accessor in PS_umeth.cpp).  "Godunov-based"
+            // below is the generic unsplit driver label, not a flux.
             amrex::Print() << "... Computing PS unsplit hydro advance (flux="
                            << ps_flux_name() << ")" << std::endl;
-#endif  // USE_PS_HYDRO (accessors live in PS_umeth.cpp; non-PS builds
-        //                 cannot run the PS path, so the branch is elided)
+#endif  // USE_PS_HYDRO
         } else {
             amrex::Print() << "... Computing Godunov-based hydro advance" << std::endl;
         }
@@ -108,10 +103,10 @@ CAMR::construct_hydro_source (const MultiFab& S,
               flux[dir].setVal<RunOn::Device>(0.);
             }
 
-            // Task #22 P2: Berger-LeVeque fluctuation register scratch —
-            // face FABs for the PS phase-energy defect (NUM_PS_FLUCT=2).
-            // Only allocated when CAMR.ps_bl_reflux!=0; PS_umeth fills
-            // them and they are CrseAdd/FineAdd'd into fluct_reg below.
+            // Face scratch for the PS phase-energy fluctuation register
+            // (NUM_PS_FLUCT=2), allocated only when CAMR.ps_bl_reflux!=0;
+            // PS_umeth fills it (zero under wp) and it is deposited into
+            // fluct_reg below.  See docs/MODEL_AND_ALGORITHM.md §1.5.
             amrex::GpuArray<amrex::FArrayBox, AMREX_SPACEDIM> fcorr_fab;
 #ifdef USE_PS_HYDRO
             const bool do_bl_fluct =
@@ -145,16 +140,12 @@ CAMR::construct_hydro_source (const MultiFab& S,
             const Real small_num        = CAMRConstants::small_num;
             Real dual_energy_eta        = CAMR::dual_energy_eta1;
             int l_allow_negative_energy = CAMR::allow_negative_energy;
-            // Task #210: the Pelanti–Shyue 6-eq integrator disables
-            // the dual-energy formulation entirely and allows negative
-            // internal energy (physical for liquid CO2).  hydro_ctoprim
-            // uses `dual_energy_eta` (== dual_energy_eta1) to decide
-            // whether to derive e from (UEDEN − ke) or fall back to
-            // UEINT.  Forcing eta=0 selects the "e = (UEDEN − ke)/ρ"
-            // branch unconditionally (the "no dual energy" behavior).
-            // allow_negative_energy=0 would fire an AMREX_ALWAYS_ASSERT
-            // on the L-side liquid cells at line 56/68 of
-            // Hydro_ctoprim.H — must be 1.  Warn once, GPU-safe.
+            // Under PS, allow_negative_energy is forced to 1 and
+            // dual_energy_eta1 to 0 at ctoprim (docs/MODEL_AND_ALGORITHM.md
+            // §8.4): liquid CO2 has physical e < 0, which the positive-e
+            // assert would reject, and eta1 = 0 takes e = (UEDEN - ke)/rho
+            // without the UEINT fallback that would amplify round-off
+            // between the two.  Warn once, GPU-safe.
 #ifdef USE_PS_HYDRO
             if (ps_hydro != 0) {
                 if (l_allow_negative_energy == 0 ||
@@ -178,11 +169,10 @@ CAMR::construct_hydro_source (const MultiFab& S,
             }
 #endif
 #ifdef USE_PS_HYDRO
-            const PsPres l_pres = ps_presence_params();   // S2 (one host read)
-            //  One host read, captured by value (GPU rule 12.2).  Tells
-            //  hydro_ctoprim to skip the single-fluid mixture EOS inversion,
-            //  whose every output is dead on the PS advance path and which is
-            //  ill-posed on a two-phase (rho_mix, e_mix) pair.
+            const PsPres l_pres = ps_presence_params();   // one host read
+            //  Captured by value; tells hydro_ctoprim to skip the single-fluid
+            //  mixture EOS inversion, ill-posed on a two-phase cell and unread
+            //  on the PS path.
             const int l_ps_hydro_ctop = ps_hydro;
 #else
             const int l_ps_hydro_ctop = 0;
@@ -196,14 +186,12 @@ CAMR::construct_hydro_source (const MultiFab& S,
                                   small_num, dual_energy_eta, l_allow_negative_energy,
                                   l_ps_hydro_ctop);
 #ifdef USE_PS_HYDRO
-                    // Populate the P-S 2014 six-equation primitive
-                    // slots (QALPHA1, QRHO1, QRHO2, QP1, QP2) and
-                    // override QPRES with the volume-fraction mixture
-                    // rule.  See Source/Hydro/PelantiShyue/PS_ctoprim.H.
-                    // Runs whenever USE_PS_HYDRO is compiled in, even
-                    // if CAMR.ps_hydro=0 — the augmented primitives
-                    // are cheap and give Godunov / MOL access to the
-                    // per-phase state should it want it in future.
+                    // Fill the six-equation primitive slots (QALPHA1,
+                    // QRHO1, QRHO2, QP1, QP2) and override QPRES with the
+                    // volume-fraction mixture rule (PS_ctoprim.H).  Runs
+                    // whenever USE_PS_HYDRO is compiled in, even with
+                    // CAMR.ps_hydro=0: cheap, and Godunov / MOL then see
+                    // the per-phase state.
                     ps_augment_primitives(i, j, k, sarr, qarr, l_pres);
 #endif
 #ifdef AMREX_USE_EB
@@ -216,8 +204,8 @@ CAMR::construct_hydro_source (const MultiFab& S,
 
             const GpuArray<const Array4<      Real>, AMREX_SPACEDIM>
               flx_arr{{AMREX_D_DECL(flux[0].array(), flux[1].array(), flux[2].array())}};
-            // Task #22 P2: face-array view of the fluctuation scratch
-            // (empty unless do_bl_fluct, in which case PS_umeth fills it).
+            // Face-array view of the fluctuation scratch (empty unless
+            // do_bl_fluct).
             const GpuArray<const Array4<Real>, AMREX_SPACEDIM> fcorr_arr =
                 do_bl_fluct
                 ? GpuArray<const Array4<Real>, AMREX_SPACEDIM>{{AMREX_D_DECL(
@@ -361,17 +349,16 @@ CAMR::construct_hydro_source (const MultiFab& S,
                        dxDp, fac_for_reflux*dt, amrex::RunOn::Device);
                 }
 #if defined(USE_PS_HYDRO) && !defined(AMREX_USE_EB)
-                // Task #22 P2/P3: deposit the PS phase-energy defect into
-                // the purpose-built ONE-SIDED fluctuation register
-                // (CAMRPSFluctReg).  Same dt·area scaling as the
-                // conservative register; the one-sided kernels carry the
-                // sign + low-branch/hi-side selection.
+                // Deposit the PS phase-energy defect into the one-sided
+                // fluctuation register (CAMRPSFluctReg); the one-sided
+                // kernels carry the sign and the low-branch/hi-side
+                // selection.  Retire-candidate: see
+                // docs/DESIGN_DECISIONS.md §7 O-5.
                 if (do_bl_fluct) {
-                    // NB: pass the real cell size dx (NOT dxDp = cell
-                    // volume).  The defect is applied in the interior as
-                    // -wp_corr/dx (a raw, non-area-weighted per-face
-                    // quantity), so the register must scale it by
-                    // dt/dx[idim], which it does when handed dx.
+                    // Pass the cell size dx, not dxDp (cell volume): the
+                    // defect is applied in the interior as -wp_corr/dx, a
+                    // raw per-face quantity, so the register scales it by
+                    // dt/dx[idim].
                     const amrex::Real* dxr = dx.data();
                     if (level < finest_level) {
                         getFluctReg(level + 1).CrseAddOneSided(mfi,
@@ -387,8 +374,8 @@ CAMR::construct_hydro_source (const MultiFab& S,
                             dxr, fac_for_reflux*dt, 0, 0, NUM_PS_FLUCT,
                             amrex::RunOn::Device);
                     }
-                    // (Task #36: the non-conservative α C-F correction is the
-                    // capacity-form update in CAMR::reflux() — no α register.)
+                    // The α coarse-fine correction is the capacity-form
+                    // co-move in CAMR::reflux(); there is no α register.
                 }
 #endif
             } // do_reflux

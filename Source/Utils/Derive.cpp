@@ -5,16 +5,14 @@
 #include "CAMR_Constants.H"
 #ifdef USE_PS_HYDRO
 #include <AMReX_ParmParse.H>
-#include "PS_ctoprim.H"   // ps_mixture_pressure_from_cons (task #21)
-#include "PS_wavespeed.H" // ps_frozen_cmix_from_state (AUDIT B14)
+#include "PS_ctoprim.H"   // ps_mixture_pressure_from_cons
+#include "PS_wavespeed.H" // ps_frozen_cmix_from_state
 
-//  AUDIT 2026-08-24 B14: CAMR.ps_hydro, single cached read.  CAMR::ps_hydro
-//  is a protected static member, unreadable from these free functions (the
-//  PS_umeth.cpp accessors document the same constraint); ParmParse returns
-//  the value CAMR::read_params queried at startup.  Needed because, unlike
-//  derpres, the sound-speed routing must NOT engage when the 6-eq slots are
-//  carried as passive scalars (ps_hydro=0): the single-fluid c is the true
-//  characteristic speed of that scheme.
+//  CAMR.ps_hydro, one cached read (see CAMR::read_params).  CAMR::ps_hydro
+//  is a protected static, unreadable from these free functions.  The
+//  sound-speed derives need it because, unlike derpres, their PS routing
+//  must not engage when the six-equation slots are carried as passive
+//  scalars (ps_hydro=0): there the single-fluid c is the scheme's speed.
 namespace {
 int ps_derive_ps_hydro()
 {
@@ -301,9 +299,8 @@ CAMR_der_ps_alpha1(
   const int* /*bcrec*/,
   const int /*level*/)
 {
-  // datfab now carries the FULL state (URHO..NVAR); read the UALPHA1 slot.
-  // (Registration changed to URHO,NVAR so the boundary fill stays in-bounds
-  // for gradient-based error tagging — see CAMR_setup.cpp / #79.)
+  // datfab carries the full state (URHO..NVAR, see the registration in
+  // CAMR_setup.cpp); read the UALPHA1 slot.
   auto const dat = datfab.const_array();
   auto vf = derfab.array();
   amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
@@ -619,13 +616,11 @@ CAMR_dersoundspeed(
   auto cfab = derfab.array();
 
 #ifdef USE_PS_HYDRO
-  //  AUDIT 2026-08-24 B14: on a PS run (ps_hydro=1) this derive used the
-  //  SINGLE-FLUID mixture inversion EOS::REY2P/REY2Gam — a speed the scheme
-  //  never propagates with (Timestep.H's diagnostic said as much), and an
-  //  inversion that can ABORT on healthy two-phase states (a recorded B7
-  //  plot failure).  Route through THE consolidated frozen Wallis c_mix
-  //  (PS_wavespeed.H, B8) that dt and the fluxes use.  ps_hydro=0 (slots
-  //  passive) keeps the single-fluid c — there it IS the scheme's speed.
+  //  On a PS run the sound speed is the frozen Wallis c_mix
+  //  (PS_wavespeed.H) that dt and the fluxes use; the single-fluid
+  //  inversion EOS::REY2P/REY2Gam is not a speed the scheme propagates with
+  //  and can abort on healthy two-phase states.  With ps_hydro=0 the slots
+  //  are passive and the single-fluid c is the scheme's speed.
   const int    l_ps   = ps_derive_ps_hydro();
   const PsPres l_pres = ps_presence_params();   // one host read
 #endif
@@ -679,7 +674,7 @@ CAMR_dermachnumber(
   auto mach = derfab.array();
 
 #ifdef USE_PS_HYDRO
-  //  AUDIT 2026-08-24 B14: same routing as CAMR_dersoundspeed above.
+  //  Same routing as CAMR_dersoundspeed above.
   const int    l_ps   = ps_derive_ps_hydro();
   const PsPres l_pres = ps_presence_params();   // one host read
 #endif
@@ -737,7 +732,7 @@ CAMR_derpres(
   auto pfab = derfab.array();
 
 #ifdef USE_PS_HYDRO
-  const PsPres l_pres = ps_presence_params();   // S2 (one host read)
+  const PsPres l_pres = ps_presence_params();   // one host read
 #endif
   amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
     const amrex::Real rho = dat(i, j, k, URHO);
@@ -756,13 +751,11 @@ CAMR_derpres(
     }
     EOS::REY2P(rho, e, massfrac, p);
 #ifdef USE_PS_HYDRO
-    // Task #21: report the P-S 2014 volume-fraction mixture pressure
-    // P_mix = α₁P₁ + α₂P₂ (branch-locked per-phase EOS) instead of the
-    // single-fluid EOS(ρ_mix,e_mix), which dips spuriously at numerically-
-    // smeared two-phase contacts and disagrees with the standalone driver's
-    // P_mix.  Falls back to the single-fluid p if a per-phase inversion is
-    // non-physical.  `dat` carries the full NVAR conservative state (this
-    // derive registers URHO..URHO+NVAR).
+    // Report the volume-fraction mixture pressure P_mix = α₁P₁ + α₂P₂
+    // (branch-locked per-phase EOS) rather than the single-fluid
+    // EOS(ρ_mix, e_mix), which dips spuriously at smeared two-phase
+    // contacts.  Falls back to the single-fluid p when a per-phase
+    // inversion is non-physical.  `dat` carries the full NVAR state.
     {
       amrex::Real Uloc[NVAR];
       for (int n = 0; n < NVAR; ++n) Uloc[n] = dat(i, j, k, n);
@@ -775,10 +768,9 @@ CAMR_derpres(
 }
 
 #ifdef USE_PS_HYDRO
-// Per-phase temperatures temp_1 (liquid) / temp_2 (vapor).  Well-defined only
-// where the phase genuinely exists; a vanished phase falls back to the mixture
-// temperature UTEMP (see ps_phase_temp_from_cons) so the field stays physical
-// and continuous — never garbage or a misleading zero.
+// Per-phase temperatures temp_1 (liquid) / temp_2 (vapor).  A vanished
+// phase reports the mixture temperature UTEMP (ps_phase_temp_from_cons) so
+// the field stays physical and continuous.
 static void CAMR_dertemp_phase(
   const amrex::Box& bx, amrex::FArrayBox& derfab, const amrex::FArrayBox& datfab,
   int phase)

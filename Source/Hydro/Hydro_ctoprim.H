@@ -20,9 +20,8 @@ hydro_ctoprim(
   amrex::Real l_dual_energy_eta1,
   const int l_allow_negative_energy,
   //  Non-zero when the Pelanti-Shyue six-equation integrator owns this
-  //  advance.  Passed as an int rather than compiled out because
-  //  CAMR.ps_hydro is a RUNTIME query: the same binary also serves
-  //  Godunov_umeth / MOL_umeth, which need every slot below.
+  //  advance.  A runtime int, not a compile-time switch: the same binary
+  //  also serves Godunov_umeth / MOL_umeth, which need every slot below.
   const int l_ps_hydro)
 {
     const amrex::Real rho = u(i, j, k, URHO);
@@ -82,45 +81,14 @@ hydro_ctoprim(
         q(i, j, k, QREINT) = e * rho;
 
         if (l_ps_hydro) {
-            //  PELANTI-SHYUE PATH.  The single-fluid EOS inversion below is
-            //  not merely unused here, it is ILL-POSED.  It solves
-            //  EOS(rho_mix, e_mix) for one temperature, but a two-phase cell's
-            //  mixture pair couples the light phase's VOLUME to the heavy
-            //  phase's MASS: it does not identify a single-fluid state and the
-            //  inversion can have no root.  That is the abort which stopped
-            //  B7-Rupture-Sonic here at rho = 1.352e1 kg/m3,
-            //  e = -1.1379e4 J/kg, energy gap -3.834e3 J/kg, 30 advances in
-            //  (measured 2026-08-11) — the last live mixture-EOS site on the
-            //  PS advance path.
-            //
-            //  Every slot it filled is dead on this path.  Verified on the
-            //  READ side, not inferred from what gets overwritten:
-            //    q[QTEMP], q[QGAME]        no reference anywhere under
-            //                              Source/Hydro/PelantiShyue/.
-            //    qa[QDPDR], qa[QDPDE]      read only by hydro_srctoprim, whose
-            //                              output src_q reaches only
-            //                              Godunov_umeth — PS_umeth's and
-            //                              MOL_umeth's argument lists omit it,
-            //                              and hydro_consup takes no q/qa/srcq
-            //                              at all.
-            //    qa[QGAMC], qa[QC],        read only by Godunov_umeth /
-            //    qa[QCSML]                 MOL_umeth.  PS_umeth declares its
-            //                              qaux parameter UNNAMED at both
-            //                              entries (PS_umeth.cpp:1117, 2362).
-            //    q[QPRES]                  was live until 2026-08-12: it fed
-            //                              ps_augment_primitives' per-phase
-            //                              pressure reference.  That reference
-            //                              is now the HOST PHASE's pressure —
-            //                              see PS_ctoprim.H — which is the one
-            //                              reference that cannot refuse.
-            //
-            //  Defined values are written rather than left as whatever the
-            //  Async_Arena handed back, so that nothing downstream can read an
-            //  indeterminate float even by accident.  They are placeholders
-            //  and are named as such; they are not physics.
+            //  Pelanti-Shyue path: the single-fluid inversion EOS(rho_mix,
+            //  e_mix) is ill-posed on a two-phase cell and can have no root,
+            //  and every slot it would fill is unread by PS_umeth (q[QPRES]
+            //  is overwritten by ps_augment_primitives; qa is unnamed there).
+            //  Defined placeholders are written so nothing downstream can
+            //  read an indeterminate float.
             q(i, j, k, QTEMP) = T;              // == u(UTEMP), as stored
-            q(i, j, k, QPRES) = amrex::Real(0.0);   // ps_augment_primitives
-                                                    // overwrites, next call
+            q(i, j, k, QPRES) = amrex::Real(0.0);
             q(i, j, k, QGAME) = amrex::Real(0.0);
             qa(i, j, k, QDPDR) = amrex::Real(0.0);
             qa(i, j, k, QDPDE) = amrex::Real(0.0);
@@ -132,11 +100,7 @@ hydro_ctoprim(
         amrex::Real dpdr_e, dpde, gam1, cs,  p;
 
         // One EOS state solve fills all five primitives (T, p, gam1, dpde,
-        // dpdr_e).  These were five separate same-(rho,e) calls that the
-        // PR MRU cache collapsed into one solve; with that cache
-        // removed for GPU-portability, the fused entry does the single solve
-        // explicitly — byte-identical output, EOS-agnostic (every model
-        // implements REY2_prim).
+        // dpdr_e); every EOS model implements REY2_prim.
         EOS::REY2_prim(rho, e, massfrac, T, p, gam1, dpde, dpdr_e);
 
         q(i, j, k, QTEMP)  = T;
@@ -147,13 +111,11 @@ hydro_ctoprim(
         qa(i, j, k, QDPDR) = dpdr_e;
         qa(i, j, k, QDPDE) = dpde;
         qa(i, j, k, QGAMC) = gam1;
-        // Guard the sound-speed sqrt: a finest-level cell left with negative
-        // rho or p by the prior hydro / coarse-fine op (before the post-hydro
-        // positivity floor runs) makes gam1*p/rho < 0 and sqrt() raises SIGFPE
-        // (INVALID) under fpe_trap — the satjet 3-level crash (task #60).  For a
-        // valid state gam1*p/rho > 0 so this is a no-op; for an invalid cell it
-        // degrades to cs=0 (no acoustic dt constraint) instead of NaN, letting
-        // the run reach the floor/relaxation that repairs the cell.
+        // Guard the sound-speed sqrt: a cell left with negative rho or p by
+        // the prior hydro / coarse-fine op (before the positivity floor runs)
+        // makes gam1*p/rho < 0 and sqrt() raises SIGFPE under fpe_trap.  A
+        // valid state is untouched; an invalid cell gets cs=0 instead of NaN
+        // so the run reaches the floor/relaxation that repairs it.
         const amrex::Real cs2 = gam1 * p / rho;
         cs = (std::isfinite(cs2) && cs2 > amrex::Real(0.0))
                ? std::sqrt(cs2) : amrex::Real(0.0);

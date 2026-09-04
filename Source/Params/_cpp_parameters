@@ -42,38 +42,20 @@ small_pres                   Real          1.e-200
 # uses MOL aapproach to timestep advection and diffusion
 do_mol                       int          0
 
-# uses the Pelanti-Shyue six-equation wave-propagation solver
-# (co2-eos-cfd integration Phase 4).  Requires the code to have
-# been built with USE_PS_HYDRO = TRUE in the Exec GNUmakefile.
+# use the Pelanti-Shyue six-equation wave-propagation solver
+# (docs/MODEL_AND_ALGORITHM.md §1).  Requires a build with
+# USE_PS_HYDRO = TRUE in the Exec GNUmakefile.
 ps_hydro                     int          0
 
-# NOTE (AUDIT 2026-08-24 C.1): the former registry entries ps_recon,
-# ps_alpha_limiter, ps_bc_use_nscbc, ps_bc_nscbc_sigma, ps_flash_tau,
-# ps_mt_tau and ps_triple_point_action were dead duplicate reads — every
-# live consumer reads its key through its own single accessor
-# (PS_umeth ps_recon_selector/ps_flux_selector/ps_alpha_limiter_minmod,
-# BCfill.cpp, PS_sources ps_source_dials) and nothing consumed the CAMR::
-# statics.  Removed rather than kept as a second default waiting to
-# disagree (the ps_relax_mode defect pattern).
 
-# Berger-LeVeque fluctuation-form coarse-fine reflux for the PS
-# NON-conservative terms (α transport + WP phase-energy defect).
-# 0 = off (only the standard conservative FluxRegister runs).
-# 1 = also run the parallel fluctuation register.  HISTORICAL NO-OP
-#     since the single-path deletion (2026-08-26): the register carried
-#     the hllc-path phase-energy defect, and wp — the only flux now —
-#     embeds that physics in its fluctuations and deposits zero.  The
-#     register infrastructure is KEPT as the task-#22 P2 landing pad
-#     for a future wp-form (two-sided A±ΔQ) register.
-# 2 = DEFAULT (2026-08-26, WP-CF-2D): additionally co-move α with its
-#     refluxed mass in CAMR::reflux() — capacity form, flux-mode
-#     independent.  Reflux corrects m_k but not α, so at ps_bl_reflux<2
-#     ρ_k = m_k/α drifts in the C-F layer and cell_cons_interp hands the
-#     broken decomposition to fine ghosts (measured: wp on XC2D dies at
-#     coarse step 22 without the co-move, runs to stop_time with it;
-#     WORKLOG 2026-08-25).  α co-moving with its refluxed mass is part
-#     of the scheme's C-F correctness contract, not an option.
-# See docs/design/camr_ps_bl_reflux_design.md (task #22).
+# Coarse-fine reflux of the PS non-conservative slots (CAMR::reflux;
+# docs/MODEL_AND_ALGORITHM.md §1.5, §4.9).
+# 0 = conservative FluxRegister only.
+# 1 = also apply the phase-energy fluctuation register; under wp it
+#     deposits zero (retire-candidate, docs/DESIGN_DECISIONS.md §7 O-5).
+# 2 = default: additionally co-move α with its refluxed partial mass in
+#     capacity form, Δα = Δm₁/ρ₁, so ρ_k = m_k/α_k stays consistent across
+#     the coarse-fine layer.
 ps_bl_reflux                 int          2
 
 # React fuel + air -> product

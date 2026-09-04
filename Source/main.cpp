@@ -120,8 +120,11 @@ main(int argc, char* argv[])
   amrptr->init(strt_time, stop_time);
 
 #ifdef USE_PS_HYDRO
-  // task #77: 0-D coupled-equilibrium (flash) self-test.  Runs after init
-  // (EOS live), prints the table, and exits without time-stepping.
+  // 0-D PS self-tests (docs/MODEL_AND_ALGORITHM.md §8.6): run after init
+  // with the EOS live, print their tables, and exit without time-stepping.
+  // Kept: ps_ptg_selftest, ps_relax_sweep, ps_x3_test.  ps_dilute_probe,
+  // ps_m2_test, ps_asy1_probe are investigation probes.
+  // Retire-candidate: see docs/DESIGN_DECISIONS.md §7 O-8.
   {
     int ps_ptg_selftest = 0;
     amrex::ParmParse pp_ps("CAMR");
@@ -131,15 +134,15 @@ main(int argc, char* argv[])
 
     int ps_dilute_probe = 0;
     pp_ps.query("ps_dilute_probe", ps_dilute_probe);
-    int ps_m2_test = 0;                    // M2 ordering measurement (Stage 5)
+    int ps_m2_test = 0;
     pp_ps.query("ps_m2_test", ps_m2_test);
-    int ps_asy1_probe_f = 0;               // ASY1 non-overshoot probe (Stage 6)
+    int ps_asy1_probe_f = 0;
     pp_ps.query("ps_asy1_probe", ps_asy1_probe_f);
-    int ps_x3_test = 0;                    // X3 fixed-point acceptance (F4)
+    int ps_x3_test = 0;                    // X3 fixed-point acceptance harness
     pp_ps.query("ps_x3_test", ps_x3_test);
     if (ps_ptg_selftest || ps_relax_sweep || ps_dilute_probe || ps_m2_test || ps_asy1_probe_f || ps_x3_test) {
-      // CI gate (#82/#80): nonzero exit on any failure so ctest/CI can fail
-      // the build.  Only IOProcessor runs the (serial, deterministic) checks.
+      // CI gate: nonzero exit on any failure so ctest/CI can fail the
+      // build.  Only IOProcessor runs the serial, deterministic checks.
       int fail = 0;
       if (amrex::ParallelDescriptor::IOProcessor()) {
         if (ps_ptg_selftest) fail += ps_ptg_zerod_selftest();

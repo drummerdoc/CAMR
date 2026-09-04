@@ -201,11 +201,9 @@ CAMR::variableSetUp()
   }
 
 #ifdef USE_PS_HYDRO
-  // Pelanti-Shyue six-equation state extensions.  All are scalar-
-  // like at walls (reflect_even) so use set_scalar_bc.  Without
-  // this loop the extended slots receive garbage in ghost cells and
-  // the flux kernel produces NaN on the first timestep at every
-  // physical boundary.
+  // Pelanti-Shyue six-equation slots: scalar-like at walls
+  // (reflect_even), so set_scalar_bc.  Without this the extended slots
+  // hold garbage in ghost cells at every physical boundary.
   set_scalar_bc(bc, phys_bc); bcs[UALPHA1] = bc; name[UALPHA1] = "alpha_1";
   set_scalar_bc(bc, phys_bc); bcs[UM1RHO1] = bc; name[UM1RHO1] = "alpha1_rho1";
   set_scalar_bc(bc, phys_bc); bcs[UM2RHO2] = bc; name[UM2RHO2] = "alpha2_rho2";
@@ -228,18 +226,18 @@ CAMR::variableSetUp()
   derive_lst.addComponent("pressure", desc_lst, State_Type, URHO, NVAR);
 
 #ifdef USE_PS_HYDRO
-  // Local flashing rate [kg m^-3 s^-1], + = evaporation (liquid->vapor): the
-  // mass ACTUALLY transferred per unit time during the reaction substep,
-  // recorded in CAMR::flash_src and served by the CAMR::derive() override.
-  // CAMR_dernull is a placeholder (data supplied by the override, not this
-  // function) — mirrors the EB "vfrac" registration pattern.
+  // Local flashing rate [kg m^-3 s^-1], + = evaporation (liquid->vapor):
+  // the mass transferred per unit time in the reaction substep, recorded
+  // in CAMR::flash_src and served by the CAMR::derive() override.
+  // CAMR_dernull is a placeholder, as for the EB "vfrac" registration.
   derive_lst.add(
     "flash_rate", amrex::IndexType::TheCellType(), 1, CAMR_dernull, the_same_box);
   derive_lst.addComponent("flash_rate", desc_lst, State_Type, URHO, 1);
 
-  // Per-phase temperatures [K]: temp_1 (liquid), temp_2 (vapor).  Meaningful
-  // once ps_relax_mode=2 allows T1 != T2; a vanished phase reports the mixture
-  // temperature (ps_phase_temp_from_cons) so the field stays physical.
+  // Per-phase temperatures [K]: temp_1 (liquid), temp_2 (vapor); T1 != T2
+  // under finite-rate thermal relaxation.  A vanished phase reports the
+  // mixture temperature (ps_phase_temp_from_cons) so the field stays
+  // physical.
   derive_lst.add(
     "temp_1", amrex::IndexType::TheCellType(), 1, CAMR_dertemp1, the_same_box);
   derive_lst.addComponent("temp_1", desc_lst, State_Type, URHO, NVAR);
@@ -298,20 +296,16 @@ CAMR::variableSetUp()
   derive_lst.addComponent("logden", desc_lst, State_Type, URHO, NVAR);
 
 #ifdef USE_PS_HYDRO
-  // Pelanti-Shyue phase-1 volume fraction as a proper derive, so AMR can
-  // refine on the phase/flash front (tagging the raw alpha_1 STATE variable
-  // segfaults; the derive path does the required ghost FillPatch).  Named
-  // ps_alpha1 to distinguish it from the EB fluid volume fraction "vfrac".
+  // Pelanti-Shyue phase-1 volume fraction as a derive, so AMR can refine on
+  // the phase/flash front (the derive path does the ghost FillPatch that
+  // tagging the raw state slot lacks).  Named ps_alpha1 to distinguish it
+  // from the EB fluid volume fraction "vfrac".
   derive_lst.add(
     "ps_alpha1", amrex::IndexType::TheCellType(), 1, CAMR_der_ps_alpha1, the_same_box);
-  // Register the FULL state (URHO..NVAR), NOT just UALPHA1: when ps_alpha1 is
-  // used as an AMR error indicator with a GRADIENT criterion
-  // (amr.*.adjacent_difference_greater), AMReX FillPatches this derive's
-  // source with 1 ghost cell, and the PS physical-BC fill (CAMRHypFill /
-  // NSCBC in BCfill.cpp) unconditionally reads/writes all NVAR components of
-  // the buffer.  A single-component (UALPHA1,1) buffer therefore overruns ->
-  // heap corruption / run-killing noise on derefine.  Carrying the full state
-  // (like "logden"/"pressure") makes the boundary fill in-bounds.  #79.
+  // The full state (URHO..NVAR) is registered, not UALPHA1 alone: a
+  // gradient tagging criterion FillPatches this derive's source with one
+  // ghost cell, and the PS boundary fill (BCfill.cpp) reads and writes all
+  // NVAR components of that buffer, so a one-component buffer overruns.
   derive_lst.addComponent("ps_alpha1", desc_lst, State_Type, URHO, NVAR);
 #endif
 

@@ -12,13 +12,11 @@
 
 using namespace amrex;
 
-// GPU-safe first-once helper used by the PS "disallowed option" overrides
-// below (task #209 / #210).  All override sites run in host code inside
-// hydro_umdrv (which itself is invoked from a possibly-OpenMP MFIter
-// loop in CAMR_construct_hydro_source), so we need atomic exchange to
-// guarantee exactly-one warning emission across CPU threads.  Device
-// kernels never call this — the PS overrides are all applied to host-
-// side scalars before they enter any ParallelFor.
+// First-once helper for the PS auto-override warnings below.  The
+// override sites run in host code inside hydro_umdrv, itself called from a
+// possibly-OpenMP MFIter loop, so an atomic exchange guarantees exactly one
+// warning across CPU threads.  Device kernels never call it: the overrides
+// act on host-side scalars before any ParallelFor.
 namespace {
 inline bool
 ps_warn_once(std::atomic<bool>& flag) noexcept
@@ -81,8 +79,8 @@ hydro_umdrv (bool do_mol,
 
 #ifdef USE_PS_HYDRO
     if (do_ps_hydro) {
-        // Pelanti–Shyue six-equation wave-propagation solver.  See
-        // Source/Hydro/PelantiShyue/README.md .
+        // Pelanti-Shyue six-equation wave-propagation solver
+        // (Source/Hydro/PelantiShyue/, docs/MODEL_AND_ALGORITHM.md §1).
         PS_umeth(bx, bclo, bchi, domlo, domhi, uin_arr, q_arr, qaux_arr, dsdt_arr,
                  AMREX_D_DECL(flx[0], flx[1], flx[2]),
                  AMREX_D_DECL(qec_arr[0], qec_arr[1], qec_arr[2]),
@@ -125,28 +123,14 @@ hydro_umdrv (bool do_mol,
 
     // Adjust the fluxes with artificial viscosity and area-weight them.
     //
-    // For the Pelanti–Shyue six-equation branch we HARDCODE difmag = 0.
-    // The artificial-viscosity kernel (hydro_artif_visc.H) loops over
-    // every NVAR slot (except UTEMP) and adds `dx * div * (u_R - u_L)`
-    // to each face flux — that corrupts the invariants the P-S wave-
-    // propagation form depends on:
-    //   • flx[UALPHA1] must stay exactly 0 (WP-α kernel writes
-    //     dsdt[UALPHA1] directly; any nonzero flux would double-count
-    //     into consup).
-    //   • flx[UE1], flx[UE2] must stay at their HLLC (Pelanti mixture-P
-    //     star-state) values, because the WP-vs-Godunov phase-energy
-    //     defect correction has been stashed based on those exact
-    //     values and re-adding artificial viscosity divergences on top
-    //     would double-adjust the phase-energy split.
-    // Standalone `ppm_1d_ps_wp.cpp` has no equivalent artificial-
-    // viscosity pass; forcing difmag = 0 here is what recovers the
-    // bit-exact single-level match, and is the correct choice for
-    // production too (PS has its own stabilization via HLLC star-state
-    // clamps and frozen-sound-speed wave-speed floors).
-    //
-    // See task #208 (root cause) and task #209 (this fix).  Warning is
-    // GPU-safe (host-side std::atomic; hydro_umdrv is called from a
-    // possibly-OpenMP MFIter loop in CAMR_construct_hydro_source).
+    // Under PS, difmag is forced to 0 (docs/MODEL_AND_ALGORITHM.md §8.4).
+    // The artificial-viscosity kernel adds dx*div*(u_R - u_L) to every
+    // NVAR slot except UTEMP, which breaks two wave-propagation invariants:
+    // flx[UALPHA1] must stay exactly 0 (PS_umeth writes dsdt[UALPHA1]
+    // directly, so any flux would double-count in consup), and flx[UE1],
+    // flx[UE2] must keep their star-state values, on which the phase-energy
+    // defect correction is based.  PS carries its own stabilisation
+    // (star-state clamps, wave-speed floors), so no viscosity is needed.
     Real l_difmag_effective = l_difmag;
     if (do_ps_hydro && l_difmag_effective != Real(0.0)) {
         static std::atomic<bool> warned_ps_difmag{false};

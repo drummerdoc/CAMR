@@ -13,31 +13,22 @@
 struct PCHypFillExtDir
 {
   ProbParmDevice const* lprobparm;
-  // NSCBC dispatch settings.  Values captured at host-side construction
-  // of the functor (see CAMR_bcfill_hyp below) so they're accessible
-  // from the device operator() without touching CAMR's protected
-  // static members from a free function.
-  // Per-face NSCBC enable (2026-09-01): CAMR.ps_bc_nscbc_{x,y,z}{lo,hi},
-  // indexed [2*idir + (0=lo,1=hi)].  Resolved HOST-side in CAMR_bcfill_hyp;
-  // sentinel -1 = "unset -- inherit the global CAMR.ps_bc_use_nscbc", so a
-  // silent deck is bit-identical to the single-switch behavior by
-  // construction.  Needed because bcnormal owns problem-specific faces
-  // (e.g. the demo2 x-lo rupture plane: reservoir gap + slip wall) that
-  // the global switch replaces wholesale.
+  // NSCBC dispatch settings, captured host-side when the functor is built
+  // (CAMR_bcfill_hyp) so the device operator() never reads ParmParse or
+  // CAMR statics.  See docs/MODEL_AND_ALGORITHM.md §6.
+  // Per-face NSCBC enable, indexed [2*idir + (0=lo,1=hi)]; resolved in
+  // CAMR_bcfill_hyp.  Faces are selected individually because bcnormal
+  // owns problem-specific faces (the pipe-break rupture plane) that a
+  // global switch would replace wholesale.
   amrex::GpuArray<int, 2*AMREX_SPACEDIM> use_nscbc_face;
   amrex::Real nscbc_sigma;
-  int         nscbc_order;    // 1 or 2 — R+ extrapolation order.
-  int         nscbc_flash;    // 1 = flash-aware choked fan (default),
-                              // 0 = frozen construction (A/B opt-out).
-  // Per-face ambient pressure targets (probe #29 follow-up, 2026-08-26):
-  // CAMR.ps_bc_p_amb_{x,y,z}{lo,hi}, indexed [2*idir + (0=lo,1=hi)].
-  // Sentinel <= 0 means "unset — inherit prob.p_amb", so a silent deck
-  // is bit-identical to the pre-dial behavior by construction.
+  int         nscbc_order;    // 1 or 2: R+ extrapolation order.
+  int         nscbc_flash;    // 1 = flash-aware choked fan, 0 = frozen.
+  // Per-face ambient pressure targets, indexed [2*idir + (0=lo,1=hi)];
+  // a value <= 0 inherits prob.p_amb at fill time.
   amrex::GpuArray<amrex::Real, 2*AMREX_SPACEDIM> p_amb_face;
 #ifdef USE_PS_HYDRO
-  PsPres      pres;           // S2: presence params, captured HOST-side at
-                              // functor construction (§12.2 rule 1 — never
-                              // read ParmParse/statics inside operator()).
+  PsPres      pres;           // presence params, captured host-side.
 #endif
 
   AMREX_GPU_HOST
@@ -90,28 +81,19 @@ struct PCHypFillExtDir
     const int* bc = bcr->data();
 
     // ---- Common per-face dispatch --------------------------------
-    // Handles both PS-mode NSCBC and the legacy bcnormal path
-    // uniformly.  Called for each face on which the BCRec is
-    // ext_dir and the current ghost cell iv is outside the domain
-    // along that face.
-    //
-    //   idir  =  boundary-normal direction (0=x, 1=y, 2=z)
-    //   sgn   = +1 for low-side face, -1 for high-side face
-    //           (AMReX convention).
-    //
-    // The stencil walks INWARD from the boundary cell N (=domlo[idir]
-    // for a lo face, domhi[idir] for a hi face) with step +sgn in
-    // the idir component; layer_offset counts how many cells iv sits
-    // outside the boundary.
+    // Fills ghost iv on a face whose BCRec is ext_dir, through either
+    // the PS-NSCBC path or the problem's bcnormal.
+    //   idir = boundary-normal direction (0=x, 1=y, 2=z)
+    //   sgn  = +1 for a low-side face, -1 for a high-side face.
+    // The stencil walks inward from the boundary cell N (domlo[idir] on
+    // a lo face, domhi[idir] on a hi face) with step +sgn; layer counts
+    // how many cells iv sits outside the boundary.
     auto do_bc_face = [&, x] (int idir, int sgn) {
-      // Boundary cell N along the normal direction.  Tangential
-      // components are copied from the current ghost's iv[].
       const int N_pos = (sgn > 0) ? domlo[idir] : domhi[idir];
       const int layer = sgn * (N_pos - iv[idir]);   // positive for ghosts outside
 
-      // Build IntVects for N, N-1, N-2 along idir.  Non-idir
-      // components come from iv (so the stencil is on the correct
-      // tangential column of interior cells).
+      // IntVects for N, N-1, N-2 along idir on the ghost's own
+      // tangential column.
       amrex::IntVect coord_v(AMREX_D_DECL(iv[0], iv[1], iv[2]));
       auto stencil_iv = [&] (int step) {
         amrex::IntVect r = coord_v;
@@ -124,15 +106,13 @@ struct PCHypFillExtDir
           && (sgn > 0 ? (domlo[idir] + 2 <= domhi[idir])
                       : (domhi[idir] - 2 >= domlo[idir]))) {
         // ---- PS-NSCBC characteristic-invariant path -----------------
-        // Tangential indices clamped into the domain and the FAB, and the
-        // normal stencil depth clamped to what the FAB holds (PeleC nscbc
-        // branch lessons, 2026-09-01).  A corner ghost's own tangential
-        // index is outside the domain, so the unclamped stencil column
-        // reads ghost cells another thread of the same launch may be
-        // writing; and corner-protocol strip FABs can carry fewer than
-        // three interior cells in the normal direction.  Clamped, the fill
-        // is a pure function of valid interior data.  The legacy bcnormal
-        // path below is left untouched so no existing result moves.
+        // Tangential indices are clamped into domain and FAB, and the
+        // normal stencil depth to what the FAB holds: a corner ghost's
+        // tangential index lies outside the domain, so an unclamped column
+        // would read ghosts another thread of the same launch may be
+        // writing, and strip FABs can hold fewer than three interior cells
+        // along the normal.  Clamped, the fill is a pure function of valid
+        // interior data.  The bcnormal path below is not clamped.
         const amrex::Dim3 flo3 = amrex::lbound(dest);
         const amrex::Dim3 fhi3 = amrex::ubound(dest);
         const int fab_lo[3] = {flo3.x, flo3.y, flo3.z};
@@ -163,11 +143,9 @@ struct PCHypFillExtDir
           s_Nm2[n] = dest(ivNm2, n);
         }
         PS_NSCBC::Params params;
-        params.pres = pres;   // S2 (functor member, host-captured POD)
-        // Per-face ambient target (2026-08-26): an explicitly-set face
-        // dial wins; the sentinel (<= 0) inherits the global prob.p_amb.
-        // Assigned per-call, so a future localized source (e.g. an EB
-        // inlet with its own ambient) slots in at its own call site.
+        params.pres = pres;
+        // An explicitly-set face target wins; the sentinel (<= 0)
+        // inherits the global prob.p_amb.
         {
           const amrex::Real pf = p_amb_face[2*idir + ((sgn > 0) ? 0 : 1)];
           params.P_amb = (pf > amrex::Real(0.0)) ? pf : lprobparm->p_amb;
@@ -175,7 +153,7 @@ struct PCHypFillExtDir
         params.sigma        = nscbc_sigma;
         params.L_ref        = prob_hi[idir] - prob_lo[idir];
         params.nscbc_order  = nscbc_order;
-        params.flash        = nscbc_flash;   // choked-fan HEM (0 = frozen A/B)
+        params.flash        = nscbc_flash;
         amrex::Real s_ghost[NVAR];
         PS_NSCBC::outflow_face(s_N, s_Nm1, s_Nm2, dx[idir],
                                 idir, sgn, layer, params, s_ghost);
@@ -183,7 +161,7 @@ struct PCHypFillExtDir
         return;
       }
 #endif
-      // ---- Legacy single-cell bcnormal path -----------------------
+      // ---- Problem-owned single-cell bcnormal path -----------------
       amrex::Real s_int_local[NVAR], s_ext_local[NVAR];
       const amrex::IntVect ivN = stencil_iv(0);
       for (int n = 0; n < NVAR; n++) s_int_local[n] = dest(ivN, n);
@@ -235,41 +213,42 @@ CAMR_bcfill_hyp(
 {
   const ProbParmDevice* lprobparm = CAMR::d_prob_parm;
 
-  // Fetch the NSCBC dispatch settings ONCE per run (AUDIT 2026-08-24
-  // B5/C.6; was once per fill call — the ParmParse table is fixed after
-  // startup, so per-call re-reads could never see a different value).
-  // CAMR::ps_bc_* members are protected static, so we can't read them from
-  // this free function directly; ParmParse gives the same values that
-  // CAMR::read_params queried at startup.  The RESOLVED values (after the
-  // no-PS_HYDRO force-off and the order forcing) are force-added back to
-  // the table so job_info records the BC path that actually ran even when
-  // the deck was silent (gerg_ext_c idiom).  Values are captured into the
-  // PCHypFillExtDir functor so the device operator() can act on them
-  // without touching CAMR class internals.
+  // NSCBC dispatch settings, read once per run (the ParmParse table is
+  // fixed after startup).  This is the single accessor for the boundary
+  // dials (docs/MODEL_AND_ALGORITHM.md §6.5):
+  //   CAMR.ps_bc_use_nscbc (0): global NSCBC outflow switch.
+  //   CAMR.ps_bc_nscbc_sigma (0.25): Poinsot-Lele restoring pull on R-
+  //     toward the ambient pressure.
+  //   CAMR.ps_bc_nscbc_order (2): R+ extrapolation order, 1 or 2.
+  //   CAMR.ps_bc_nscbc_flash (1): flash-aware choked fan; 0 = frozen.
+  //   CAMR.ps_bc_p_amb_{x,y,z}{lo,hi} (-1 = inherit prob.p_amb): per-face
+  //     ambient pressure, for problems whose two ends see different far
+  //     fields.
+  //   CAMR.ps_bc_nscbc_{x,y,z}{lo,hi} (-1 = inherit ps_bc_use_nscbc):
+  //     per-face NSCBC enable.
+  // The resolved values (after the no-USE_PS_HYDRO force-off and the
+  // order forcing) are added back to the table so job_info records the BC
+  // path that actually ran even when the deck was silent.
   struct NscbcCfg { int use; amrex::Real sigma; int order; int flash;
                     amrex::GpuArray<amrex::Real, 2*AMREX_SPACEDIM> pamb;
                     amrex::GpuArray<int, 2*AMREX_SPACEDIM> uface; };
   static const NscbcCfg nscbc_cfg = []() -> NscbcCfg {
     int u = 0;
     amrex::Real sg = amrex::Real(0.25);
-    int od = 2;   // 1 or 2 — R+ extrapolation order.
+    int od = 2;
     amrex::ParmParse pp("CAMR");
     pp.query("ps_bc_use_nscbc",   u);
     pp.query("ps_bc_nscbc_sigma", sg);
     pp.query("ps_bc_nscbc_order", od);
-    //  CAMR.ps_bc_nscbc_v2 RETIRED 2026-08-27 with the legacy ghost
-    //  construction it selected (Marc's call; the measured dossier —
-    //  A1 abort class, LEGACY-FLUSH R>=1, #31 vent strictly dominated
-    //  by the choked-fan closure — is in the WORKLOG).  A SET key,
-    //  either value, aborts rather than silently no-oping (the KEY is
-    //  retired, not a value):
+    // ps_bc_nscbc_v2 has no replacement: the characteristic construction
+    // is the only form.  A set key aborts whatever its value.
     if (pp.contains("ps_bc_nscbc_v2")) {
       amrex::Abort("CAMR.ps_bc_nscbc_v2 is retired (2026-08-27): the "
                    "legacy ghost construction was deleted; the v2 "
                    "characteristic construction (choked fan + HEM "
                    "flash) is the only form.  Remove the key.");
     }
-    int fl = 1;   // 2026-08-27: flash-aware choked fan default ON (0 = frozen A/B)
+    int fl = 1;
     pp.query("ps_bc_nscbc_flash", fl);
     if (fl != 0 && fl != 1) {
       amrex::Abort("CAMR.ps_bc_nscbc_flash accepts 0 (frozen A/B) or 1 "
@@ -277,11 +256,7 @@ CAMR_bcfill_hyp(
                    "(end-state energy-lever variant) was refuted and "
                    "deleted 2026-08-27.");
     }
-    // Per-face ambient targets (probe #29 follow-up, 2026-08-26).
-    // Sentinel -1 = unset -> inherit prob.p_amb at fill time.  One
-    // global p_amb cannot describe a problem whose two ends see
-    // different far fields (B4: 100 bar left / 50 bar right — the
-    // measured NSCBC-2 category error).
+    // Per-face ambient targets; -1 = inherit prob.p_amb at fill time.
     amrex::GpuArray<amrex::Real, 2*AMREX_SPACEDIM> pa;
     for (int f = 0; f < 2*AMREX_SPACEDIM; ++f) pa[f] = amrex::Real(-1.0);
     pp.query("ps_bc_p_amb_xlo", pa[0]);
@@ -294,11 +269,8 @@ CAMR_bcfill_hyp(
     pp.query("ps_bc_p_amb_zlo", pa[4]);
     pp.query("ps_bc_p_amb_zhi", pa[5]);
 #endif
-    // Per-face NSCBC enable (2026-09-01).  Sentinel -1 = unset -> inherit
-    // the global CAMR.ps_bc_use_nscbc, so a silent deck is bit-identical
-    // to the single-switch behavior by construction.  Modeled on PeleC's
-    // nscbc branch, where face selection is likewise resolved per face,
-    // not per run.
+    // Per-face NSCBC enable; -1 = inherit the global switch, so a silent
+    // deck behaves exactly as the single switch.
     amrex::GpuArray<int, 2*AMREX_SPACEDIM> uf;
     for (int f = 0; f < 2*AMREX_SPACEDIM; ++f) { uf[f] = -1; }
     pp.query("ps_bc_nscbc_xlo", uf[0]);
@@ -318,7 +290,7 @@ CAMR_bcfill_hyp(
       }
     }
 #ifndef USE_PS_HYDRO
-    u = 0;   // safety: NSCBC is a no-op without PS_HYDRO.
+    u = 0;   // NSCBC is a no-op without USE_PS_HYDRO.
 #endif
     for (int f = 0; f < 2*AMREX_SPACEDIM; ++f) {
       if (uf[f] == -1) { uf[f] = u; }
@@ -346,8 +318,7 @@ CAMR_bcfill_hyp(
     pp.add("ps_bc_nscbc_zlo", uf[4]);
     pp.add("ps_bc_nscbc_zhi", uf[5]);
 #endif
-    // Resolved per-face targets -> job_info (gerg_ext_c idiom);
-    // -1 records "inherits prob.p_amb".
+    // Resolved per-face targets -> job_info; -1 records "inherits prob.p_amb".
     pp.add("ps_bc_p_amb_xlo", pa[0]);
     pp.add("ps_bc_p_amb_xhi", pa[1]);
 #if (AMREX_SPACEDIM >= 2)
@@ -364,8 +335,7 @@ CAMR_bcfill_hyp(
   const int         nscbc_order = nscbc_cfg.order;
   const int         nscbc_flash = nscbc_cfg.flash;
 
-  // One-time per-run banner so runlogs record which outflow BC path
-  // is actually in play.  Diagnostic-only; no performance impact.
+  // One-time banner so run logs record which outflow BC path is in play.
   {
     static bool banner_shown = false;
     if (!banner_shown) {
@@ -388,7 +358,7 @@ CAMR_bcfill_hyp(
     PCHypFillExtDir{lprobparm, nscbc_cfg.uface, nscbc_sigma, nscbc_order,
                     nscbc_flash, nscbc_cfg.pamb
 #ifdef USE_PS_HYDRO
-                    , ps_presence_params()   // S2: host-side read here
+                    , ps_presence_params()   // host-side read
 #endif
                     });
   hyp_bndry_func(bx, data, dcomp, numcomp, geom, time, bcr, bcomp, scomp);

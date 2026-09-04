@@ -21,10 +21,10 @@
 #include "Tagging.H"
 #include "IndexDefines.H"
 #ifdef USE_PS_HYDRO
-#include "PS_relaxation.H"   // ps_resync_phase_energy / ps_apply_floor (#84)
+#include "PS_relaxation.H"   // ps_resync_phase_energy / ps_apply_floor
 #include "PS_guards.H"
 #include "PS_wavespeed.H"      // ps_guard counters (clean_state repairs)
-#include "PS_promote.H"       // 3b: checked promotion (ps_regime_reach)
+#include "PS_promote.H"       // checked promotion (ps_regime_reach)
 #endif
 
 bool CAMR::signalStopJob = false;
@@ -74,24 +74,19 @@ CAMR::read_params()
 #include "CAMR_queries.H"
 
 #if defined(USE_GERG_EOS) || defined(USE_GERGTAB_EOS)
-  // CAMR.gerg_ext_c -> gerg::set_ext_c, once, before any hydro.  Also
-  // force-adds the resolved value to the ParmParse table so it appears in
-  // job_info -- i.e. every plotfile records which extension sound-speed
-  // surface produced it.  See Source/EOS/GERG/gerg_co2_guard.H.
+  // CAMR.gerg_ext_c -> gerg::set_ext_c, once, before any hydro; the
+  // resolved value is added to the ParmParse table so job_info records
+  // which extension sound-speed surface produced every plotfile.  See
+  // Source/EOS/GERG/gerg_co2_guard.H.
   EOS::gerg_ext_c_init();
 #endif
 
   // ---------------------------------------------------------------------
-  //  Pelanti-Shyue solver dispatch consistency check.
-  //
-  //  CAMR.ps_hydro is a runtime flag but it only has any effect if
-  //  the code was compiled with USE_PS_HYDRO = TRUE (which pulls in
-  //  Source/Hydro/PelantiShyue/PS_umeth.cpp and activates the
-  //  dispatch branch in Hydro_umdrv.cpp).  If the user sets ps_hydro
-  //  in the inputs file but forgot to rebuild with the flag, that's
-  //  a silent misconfiguration — the code would just run Godunov and
-  //  they'd wonder why their PS run behaves exactly like Godunov.
-  //  Catch it here.
+  //  Pelanti-Shyue dispatch check.  CAMR.ps_hydro (0) is a runtime flag
+  //  that only takes effect in a build with USE_PS_HYDRO = TRUE (which
+  //  compiles PS_umeth.cpp and the dispatch branch in Hydro_umdrv.cpp);
+  //  a deck that sets it against a non-PS binary would silently run
+  //  Godunov, so it aborts here instead.
   if (ps_hydro != 0) {
 #ifndef USE_PS_HYDRO
     amrex::Abort(
@@ -343,13 +338,10 @@ CAMR::init_stuff(amrex::Amr& papa,
         level_geom, papa.Geom(level - 1), papa.refRatio(level - 1), level, 1);
     }
 
-    // Berger-LeVeque fluctuation register (task #22).  Holds the PS
-    // phase-energy WP-vs-Godunov defect, which is flux-form (B&L §4a):
-    // NUM_PS_FLUCT = 2 components (defect on UE1, UE2).  Applied in
-    // reflux() to state slots UE1/UE2 via a destcomp offset.  The
-    // non-flux-form α transport fix-up is handled separately (P2b).
-    // Gated: ps_bl_reflux=0 (opt-out; default is 2 since 2026-08-26)
-    // carries no extra storage.
+    // Fluctuation register for the PS phase-energy defect, NUM_PS_FLUCT = 2
+    // components applied in reflux() to UE1/UE2 through a destcomp offset.
+    // Not allocated when CAMR.ps_bl_reflux = 0.  The α coarse-fine
+    // correction is the co-move in reflux() and needs no register.
 #if defined(USE_PS_HYDRO) && !defined(AMREX_USE_EB)
     if (ps_bl_reflux != 0) {
       fluct_reg.define(
@@ -536,10 +528,10 @@ CAMR::init()
   amrex::MultiFab& S_new = get_new_data(State_Type);
   FillCoarsePatch(S_new, 0, cur_time, State_Type, 0, NVAR);
 #ifdef USE_PS_HYDRO
-  // Diagnostic (task #18/#41): alpha_1 range on a NEW fine level right after
-  // coarse->fine interpolation.  If alpha1_max here jumps above the injected
-  // value, the coarse-fine interpolation of the two-phase state is a driver of
-  // the alpha_1 -> pure-phase blow-up.  Gated: CAMR.ps_diag_alpha = 1.
+  // CAMR.ps_diag_alpha: alpha_1 range on a new fine level right after
+  // coarse->fine interpolation, to attribute a drive toward a pure phase
+  // to the interpolation.  Retire-candidate: see docs/DESIGN_DECISIONS.md
+  // §7 O-8.
   {
     static int dg = -1;
     if (dg < 0) { int t = 0; amrex::ParmParse pp("CAMR");
@@ -818,9 +810,9 @@ CAMR::post_timestep(int /*iteration*/)
     // and then update quantities like temperature to be consistent.
     amrex::MultiFab& S_new_crse = get_new_data(State_Type);
 #ifdef USE_PS_HYDRO
-    // Diagnostic (task #51): alpha_1 range right AFTER reflux+avgDown, before
-    // clean_state.  A jump toward pure phase here pins the coarse-fine reflux
-    // as the driver of the alpha_1 -> pure-liquid blow-up.  Gated ps_diag_alpha.
+    // CAMR.ps_diag_alpha: alpha_1 range right after reflux + avgDown, before
+    // clean_state, to attribute a drive toward a pure phase to the reflux.
+    // Retire-candidate: see docs/DESIGN_DECISIONS.md §7 O-8.
     {
       static int dg = -1;
       if (dg < 0) { int t = 0; amrex::ParmParse pp("CAMR");
@@ -883,22 +875,18 @@ CAMR::post_regrid(int /*lbase*/, int /*new_finest*/)
   fine_mask.clear();
 
 #ifdef USE_PS_HYDRO
-  // Two-phase consistency after a regrid (#84).  Cells filled by C-F
-  // interpolation (new fine regions) or average-down (de-refined regions)
-  // can carry a per-phase energy split slightly off UEDEN; the PS
-  // reconstruction assumes UE1+UE2==UEDEN, and in Lie mode (ps_strang=0)
-  // the next step feeds this straight into the hydro BEFORE the post-hydro
-  // reaction resync runs.  Re-sync + floor the regridded new-time state
-  // here so no regridded cell reaches the flux with an inconsistent /
-  // sub-floor two-phase state.  No-op on untouched interior cells.
+  // Two-phase consistency after a regrid.  Cells filled by C-F
+  // interpolation or average-down can carry a phase-energy split off
+  // UEDEN, and in Lie mode (ps_strang=0) the next step feeds them to the
+  // hydro before the post-hydro resync runs; resync, fold and floor them
+  // here so no regridded cell reaches a flux inconsistent or sub-floor.
+  // No-op on untouched interior cells.  See docs/MODEL_AND_ALGORITHM.md §4.9.
   if (ps_hydro != 0) {
     amrex::MultiFab& S_new = get_new_data(State_Type);
     ps_resync_phase_energy(S_new, 0);
-    // S3 (design §3): regrid interpolation can manufacture sub-alpha_vanish
-    // phase slivers at new fine cells; fold them to exact zero before any
-    // flux sees them.  No-op unless presence is enabled (the fold wrapper
-    // resolves its own threshold; audit counters record the churn by the
-    // PS-FOLD report).
+    // Regrid interpolation manufactures sub-alpha_vanish slivers at new
+    // fine cells; fold them to exact zero before any flux sees them.  The
+    // fold audit counts the churn ([PS-FOLD]).
     ps_apply_vanish_fold(S_new, 0);
     ps_apply_floor(S_new, 0);
   }
@@ -970,11 +958,10 @@ CAMR::reflux()
   amrex::MultiFab& S_crse = get_new_data(State_Type);
 
 #if defined(USE_PS_HYDRO) && !defined(AMREX_USE_EB)
-  // Task #36 (capacity-form α reflux): snapshot the per-phase mass
-  // α₁ρ₁ (=UM1RHO1) BEFORE flux_reg refluxes it, so we can move the
-  // capacity α₁ with its own mass afterwards (Δα₁ = Δ(α₁ρ₁)/ρ₁),
-  // preserving ρ₁=α₁ρ₁/α₁.  flux_reg does NOT touch UALPHA1 (its α flux
-  // is 0), so the current UALPHA1 is the pre-reflux value we key ρ₁ on.
+  // Capacity-form α reflux: snapshot the partial mass α₁ρ₁ (UM1RHO1) before
+  // flux_reg refluxes it, so α₁ can be co-moved with its own mass below.
+  // flux_reg does not touch UALPHA1 (its α flux is 0), so the current
+  // UALPHA1 is the pre-reflux value ρ₁ is keyed on.
   amrex::MultiFab a1r1_pre;
   if (ps_bl_reflux > 1) {
     a1r1_pre.define(S_crse.boxArray(), S_crse.DistributionMap(), 1, 0);
@@ -1005,18 +992,17 @@ CAMR::reflux()
 #endif
 
 #if defined(USE_PS_HYDRO) && !defined(AMREX_USE_EB)
-  // Task #22 P3: Berger-LeVeque fluctuation-form reflux for the PS
-  // phase-energy WP-vs-Godunov defect.  The one-sided deposit
-  // (CAMRPSFluctReg::CrseAddOneSided/FineAddOneSided) has already put the
-  // correction (wp_corr_crse - Σfine) into the register for exactly the
-  // low-branch coarse cells; the inherited Reflux applies it to the
-  // contiguous UE1/UE2 slots.  Gated by CAMR.ps_bl_reflux.
+  // PS coarse-fine correction of the non-conservative slots
+  // (docs/MODEL_AND_ALGORITHM.md §1.5, §4.9); CAMR.ps_bl_reflux is
+  // documented in Params/_cpp_parameters.
+  // Phase-energy defect: the one-sided deposit (CAMRPSFluctReg::
+  // CrseAddOneSided/FineAddOneSided) holds wp_corr_crse - Σfine for the
+  // low-branch coarse cells and the inherited Reflux applies it to the
+  // contiguous UE1/UE2 slots.  Under wp the deposit is zero.
+  // Retire-candidate: see docs/DESIGN_DECISIONS.md §7 O-5.
   if (ps_bl_reflux != 0) {
-    // Diagnostic (task #22): monitor the coarse vs fine fluctuation
-    // contributions SEPARATELY before they are merged by Reflux, so we
-    // can tell (a) whether the fine deposit is cancelling the coarse
-    // (getFineData large & comparable) vs a cancellation bug (fine ~0),
-    // and (b) pin the time when BOTH sides carry nontrivial signal.
+    // Report the coarse and fine fluctuation contributions separately
+    // before Reflux merges them.
     if (verbose) {
       amrex::MultiFab& cd = fine_level.fluct_reg.getCrseData();
       amrex::MultiFab& fd = fine_level.fluct_reg.getFineData();
@@ -1032,18 +1018,19 @@ CAMR::reflux()
 
     fine_level.fluct_reg.Reflux(S_crse, 0, UE1, NUM_PS_FLUCT);
 
-    // Task #36: CAPACITY-FORM α reflux.  Rather than reflux α₁ with a
-    // separate (uncoordinated) fluctuation operator — which shifts
-    // ρ₁=α₁ρ₁/α₁ and spikes P₁ (the §3f artifact) — move the capacity α₁
-    // WITH its own already-conservatively-refluxed mass α₁ρ₁:
-    //     Δ(α₁ρ₁) = (α₁ρ₁)_after_fluxreg − (α₁ρ₁)_before      [= flux_reg's
-    //                                                            mass reflux]
-    //     ρ₁      = (α₁ρ₁)_before / α₁_before                 [pre-reflux]
+    // Capacity-form α co-move (ps_bl_reflux = 2).  α₁ has no flux; an
+    // uncoordinated α reflux shifts ρ₁ = α₁ρ₁/α₁ and spikes P₁, so α₁ is
+    // moved with its own already-refluxed mass:
+    //     Δ(α₁ρ₁) = (α₁ρ₁)_after_fluxreg − (α₁ρ₁)_before
+    //     ρ₁      = (α₁ρ₁)_before / α₁_before
     //     α₁     += Δ(α₁ρ₁) / ρ₁
-    // Then ρ₁_after = (α₁ρ₁+Δ)/(α₁+Δ/ρ₁) = ρ₁ EXACTLY — no P₁ spike, and
-    // no separate α register is needed.  Only flux_reg (conservative)
-    // touches the conserved slots; α₁ is co-moved with its mass.  A small
-    // positivity clamp guards the recovered α₁.
+    // which leaves ρ₁ exactly invariant.  Skipped when α₁_pre <= amin
+    // (1e-8) or ρ₁_pre <= 1e-10; |Δα₁| is capped at 0.05 per reflux and
+    // the result clamped to [amin, 1 − amin]; both limiters are counted
+    // ([PS-GUARD] reflux_cap / reflux_clamp).  A firing limiter leaves an
+    // α-vs-mass residual for the next-step resync.  The clamp holds a
+    // corridor-small α₁ at 1e-8 rather than letting it reach 0: an open
+    // decision, docs/DESIGN_DECISIONS.md §7 O-17.
     if (ps_bl_reflux > 1) {
         const amrex::Real amin = amrex::Real(1.0e-8);
         const amrex::Real rho_floor = amrex::Real(1.0e-10);
@@ -1059,23 +1046,10 @@ CAMR::reflux()
                 if (d_m != amrex::Real(0.0) && a1_old > amin) {
                     const amrex::Real rho1 = m_old / a1_old;         // pre-reflux ρ₁
                     if (rho1 > rho_floor) {
-                        // Capacity co-move Δα₁ = Δ(α₁ρ₁)/ρ₁.  HARDENED (task #51):
-                        // a spurious-large coarse-fine flux mismatch at a sharp
-                        // two-phase contact can make Δα₁ huge and slam α₁ to the
-                        // pure-phase clamp (0.05 -> ~1 pure liquid -> stiff EOS
-                        // -> dt collapse / crash, observed at step ~175).  Cap
-                        // the per-reflux |Δα₁| so α₁ can only move gradually; the
-                        // mass is still conservatively refluxed, only the α
-                        // co-move is rate-limited (next-step resync/relaxation
-                        // reconciles the small residual).
+                        // Rate cap: a large coarse-fine flux mismatch at a
+                        // sharp contact would otherwise slam α₁ to the clamp.
                         constexpr amrex::Real da_cap = amrex::Real(0.05);
                         amrex::Real da = d_m / rho1;
-                        //  AUDIT 2026-08-24 B13: both limiters COUNTED (were
-                        //  silent).  A firing cap/clamp leaves an α-vs-mass
-                        //  residual for the next-step resync to reconcile;
-                        //  [PS-GUARD] reflux_cap / reflux_clamp make its
-                        //  frequency observable.  (Host builds; the counters
-                        //  compile to no-ops under AMREX_USE_GPU.)
                         const amrex::Real da_raw = da;
                         da = amrex::min(amrex::max(da, -da_cap), da_cap);
                         if (da != da_raw) { ps_guard::count_reflux_cap(); }
@@ -1321,18 +1295,15 @@ CAMR::avgDown(int state_indx)
 #endif
 
 #ifdef USE_PS_HYDRO
-    // Two-phase consistency after coarsening (#84).  amrex::average_down
-    // volume-averages each conservative slot INDEPENDENTLY; the linear
-    // invariants (rho, m_k, UE_k, UEDEN) stay consistent, but the per-phase
-    // (rho_k, e_k) the PS reconstruction derives from the coarsened
-    // alpha/masses/energies can land just off the EOS-consistent manifold
-    // (same class as the C-F interp #58 / reflux #51 issues, on the DOWN
-    // direction).  Re-sync UE1+UE2 -> UEDEN and apply the positivity floor
-    // on the coarsened data so a coarse cell never feeds an inconsistent
-    // two-phase state into the next hydro.  No-op on interior cells.
+    // Two-phase consistency after coarsening.  average_down averages each
+    // slot independently, so the per-phase (rho_k, e_k) derived from the
+    // coarsened alpha/masses/energies can land off the EOS-consistent
+    // manifold.  Resync UE1+UE2 -> UEDEN, fold slivers and floor on the
+    // coarsened data so no coarse cell feeds an inconsistent two-phase
+    // state to the next hydro.  No-op on interior cells (§4.9).
     if (ps_hydro != 0 && state_indx == State_Type) {
         ps_resync_phase_energy(S_crse, 0);
-        ps_apply_vanish_fold(S_crse, 0);   // S3: avgDown slivers -> exact zero
+        ps_apply_vanish_fold(S_crse, 0);   // avgDown slivers -> exact zero
         ps_apply_floor(S_crse, 0);
     }
 #endif
@@ -1363,10 +1334,10 @@ CAMR::derive(const std::string& name, amrex::Real time, int ngrow)
   }
 #endif
 #ifdef USE_PS_HYDRO
-  // Local flashing rate dm1/dt [kg m^-3 s^-1], + = evaporation.  Data is
-  // recorded during advance() into flash_src (see CAMR_advance.cpp); serve a
-  // copy here.  If not yet populated (e.g. plot at t=0 before any advance, or
-  // just after a regrid), return zeros on the current grids.
+  // Local flashing rate dm1/dt [kg m^-3 s^-1], + = evaporation, recorded
+  // during advance() into flash_src (CAMR_advance.cpp).  Zeros on the
+  // current grids when not yet populated (plot at t=0, or just after a
+  // regrid).
   if (name == "flash_rate") {
     std::unique_ptr<amrex::MultiFab> derive_dat(
       new amrex::MultiFab(grids, dmap, 1, ngrow));
@@ -1387,11 +1358,9 @@ CAMR::derive(
   const std::string& name, amrex::Real time, amrex::MultiFab& mf_to_fill, int dcomp)
 {
 #ifdef USE_PS_HYDRO
-  //  AUDIT 2026-08-24 B14: this overload fell through to AmrLevel::derive,
-  //  whose registered function for flash_rate is CAMR_dernull — the
-  //  destination component was NEVER FILLED (whatever memory the caller
-  //  handed in went to the plotfile as "flash_rate").  Mirror the
-  //  unique_ptr overload above: zeros, then flash_src where it matches.
+  //  The registered derive function for flash_rate is CAMR_dernull, which
+  //  fills nothing; this overload must serve flash_src itself, as the
+  //  unique_ptr overload above does: zeros, then flash_src where it matches.
   if (name == "flash_rate") {
     mf_to_fill.setVal(0.0, dcomp, 1, mf_to_fill.nGrow());
     if (flash_src.ok() &&
@@ -1427,24 +1396,15 @@ CAMR::reset_internal_energy(amrex::MultiFab& S_new, int ng)
     auto l_dual_energy_eta2                  = dual_energy_eta2;
     const auto l_small_temp                  = small_temp;
 
-    // Task #210: The Pelanti–Shyue 6-eq integrator has its own
-    // per-phase internal-energy accounting (UE1, UE2) and its own
-    // pressure closure; UEDEN and UEINT are book-keeping slots that
-    // must NOT be touched by CAMR's dual-energy reset machinery.
-    //
-    //   • The liquid CO2 phase has physical specific internal energy
-    //     e ≈ −130 kJ/kg at 270 K (PR EOS), so allow_negative_energy
-    //     must be 1 or the reset path will silently floor UEINT/UEDEN
-    //     via EOS::RTY2E(small_T,…).
-    //   • dual_energy_update_E_from_e = 1 would let a floored e
-    //     bleed back into UEDEN, breaking the m1E1 + m2E2 accounting.
-    //   • The stock UEINT-vs-(UEDEN−ke) blend controlled by eta2 does
-    //     the same job PS already does exactly, but with FP noise.
-    //
-    // Force the "no dual-energy formulation, allow negative e" branch
-    // (allow_small=1 and allow_neg=1 selects the pure
-    // UEINT = UEDEN − ρ·ke reset at CAMR_reset_internal_e.H:125 which
-    // is idempotent for PS state).  Warn once (GPU-safe).
+    // Settings forced under PS (docs/MODEL_AND_ALGORITHM.md §8.4): the
+    // six-equation integrator keeps its own phase-energy accounting (UE1,
+    // UE2), so the dual-energy reset must not touch UEDEN/UEINT.  Liquid
+    // CO2 has physical e ≈ −130 kJ/kg, which the reset path would floor
+    // through EOS::RTY2E(small_T) unless allow_negative_energy and
+    // allow_small_energy are 1; dual_energy_update_E_from_e = 1 would let
+    // an e-derived write corrupt the m1E1 + m2E2 accounting; eta2 = 0
+    // selects the pure UEINT = UEDEN − ρ·ke reset, idempotent for PS state.
+    // Warn once (GPU-safe).
     if (ps_hydro != 0) {
         if (l_allow_negative_energy == 0 ||
             l_allow_small_energy == 0 ||
@@ -1488,14 +1448,10 @@ void
 CAMR::computeTemp(amrex::MultiFab& S, int ng)
 {
   reset_internal_energy(S, ng);
-  const int l_ps_hydro = ps_hydro;              // task #52: per-phase T for PS state
+  const int l_ps_hydro = ps_hydro;              // per-phase T for PS state
 #ifdef USE_PS_HYDRO
-  const amrex::Real l_T_trip = EOS::T_triple(); // fluid triple point (EOS, not hardcoded).
-                                                // Guarded: only the extended PS EOS
-                                                // contract provides T_triple() (GammaLaw
-                                                // does not), and l_T_trip's only use is
-                                                // inside the USE_PS_HYDRO block below.
-  const PsPres l_pr = ps_presence_params();     // host read once, by value (GPU 12.2)
+  const amrex::Real l_T_trip = EOS::T_triple(); // only the PS EOS contract provides it
+  const PsPres l_pr = ps_presence_params();     // host read once, by value
 #endif
 
 #ifdef AMREX_USE_EB
@@ -1533,28 +1489,16 @@ CAMR::computeTemp(amrex::MultiFab& S, int ng)
          massfrac[n] = Sarr(i, j, k, UFS + n) * rhoInv;
        }
        amrex::Real rho = Sarr(i, j, k, URHO);
-       // The MIXTURE inversion REY2T(rho_mix, e_mix) is deferred to after the
-       // presence block, because for a PS two-phase cell it is not a question
-       // with an answer: rho_mix is set by the light phase's VOLUME while
-       // e_mix is set by the heavy phase's MASS, so the pair need not be a
-       // single-fluid state at all.  Measured 2026-08-11 with the liquid on
-       // its 280 K saturation locus: at alpha_1 = 0.005 against vapour at
-       // 12.3 kg/m3 the inversion returns 134.6 K -- 82 K BELOW the triple
-       // point -- for a cell whose phases are at 280 K and 219.6 K; and on the
-       // B9 HEM leg it has no root at all and aborted the run from this
-       // diagnostic.  Ask it only where it is well posed (below).
+       // UTEMP is a diagnostic; the conserved evolution never reads it.
+       // For a PS two-phase cell the mixture inversion REY2T(rho_mix, e_mix)
+       // is not a well-posed question (rho_mix is set by the light phase's
+       // volume, e_mix by the heavy phase's mass, and the pair need not be a
+       // single-fluid state; it can be non-monotone near the dome or have no
+       // root), so T is taken from the branch-locked per-phase state and the
+       // mixture inversion is asked only where the cell is single-phase.
        bool ps_T_set = false;
 
 #ifdef USE_PS_HYDRO
-       // Task #52: for the Pelanti-Shyue 6-eq state, the single-phase
-       // mixture inversion REY2T(rho_mix,e_mix) is non-monotone near the
-       // saturation dome and produces a wiggly Temp DIAGNOSTIC even when the
-       // conserved state is smooth.  Recompute T from the per-phase state
-       // (branch-locked EOS), which is thermodynamically correct and smooth:
-       // dominant phase in near-single-phase cells, alpha-weighted in genuine
-       // two-phase cells.  Diagnostic only — does not touch the conserved
-       // evolution.  Falls back to the mixture T above if the per-phase
-       // result is non-finite.
        if (l_ps_hydro != 0) {
          const amrex::Real a1 = Sarr(i, j, k, UALPHA1);
          const amrex::Real m1 = Sarr(i, j, k, UM1RHO1);
@@ -1581,55 +1525,29 @@ CAMR::computeTemp(amrex::MultiFab& S, int ng)
                                           : hem::Phase3::Vapor, Pq, Tq, Sq);
              return Tq;
            };
-           // PRESENCE dispatch (design 1, contract 2).  The per-phase T is a
-           // BRANCH-LOCKED query at (m_k/alpha_k, UE_k/m_k), so it may only be
-           // asked for a phase that HAS a state; in the corridor rho_k
-           // inherits relative error eta/alpha_k and the query has no right to
-           // an answer.  Exactly one of these three holds, and alpha_1+alpha_2
-           // = 1 makes CORRIDOR+CORRIDOR unreachable (one of them is >= 1/2):
-           //   both INDEPENDENT   -> alpha-weighted per-phase T; the mixture
-           //                         inversion is NOT asked (it is the case
-           //                         with no answer).
-           //   one CORRIDOR       -> the HOST phase's branch-locked T.  The
-           //                         corridor phase is host-slaved by
-           //                         definition (design 1/4) and contributes
-           //                         no thermodynamics; previously these cells
-           //                         took the mixture value, which is exactly
-           //                         the unanswerable query.
-           //   one ABSENT         -> fall through to the mixture inversion:
-           //                         the cell IS single-phase Euler and
-           //                         (rho_mix, e_mix) IS the survivor's own
-           //                         state, so that call is well posed.
+           // Presence dispatch (docs/MODEL_AND_ALGORITHM.md §4): the
+           // per-phase T is a branch-locked query at (m_k/alpha_k, UE_k/m_k)
+           // and may only be asked of a phase that has a state.  Exactly one
+           // of these holds (alpha_1 + alpha_2 = 1 rules out two corridors):
+           //   both Independent -> alpha-weighted per-phase T;
+           //   one Corridor     -> the host phase's T (the corridor phase is
+           //                       host-slaved and carries no thermodynamics);
+           //   one Absent       -> the mixture inversion below: the cell is
+           //                       single-phase and (rho_mix, e_mix) is the
+           //                       survivor's own state.
            PsRegime rg1 = ps_regime(a1, m1, l_pr);
            PsRegime rg2 = ps_regime(a2, m2, l_pr);
-           //  3b checked promotion: an energy-unreachable would-be-Independent
-           //  phase is demoted to Corridor so the both-INDEPENDENT branch
-           //  below (the aborting REY2PTS_phase T query) is NOT taken on it —
-           //  the step-3669 abort channel, prevented at classification.
+           //  Checked promotion: an energy-unreachable would-be-Independent
+           //  phase is demoted to Corridor so the aborting REY2PTS_phase
+           //  query in the both-Independent branch is never asked of it.
            rg1 = ps_regime_reach(rg1, m1 / a1,
                      Sarr(i,j,k,UE1) / m1 - ke, /*liquid=*/true,  l_pr);
            rg2 = ps_regime_reach(rg2, m2 / a2,
                      Sarr(i,j,k,UE2) / m2 - ke, /*liquid=*/false, l_pr);
 #if defined(USE_PR_EOS) && !defined(AMREX_USE_GPU)
-           //  STEP-1 PROBE (2026-08-12).  DIAGNOSTIC ONLY -- it changes no
-           //  value and no control flow: it asks the NON-ABORTING entry first,
-           //  prints the presence context if that entry refuses, and then lets
-           //  the ordinary aborting call happen exactly as before.
-           //
-           //  The question it answers: when this function's branch-locked query
-           //  is refused, is the phase INDEPENDENT (alpha_k >= alpha_cond, so the
-           //  query was contractually allowed and the state is a real defect) or
-           //  CORRIDOR (alpha_k < alpha_cond, so the query should never have been
-           //  issued and this is a gate hole)?  Two different fixes.
-           //
-           //  Why it is needed rather than reading the existing instruments: the
-           //  backtrace line number places the failing call in the
-           //  both-Independent branch, but ps_validate_state reports
-           //  `reachable bulk = 0` at all 530 of its sampling points on B7 and
-           //  only ever flags a CORRIDOR phase at alpha_1 ~= 0.0096 -- 4 % below
-           //  alpha_cond.  Those two signals disagree.  clean_state (this
-           //  function's caller) runs between validator sample points and mutates
-           //  the state, so neither signal settles it.  Print alpha at the query.
+           //  [PS-TQUERY] probe: prints the presence context when the
+           //  branch-locked query is refused; changes no value or control
+           //  flow.  Retire-candidate: see docs/DESIGN_DECISIONS.md §7 O-8.
            auto probe = [&](int ph, amrex::Real rk, amrex::Real ek,
                             const char* where) {
              amrex::Real Pp, Tp, Sp;
@@ -1659,12 +1577,6 @@ CAMR::computeTemp(amrex::MultiFab& S, int ng)
                << "            alpha_1 = " << a1 << "  alpha_2 = " << a2
                << "  m_1 = " << m1 << "  m_2 = " << m2
                << "  rg1 = " << int(rg1) << "  rg2 = " << int(rg2) << "\n";
-             //  BOTH phase quotients and the mixture, to test whether the SPLIT
-             //  has run away while the SUM stays exact.  UE1+UE2 == UEDEN is the
-             //  only energy invariant we check (V5), and it is blind to the
-             //  split: e_1 very negative and e_2 very positive satisfy it
-             //  perfectly.  ps_resync_phase_energy rescales at FIXED RATIO, so
-             //  it preserves a bad split exactly rather than correcting it.
              const PsPhaseQuot pq1 = ps_phase_quot(a1, m1, Sarr(i,j,k,UE1), ke, l_pr);
              const PsPhaseQuot pq2 = ps_phase_quot(a2, m2, Sarr(i,j,k,UE2), ke, l_pr);
              amrex::Real Pa, Ta, Sa;
@@ -1691,10 +1603,9 @@ CAMR::computeTemp(amrex::MultiFab& S, int ng)
 #endif
            amrex::ignore_unused(probe);
            if (rg1 == PsRegime::Independent && rg2 == PsRegime::Independent) {
-             // Contract 3: quotients formed once, checked.  If they do not
-             // exist the cell is a state defect owned by ps_validate_state
-             // (V1/V6/V7) -- do NOT fall back to the mixture inversion, which
-             // for a two-phase cell is the query that has no answer.
+             // Quotients formed once, checked.  If they do not exist the
+             // cell is a state defect owned by ps_validate_state; no
+             // fallback to the mixture inversion, which has no answer here.
              ps_T_set = true;
              const PsPhaseQuot q1 = ps_phase_quot(a1, m1, Sarr(i,j,k,UE1), ke, l_pr);
              const PsPhaseQuot q2 = ps_phase_quot(a2, m2, Sarr(i,j,k,UE2), ke, l_pr);
@@ -1723,22 +1634,18 @@ CAMR::computeTemp(amrex::MultiFab& S, int ng)
        }
 #endif
        // Mixture inversion: every non-PS cell, and PS cells that are
-       // single-phase (one phase ABSENT).  Unchanged for the non-PS path,
-       // where ps_T_set is always false.
+       // single-phase (one phase Absent).
        if (!ps_T_set) {
          EOS::REY2T(rho, e, massfrac, T);
          Sarr(i, j, k, UTEMP) = T;
        }
 #ifdef USE_PS_HYDRO
-       // Display floor: the single-phase mixture REY2T can return
-       // sub-triple-point T at dense inlet cells, which is outside the CO2
-       // EOS validity range (dry-ice territory the PR EOS cannot model).
-       // Clamp the reported T to the triple point so the diagnostic stays
-       // physical & monotone (matches ps_temp_floor on the energy side).
-       // Applied AFTER whichever branch supplied the value, as before.
-       // NOTE: this is a surviving silent floor on a diagnostic field; it now
-       // also masks a legitimately sub-triple-point per-phase T.  Named here,
-       // not removed in this commit.
+       // Display floor on the diagnostic: the mixture REY2T can return a
+       // sub-triple-point T at dense inlet cells, outside the CO2 EOS
+       // validity range; clamp to the triple point so the field stays
+       // physical and monotone (as ps_temp_floor does on the energy side).
+       // A silent floor on a diagnostic field; it also masks a genuinely
+       // sub-triple-point per-phase T.
        if (l_ps_hydro != 0 && Sarr(i, j, k, UTEMP) < l_T_trip)
          Sarr(i, j, k, UTEMP) = l_T_trip;
 #endif
@@ -1810,19 +1717,15 @@ CAMR::expand_state(amrex::MultiFab& S, const amrex::Real time, const int ng)
 
     AmrLevel::FillPatch(*this,S,ng,time,State_Type,0,S.nComp());
 
-    // refresh_temp = false: this is Sborder, the ghost-filled working copy fed
-    // to the hydro, and it is the WIDEST MultiFab in the step (numGrow ghosts)
-    // -- so its UTEMP sweep was the most expensive single one.  The hydro does
-    // not read it: PS ctoprim recomputes T from the conserved state
-    // (PS_umeth.cpp "T recomputed at ctoprim"; flx[UTEMP] is set to 0).
+    // refresh_temp = false: Sborder is the widest MultiFab in the step and
+    // the hydro never reads UTEMP (PS ctoprim recomputes T from the
+    // conserved state; flx[UTEMP] is 0).
     clean_state(S, false);
 }
 
 void
 CAMR::clean_state(amrex::MultiFab& S, bool refresh_temp)
 {
-  // Timed: called 5x per CAMR_advance (and again inside expand_state), so it
-  // was a large untimed contributor to CAMR_advance's EXCLUSIVE time.
   BL_PROFILE("CAMR::clean_state()");
 
   // Enforce a minimum density.
@@ -1831,19 +1734,12 @@ CAMR::clean_state(amrex::MultiFab& S, bool refresh_temp)
   normalize_species(S);
 
 #ifdef USE_PS_HYDRO
-  // 6-eq state clamp.  Was: clamp α₁ into [1e-6, 1-1e-6] and each partial
-  // mass up to RHO_FLOOR·α_k, unconditionally, on every cell of every call.
-  // That stamped α₁ = 1e-6 with m_k = 1e-12 (their product) into every cell
-  // in the domain each step — including far-field cells no front had
-  // reached — recreating the trace fiction that `prob.alpha_trace` only ever
-  // set at t=0, and immediately undoing the vanish fold, which had correctly
-  // zeroed the same cells two stages earlier.  m/α = 1e-12/1e-6 = 1e-6 is
-  // the `rho = 1e-06` state that was reaching the EOS with no root.
-  //
-  // Now: α₁ is held to its DEFINITIONAL range [0,1] — 0 and 1 are legal and
-  // mean the phase is absent — and a negative partial mass is set to 0,
-  // which makes that phase absent rather than inventing a fictitious one.
-  // Both are counted.  Nothing is floored to a non-zero value.
+  // Six-equation state hygiene.  α₁ is held only to its definitional
+  // range [0,1] (0 and 1 are legal and mean the phase is absent), and a
+  // negative or non-finite partial mass is set to 0, which makes that phase
+  // absent rather than inventing one; the mass repairs are counted.
+  // Nothing is floored to a non-zero value: a non-zero floor would stamp a
+  // fictitious trace phase into every cell and undo the vanish fold.
   amrex::ignore_unused(0);
   for (amrex::MFIter mfi(S, amrex::TilingIfNotGPU()); mfi.isValid(); ++mfi) {
       const amrex::Box& bx = mfi.growntilebox();
@@ -1851,10 +1747,7 @@ CAMR::clean_state(amrex::MultiFab& S, bool refresh_temp)
       amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
           amrex::Real a1 = Sa(i,j,k, UALPHA1);
           //  A non-finite volume fraction is a defect, not a value to be
-          //  chosen.  It used to be replaced by 0.5 -- inventing a
-          //  half-and-half cell out of a NaN.  It is not repaired: it stops
-          //  the run.  alpha itself is held only to its DEFINITIONAL range
-          //  [0,1]; 0 and 1 are legal and mean the phase is absent.
+          //  chosen: it stops the run (host builds).
           if (!std::isfinite(a1)) {
 #if !defined(AMREX_USE_GPU)
               amrex::Print() << "\n[PS-STATE] non-finite alpha_1 at ("
@@ -1908,18 +1801,15 @@ CAMR::clean_state(amrex::MultiFab& S, bool refresh_temp)
 
   int ng = S.nGrow();
 
-  // computeTemp = reset_internal_energy (state hygiene, ALWAYS needed) plus a
-  // per-cell EOS inversion that fills the UTEMP DIAGNOSTIC slot.  The latter
-  // costs 1 mixture (rho,e)->T inversion per cell over the whole grown box,
-  // plus 2 branch-locked per-phase inversions in genuine two-phase cells
-  // (task #52) -- and clean_state runs 5x per CAMR_advance (7x counting
-  // expand_state), i.e. ~49 full-domain sweeps per 3-level coarse step, to
-  // refresh a field the conserved evolution never reads.  Skip the UTEMP part
-  // on the intermediate calls.  CAMR.lazy_temp = 0 restores the old behaviour.
+  // computeTemp = reset_internal_energy (state hygiene, always needed) plus
+  // the per-cell EOS inversion that fills the UTEMP diagnostic slot.
+  // CAMR.lazy_temp (1): skip the UTEMP part on the intermediate calls of an
+  // advance, since the conserved evolution never reads it; 0 = refresh on
+  // every call.
   static const bool lazy_temp = []() {
       int v = 1; amrex::ParmParse pp("CAMR");
       pp.query("lazy_temp", v);
-      pp.add("lazy_temp", v);   // AUDIT 2026-08-24 B5/C.6: resolved -> job_info
+      pp.add("lazy_temp", v);   // resolved value -> job_info
       return v != 0;
   }();
   if (refresh_temp || !lazy_temp) {

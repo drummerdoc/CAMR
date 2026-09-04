@@ -106,20 +106,18 @@
 #endif
 
 // ---------------------------------------------------------------------
-//  Pelanti-Shyue six-equation state extension (co2-eos-cfd Phase 4).
+//  Pelanti-Shyue six-equation state extension.
 //
-//  When USE_PS_HYDRO is defined (per-case, via -DUSE_PS_HYDRO in the
-//  Exec GNUmakefile), the conservative array is extended by five
-//  components — volume fraction α₁, per-phase densities α_k ρ_k, and
-//  per-phase total energy densities α_k ρ_k E_k.  These extra slots
-//  are declared as passive scalars so that Godunov / MOL harmlessly
-//  advect them along the contact velocity; the PelantiShyue hydro
-//  module (Phase 4c) will replace that treatment with the correct
-//  A±ΔQ wave-propagation update.
+//  With USE_PS_HYDRO defined (per case, -DUSE_PS_HYDRO in the Exec
+//  GNUmakefile) the conservative array carries five extra components:
+//  volume fraction α₁, the partial densities α_k ρ_k and the per-phase
+//  total energy densities α_k ρ_k E_k.  They are registered as passive
+//  scalars so the stock Godunov/MOL paths (CAMR.ps_hydro = 0) advect
+//  them with the contact; under CAMR.ps_hydro != 0 the PelantiShyue
+//  module applies the A±ΔQ wave-propagation update instead.
+//  See docs/MODEL_AND_ALGORITHM.md §1.
 //
-//  When USE_PS_HYDRO is NOT defined (default) the layout is identical
-//  to upstream CAMR — no additional slots, no changes to NVAR or the
-//  passive-scalar map.
+//  Without USE_PS_HYDRO the layout is identical to upstream CAMR.
 // ---------------------------------------------------------------------
 #ifdef USE_PS_HYDRO
 #define NUM_PS 5
@@ -148,18 +146,15 @@
 #define UE1     (UPS + 3)   // α₁ ρ₁ E₁ (per-phase total energy) [J/m³]
 #define UE2     (UPS + 4)   // α₂ ρ₂ E₂                          [J/m³]
 
-// Berger-LeVeque fluctuation register width (task #22): the phase-energy
-// WP-vs-Godunov defect, one flux-form component per phase.  Its two
-// components map to state slots UE1, UE2 (contiguous, so a single
-// destcomp=UE1 offset applies the whole register).
-// Per-face scratch (fcorr) width for the defect fluctuation register:
-//   [0] = UE1 defect,  [1] = UE2 defect   (one-sided, flux-form; #22 P3).
-// (The non-conservative alpha C-F correction is handled by the
-// capacity-form reflux in CAMR::reflux() — task #36 — which moves alpha1
-// with its own conservatively-refluxed mass and needs no fcorr slots.)
+// Width of the per-face phase-energy fluctuation register (fcorr):
+//   [0] = UE1 defect, [1] = UE2 defect, contiguous with UE1/UE2 so one
+//   destcomp = UE1 offset applies the whole register.
+// Under wp the deposit is zero; α₁ is coarse-fine corrected by the
+// capacity-form co-move in CAMR::reflux() and needs no slot here.
+// See docs/MODEL_AND_ALGORITHM.md §1.5.
 #define NUM_PS_FLUCT 2
 
-// PS primitive slots (populated by PS_ctoprim in Phase 4c)
+// PS primitive slots (filled by PS_ctoprim)
 #define QALPHA1 (QPS + 0)   // α₁
 #define QRHO1   (QPS + 1)   // ρ₁ per-phase density
 #define QRHO2   (QPS + 2)   // ρ₂

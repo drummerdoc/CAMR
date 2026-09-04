@@ -17,8 +17,9 @@
 #endif
 
 #ifdef USE_PS_HYDRO
-// Purpose-built one-sided C-F register for the PS phase-energy defect
-// (task #22).  Derives from amrex::YAFluxRegister; non-EB only.
+// One-sided coarse-fine register for the PS phase-energy defect.
+// Derives from amrex::YAFluxRegister; non-EB only.
+// Retire-candidate: see docs/DESIGN_DECISIONS.md §7 O-5.
 #include "PS_FluctuationRegister.H"
 #endif
 
@@ -312,8 +313,8 @@ public:
   amrex::EBFluxRegister& getPresReg();
   amrex::EBFluxRegister& getPresReg(int lev);
 
-  // Berger-LeVeque fluctuation register for the PS non-conservative
-  // terms (task #22).  Only allocated / used when CAMR.ps_bl_reflux!=0.
+  // Fluctuation register for the PS phase-energy defect; allocated and
+  // used only when CAMR.ps_bl_reflux != 0.
   amrex::EBFluxRegister fluct_reg;
   amrex::EBFluxRegister& getFluctReg();
   amrex::EBFluxRegister& getFluctReg(int lev);
@@ -329,10 +330,9 @@ public:
   amrex::YAFluxRegister& getPresReg();
   amrex::YAFluxRegister& getPresReg(int lev);
 
-  // Berger-LeVeque fluctuation register for the PS non-conservative
-  // terms (task #22).  Only allocated / used when CAMR.ps_bl_reflux!=0.
-  // Purpose-built one-sided register (CAMRPSFluctReg) when PS is built;
-  // otherwise a plain (unused) YAFluxRegister placeholder.
+  // Fluctuation register for the PS phase-energy defect; allocated and
+  // used only when CAMR.ps_bl_reflux != 0.  The one-sided CAMRPSFluctReg
+  // when PS is built, otherwise an unused YAFluxRegister placeholder.
 #ifdef USE_PS_HYDRO
   CAMRPSFluctReg fluct_reg;
   CAMRPSFluctReg& getFluctReg();
@@ -376,10 +376,10 @@ protected:
 
 #ifdef USE_PS_HYDRO
   // Diagnostic: local flashing rate dm1/dt [kg m^-3 s^-1], + = evaporation
-  // (liquid -> vapor).  Recorded during advance() from the mass ACTUALLY
-  // transferred by the reaction substep (ps_apply_sources), NOT a stateless
-  // function of the stored state (which reads ~0 for near-instant MT).
-  // Served to plotfiles via the CAMR::derive("flash_rate") override.
+  // (liquid -> vapor), measured in advance() from the mass the reaction
+  // substep actually transfers (a stateless function of the stored state
+  // reads ~0 for near-instant transfer).  Served to plotfiles through the
+  // CAMR::derive("flash_rate") override.
   amrex::MultiFab flash_src;
 #endif
 
@@ -408,15 +408,13 @@ protected:
   static void error_setup ();
 
   void expand_state(amrex::MultiFab& S, const amrex::Real time, const int ng);
-  //  refresh_temp: recompute the UTEMP DIAGNOSTIC slot (computeTemp) as well
-  //  as the state hygiene.  computeTemp is a per-cell EOS inversion over the
-  //  whole GROWN box -- 1 mixture (rho,e)->T plus 2 branch-locked per-phase
-  //  inversions in genuine two-phase cells (task #52) -- and clean_state is
-  //  called 5x per CAMR_advance (plus twice more via expand_state).  UTEMP
-  //  does not feed the conserved evolution, so the intermediate calls pass
-  //  false and only the final state gets a refresh.  reset_internal_energy
-  //  (which IS state hygiene) still runs every time.
-  //  CAMR.lazy_temp = 0 restores the old unconditional behaviour.
+  //  refresh_temp: also recompute the UTEMP diagnostic slot (computeTemp, a
+  //  per-cell EOS inversion over the grown box: one mixture (rho,e)->T plus
+  //  two branch-locked per-phase inversions in two-phase cells).  UTEMP
+  //  does not feed the conserved evolution, so the intermediate calls in an
+  //  advance pass false and only the final state is refreshed;
+  //  reset_internal_energy runs every time.  CAMR.lazy_temp = 0 makes the
+  //  refresh unconditional.
   void clean_state(amrex::MultiFab& S, bool refresh_temp = true);
 #ifdef CAMR_USE_MOVING_EB
   void ZeroingOutForPlotting(amrex::MultiFab& S);
