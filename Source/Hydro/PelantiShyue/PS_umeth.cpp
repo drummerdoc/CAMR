@@ -702,6 +702,9 @@ PS_umeth(const Box& bx,
         static int c = -1;
         if (c < 0) { int v = 1; amrex::ParmParse pp("CAMR");
                      pp.query("ps_llf_identity", v);
+                     if (v != 0 && v != 1) {
+                         amrex::Abort("CAMR.ps_llf_identity must be 0 or 1");
+                     }
                      pp.add("ps_llf_identity", v);
                      c = v; }
         return c;
@@ -714,8 +717,8 @@ PS_umeth(const Box& bx,
     // CAMR.ps_wp_order (default 1; the acceptance configuration uses 2):
     // 1 = first-order fluctuations only; 2 = plus the limited correction
     // fluxes on all three waves (second order in smooth flow, first order
-    // at discontinuities).  Any other value resolves to 1.  The default is
-    // an open item (docs/DESIGN_DECISIONS.md O-4).
+    // at discontinuities).  Any other value aborts.  The default is an open
+    // item (docs/DESIGN_DECISIONS.md O-4).
     auto ps_wp_order_cached = []() -> int
     {
         static int cached = -1;
@@ -723,7 +726,10 @@ PS_umeth(const Box& bx,
             int v = 1;
             amrex::ParmParse pp("CAMR");
             pp.query("ps_wp_order", v);
-            cached = (v == 2) ? 2 : 1;
+            if (v != 1 && v != 2) {
+                amrex::Abort("CAMR.ps_wp_order must be 1 or 2");
+            }
+            cached = v;
         }
         return cached;
     };
@@ -732,6 +738,7 @@ PS_umeth(const Box& bx,
     // CAMR.ps_wp_limiter (vanleer): "none"/"unlimited" sets φ=1 (pure
     // Lax-Wendroff correction).  Unlimited is not monotone and is meant only
     // for smooth order-of-accuracy checks, where van Leer clips extrema.
+    // Any other string aborts.
     auto ps_wp_unlimited_cached = []() -> int
     {
         static int cached = -1;
@@ -739,7 +746,13 @@ PS_umeth(const Box& bx,
             std::string s = "vanleer";
             amrex::ParmParse pp("CAMR");
             pp.query("ps_wp_limiter", s);
-            cached = (s == "none" || s == "unlimited") ? 1 : 0;
+            if (s == "vanleer") {
+                cached = 0;
+            } else if (s == "none" || s == "unlimited") {
+                cached = 1;
+            } else {
+                amrex::Abort("CAMR.ps_wp_limiter must be vanleer, none or unlimited");
+            }
         }
         return cached;
     };
@@ -782,7 +795,7 @@ PS_umeth(const Box& bx,
 
     // CAMR.ps_wp_transverse (0): 0 = directionally split; 1 = contact-only
     // transverse correction (ps_wp_tvterm; the validated 2-D setting);
-    // 2 = plus acoustic waves (experimental, F-2).  Clamped to [0,2].
+    // 2 = plus acoustic waves (experimental, F-2).  Any other value aborts.
     // 2-D/3-D only.
     auto ps_wp_transverse_cached = []() -> int
     {
@@ -791,7 +804,10 @@ PS_umeth(const Box& bx,
             int v = 0;
             amrex::ParmParse pp("CAMR");
             pp.query("ps_wp_transverse", v);
-            cached = (v < 0) ? 0 : (v > 2 ? 2 : v);
+            if (v != 0 && v != 1 && v != 2) {
+                amrex::Abort("CAMR.ps_wp_transverse must be 0, 1 or 2");
+            }
+            cached = v;
         }
         return cached;
     };

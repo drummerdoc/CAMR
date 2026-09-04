@@ -51,24 +51,35 @@ namespace EOS {
   // Host runtime gates; the device path is always the table.
   // CAMR.eos_table (1): table seed on all hot paths; 0 = analytic
   // bisection, so one GERGTab build reproduces GERG.  CAMR.eos_mlp is a
-  // deprecated alias.  Retire-candidate (the alias): see
-  // docs/DESIGN_DECISIONS.md §5.
+  // deprecated alias; setting both aborts.  Retire-candidate (the alias):
+  // see docs/DESIGN_DECISIONS.md §5.
 #if !defined(__CUDA_ARCH__) && !defined(__HIP_DEVICE_COMPILE__) && !defined(__SYCL_DEVICE_ONLY__)
   inline bool gergtab_enabled()
   {
       static const bool e = []() {
-          int v = 1; amrex::ParmParse pp("CAMR");
+          amrex::ParmParse pp("CAMR");
+          if (pp.contains("eos_table") && pp.contains("eos_mlp")) {
+              amrex::Abort("Both CAMR.eos_table and its deprecated alias "
+                           "CAMR.eos_mlp are set -- remove eos_mlp");
+          }
+          int v = 1;
           pp.query("eos_table", v); pp.query("eos_mlp", v);
           return v != 0;
       }();
       return e;
   }
   // CAMR.eos_table_auto (1): table seed on the auto path too; 0 =
-  // analytic there.  CAMR.eos_mlp_auto is a deprecated alias.
+  // analytic there.  CAMR.eos_mlp_auto is a deprecated alias; setting
+  // both aborts.
   inline bool gergtab_auto_enabled()
   {
       static const bool a = []() {
-          int v = 1; amrex::ParmParse pp("CAMR");
+          amrex::ParmParse pp("CAMR");
+          if (pp.contains("eos_table_auto") && pp.contains("eos_mlp_auto")) {
+              amrex::Abort("Both CAMR.eos_table_auto and its deprecated alias "
+                           "CAMR.eos_mlp_auto are set -- remove eos_mlp_auto");
+          }
+          int v = 1;
           pp.query("eos_table_auto", v); pp.query("eos_mlp_auto", v);
           return v != 0;
       }();

@@ -1693,14 +1693,16 @@ CAMR::clean_state(amrex::MultiFab& S, bool refresh_temp)
       amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
           amrex::Real a1 = Sa(i,j,k, UALPHA1);
           //  A non-finite volume fraction is a defect, not a value to be
-          //  chosen: it stops the run (host builds).
+          //  chosen: it stops the run on every build (amrex::Abort(const
+          //  char*) is host/device callable); the cell index prints on
+          //  host builds only.
           if (!std::isfinite(a1)) {
 #if !defined(AMREX_USE_GPU)
               amrex::Print() << "\n[PS-STATE] non-finite alpha_1 at ("
                              << i << "," << j << "," << k << "): a1 = " << a1
                              << "\n  Not repaired.  Fix the data going in.\n\n";
-              amrex::Abort("PS-STATE: non-finite alpha_1 in clean_state");
 #endif
+              amrex::Abort("[PS-STATE] non-finite alpha_1");
           }
           if (a1 < amrex::Real(0.0)) a1 = amrex::Real(0.0);
           if (a1 > amrex::Real(1.0)) a1 = amrex::Real(1.0);

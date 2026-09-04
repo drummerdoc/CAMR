@@ -276,11 +276,15 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
         const double l_mt_h_w = hem::ps_dial_mt_h_weight();
         // CAMR.ps_mt_tau_model (0): 0 = the constant CAMR.ps_mt_tau; 2 = tau
         // derived from the state as |dm_eq|/Gamma_SRT (Lund & Aursand eq. 25,
-        // geometry via CAMR.ps_mt_srt_d / ps_mt_srt_delta).  The kernel
-        // treats 1 exactly as 0 (only 2 is tested).
+        // geometry via CAMR.ps_mt_srt_d / ps_mt_srt_delta).  1 (the HRM
+        // correlation) is retired; any value other than 0 or 2 aborts.
         static const int mt_tau_model = []() -> int {
             int v = 0; amrex::ParmParse pp("CAMR");
-            pp.query("ps_mt_tau_model", v); return v; }();
+            pp.query("ps_mt_tau_model", v);
+            if (v != 0 && v != 2) {
+                amrex::Abort("CAMR.ps_mt_tau_model must be 0 or 2 (1 is retired)");
+            }
+            return v; }();
         const int l_mt_tau_model = mt_tau_model;
         // CAMR.ps_mt_target (1): 1 = target consistent with the step's carrier
         // and (E.1) path, which keeps the Lund & Aursand eq. 23 monotonicity
