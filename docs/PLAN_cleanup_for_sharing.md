@@ -332,7 +332,48 @@ Found while writing `docs/` against the code:
   8–12 bar under PR vs 16 % under GERG) — recorded in MODEL ch. 7/DECISIONS as
   an open physics observation, not a cleanup item.
 
-### 3.6 Two configurations, stated once
+### 3.6 Phase-2 findings (2026-09-04) — candidate defects seen while rewriting comments
+
+Reported, not fixed (each is a behaviour change → `[DECIDE-26]`: which of
+these go into Phase 3/4, which are physics questions):
+
+- `hem_pelanti_shyue.H`: `dm_hard_cap` computed and never used; `ps_mt_tau_model=1`
+  silently behaves as 0 (abort instead, rule 20); `ps_flash_source_cell` default
+  argument `alpha_seed_target = 0.02` differs from `alpha_birth` 4e-2 (harmless
+  while every caller passes the presence value — make it non-defaulted);
+  `ps_y_floor` is applied only under `ps_c_mode=1`; `dt ≤ 0` returns true from
+  the thermal kernel and false from the MT kernel.
+- `PS_relaxation.H`: `ps_report_temps` MPI-reduces the maxima but not their
+  locations (prints the I/O rank's); only the mode-0 kernel counts its α-floor
+  early returns (rule 14); the canonical chain's closing mechanical pass
+  discards its return value; mode 3 passes the whitelist and aborts only at
+  dispatch.
+- `PS_nscbc.H`: `_cell_primitives` gets the invariants' pressure from the
+  single-fluid `EOS::REY2P(rho_mix, e_mix)` — the mixture query the flux path
+  avoids; a failed inversion silently yields P = 1 Pa (uncounted) inside R±
+  (rule 17). The fan loop terminates on exact floating-point equality.
+- `PS_umeth.cpp`: `ps_wp_order` maps any value ≠2 to 1 and `ps_wp_transverse`
+  clamps out-of-range values silently (rule 20 says abort).
+- `PS_guards.H`: the GPU `#else` branch defines no stubs for
+  `count_nscbc_zg_pack` / `count_nscbc_flash` — a device build of the NSCBC
+  path does not compile.
+- `Make.package` omits `PS_promote.H`, `PS_wavespeed.H`, `PS_zerod_test.H`,
+  `PS_FluctuationRegister.H` from `CEXE_headers` (dependency tracking only).
+- EOS: `GERG/EOS.H` reads `eos_table` then the deprecated `eos_mlp` alias with
+  no abort when both are set — the alias silently wins (PRTab's accessor
+  aborts; make GERG match); `PR/EOS.H::EY2T` uses 8.314 where `hem::R_gas` is
+  8.31446 (derive path only); `state_from_rho_e_phase_fixed` is unbracketed
+  and reachable via `CAMR.eos_warmstart_fixed=1` (goes with `[DECIDE-7]`).
+- Core: `clean_state`'s abort on non-finite α₁ is host-only (device build
+  passes NaN through — joins `[DECIDE-25]`); the kept health lines
+  `[PS-RELAXFB]`/`[PS-PROMOTE]`/`[PS-FLCAUSE]` print only when the
+  retire-candidate `ps_face_diag` (itself under `ps_diag_mass`) is set —
+  re-gate them on `ps_diag_mass` alone in Phase 3; `Hydro_ctoprim.H` eta1=0
+  branch tests `(UEDEN−ke)/UEDEN > 0`, not "unconditionally" as docs §8.4
+  says (fix the doc or the code — physics question); `CAMR_derpres` ignores
+  `ps_hydro` while the sound-speed derives gate on it.
+
+### 3.7 Two configurations, stated once
 
 The 1-D acceptance battery runs bare defaults (`ps_relax_mode=5`,
 `ps_flash_from_absent=1`, τ = 1e-7); the 2-D pipe-break decks pin
@@ -728,7 +769,7 @@ Tag `pre-cleanup-2026-09-04` first.
 |---|---|---|---|
 | 0 | Tag; write `docs/GROUND_RULES.md` and this plan into `docs/`; fix the `.gitignore`; track `characterization/`, `fig4_digitized_curves.csv`; vendor the exact references; `regen_refs.sh`; `characterize.py --defaults`; record `PRE` fingerprints (1-D) and the two 2-D restart windows | gate green, fingerprints stored | **DONE 09-04** except the 2-D windows (need MPI on the Mac: `Exec/regen_refs.sh windows PRE`) and `GROUND_RULES.md` (Phase 1) — commits `66588de…b5b5a8b` |
 | 1 | Docs: write MODEL_AND_ALGORITHM (incl. the eight WORKLOG-only items), DESIGN_DECISIONS, VERIFICATION, RUNNING, FUTURE_WORK, tex revision; new README.md; module READMEs; then delete the 31 source files | doc-only | **DONE 09-04** (docs commit + separate deletion commit; revert the deletion with `git revert <sha>` if anything is missed — everything is also at tag `pre-cleanup-2026-09-04`) |
-| 2 | Stale-comment fix list §4.2 + comment policy pass, file by file (hem, PS_relaxation, PS_umeth, PS_hllc, PS_nscbc, PS_sources, PS_guards, PS_ctoprim, PS_presence/promote, EOS, core) | bit-identical fingerprint after each file (comment-only edits must produce an identical binary; `cmp` the exe as the fastest check) | none |
+| 2 | Stale-comment fix list §4.2 + comment policy pass, file by file (hem, PS_relaxation, PS_umeth, PS_hllc, PS_nscbc, PS_sources, PS_guards, PS_ctoprim, PS_presence/promote, EOS, core) | bit-identical fingerprint after each file (comment-only edits must produce an identical binary; `cmp` the exe as the fastest check) | **DONE 09-04** (`ad7532f…6d0b258`): 48 files, 26,714→23,095 lines (comment lines roughly halved); proof = comment-strip diff empty per file, stripped-exe disassembly identical except three `__LINE__` immediates, fingerprints IDENTICAL in both configurations. Deck banners deferred to Phase 6. Abort-message strings still carry dates/task numbers (they are code → Phase 3 `ps_retired_keys()` table) |
 | 3 | Dead code (a): the provably unreachable list; retired-key table; Make.package/README inventories | IDENTICAL fingerprints, identical restart windows | none |
 | 4 | Duplication/refactor §4.4 items 2–9, 11 (helpers, counters, constants at unchanged values, EOS contract header, file splits) | IDENTICAL | `[DECIDE-15]`, `[DECIDE-16]` |
 | 5 | Refactor item 1 (one cell state) | IDENTICAL expected; if not, present the diff as `[DECIDE-13]` | `[DECIDE-13]`, `[DECIDE-18]` |
@@ -771,6 +812,7 @@ paced by the run in phase 8.
 | 23 | Standalone `suite/exact_*.csv` committed on your side before vendoring | **DECIDED 09-04: vendor.** Note: only `profiles/*.csv` were committed in the standalone; the `exact_*.csv` were untracked there, so the CAMR copy (`refs/exact/`, commit `60db9d7`) is now the only version-controlled one — commit them in co2-eos-cfd too |
 | 24 | B4-flatness reference configuration (margin 0.10 vs 0) | **DECIDED 09-04: 0.10** (code default); drop the dead env in check 2 in Phase 6 |
 | 25 | GPU builds silently take the strict relax gate and the `bcnormal` outflow path (`#if !GPU` branches) — abort instead? | yes (rule 9) |
+| 26 | Which of the §3.6 candidate defects to fix in Phase 3/4 | fix the rule-17/20 ones (silent aliases/maps → abort; uncounted P=1 Pa in NSCBC), the health-line gating, the GPU stubs, the GERG alias precedence, Make.package; leave the physics questions (eta1 branch, dt≤0 conventions, derpres) as documented |
 
 ---
 
