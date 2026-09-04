@@ -284,7 +284,21 @@ PRIMER and the two derivations.
 7. **DT7 calibration** θ_eff ≈ 0.08·D and the ladder result.
 8. The **"Superseded — do not re-derive"** block.
 
-### 3.4 Two configurations, stated once
+### 3.4 Phase-0 notes (2026-09-04)
+
+- Fingerprints are compiler/machine specific: `POST_ACCEPT_RELAXED` (Mac/llvm)
+  vs `PRE_matched` (VM/gnu, same source) differ at 1e-16…1e-12. Compare only
+  records from the same host; `refs/PROVENANCE_PRE.txt` says which.
+- The bridge VM has no MPI and kills background jobs at the end of each call;
+  the 1-D battery must be run in batches (`characterize.py record --cases …`
+  then `merge`), and B12 at bare defaults alone takes ~2.5 min there (mode-5
+  X3 on a two-phase wall reflection) versus ~8 s in the matched config — worth
+  a look when the operator is profiled.
+- The 2-D restart windows (`FIX1_star_relaxed` predates 3b/3c/C2) must be
+  re-recorded on the Mac with the rebuilt 2-D exe before any 2-D-affecting
+  edit: `Exec/regen_refs.sh 2d PRE && Exec/regen_refs.sh windows PRE`.
+
+### 3.5 Two configurations, stated once
 
 The 1-D acceptance battery runs bare defaults (`ps_relax_mode=5`,
 `ps_flash_from_absent=1`, τ = 1e-7); the 2-D pipe-break decks pin
@@ -678,7 +692,7 @@ Tag `pre-cleanup-2026-09-04` first.
 
 | Phase | Content | Gate | Needs |
 |---|---|---|---|
-| 0 | Tag; write `docs/GROUND_RULES.md` and this plan into `docs/`; fix the `.gitignore`; track `characterization/`, `fig4_digitized_curves.csv`; vendor the exact references; `regen_refs.sh`; `characterize.py --defaults`; record `PRE` fingerprints (1-D) and the two 2-D restart windows | gate green, fingerprints stored | `[DECIDE-23]` |
+| 0 | Tag; write `docs/GROUND_RULES.md` and this plan into `docs/`; fix the `.gitignore`; track `characterization/`, `fig4_digitized_curves.csv`; vendor the exact references; `regen_refs.sh`; `characterize.py --defaults`; record `PRE` fingerprints (1-D) and the two 2-D restart windows | gate green, fingerprints stored | **DONE 09-04** except the 2-D windows (need MPI on the Mac: `Exec/regen_refs.sh windows PRE`) and `GROUND_RULES.md` (Phase 1) — commits `66588de…b5b5a8b` |
 | 1 | Docs: write MODEL_AND_ALGORITHM (incl. the eight WORKLOG-only items), DESIGN_DECISIONS, VERIFICATION, RUNNING, FUTURE_WORK, tex revision; new README.md; module READMEs; then delete the 31 source files | doc-only | `[DECIDE-11]`, `[DECIDE-14]` |
 | 2 | Stale-comment fix list §4.2 + comment policy pass, file by file (hem, PS_relaxation, PS_umeth, PS_hllc, PS_nscbc, PS_sources, PS_guards, PS_ctoprim, PS_presence/promote, EOS, core) | bit-identical fingerprint after each file (comment-only edits must produce an identical binary; `cmp` the exe as the fastest check) | none |
 | 3 | Dead code (a): the provably unreachable list; retired-key table; Make.package/README inventories | IDENTICAL fingerprints, identical restart windows | none |
@@ -708,10 +722,10 @@ paced by the run in phase 8.
 | 8 | Delete the listed investigation diagnostics (keep list given) | yes |
 | 9 | Delete refuted A/B loser branches | yes |
 | 10 | Reduce `ps_state_from_cons` to one branch | yes |
-| 11 | Ship an `archive/` with WORKLOG/FINDINGS/HANDOFFs | no — git tag is the archive |
+| 11 | Ship an `archive/` with WORKLOG/FINDINGS/HANDOFFs | **DECIDED 09-04: no** — tag `pre-cleanup-2026-09-04` is the archive |
 | 12 | 2-D production relaxation mode: keep mode 2 or move demo2/3 to mode 5 | move to 5 in the phase-8 run; it is the only way to make the 1-D and 2-D configurations one story and unblock 3 |
 | 13 | Accept any fingerprint change from unifying the five cell-state constructors | decide with the diff in hand |
-| 14 | Third-party PDFs in the shared tree | remove; cite |
+| 14 | Third-party PDFs in the shared tree | **DECIDED 09-04: out** — done (`b5b5a8b`), cited instead |
 | 15 | Drop the ignored `Y[]` species argument from the PS EOS contract | yes |
 | 16 | Which of the ten "small phase" thresholds are distinct physics | needs your derivation call; I will bring the table |
 | 17 | Reflux α co-move clamp `[1e-8, 1−1e-8]`, `\|Δα\| ≤ 0.05` vs ABSENT reachability | report only; rule 1/2 territory |
@@ -720,8 +734,8 @@ paced by the run in phase 8.
 | 20 | Keep `CO2_Sod` (single-fluid PR) | keep only if single-fluid PR is supported |
 | 21 | Delete upstream `DoubleRamp`/`ReReTest`/`MovingEBCases` on this branch | leave untouched if merging back to `development` is intended |
 | 22 | Run-data triage rows (§5.3) | as tabled |
-| 23 | Standalone `suite/exact_*.csv` committed on your side before vendoring | please confirm |
-| 24 | B4-flatness reference configuration (margin 0.10 vs 0) | re-baseline at the code default 0.10 |
+| 23 | Standalone `suite/exact_*.csv` committed on your side before vendoring | **DECIDED 09-04: vendor.** Note: only `profiles/*.csv` were committed in the standalone; the `exact_*.csv` were untracked there, so the CAMR copy (`refs/exact/`, commit `60db9d7`) is now the only version-controlled one — commit them in co2-eos-cfd too |
+| 24 | B4-flatness reference configuration (margin 0.10 vs 0) | **DECIDED 09-04: 0.10** (code default); drop the dead env in check 2 in Phase 6 |
 
 ---
 
