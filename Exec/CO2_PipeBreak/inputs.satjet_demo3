@@ -120,7 +120,6 @@ amr.ref_ratio       = 2 2 2 2
 amr.regrid_int      = 2 2 2 2
 amr.blocking_factor = 16
 amr.max_grid_size   = 64
-amr.n_error_buf     = 2 2 2 2
 amr.grid_eff        = 0.9
 
 #amr.refinement_indicators = ldtag atag nftag pgtag
@@ -132,7 +131,7 @@ amr.ldtag.max_level = 2
 
 amr.atag.field_name = ps_alpha1
 #amr.atag.value_greater = 1.0e-3
-amr.atag.adjacent_difference_greater = 0.005   # demo3: 20x tighter alpha-gradient capture (was 0.1)
+amr.atag.adjacent_difference_greater = 0.01    # demo3: 10x tighter alpha-gradient capture (was 0.1)
 amr.atag.max_level = 2
 
 #amr.nftag.in_box_lo = 0.0   0.42
@@ -143,8 +142,7 @@ amr.pgtag.field_name = pressure
 amr.pgtag.adjacent_difference_greater = 3.0e5
 amr.pgtag.max_level = 2
 
-#amr.n_error_buf = 4 4 4 4                        # was 2: keep C-F off features
-amr.n_error_buf = 2 2 2 2 
+amr.n_error_buf = 4 4 4 4 
 
 #amr.refinement_indicators = ldtag atag
 #amr.ldtag.field_name = logden
