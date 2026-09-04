@@ -953,14 +953,10 @@ PS_umeth(const Box& bx,
         static const int cached = []() {
             int v = 0; amrex::ParmParse pp("CAMR");
             pp.query("ps_lw_skip_contact", v);
-            if (v == 2) {
-                amrex::Abort("CAMR.ps_lw_skip_contact=2 (regime-gated) is not "
-                    "yet implemented (pending DESIGN_ps_contact_lw.md DECIDE-2). "
-                    "Use 0 (off) or 1 (blanket).");
-            }
-            if (v != 0 && v != 1) {
-                amrex::Abort("CAMR.ps_lw_skip_contact accepts 0 (off) or 1 "
-                    "(blanket contact-wave skip).");
+            if (v != 0 && v != 1 && v != 2) {
+                amrex::Abort("CAMR.ps_lw_skip_contact accepts 0 (off), 1 "
+                    "(blanket contact-wave skip), or 2 (regime-gated: skip "
+                    "only at a genuine two-phase material interface).");
             }
             return v; }();
         return cached;
@@ -1192,14 +1188,33 @@ PS_umeth(const Box& bx,
                  amrex::Array4<amrex::Real> const& ft, Real dxd) noexcept
             {
                 const Real dtdx = dt_l / dxd;
+                //  C2 contact-wave skip predicate (DESIGN_ps_contact_lw.md).
+                //  mode 1: blanket.  mode 2: skip only at a genuine material
+                //  interface, detected THRESHOLD-FREE as a presence-regime
+                //  change across the face (Independent<->Corridor<->Absent) in
+                //  either phase.  Uniform trace (A/C's alpha=1e-6 everywhere)
+                //  is Corridor on both sides -> same regime -> NOT skipped, so
+                //  single-phase contact sharpening (the 0.0350 edge) is kept;
+                //  the demo3 jet edge (alpha 0.05 Independent vs 1e-6 Corridor)
+                //  IS a regime change -> skipped.  Dropping the WHOLE contact
+                //  wave preserves the W2-2 linear identities.
+                bool skip_contact = (wp_lw_skip == 1);
+                if (wp_lw_skip == 2) {
+                    const int li = i - ((idir==0)?1:0);
+                    const int lj = j - ((idir==1)?1:0);
+                    const int lk = k - ((idir==2)?1:0);
+                    const Real a1L = uin_arr(li,lj,lk, UALPHA1);
+                    const Real a1R = uin_arr(i, j, k,  UALPHA1);
+                    const PsRegime r1L = ps_regime(a1L, uin_arr(li,lj,lk,UM1RHO1), l_pres);
+                    const PsRegime r1R = ps_regime(a1R, uin_arr(i, j, k, UM1RHO1), l_pres);
+                    const PsRegime r2L = ps_regime(Real(1.0)-a1L, uin_arr(li,lj,lk,UM2RHO2), l_pres);
+                    const PsRegime r2R = ps_regime(Real(1.0)-a1R, uin_arr(i, j, k, UM2RHO2), l_pres);
+                    skip_contact = (r1L != r1R) || (r2L != r2R);
+                }
                 Real Ft[NVAR];
                 for (int n = 0; n < NVAR; ++n) Ft[n] = Real(0.0);
                 for (int l = 0; l < 3; ++l) {
-                    //  C2: blanket contact-wave skip (mode 1).  l=1 is the
-                    //  contact; dropping the WHOLE wave preserves the W2-2
-                    //  identities (each wave satisfies them).  Mode 2
-                    //  (regime-gated) will make this conditional per face.
-                    if (wp_lw_skip == 1 && l == 1) continue;
+                    if (skip_contact && l == 1) continue;
                     const Real sl = wv(i,j,k, 3*NVAR + l);
                     if (std::abs(sl) < Real(1.0e-30)) continue;
                     const int ni = i - ((idir==0) ? ((sl>Real(0.0))?1:-1) : 0);

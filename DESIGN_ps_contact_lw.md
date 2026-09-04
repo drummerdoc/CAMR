@@ -145,3 +145,38 @@ bin, e.g. 1e-6 vs 1e-2) is NOT caught; the alpha_cond crossing within the
 lip transition is, which is its sharpest part.  Mode-2 acceptance must
 therefore show BOTH: A/C mean holds 0.0350 AND the demo3 near-orifice
 hash drops.  [DECIDE-2: adopt the regime-differ predicate?]
+
+
+---
+
+## 9. MEASURED 2026-09-05 — mode 2 (regime-gated) lands, [DECIDE-2] predicate
+
+`ps_lw_skip_contact=2`: skip the contact wave iff a phase's presence
+regime DIFFERS across the face (threshold-free).  Measured:
+
+  A/C mean: mode 0 = 0.0350, mode 1 = 0.0374 (+6.9%), mode 2 = **0.0351**
+    A3-Lax / C3-Strong (the sensitive single-phase contacts): mode 2
+    BIT-IDENTICAL to mode 0 -> the 0.0350 edge is preserved.
+  Predicate liveness (mode 0 vs 2):
+    B1 (uniform alpha=1, single-phase)      : 0  (no-op, correct)
+    B5 / B12 (uniform-regime two-phase)     : 0  (no-op)
+    B2-Evap-wave (alpha crosses regimes)    : 17.7  (fires)
+    B7-Rupture-Sonic (alpha crosses regimes): 39.1  (fires)
+  verify_canonical (default mode 0): ALL PASS, unchanged (mode 0 is
+  bit-identical -- skip_contact=false, loop runs all 3 waves as before).
+
+**Scope, stated honestly.**  The regime-differ predicate is threshold-
+free but NARROW: it fires only where alpha crosses a presence-regime
+boundary (alpha_cond / alpha_vanish).  It is therefore a NO-OP on
+uniform-regime two-phase contacts (both sides Independent, e.g. B5, or
+both Corridor, e.g. B12).  It DOES fire at the demo3 jet edge (0.05
+Independent -> 1e-6 Corridor).  If a 2-D demo3 test shows part of the
+near-orifice hash lives in the Independent region (not caught), the
+broader option is the alpha-jump-magnitude predicate (DECIDE-2's rejected
+threshold form), which catches all material interfaces at the cost of a
+tuned cut.  Recommendation: keep the threshold-free regime-differ
+predicate; escalate only if the 2-D result demands it.
+
+**Remaining acceptance:** the 2-D demo3 near-orifice hash must drop under
+mode 2 (needs the 2-D exe rebuild + a short run).  Then DECIDE-3 (default
+0 -> flip to 2 once that confirms).  Gated default 0 throughout.
