@@ -108,3 +108,40 @@ identity-safe by the whole-wave-drop constraint, fully gated and A/B-able.
 The real content is the §2 A/C tradeoff — the code is easy; the DECISION
 is whether the two-phase contact fix is worth any single-phase A/C cost,
 which mode 2 is designed to make a non-question.
+
+
+---
+
+## 8. MEASURED 2026-09-05 — [DECIDE-1(a)] blanket A/C cost, modes 0/1 landed
+
+`CAMR.ps_lw_skip_contact` implemented, modes 0 (off, default) and 1
+(blanket); mode 2 aborts (pending DECIDE-2).  Frozen A/C battery A/B:
+
+    mode 0 (baseline)   A/C mean 0.0350  (bit-identical to gate)
+    mode 1 (blanket)    A/C mean 0.0374  (+6.9%)
+
+Degradation concentrated at the strong SINGLE-PHASE contacts:
+  A3-Lax-like   rho 0.0269 -> 0.0360 (+34%)
+  C3-Strong-V   rho 0.0292 -> 0.0400 (+37%), u +11%
+  A1-Sod (u)    0.0125 -> 0.0185
+weak/acoustic cases (A2/A5/C2) and C1 (exact) unchanged.  So the contact
+LW correction DOES carry part of CAMR's 0.0350 edge — a blanket skip is
+NOT acceptable, and mode 2 (keep it on single-phase faces) is required.
+
+### The DECIDE-2 predicate, now with the trace-alpha wrinkle
+The A/C cases run with prob.alpha_trace=1e-6, so the "absent" phase is
+UNIFORM Corridor (1e-8 < 1e-6 < alpha_cond) — NOT Absent.  So a naive
+"skip where a second phase is present" predicate would fire on the A/C
+trace and reproduce the mode-1 degradation.  The predicate must fire on a
+real alpha JUMP, not on uniform trace.  Threshold-free option that
+distinguishes them: **skip where the two straddling cells are in
+DIFFERENT presence regimes** for a phase (e.g. Independent<->Corridor).
+  - A/C: alpha uniform 1e-6 -> both Corridor -> SAME regime -> KEEP
+    (single-phase contact correction preserved -> A/C back to 0.0350).
+  - demo3 jet edge: alpha 0.05 (Independent) vs 1e-6 (Corridor) ->
+    DIFFERENT -> SKIP (the material interface).
+Caveat: a Corridor-Corridor alpha ramp (both sides in the wide Corridor
+bin, e.g. 1e-6 vs 1e-2) is NOT caught; the alpha_cond crossing within the
+lip transition is, which is its sharpest part.  Mode-2 acceptance must
+therefore show BOTH: A/C mean holds 0.0350 AND the demo3 near-orifice
+hash drops.  [DECIDE-2: adopt the regime-differ predicate?]

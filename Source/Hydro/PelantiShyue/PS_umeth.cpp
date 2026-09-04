@@ -938,6 +938,35 @@ PS_umeth(const Box& bx,
     };
     const int wp_proj_scale = ps_wp_projscale_cached();
 
+    // C2 (DESIGN_ps_contact_lw.md): skip the Lax-Wendroff correction on the
+    // CONTACT wave (l=1), which carries the non-conservative alpha jump —
+    // applying LW there smears alpha into the phase densities/energies
+    // (STANDALONE_LESSONS_GAP C2).  CAMR.ps_lw_skip_contact:
+    //   0 = off (default; contact corrected, bit-identical baseline)
+    //   1 = BLANKET skip (standalone PS_LW_SKIP_CONTACT; measures the A/C
+    //       cost of dropping the contact correction everywhere, [DECIDE-1a])
+    //   2 = regime-gated (single-phase faces keep it) — PENDING DECIDE-2,
+    //       not yet wired; set 0 or 1 for now.
+    // Whole-wave drop only (the W2-2 linear identities forbid per-slot skip).
+    auto ps_lw_skip_contact_cached = []() -> int
+    {
+        static const int cached = []() {
+            int v = 0; amrex::ParmParse pp("CAMR");
+            pp.query("ps_lw_skip_contact", v);
+            if (v == 2) {
+                amrex::Abort("CAMR.ps_lw_skip_contact=2 (regime-gated) is not "
+                    "yet implemented (pending DESIGN_ps_contact_lw.md DECIDE-2). "
+                    "Use 0 (off) or 1 (blanket).");
+            }
+            if (v != 0 && v != 1) {
+                amrex::Abort("CAMR.ps_lw_skip_contact accepts 0 (off) or 1 "
+                    "(blanket contact-wave skip).");
+            }
+            return v; }();
+        return cached;
+    };
+    const int wp_lw_skip = ps_lw_skip_contact_cached();
+
     // BL-3a: contact-only transverse fluctuation coupling (2D).
     //   CAMR.ps_wp_transverse = 0 (default) → directionally split (BL-1/2).
     //                         = 1           → add the LeVeque transverse
@@ -1166,6 +1195,11 @@ PS_umeth(const Box& bx,
                 Real Ft[NVAR];
                 for (int n = 0; n < NVAR; ++n) Ft[n] = Real(0.0);
                 for (int l = 0; l < 3; ++l) {
+                    //  C2: blanket contact-wave skip (mode 1).  l=1 is the
+                    //  contact; dropping the WHOLE wave preserves the W2-2
+                    //  identities (each wave satisfies them).  Mode 2
+                    //  (regime-gated) will make this conditional per face.
+                    if (wp_lw_skip == 1 && l == 1) continue;
                     const Real sl = wv(i,j,k, 3*NVAR + l);
                     if (std::abs(sl) < Real(1.0e-30)) continue;
                     const int ni = i - ((idir==0) ? ((sl>Real(0.0))?1:-1) : 0);
