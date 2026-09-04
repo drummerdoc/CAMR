@@ -3,6 +3,7 @@
 *.ex
 *~
 tmp_build_dir
+Claude outputs/
 AMReX_buildInfo.cpp
 Backtrace.*
 .ccls-cache
