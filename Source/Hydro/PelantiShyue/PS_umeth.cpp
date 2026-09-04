@@ -942,7 +942,7 @@ PS_umeth(const Box& bx,
     // CONTACT wave (l=1), which carries the non-conservative alpha jump —
     // applying LW there smears alpha into the phase densities/energies
     // (STANDALONE_LESSONS_GAP C2).  CAMR.ps_lw_skip_contact:
-    //   0 = off (default; contact corrected, bit-identical baseline)
+    //   0 = off (contact corrected; the pre-2026-09-05 baseline)
     //   1 = BLANKET skip (standalone PS_LW_SKIP_CONTACT; measures the A/C
     //       cost of dropping the contact correction everywhere, [DECIDE-1a])
     //   2 = regime-gated (single-phase faces keep it) — PENDING DECIDE-2,
@@ -951,7 +951,13 @@ PS_umeth(const Box& bx,
     auto ps_lw_skip_contact_cached = []() -> int
     {
         static const int cached = []() {
-            int v = 0; amrex::ParmParse pp("CAMR");
+            //  DEFAULT 2 (softened regime taper) since 2026-09-05 [DECIDE-3]:
+            //  validated on the 1-D A/C battery (mean 0.0350 preserved) and
+            //  the 2-D demo3 A/B (alpha_cond kink removed, near-orifice zigzag
+            //  ~5x smaller, spurious extrema halved).  0 = off (A/B baseline),
+            //  1 = blanket (A/C-cost measurement).  Retire to single-path
+            //  later per the ps_star_relaxed pattern.
+            int v = 2; amrex::ParmParse pp("CAMR");
             pp.query("ps_lw_skip_contact", v);
             if (v != 0 && v != 1 && v != 2) {
                 amrex::Abort("CAMR.ps_lw_skip_contact accepts 0 (off), 1 "

@@ -240,9 +240,18 @@ for rp in (0, 1):
 # the frozen A/C battery reproduces its recorded per-case tuples EXACTLY at mean
 # 0.0350 with C1 exact -- so the hyperbolic core is provably untouched.
 # What the check is FOR is unchanged: rp=0 and rp=1 must differ (third assertion).
+# RE-BASELINED 2026-09-04: rp=1 0.774 -> 0.752 at the ps_lw_skip_contact=2
+# default flip (contact-wave Lax-Wendroff correction softened-tapered off, C2).
+# Unlike the two shifts above this is NOT common-mode: rp=0 held at 0.849 (band
+# 0.845, unchanged), only the reproject leg moved, and it moved TOWARD LOWER
+# error (0.774->0.752).  The separation the check actually tests GREW, delta
+# 0.098 vs 0.068 before, so liveness is strengthened not weakened.  A/C battery
+# reproduces its recorded tuples EXACTLY at mean 0.0350 with C1 exact and B12
+# R=0.0097 is unchanged -- the hyperbolic core and two-phase physics are
+# provably untouched; the move is confined to the LW correction on the contact.
 check('rp=0 reproduces legacy (~0.845)', abs(res[0] - 0.845) < 0.02,
       f'got {res[0]:.3f}')
-check('rp=1 improves (~0.774)', abs(res[1] - 0.774) < 0.02, f'got {res[1]:.3f}')
+check('rp=1 improves (~0.752)', abs(res[1] - 0.752) < 0.02, f'got {res[1]:.3f}')
 check('rp=0 vs rp=1 differ (change is live)', abs(res[0] - res[1]) > 0.05,
       f'delta={abs(res[0]-res[1]):.3f}')
 
