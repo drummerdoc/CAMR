@@ -1245,7 +1245,6 @@ inline bool ps_mass_transfer_relax_cell(
     double m1 = U[1];   // alpha_1 * rho_1
     double m2 = U[2];   // alpha_2 * rho_2
     if (m1 <= 0.0 || m2 <= 0.0) return false;
-    const double dm_hard_cap = 0.98 * std::min(m1, m2);
 
     // Apply a candidate dm to a scratch copy, pressure-relax, query (g_1, g_2).
     auto apply_dm_and_query = [&](double dm_try, V6& U_out,
@@ -2401,9 +2400,11 @@ inline void ps_flash_refuse_reset()
 // fraction of the proposal that keeps both phases representable.
 // Returns true when mass moved; every refusal is counted by cause.
 // project_sat_in: -1 = the CAMR.ps_flash_project_sat dial, 0 off, 1 on.
+// alpha_seed_target has no default: every caller passes the presence
+// design's alpha_birth explicitly (single-sourced, PS_presence.H).
 inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
                                   double dt, double tau_flash,
-                                  double alpha_seed_target = 0.02,
+                                  double alpha_seed_target,
                                   double alpha_floor = 1.0e-6,
                                   int project_sat_in = -1)
 {

@@ -695,7 +695,9 @@ inline int ps_dilute_relax_probe()
         amrex::Print()<<b;
         // Does flash move anything at dt/tau = 1 (one e-folding)?
         hem::V6 Uf = U;
-        const bool fok = hem::ps_flash_source_cell(Uf, eos, 1.0e-7, 1.0e-7);
+        // Seed level: the presence design's alpha_birth, as the driver uses.
+        const bool fok = hem::ps_flash_source_cell(Uf, eos, 1.0e-7, 1.0e-7,
+                             double(ps_presence_params().alpha_birth));
         std::snprintf(b,sizeof b,
             "  FLASH  fired=%d   alpha1: %.6f -> %.6f   (delta = %+.3e)\n",
             (int)fok, a1, Uf[0], Uf[0]-a1);

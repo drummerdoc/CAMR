@@ -75,7 +75,7 @@ _zero_gradient_ghost(const amrex::Real s_N[NVAR],
 // Mixture primitives and species Y[] of one cell; P is the stock
 // single-fluid inversion, used only inside the acoustic invariants as a
 // consistent stencil quantity (the pack never reads it).  A failed or
-// sub-1 Pa inversion returns P = 1 Pa.
+// sub-1 Pa inversion returns P = 1 Pa and is counted (nscbc pmix_fail).
 AMREX_GPU_HOST_DEVICE
 AMREX_FORCE_INLINE
 void
@@ -107,7 +107,10 @@ _cell_primitives(const amrex::Real s[NVAR],
         Y[n] = _finite_or(s[UFS + n], Real(0.0)) * inv_rho;
     }
     EOS::REY2P(rho, e_spec, Y, P);
-    if (!std::isfinite(P) || P < Real(1.0)) P = Real(1.0);
+    if (!std::isfinite(P) || P < Real(1.0)) {
+        P = Real(1.0);
+        ps_guard::count_nscbc_pmix_fail();
+    }
 }
 
 // ---------------------------------------------------------------------

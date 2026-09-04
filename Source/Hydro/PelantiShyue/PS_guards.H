@@ -176,6 +176,9 @@ AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_reflux_clamp() noexcept {}
 //    flash : the flash-aware ghost closure fired (the ghost's mixture
 //            enthalpy fell inside the dome and it was re-closed as a
 //            saturated mixture); a diagnostic count, not a fallback.
+//    pmix_fail : the stencil-only single-fluid mixture inversion in
+//            _cell_primitives failed (non-finite or sub-1 Pa) and the
+//            stencil P was set to 1 Pa; counted, never silent.
 // ---------------------------------------------------------------------
 #if !defined(AMREX_USE_GPU)
 inline long& n_nscbc_zg_c()     { static long n = 0; return n; }
@@ -183,18 +186,24 @@ inline long& n_nscbc_zg_sup()   { static long n = 0; return n; }
 inline long& n_nscbc_zg_slots() { static long n = 0; return n; }
 inline long& n_nscbc_zg_pack()  { static long n = 0; return n; }
 inline long& n_nscbc_flash()    { static long n = 0; return n; }
+inline long& n_nscbc_pmix_fail(){ static long n = 0; return n; }
 inline void  count_nscbc_zg_c()     { ++n_nscbc_zg_c(); }
 inline void  count_nscbc_zg_sup()   { ++n_nscbc_zg_sup(); }
 inline void  count_nscbc_zg_slots() { ++n_nscbc_zg_slots(); }
 inline void  count_nscbc_zg_pack()  { ++n_nscbc_zg_pack(); }
 inline void  count_nscbc_flash()    { ++n_nscbc_flash(); }
+inline void  count_nscbc_pmix_fail(){ ++n_nscbc_pmix_fail(); }
 inline void  reset_nscbc_counts() { n_nscbc_zg_c() = 0;
                                     n_nscbc_zg_sup() = 0; n_nscbc_zg_slots() = 0;
-                                    n_nscbc_zg_pack() = 0; n_nscbc_flash() = 0; }
+                                    n_nscbc_zg_pack() = 0; n_nscbc_flash() = 0;
+                                    n_nscbc_pmix_fail() = 0; }
 #else
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_nscbc_zg_c()     noexcept {}
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_nscbc_zg_sup()   noexcept {}
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_nscbc_zg_slots() noexcept {}
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_nscbc_zg_pack()  noexcept {}
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_nscbc_flash()    noexcept {}
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_nscbc_pmix_fail() noexcept {}
 #endif
 
 // ---------------------------------------------------------------------

@@ -1168,6 +1168,22 @@ ps_report_temps(amrex::MultiFab& S_new, const char* label,
     amrex::ParallelDescriptor::ReduceRealMax(t1max);
     amrex::ParallelDescriptor::ReduceRealMax(t2max);
     amrex::ParallelDescriptor::ReduceIntSum(n_hot);
+    //  The hottest cell's location/values travel with the maximum: MAXLOC
+    //  by hand, the lowest rank whose local thot equals the global thot
+    //  broadcasts (thot, xhot, ahot).  A rank with no two-phase cell keeps
+    //  the -1 sentinels and never wins unless every rank does.
+    {
+        const Real thot_loc = thot;
+        amrex::ParallelDescriptor::ReduceRealMax(thot);
+        const int np = amrex::ParallelDescriptor::NProcs();
+        if (np > 1) {
+            int owner = (thot_loc == thot) ? amrex::ParallelDescriptor::MyProc() : np;
+            amrex::ParallelDescriptor::ReduceIntMin(owner);
+            Real hot[3] = { thot, xhot, ahot };
+            amrex::ParallelDescriptor::Bcast(hot, 3, owner);
+            thot = hot[0]; xhot = hot[1]; ahot = hot[2];
+        }
+    }
     if (amrex::ParallelDescriptor::IOProcessor()) {
         amrex::Print() << "[ps_Tdiag] " << label
                        << ": maxT1=" << t1max << " maxT2=" << t2max

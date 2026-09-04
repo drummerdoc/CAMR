@@ -300,16 +300,19 @@ CAMR::CAMR_advance (Real time,
             amrex::Long nt_ = ps_guard::n_nscbc_zg_slots();
             amrex::Long np_ = ps_guard::n_nscbc_zg_pack();
             amrex::Long nf_ = ps_guard::n_nscbc_flash();
+            amrex::Long nm_ = ps_guard::n_nscbc_pmix_fail();
             amrex::ParallelDescriptor::ReduceLongSum(nc_);
             amrex::ParallelDescriptor::ReduceLongSum(ns_);
             amrex::ParallelDescriptor::ReduceLongSum(nt_);
             amrex::ParallelDescriptor::ReduceLongSum(np_);
             amrex::ParallelDescriptor::ReduceLongSum(nf_);
+            amrex::ParallelDescriptor::ReduceLongSum(nm_);
             amrex::Print() << " | nscbc_zg(c=" << nc_
                            << ",sup=" << ns_
                            << ",slots=" << nt_
                            << ",pack=" << np_ << ")"
-                           << " nscbc_flash=" << nf_ << "\n";
+                           << " nscbc_flash=" << nf_
+                           << " pmix_fail=" << nm_ << "\n";
             ps_guard::reset_ctop_counts();
             ps_guard::reset_counts();
             ps_guard::reset_rho_counts();
@@ -318,7 +321,10 @@ CAMR::CAMR_advance (Real time,
             // Face audit, gated on CAMR.ps_face_diag (0); the counters
             // themselves cost a few compares per face.  The [PS-FACE] and
             // [PS-W21] lines are retire-candidates: see
-            // docs/DESIGN_DECISIONS.md §7 O-8.
+            // docs/DESIGN_DECISIONS.md §7 O-8.  The health lines
+            // ([PS-RELAXFB], [PS-PROMOTE], [PS-FLOORBUDGET], [PS-FLCAUSE])
+            // print under ps_diag_mass alone; their counters reset at the
+            // same cadence either way.
             {
                 static const int fd = []() {
                     int v = 0; amrex::ParmParse pp("CAMR");
@@ -362,105 +368,106 @@ CAMR::CAMR_advance (Real time,
                         }
                     }
                     amrex::Print() << "\n";
-                    //  Faces where the relaxed star construction fell back
-                    //  to the B.14 form: zero on the 1-D suite; persistent
-                    //  non-zero in production is a finding.
+                }
+                //  Faces where the relaxed star construction fell back
+                //  to the B.14 form: zero on the 1-D suite; persistent
+                //  non-zero in production is a finding.
+                {
+                    amrex::Long nrf = PS_HLLC::face_diag::n_relax_fb();
+                    amrex::ParallelDescriptor::ReduceLongSum(nrf);
+                    if (nrf > 0) {
+                        amrex::Print() << "[PS-RELAXFB] L" << level
+                                       << " step "
+                                       << parent->levelSteps(level) << " "
+                                       << label << ": B.14 fallbacks = "
+                                       << nrf << "\n";
+                    }
+                }
+                //  Checked-promotion refusals and floor legs skipped on
+                //  non-Independent phases.  Printed only when non-zero.
+                {
+                    amrex::Long npr = ps_promote_diag::n_promote_refuse();
+                    amrex::Long nfs = ps_promote_diag::n_floor_skip();
+                    amrex::ParallelDescriptor::ReduceLongSum(npr);
+                    amrex::ParallelDescriptor::ReduceLongSum(nfs);
+                    if (npr > 0 || nfs > 0) {
+                        amrex::Print() << "[PS-PROMOTE] L" << level
+                                       << " step "
+                                       << parent->levelSteps(level) << " "
+                                       << label
+                                       << ": promote_refuse = " << npr
+                                       << "  floor_skip = " << nfs << "\n";
+                    }
+                    //  CAMR.ps_floor_budget: of the skipped floor legs, how
+                    //  many carried a reachable vs unreachable own-branch
+                    //  state, the pressure-floor energy not manufactured,
+                    //  and the most negative skipped e_k.
+                    //  Retire-candidate: see docs/DESIGN_DECISIONS.md §7 O-8.
                     {
-                        amrex::Long nrf = PS_HLLC::face_diag::n_relax_fb();
-                        amrex::ParallelDescriptor::ReduceLongSum(nrf);
-                        if (nrf > 0) {
-                            amrex::Print() << "[PS-RELAXFB] L" << level
-                                           << " step "
-                                           << parent->levelSteps(level) << " "
-                                           << label << ": B.14 fallbacks = "
-                                           << nrf << "\n";
+                        amrex::Long nre = ps_promote_diag::n_floor_reach();
+                        amrex::Long nun = ps_promote_diag::n_floor_unreach();
+                        amrex::Real eav = ps_promote_diag::floor_e_avoided();
+                        amrex::Real emn = ps_promote_diag::floor_min_e();
+                        amrex::ParallelDescriptor::ReduceLongSum(nre);
+                        amrex::ParallelDescriptor::ReduceLongSum(nun);
+                        amrex::ParallelDescriptor::ReduceRealSum(eav);
+                        amrex::ParallelDescriptor::ReduceRealMin(emn);
+                        if (nre > 0 || nun > 0) {
+                            amrex::Print() << "[PS-FLOORBUDGET] L" << level
+                                << " step " << parent->levelSteps(level)
+                                << " " << label
+                                << ": skip reachable = " << nre
+                                << "  unreachable = " << nun
+                                << "  e_manufacture_avoided = " << eav
+                                << " J  min_skip_e = " << emn << " J/kg\n";
                         }
                     }
-                    //  Checked-promotion refusals and floor legs skipped on
-                    //  non-Independent phases.  Printed only when non-zero.
-                    {
-                        amrex::Long npr = ps_promote_diag::n_promote_refuse();
-                        amrex::Long nfs = ps_promote_diag::n_floor_skip();
-                        amrex::ParallelDescriptor::ReduceLongSum(npr);
-                        amrex::ParallelDescriptor::ReduceLongSum(nfs);
-                        if (npr > 0 || nfs > 0) {
-                            amrex::Print() << "[PS-PROMOTE] L" << level
-                                           << " step "
-                                           << parent->levelSteps(level) << " "
-                                           << label
-                                           << ": promote_refuse = " << npr
-                                           << "  floor_skip = " << nfs << "\n";
-                        }
-                        //  CAMR.ps_floor_budget: of the skipped floor legs, how
-                        //  many carried a reachable vs unreachable own-branch
-                        //  state, the pressure-floor energy not manufactured,
-                        //  and the most negative skipped e_k.
-                        //  Retire-candidate: see docs/DESIGN_DECISIONS.md §7 O-8.
-                        {
-                            amrex::Long nre = ps_promote_diag::n_floor_reach();
-                            amrex::Long nun = ps_promote_diag::n_floor_unreach();
-                            amrex::Real eav = ps_promote_diag::floor_e_avoided();
-                            amrex::Real emn = ps_promote_diag::floor_min_e();
-                            amrex::ParallelDescriptor::ReduceLongSum(nre);
-                            amrex::ParallelDescriptor::ReduceLongSum(nun);
-                            amrex::ParallelDescriptor::ReduceRealSum(eav);
-                            amrex::ParallelDescriptor::ReduceRealMin(emn);
-                            if (nre > 0 || nun > 0) {
-                                amrex::Print() << "[PS-FLOORBUDGET] L" << level
-                                    << " step " << parent->levelSteps(level)
-                                    << " " << label
-                                    << ": skip reachable = " << nre
-                                    << "  unreachable = " << nun
-                                    << "  e_manufacture_avoided = " << eav
-                                    << " J  min_skip_e = " << emn << " J/kg\n";
+                    ps_promote_diag::reset();
+                }
+                //  Refusal-cause breakdown for the wp fluctuation path;
+                //  printed only when something refused.
+                {
+                    static const char* cz[PS_HLLC::PS_FL_NCAUSE] = {
+                        "ok", "face", "ws_denom", "ws_SM", "ws_Pstar",
+                        "st_denom", "st_massneg", "st_rho", "st_q",
+                        "st_Estar" };
+                    amrex::Long tot = 0;
+                    amrex::Long cv[PS_HLLC::PS_FL_NCAUSE];
+                    for (int c = 0; c < PS_HLLC::PS_FL_NCAUSE; ++c) {
+                        cv[c] = PS_HLLC::face_diag::n_fl_cause(c);
+                        amrex::ParallelDescriptor::ReduceLongSum(cv[c]);
+                        if (c != PS_HLLC::PS_FL_OK) tot += cv[c];
+                    }
+                    amrex::Long sL = PS_HLLC::face_diag::n_fl_side(0);
+                    amrex::Long sR = PS_HLLC::face_diag::n_fl_side(1);
+                    amrex::ParallelDescriptor::ReduceLongSum(sL);
+                    amrex::ParallelDescriptor::ReduceLongSum(sR);
+                    if (tot > 0) {
+                        amrex::Print() << "[PS-FLCAUSE] L" << level << " step "
+                                       << parent->levelSteps(level) << " "
+                                       << label << ": total=" << tot;
+                        for (int c = 1; c < PS_HLLC::PS_FL_NCAUSE; ++c) {
+                            if (cv[c] > 0) {
+                                amrex::Print() << "  " << cz[c] << "=" << cv[c];
                             }
                         }
-                        ps_promote_diag::reset();
+                        amrex::Print() << "  | star side L=" << sL
+                                       << " R=" << sR << "\n";
                     }
-                    //  Refusal-cause breakdown for the wp fluctuation path;
-                    //  printed only when something refused.
-                    {
-                        static const char* cz[PS_HLLC::PS_FL_NCAUSE] = {
-                            "ok", "face", "ws_denom", "ws_SM", "ws_Pstar",
-                            "st_denom", "st_massneg", "st_rho", "st_q",
-                            "st_Estar" };
-                        amrex::Long tot = 0;
-                        amrex::Long cv[PS_HLLC::PS_FL_NCAUSE];
-                        for (int c = 0; c < PS_HLLC::PS_FL_NCAUSE; ++c) {
-                            cv[c] = PS_HLLC::face_diag::n_fl_cause(c);
-                            amrex::ParallelDescriptor::ReduceLongSum(cv[c]);
-                            if (c != PS_HLLC::PS_FL_OK) tot += cv[c];
-                        }
-                        amrex::Long sL = PS_HLLC::face_diag::n_fl_side(0);
-                        amrex::Long sR = PS_HLLC::face_diag::n_fl_side(1);
-                        amrex::ParallelDescriptor::ReduceLongSum(sL);
-                        amrex::ParallelDescriptor::ReduceLongSum(sR);
-                        if (tot > 0) {
-                            amrex::Print() << "[PS-FLCAUSE] L" << level << " step "
-                                           << parent->levelSteps(level) << " "
-                                           << label << ": total=" << tot;
-                            for (int c = 1; c < PS_HLLC::PS_FL_NCAUSE; ++c) {
-                                if (cv[c] > 0) {
-                                    amrex::Print() << "  " << cz[c] << "=" << cv[c];
-                                }
-                            }
-                            amrex::Print() << "  | star side L=" << sL
-                                           << " R=" << sR << "\n";
-                        }
-                        //  Residual before the fixup; under scalar-per-wave
-                        //  limiting it is round-off.
-                        {
-                            double wm = PS_HLLC::face_diag::max_w21_mass();
-                            double we = PS_HLLC::face_diag::max_w21_energy();
-                            amrex::ParallelDescriptor::ReduceRealMax(wm);
-                            amrex::ParallelDescriptor::ReduceRealMax(we);
-                            amrex::Print() << "[PS-W21] L" << level << " step "
-                                           << parent->levelSteps(level) << " "
-                                           << label
-                                           << ": residual before fixup  mass="
-                                           << wm << "  energy=" << we << "\n";
-                        }
-                    }
+                }
+                //  Residual before the fixup; under scalar-per-wave
+                //  limiting it is round-off.  Face-audit line, under
+                //  ps_face_diag with [PS-FACE].
+                if (fd != 0) {
+                    double wm = PS_HLLC::face_diag::max_w21_mass();
+                    double we = PS_HLLC::face_diag::max_w21_energy();
+                    amrex::ParallelDescriptor::ReduceRealMax(wm);
+                    amrex::ParallelDescriptor::ReduceRealMax(we);
+                    amrex::Print() << "[PS-W21] L" << level << " step "
+                                   << parent->levelSteps(level) << " "
+                                   << label
+                                   << ": residual before fixup  mass="
+                                   << wm << "  energy=" << we << "\n";
                 }
                 PS_HLLC::face_diag::reset();
             }
