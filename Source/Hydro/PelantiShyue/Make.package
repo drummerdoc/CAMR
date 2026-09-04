@@ -1,17 +1,4 @@
-# =====================================================================
-#  Pelanti–Shyue six-equation wave-propagation hydro module.
-#
-#  Only compiled when USE_PS_HYDRO = TRUE in the Exec GNUmakefile;
-#  the Bdirs += entry that includes this directory is guarded there
-#  (see Exec/Make.CAMR).
-#
-#  Phase 4a: scaffolding.
-#  Phase 4b: NVAR/QVAR extension.
-#  Phase 4c-α (this commit): PS_umeth stub + dispatch.
-#  Phase 4c-β: PS_umeth full implementation (lift the WP fluctuation
-#              kernel from hem_pelanti_shyue.H).
-#  Phase 4d:  add PS_relaxation.H (Pelanti mechanical + MT + flash).
-# =====================================================================
+# Pelanti-Shyue six-equation wave-propagation hydro module; compiled only when USE_PS_HYDRO = TRUE (guarded in Exec/Make.CAMR).
 CEXE_headers += PS_umeth.H
 CEXE_sources += PS_umeth.cpp
 CEXE_headers += hem_pelanti_shyue.H

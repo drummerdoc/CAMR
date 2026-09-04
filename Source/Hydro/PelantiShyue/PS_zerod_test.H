@@ -2,68 +2,29 @@
 #define PS_ZEROD_TEST_H
 #ifdef USE_PS_HYDRO
 // ---------------------------------------------------------------------
-//  PS_zerod_test.H  (task #77) — 0-D validation of the coupled
-//  P-T-g equilibrium target BEFORE wiring ps_relax_mode=2.
+//  PS_zerod_test.H — 0-D self-tests of the per-cell relaxation and
+//  mass-transfer kernels on the production EOS callback.  Run from
+//  main() after AMReX/EOS initialisation, without time-stepping; each
+//  returns a failure count that main() turns into the exit code, so a
+//  CI step is `<exe> <inputs> CAMR.ps_ptg_selftest=1 CAMR.ps_relax_sweep=1
+//  max_step=0` (exit 0 = pass).  See docs/VERIFICATION.md.
 //
-//  Verifies that hem::ps_mass_transfer_relax_cell (Newton on dm with a
-//  nested pressure/alpha relaxation, driving g1->g2) is a correct
-//  homogeneous-equilibrium flash: starting from an off-equilibrium
-//  two-phase cell it must converge to a state with
-//      P1 = P2,  T1 = T2,  g1 = g2,          (full phase equilibrium)
-//  land on the saturation dome (P ~= Psat(T)), conserve mixture mass
-//  and internal energy, and move mass in the thermodynamically correct
-//  direction (toward the lower Gibbs phase).
+//    CAMR.ps_ptg_selftest=1  ps_ptg_zerod_selftest: off-equilibrium
+//        two-phase cells must reach P1 = P2, g1 = g2 with exact mass and
+//        energy conservation under hem::ps_mass_transfer_relax_cell.
+//    CAMR.ps_relax_sweep=1   ps_relax_corner_sweep: every relaxation
+//        solver, on the corners a demo never exercises, leaves a finite
+//        state that is valid or gracefully refused; never "claims ok but
+//        invalid".
+//    CAMR.ps_x3_test=1       ps_x3_fixedpoint_test: the X3 coupled source
+//        reaches one fixed point independent of route and basin, equal
+//        to the HEM flash of the cell invariants.
+//    CAMR.ps_m2_test, ps_asy1_probe, ps_dilute_probe: investigation
+//        probes.  Retire-candidate: see docs/DESIGN_DECISIONS.md O-8.
 //
-//  Triggered from main() when CAMR.ps_ptg_selftest=1; runs the table
-//  and returns (the driver then exits without time-stepping).
-//
-// =====================================================================
-//  USING THE 0-D PATH TO DESIGN CI TESTS
-// =====================================================================
-//  Two fast, deterministic entry points run the REAL EOS <-> relaxation
-//  <-> mass-transfer code (not a mock), after AMReX/EOS init but WITHOUT
-//  time-stepping, then exit:
-//
-//    ./CAMR<dim>.<...>.ex <any-inputs> CAMR.ps_ptg_selftest=1 max_step=0
-//        -> ps_ptg_zerod_selftest(): coupled-equilibrium (flash) check.
-//           Builds off-equilibrium two-phase cells, runs the Gibbs MT
-//           solver, asserts it reaches P1=P2, T1=T2, g1=g2 on the dome
-//           with EXACT mass/energy conservation and the correct dm sign.
-//           Prints ".. N/M passed".
-//
-//    ./CAMR<dim>.<...>.ex <any-inputs> CAMR.ps_relax_sweep=1 max_step=0
-//        -> ps_relax_corner_sweep(): robustness map of isoP / isoT /
-//           MT(g) / mechP across the corners (trace-alpha, metastable,
-//           spinodal, cross-critical, cold near-triple).  Asserts every
-//           solver leaves a FINITE state that is either physically valid
-//           or gracefully refused (ok=0), never a "claims-ok but invalid"
-//           write.  Prints ".. K UNSAFE (expect 0) -> PASS/FAIL".
-//
-//  WHY THIS IS THE RIGHT CI/regression HARNESS:
-//    * Exercises the exact production code path; it is what caught the
-//      uninitialized PsPhase.c bug (#77) that no full 2D run surfaced.
-//    * Sub-second, serial, deterministic, needs no plotfiles.
-//    * It is the first-line validator for the MLP-EOS swap (#42): replace
-//      the ps_make_camr_eos_api callback with the learned EOS and rerun
-//      BOTH flags -- a learned EOS that returns a non-physical c, a g that
-//      is not h - T*s to round-off, or that breaks solver convergence /
-//      conservation fails HERE, not 300 steps into a 2D run.
-//
-//  TO ADD A CASE: append a row to the `cases[]` (self-test) or `cs[]`
-//    (corner sweep) table: {label, T_init[K], alpha1, rho1, rho2}.
-//    ps_zt_e_of_rhoT() back-solves each phase energy for that T on its
-//    branch.  Pick states that probe the regime you care about (near the
-//    dome, deep trace, spinodal loop, cross-critical, cold near-triple).
-//
-//  BUILD GATE (task #82, IMPLEMENTED): both functions return a failure
-//    count; main() sums them and returns a NONZERO exit code on any
-//    failure (MPI-safe: run on IOProcessor, Bcast the result).  So a CI
-//    step is just:
-//        ./CAMR<dim>...ex inputs.<any> CAMR.ps_ptg_selftest=1 \
-//            CAMR.ps_relax_sweep=1 max_step=0   # exit 0 = PASS, !=0 = FAIL
-//    Add that as a ctest/CI command; the exit code IS the gate (the
-//    "N/M passed" / "K UNSAFE ... PASS/FAIL" prints are for humans).
-//    Verified both ways (forced-fail -> exit 1; nominal -> exit 0).
+//  To add a case, append a row {label, T_init [K], alpha1, rho1, rho2}
+//  to the relevant table; ps_zt_e_of_rhoT back-solves each phase energy
+//  for that T on its branch.  Sub-second, serial, deterministic.
 // ---------------------------------------------------------------------
 #include <cmath>
 #include <cstdio>
@@ -97,7 +58,9 @@ inline double ps_zt_e_of_rhoT(const hem::PsPhaseAPI& eos, int phase,
     return e1;
 }
 
-// Returns the number of FAILED cases (0 = all pass) so main() can gate CI.
+// Returns the number of failed cases (0 = all pass).  Gate: P1 = P2 and
+// g1 = g2 with exact conservation, the solver's actual contract; T1 = T2,
+// on-dome and the dm sign are informational.
 inline int ps_ptg_zerod_selftest()
 {
     const hem::PsPhaseAPI eos = ps_make_camr_eos_api();
@@ -154,15 +117,10 @@ inline int ps_ptg_zerod_selftest()
         }
         const double dM = std::abs(M1 - M0) / M0;
         const double dE = std::abs(E1 - E0) / std::max(1.0, std::abs(E0));
-        // dm should point toward the lower-Gibbs phase: dg_in>0 (g1>g2) => evaporate (dm>0).
+        // dm should point toward the lower-Gibbs phase: dg_in > 0 => dm > 0.
+        // Informational: the nested pressure relax can shift g.
         const bool dir_ok = (std::abs(dg_in) < 1e-9) ||
                             ((dg_in > 0.0) == (dm >= 0.0));
-        // Gate on the solver's ACTUAL contract: mechanical (P1=P2) + chemical
-        // (g1=g2) equilibrium with exact mass/energy conservation.  dT / dome
-        // (full thermal + saturation) are NOT enforced by this solver and are
-        // reported for information only, not gated.  dir (sign vs INITIAL g)
-        // is unreliable once the nested pressure relax shifts g, so it too is
-        // informational.
         const bool pass = conv && dP < 1e-3 && dg < 1e-3 &&
                           dM < 1e-10 && dE < 1e-8;
         if (pass) ++npass;
@@ -188,27 +146,15 @@ inline int ps_ptg_zerod_selftest()
 
 
 // ---------------------------------------------------------------------
-//  ps_relax_corner_sweep  (task #41) — robustness map of the relaxation
-//  Newton solves in the corners the demo never exercises: deep-trace
-//  alpha, metastable/spinodal per-phase states, cross-critical, cold
-// =====================================================================
-//  ps_m2_ordering_test — M2 (DESIGN_ps_extinction.md 12.6; Stage 5 of
-//  PLAN_measurements_and_fixes.md).  THE question X3 hangs on: does the
-//  composite of {mechanical M, thermal T, mass-transfer G} converge to
-//  the same fixed point in every ORDERING?  Order-dependence proves the
-//  three sequential projections are NOT a projection (the composite has
-//  no single invariant manifold) and elects the X3 coupled relaxation
-//  source over the interim closing pass; order-independence blesses the
-//  interim pass as exact.
-//
-//  Each of the six orderings runs the 3-op sequence to a fixed point
-//  (rel change < 1e-13 or 200 sweeps) from the same states the 0-D
-//  self-test uses.  Reported against the HEM flash of the same
-//  (rho_mix, e_mix) — the EOS auto-surface state, which IS the
-//  equilibrium answer for the mixture invariants the composite
-//  conserves.  Triggered CAMR.ps_m2_test=1; a measurement, not a CI
-//  gate (always returns 0); the verdict line is the deliverable.
-// =====================================================================
+//  ps_m2_ordering_test (CAMR.ps_m2_test=1): does the composite of the
+//  sequential {mechanical, thermal, mass-transfer} projections reach the
+//  same fixed point in every ordering?  Order-dependence means the
+//  composite is not a projection, which is the argument for the X3
+//  coupled source.  Each ordering runs to a fixed point (rel change
+//  < 1e-13 or 200 sweeps) from the self-test states and is reported
+//  against the HEM flash of the same (rho_mix, e_mix).  A measurement,
+//  not a gate (returns 0).  Retire-candidate: see docs/DESIGN_DECISIONS.md O-8.
+// ---------------------------------------------------------------------
 inline int ps_m2_ordering_test()
 {
     const hem::PsPhaseAPI eos = ps_make_camr_eos_api();
@@ -225,8 +171,8 @@ inline int ps_m2_ordering_test()
         {290.0, 0.40, 830.0, 120.0},
         {270.0, 0.30, 900.0,  90.0},
     };
-    //  Orderings: M = mechanical (alpha-adjusting), T = isochoric thermal,
-    //  G = Gibbs mass transfer.  MTG is the production order.
+    //  M = mechanical (alpha-adjusting), T = isochoric thermal, G = Gibbs
+    //  mass transfer.
     const int ORD[6][3] = {{0,1,2},{0,2,1},{1,0,2},{1,2,0},{2,0,1},{2,1,0}};
     const char* ONM[6] = {"MTG","MGT","TMG","TGM","GMT","GTM"};
 
@@ -319,31 +265,19 @@ inline int ps_m2_ordering_test()
 }
 
 
-// =====================================================================
-//  ps_x3_fixedpoint_test — F4 (PLAN_flash_and_coupling.md): the
-//  acceptance test for the X3 coupled relaxation source, run on the
-//  SAME six states as M2.  What M2 asked of the composite — is the
-//  fixed point independent of the route taken to it? — is asked of X3
-//  three ways per state:
-//    route A: constant dt = 1e-4 to a fixed point;
-//    route B: geometric dt ladder 1e-7 -> 1e-2 (route-dependence is
-//             X3's analogue of ordering-dependence);
-//    route C: route A from a PERTURBED energy split (2 % of E moved
-//             between phases pre-projection — same mixture invariants,
-//             different start: the two-basin probe M2 failed).
-//  PASS per state: the three endpoints agree to within solver noise —
-//  alpha 1e-5 abs, P 1e-4 rel, T 1e-5 rel (AMENDED from the registered
-//  1e-6 after the first run: well-converged endpoints scatter at ~2e-5
-//  rel P, which is the constraint projector's own tol_rel = 1e-5, not a
-//  basin split; the REAL failures measured 0.25-0.85 rel, three orders
-//  above the new thresholds) — AND each sits on the triple equilibrium
-//  AND P matches the HEM flash P_hem of the same invariants to 1e-3
-//  rel.  Harness rate
-//  constants (theta = 1e-5, srt_d = 1e-4 — the F2-measured Sigma scale)
-//  set the approach speed only; the endpoint may not depend on them.
-//  Triggered CAMR.ps_x3_test=1; returns the number of failing states
-//  (a real CI gate).
-// =====================================================================
+// ---------------------------------------------------------------------
+//  ps_x3_fixedpoint_test (CAMR.ps_x3_test=1): acceptance test of the X3
+//  coupled relaxation source on six reference states, three routes each:
+//    A: constant dt = 1e-4 to a fixed point;
+//    B: geometric dt ladder 1e-7 -> 1e-2 (route independence);
+//    C: route A from a perturbed energy split, 2 % of E moved between
+//       phases (same mixture invariants, different basin).
+//  Pass per state: the endpoints agree to alpha 1e-5 abs, P 1e-4 rel,
+//  T 1e-5 rel (the constraint projector's own tolerance floor, not a
+//  basin split), and P matches the HEM flash of the same invariants to
+//  1e-3 rel.  The harness rate constants set the approach speed only;
+//  the endpoint may not depend on them.  Returns the failing-state count.
+// ---------------------------------------------------------------------
 inline int ps_x3_fixedpoint_test()
 {
     const hem::PsPhaseAPI eos = ps_make_camr_eos_api();
@@ -352,7 +286,7 @@ inline int ps_x3_fixedpoint_test()
     amrex::Print() << "\n===== PS X3: coupled-source fixed point vs route (and basin) =====\n";
 
     struct Case { double T, a1, r1, r2; };
-    const Case cases[] = {                       //  M2's states, verbatim
+    const Case cases[] = {                       //  the self-test states
         {270.0, 0.30, 950.0,  63.0},
         {270.0, 0.10, 950.0,  63.0},
         {270.0, 0.70, 950.0,  63.0},
@@ -470,45 +404,36 @@ inline int ps_x3_fixedpoint_test()
 }
 
 
-// =====================================================================
-//  ps_asy1_probe — Stage 6 step 1 (PLAN_measurements_and_fixes.md): the
-//  0-D non-overshoot probe of the ASY1-derived MT step
-//  (CAMR.ps_mt_tau_model=2: tau = |dm_eq| / Gamma_SRT, Lund & Aursand
-//  Eq. 25).  The historical failure this guards against: at dt/tau = 76
-//  with a VOID target the kernel applied the whole equilibrium transfer
-//  of an order-one disequilibrium in one step and walked off the EOS
-//  domain (M1, gate-off aborts).  With the CONSISTENT target (default
-//  since Stage 3) and the rate-derived tau, the Eq. 23 monotonicity
-//  premise holds by construction and the step must approach g1 = g2
-//  monotonically at ANY dt.
-//
-//  Time-marches the kernel from in-band, order-one-driving-force states
-//  (P1/Psat down to ~0.2, the refused-cell range) across four decades of
-//  dt, with the Stage-3-designated UPWIND carrier.  PASS per (state, dt):
-//  |g1-g2| decays monotonically (tolerance for solver noise) and never
-//  flips sign beyond 1e-6 relative.  Triggered CAMR.ps_asy1_probe=1;
-//  returns the number of overshooting (state, dt) pairs — a real gate.
-// =====================================================================
+// ---------------------------------------------------------------------
+//  ps_asy1_probe (CAMR.ps_asy1_probe=1): 0-D non-overshoot probe of the
+//  split mass-transfer step with the state-derived tau (ps_mt_tau_model=2,
+//  tau = |dm_eq| / Gamma_SRT, Lund & Aursand eq. 25) and the consistent
+//  target, under which the eq. 23 monotonicity premise holds and the
+//  step must approach g1 = g2 monotonically at any dt.  Marches in-band,
+//  order-one-driving-force states across four decades of dt with the
+//  upwind carrier; a pair fails if |g1 - g2| grows or flips sign beyond
+//  1e-6 relative.  Returns the overshooting (state, dt) count.
+//  Retire-candidate: see docs/DESIGN_DECISIONS.md O-8.
+// ---------------------------------------------------------------------
 inline int ps_asy1_probe()
 {
     const hem::PsPhaseAPI eos = ps_make_camr_eos_api();
     if (!eos.valid()) { amrex::Print() << "[ps-ASY1] EOS API invalid\n"; return 1; }
 
-    //  F3: the probe exercises whichever step FORM CAMR.ps_mt_form selects
-    //  (0 = exact-relaxation, 1 = BE-SRT); record it in the header so a log
-    //  is attributable without its inputs file.
+    // The step form CAMR.ps_mt_form selects (0 exact-relaxation, 1 BE-SRT)
+    // is recorded in the banner so a log is attributable without its inputs.
     amrex::Print() << "\n===== PS ASY1 0-D non-overshoot probe (tau_model=2, upwind carrier)"
                    << "  [ps_mt_form=" << hem::ps_knob_int("ps_mt_form", 0)
                    << "] =====\n";
 
     struct PCase { const char* nm; double a1, r1, T1, r2, T2; };
     const PCase cases[] = {
-        //  12.4-like: strongly superheated liquid beside a cold (in-band)
-        //  vapour; P1/Psat(T1) ~ 0.2, |g1-g2|/g order one.
+        // strongly superheated liquid beside a cold in-band vapour;
+        // P1/Psat(T1) ~ 0.2, |g1-g2|/g order one
         {"12.4-like ", 0.05, 900.0, 269.0, 14.0, 230.0},
-        //  B2-front-like: flashing front state.
+        // flashing-front state
         {"B2-front  ", 0.30, 1000.0, 260.0, 12.0, 240.0},
-        //  near-dome control (small driving force).
+        // near-dome control (small driving force)
         {"near-dome ", 0.30, 950.0, 270.0, 63.0, 270.0},
     };
     const double DTs[] = {1.0e-7, 1.0e-6, 1.0e-5, 1.0e-3};
@@ -551,8 +476,7 @@ inline int ps_asy1_probe()
                 bool oks = false;
                 gd = grel_of(U, oks);
                 if (!oks) {
-                    //  F3 attribution: WHICH reconstruction check fails on the
-                    //  written state, with the state on the record.
+                    // Which reconstruction check fails on the written state.
                     hem::PsState sx = hem::ps_state_from_cons(U, eos);
                     char lb[300];
                     std::snprintf(lb, sizeof lb,
@@ -575,9 +499,8 @@ inline int ps_asy1_probe()
                 if (std::abs(gd) < 1.0e-9) break;
             }
             if (over) ++n_overshoot;
-            //  Attribute stalls: a state that does not move is a state the
-            //  kernel refused or whose equilibrium-target solve failed
-            //  (dm_eq = 0 -> exact relaxation silently transfers nothing).
+            // Attribute stalls: a state that does not move was refused by
+            // the kernel or its equilibrium-target solve failed (dm_eq = 0).
             hem::PsMtStats& st = hem::ps_mt_stats();
             long cz[hem::PS_MT_NCAUSE];
             for (int q = 0; q < hem::PS_MT_NCAUSE; ++q)
@@ -605,13 +528,13 @@ inline int ps_asy1_probe()
 
 
 // ---------------------------------------------------------------------
-//  ps_relax_corner_sweep  (task #41) — robustness map of the relaxation
-//  Newton solves in the corners the demo never exercises: deep-trace
-//  alpha, metastable/spinodal per-phase states, cross-critical, cold
-//  near-triple.  For each state, run each solver on a COPY and report
-//  whether it returned ok, whether the OUTPUT is finite & physical
-//  (the real safety question), the post-residual, and conservation.
-//  Prints a table; changes no solver.  Triggered CAMR.ps_relax_sweep=1.
+//  ps_relax_corner_sweep (CAMR.ps_relax_sweep=1): robustness map of the
+//  relaxation Newton solves in the corners a demo never exercises:
+//  deep-trace alpha, metastable/spinodal per-phase states, cross-critical,
+//  cold near-triple.  For each state every solver runs on a copy and the
+//  report shows whether it returned ok, whether the output is finite and
+//  physical (the safety question), the post-residual and conservation.
+//  Changes no solver.  Returns the number of UNSAFE results.
 // ---------------------------------------------------------------------
 inline int ps_relax_corner_report(const char* label, hem::V6 U0,
                                    const hem::PsPhaseAPI& eos)
@@ -639,11 +562,10 @@ inline int ps_relax_corner_report(const char* label, hem::V6 U0,
         r.dE = std::abs((U[4]+U[5])-E0)/std::max(1.0,std::abs(E0));
         return r;
     };
-    // Deep-trace cells (alpha <= alpha_floor) are effectively single-phase:
-    // the relaxation solvers correctly skip them and a two-phase
-    // reconstruction is legitimately degenerate.  In the real advance
-    // ps_apply_vanish_fold folds these to single-phase BEFORE relaxation, so
-    // an "invalid" reconstruction here is expected, not a solver failure.
+    // Deep-trace cells are effectively single-phase: the solvers skip them
+    // and a two-phase reconstruction is legitimately degenerate.  In the
+    // advance the vanish fold removes them before relaxation, so an
+    // "invalid" reconstruction here is expected, not a solver failure.
     const bool deep_trace = !(U0[0] > 1.0e-6) || !((1.0 - U0[0]) > 1.0e-6);
     const char* nm[4] = {"isoP","isoT","MT(g)","mechP"};
     char buf[256];
@@ -662,8 +584,7 @@ inline int ps_relax_corner_report(const char* label, hem::V6 U0,
     return n_unsafe;
 }
 
-// Returns the number of UNSAFE (solver produced non-finite / invalid-claimed-ok
-// state) results (0 = all safe) so main() can gate CI.
+// Driver over the corner table; returns the UNSAFE count (0 = all safe).
 inline int ps_relax_corner_sweep()
 {
     const hem::PsPhaseAPI eos = ps_make_camr_eos_api();
@@ -706,13 +627,13 @@ inline int ps_relax_corner_sweep()
 
 
 // ---------------------------------------------------------------------
-//  ps_dilute_relax_probe  (#88) — single-cell A/B probe.  Feeds a fixed
-//  dilute-front two-phase state (alpha1~0.006, liquid rho1, trace vapor rho2,
-//  both near T) to ONE alpha-adjusting mechanical relaxation and prints the
-//  EOS eval (in) + the relaxed (out) per-phase P/T.  Compare the printed
-//  numbers against the standalone fed the SAME (rho1,rho2,e1,e2,alpha1) to
-//  see whether the identical kernel + each code's EOS callback diverge.
-//  Triggered CAMR.ps_dilute_probe=1.  Returns 0 (diagnostic only).
+//  ps_dilute_relax_probe (CAMR.ps_dilute_probe=1): single-cell probe.
+//  Feeds one dilute-front two-phase state (CAMR.probe_a1/r1/r2/T1/T2)
+//  to one alpha-adjusting mechanical relaxation, prints the EOS state in
+//  and out, then reports each conversion gate's verdict on that cell
+//  (flash window, metastability, coexistence band) so a closed channel is
+//  named rather than guessed.  Returns 0 (diagnostic only).
+//  Retire-candidate: see docs/DESIGN_DECISIONS.md O-8.
 // ---------------------------------------------------------------------
 inline int ps_dilute_relax_probe()
 {
@@ -746,27 +667,20 @@ inline int ps_dilute_relax_probe()
     std::snprintf(b,sizeof b,"  OUT:      P1=%.4e T1=%.2f | P2=%.4e T2=%.2f   (dE_mix=%.3e)\n",
                   q1.P,q1.T,q2.P,q2.T, (Uo[4]+Uo[5])-(U[4]+U[5]));
     amrex::Print()<<b;
-    //  CONVERSION-GATE PROBE (2026-08-12).  The measured problem is not that
-    //  conversion goes wrong, it is that it does not HAPPEN: on B2/B9 the MT
-    //  operator fires 2-4 times in a whole run and flash never develops.  Every
-    //  operator that could convert mass is behind a gate; report each gate's
-    //  verdict on THIS cell so the closed one is named rather than guessed.
+    // Conversion-gate verdicts on this cell.
     {
         const double Tt = eos.t_triple(), Tc = eos.t_crit();
         const double Ps1 = double(EOS::Psat(amrex::Real(p1.T)));
         const double Ps2 = double(EOS::Psat(amrex::Real(p2.T)));
-        //  Flash's alpha-dominance window: it fires ONLY in nominally
-        //  single-phase cells (alpha_1 > 1-thr deep liquid, or < thr deep
-        //  vapour, thr = 0.1 by default).  The mid range is DELEGATED to MT --
-        //  so if MT is also gated off, the mid range has no conversion channel
-        //  at all.  That is the hypothesis this block exists to test.
+        // Flash alpha-dominance window (thr = ps_flash_alpha_thr default):
+        // nominally single-phase cells only; the mid range is delegated to MT.
         const double thr = 0.1;
         const bool flash_liq = (a1 > 1.0 - thr);
         const bool flash_vap = (a1 < thr);
-        const double marg = 0.10;   // PS_FLASH_METASTABLE_MARGIN default
+        const double marg = 0.10;   // ps_flash_metastable_margin default
         const bool meta_liq = flash_liq && (p1.P < (1.0 - marg) * Ps1);
         const bool meta_vap = flash_vap && (p2.P > (1.0 + marg) * Ps2);
-        //  MT / thermal gate: both phase temperatures inside (T_triple, T_crit).
+        // MT / thermal gate: both phase temperatures inside (T_triple, T_crit).
         const bool Tok1 = (p1.T > Tt && p1.T < Tc);
         const bool Tok2 = (p2.T > Tt && p2.T < Tc);
         std::snprintf(b,sizeof b,
@@ -779,7 +693,7 @@ inline int ps_dilute_relax_probe()
             (int)flash_liq,(int)flash_vap,(int)meta_liq,(int)meta_vap,
             (int)Tok1,(int)Tok2,(int)(p1.valid && p2.valid && Tok1 && Tok2));
         amrex::Print()<<b;
-        //  Does flash actually move anything?  dt/tau = 1 (one e-folding).
+        // Does flash move anything at dt/tau = 1 (one e-folding)?
         hem::V6 Uf = U;
         const bool fok = hem::ps_flash_source_cell(Uf, eos, 1.0e-7, 1.0e-7);
         std::snprintf(b,sizeof b,

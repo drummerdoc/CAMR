@@ -1,32 +1,29 @@
 #ifndef PS_PROMOTE_H
 #define PS_PROMOTE_H
 // =====================================================================
-//  PS_promote.H — CHECKED PROMOTION (DESIGN_ps_corridor_closure.md 3b,
-//  [DECIDE-3] option A, accepted by Marc 2026-09-02 as item 3's main
-//  path after the continuous face-closure was refuted, note §9).
+//  PS_promote.H — checked promotion (docs/MODEL_AND_ALGORITHM.md §4.5).
 //
-//  A phase the cheap classifier ps_regime would call INDEPENDENT is
-//  DEMOTED to CORRIDOR when its energy quotient defines no state its own
-//  branch can answer.  rho_k = m_k/alpha_k is bounded by rho_deg already;
-//  the missing check is the ENERGY: e_k = UE_k/m_k may sit below the
-//  coldest / above the hottest reachable e on the phase's branch (the
-//  step-3669 abort: e_1 = -2.2e5 promoted, computeTemp's branch-locked
-//  T query found no root).  This PREVENTS that branch query from ever
-//  being issued on an unreachable promoted state — at CREATION, keeping
-//  the phase host-slaved (corridor), not repairing it downstream.
+//  A phase the classifier ps_regime would call Independent is demoted to
+//  Corridor when its (rho_k, e_k) has no root on its own branch.  rho_deg
+//  bounds the density quotient already; the missing check is the energy:
+//  e_k = UE_k/m_k can sit below the coldest or above the hottest
+//  reachable e on the branch, and such a phase, once promoted, drifts to
+//  the branch edge and aborts in the first aborting branch-locked query.
+//  The check is prevention at the promotion event: the phase stays
+//  host-slaved (Corridor); nothing is repaired downstream.
 //
-//  Adds NO constant (ground rule 1): the branch's OWN e-domain is the
-//  bound, tested with the non-aborting EOS::REY2PTS_phase_try (which
-//  brackets e_PR(T) over [1,5000] K and reports a sign change — a real
-//  root — vs none).  Gated CAMR.ps_promote_checked (default 0); OFF is
-//  bit-identical to the pre-3b baseline by construction.
+//  Adds no constant: the branch's own energy domain is the bound, tested
+//  with the non-aborting EOS::REY2PTS_phase_try, which brackets e(T) over
+//  [1, 5000] K and reports a sign change (a root) or none.  Applied as an
+//  extra condition on each site's existing "Independent -> branch query,
+//  else host-slave" dispatch, so a demotion falls into the corridor path
+//  with no new control flow.  Refusals are counted; on the 1-D battery
+//  they are zero and the check is bit-identical on and off, which is the
+//  test that no legitimate promotion is unreachable.
 //
-//  Applied as an extra condition on each site's EXISTING
-//  `rg == Independent -> branch query, else host-slave` guard, so a
-//  demotion falls into the already-present corridor path with no new
-//  control flow.  This header isolates the EOS dependency: PS_presence.H
-//  (the classifier's home) has no EOS include; EOS.H has no presence
-//  include; this bridges the two.
+//  Dial: CAMR.ps_promote_checked (default 1), read in PS_presence.H.
+//  This header isolates the EOS dependency: PS_presence.H has no EOS
+//  include and EOS.H has no presence include.
 // =====================================================================
 #ifdef USE_PS_HYDRO
 
@@ -34,26 +31,19 @@
 #include "EOS.H"
 #include <AMReX_GpuQualifiers.H>
 
-//  Refusal counter (host-only, ground rule 9): would-be-Independent phases
-//  demoted to Corridor for energy-unreachability.  Reported/reset with the
-//  W0 face audit.  Nonzero in 2-D is the instrument that sizes 3b(B); ZERO
-//  on the whole 1-D suite is the acceptance (no legitimate promotion is
-//  unreachable there, so gate ON must be bit-identical to gate OFF).
-//  Item-3 diagnostic counters (host-only, ground rule 9), in their OWN
-//  namespace to avoid colliding with PS_HLLC::face_diag.  Reported and reset
-//  in CAMR_advance.cpp's ps_face_diag block.
-//    n_promote_refuse : would-be-Independent phases demoted to Corridor for
-//                       energy-unreachability (3b).  Sizes 3b(B).
+//  Host-only diagnostic counters, reported and reset in CAMR_advance.cpp:
+//    n_promote_refuse : would-be-Independent phases demoted to Corridor
+//                       for energy-unreachability ([PS-PROMOTE]).
 //    n_floor_skip     : per-phase floor legs skipped on a non-Independent
-//                       phase (3c).
+//                       phase (CAMR.ps_floor_indep).
 #if !defined(AMREX_USE_GPU)
 namespace ps_promote_diag {
     inline long& n_promote_refuse() { static long n = 0; return n; }
     inline long& n_floor_skip()     { static long n = 0; return n; }
-    //  3c conservation-budget accumulators (CAMR.ps_floor_budget): of the
-    //  corridor phases whose floor leg 3c skips, how many carry a REACHABLE
-    //  vs UNREACHABLE own-branch state; the total pressure-floor energy 3c
-    //  refrained from manufacturing; and the most-negative skipped e_k.
+    //  Floor-budget accumulators (CAMR.ps_floor_budget): of the corridor
+    //  phases whose floor leg is skipped, how many carry a reachable vs
+    //  unreachable own-branch state; the pressure-floor energy not added;
+    //  and the most-negative skipped e_k.
     inline long&   n_floor_reach()   { static long n = 0; return n; }
     inline long&   n_floor_unreach() { static long n = 0; return n; }
     inline double& floor_e_avoided() { static double x = 0.0; return x; }
@@ -66,11 +56,11 @@ namespace ps_promote_diag {
 }
 #endif
 
-//  Demote an Independent classification to Corridor iff its (rho,e) has no
-//  root on the requested branch.  Pass-through when the phase is not
-//  Independent or the gate is off.  rho,e are the values the site is about
-//  to hand the branch-locked EOS, so the test is exactly the query that
-//  would fire.
+//  Demote an Independent classification to Corridor iff (rho, e) has no
+//  root on the requested branch; pass-through when the phase is not
+//  Independent or the gate is off.  rho, e are the values the site is
+//  about to hand the branch-locked EOS, so the test is exactly the query
+//  that would fire.
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
 PsRegime ps_regime_reach(PsRegime rg, amrex::Real rho, amrex::Real e,
                          bool want_liquid, const PsPres& pr) noexcept

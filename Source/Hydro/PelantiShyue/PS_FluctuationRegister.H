@@ -1,37 +1,29 @@
 #ifndef PS_FLUCTUATION_REGISTER_H
 #define PS_FLUCTUATION_REGISTER_H
-// #define PS_FLUCTREG_DEBUG 1   // enable for task #22 P3 fine-deposit diagnostics
+// #define PS_FLUCTREG_DEBUG 1   // fine-deposit diagnostics
 // =====================================================================
-//  PS_FluctuationRegister.H  —  task #22
+//  PS_FluctuationRegister.H
 //
-//  CAMRPSFluctReg: a purpose-built coarse-fine register for the
-//  Pelanti-Shyue NON-conservative phase-energy WP-vs-Godunov defect.
+//  CAMRPSFluctReg: a coarse-fine register for a one-sided per-cell
+//  phase-energy correction, dsdt[UE_k] += -corr(low face)/dx with no
+//  high-face term, which is not the two-sided flux-difference form the
+//  stock amrex::YAFluxRegister deposit assumes (wrong overall sign, and
+//  a spurious correction of the coarse cell on the high side of a
+//  coarse-fine face).  It derives from YAFluxRegister to reuse the
+//  storage, the coarse-fine topology built in define(), and Reflux()
+//  unchanged; only the deposit is specialised (Berger-LeVeque form):
+//    * CrseAddOneSided: only the low-neighbour-fine branch, +sign;
+//    * FineAddOneSided: only the hi-side fine faces (which map to the
+//      low-branch coarse cell), -sign.
+//  The branch is chosen per face before the per-cell collapse, so corner
+//  coarse-fine cells get exactly what the one-sided interior update did.
+//  Reference: docs/MODEL_AND_ALGORITHM.md §4.9.
 //
-//  It derives from amrex::YAFluxRegister to reuse the (GPU-friendly)
-//  storage (m_crse_data / m_cfpatch / m_crse_flag / m_cfp_fab), the
-//  coarse-fine topology built in define(), and Reflux() UNCHANGED.
-//  Only the DEPOSIT is specialized, because the PS defect is applied in
-//  the interior as a ONE-SIDED per-cell source
-//
-//      dsdt[UE1] += -wp_corr(low face)/dx      (no high-face term),
-//
-//  which is NOT the two-sided flux-difference form that the stock
-//  YAFluxRegister CrseAdd/FineAdd assume.  A stock register therefore
-//  (a) has the wrong overall sign and (b) spuriously corrects the coarse
-//  cell on the *high* side of a C-F face, which the one-sided update
-//  never touched.  See docs/design/camr_ps_bl_reflux_design.md §3b.
-//
-//  The specialized deposit fixes both by selecting, at deposit time
-//  (where the C-F orientation is known box-independently):
-//    * CrseAddOneSided : keep ONLY the low-neighbour-fine branch, and
-//      deposit with +sign  (=> reflux correction (wp_corr_crse - Σfine)
-//      cancels the interior -wp_corr_crse and installs -Σfine).
-//    * FineAddOneSided  : keep ONLY the hi-side fine faces (which map to
-//      the low-branch coarse cell), deposited with -sign.
-//  Because the branch is chosen per-face BEFORE the per-cell collapse,
-//  corner C-F cells are handled correctly (a cell with fine on its
-//  low-x and high-y faces gets the low-x correction and nothing from
-//  high-y — exactly as the one-sided interior update requires).
+//  Status: under the wave-propagation flux the correction register is
+//  left at zero, so this register deposits zero and Reflux adds zero;
+//  what acts at the coarse-fine layer is the alpha co-move in
+//  CAMR::reflux (CAMR.ps_bl_reflux = 2).
+//  Retire-candidate: see docs/DESIGN_DECISIONS.md O-5.
 // =====================================================================
 
 #include "IndexDefines.H"             // NUM_PS_FLUCT, UE1, UE2
@@ -40,8 +32,7 @@
 #include <AMReX_Gpu.H>
 
 // ---------------------------------------------------------------------
-//  Device kernels (global namespace; the amrex_yafluxreg_* constants are
-//  at global scope).  Modelled on amrex::yafluxreg_crseadd / _fineadd.
+//  Device kernels, modelled on amrex::yafluxreg_crseadd / _fineadd.
 // ---------------------------------------------------------------------
 
 //! One-sided coarse add: only the LOW-neighbour-fine faces, +sign.
@@ -90,12 +81,10 @@ void camr_ps_fluctreg_fineadd_hi (
 {
     const auto lo = amrex::lbound(bx);
     const auto hi = amrex::ubound(bx);
-    // IntVect::dim3() zero-fills the unused dimensions (rr.z==0 in 2D,
-    // rr.y==rr.z==0 in 1D), so clamp EVERY transverse loop bound to 1.
-    // Before 2026-08-24 only z was clamped: in a DIM=1 build the x-branch
-    // ran `joff < rr.y` = `joff < 0` and FineAddOneSided deposited NOTHING
-    // while CrseAddOneSided still ran — a one-sided-only C-F "correction"
-    // (AUDIT 2026-08-24 A3).  No behavior change for DIM>=2.
+    // IntVect::dim3() zero-fills the unused dimensions (rr.z == 0 in 2D,
+    // rr.y == rr.z == 0 in 1D), so every transverse loop bound is clamped
+    // to 1; otherwise a DIM=1 build deposits nothing here while the coarse
+    // side still runs.
     const int nkoff = (AMREX_SPACEDIM == 3) ? rr.z : 1;
     const int njoff = (AMREX_SPACEDIM >= 2) ? rr.y : 1;
     if (idim == 0) {                        // x hi-side (cf. base case 1)

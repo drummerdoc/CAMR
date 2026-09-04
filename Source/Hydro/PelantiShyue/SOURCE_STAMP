@@ -1,18 +1,3 @@
-# Source-of-truth record for the copied PS algorithm code.
-#
-# hem_pelanti_shyue.H is a verbatim copy from
-#     ~/src/SINTEF/co2-eos-cfd  (branch: main)
-#     src/hem/hem_pelanti_shyue.H
-#     git rev: 3a66893 ("Repo init")
-#     copied on: 2026-07-05
-#
-# When the standalone repo advances (bug fixes, new relaxation
-# models, saturation-curve updates, etc.) the corresponding CAMR
-# header should be refreshed from the same path.  Diffing is safe:
-# the algorithm code is pure device-inline C++ with no CAMR-specific
-# includes.
-#
-# Companion headers already inside Source/EOS/RealFluidCO2/ that this
-# module depends on:
-#     hem_pr_state.H
-#     hem_saturation_amrex.H
+# Provenance: the PS module originated as a port of the co2-eos-cfd standalone
+# (hem_pelanti_shyue.H and the per-cell kernels) and has since diverged;
+# it is maintained here, not refreshed from the standalone.

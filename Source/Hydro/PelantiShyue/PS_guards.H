@@ -1,28 +1,28 @@
 #ifndef PS_GUARDS_H
 #define PS_GUARDS_H
 // =====================================================================
-//  PS_guards.H  --  SINGLE-SOURCE guards for the Pelanti-Shyue module.
+//  PS_guards.H  --  single-source guards and guard counters for the
+//  Pelanti-Shyue module.
 //
-//  WHY THIS FILE EXISTS
-//  --------------------
-//  The per-phase pressure sanity test was implemented FOUR times, in four
-//  functions, with three different bodies.  A fix applied to one copy is
-//  invisible: adding an upper bound to ps_augment_primitives produced
-//  bit-identical output for four consecutive runs of the failing pipe-break
-//  case, because the live path went through the other copies.  Separately,
-//  PS_P_CLIP -- a fifth implementation of the same idea, in
-//  hem_pelanti_shyue.H -- is unreachable in the wave-propagation production
-//  path (PS_umeth.cpp never calls ps_flux or ps_state_from_cons), so setting
-//  it also changed nothing.
+//  Principle (docs/MODEL_AND_ALGORITHM.md §8.2): Category A constants
+//  (triple point, critical point, covolume, validity box) come from the
+//  EOS backend's domain metadata and are never tuned; Category B guards
+//  (against the structural singularities rho_k = m_k/alpha_k,
+//  e_k = E_k/m_k, branch-locked calls outside their domain) are fluid-
+//  independent and defined exactly ONCE here, called from every site.
+//  Every early return and every substitution is counted: a guard that is
+//  never reached and a guard that is reached but never trips look
+//  identical from outside and need different fixes, so `seen` is counted
+//  alongside `reject`.  No upper caps: a discrete accept/reject predicate
+//  on near-pole trace states flips cell-to-cell and step-to-step, which
+//  injects grid-scale pressure noise (the "pepper" mechanism); only
+//  lower bounds survive, and the pole-adjacent state itself is prevented
+//  by the presence representation (ch. 4).
 //
-//  Rule this file enforces: ONE definition, called from every site.
-//
-//  DEVICE-CLEAN: no std::getenv, no ParmParse, no statics.  Everything is
-//  constexpr or passed by value, so these are callable from a ParallelFor
-//  (GPU-port blocker B0 does not apply to anything here).
-//
-//  See GUARD_INVENTORY.md in this directory for the full audit and for the
-//  physics derivation of each constant.
+//  Device-clean: no ParmParse, no statics in the guard functions; the
+//  counters are host-only and compile to no-ops under AMREX_USE_GPU.
+//  Reported on the [PS-GUARD] line at the ps_diag_mass cadence.
+//  Inventory and justification per guard: docs/MODEL_AND_ALGORITHM.md §8.3.
 // =====================================================================
 #ifdef USE_PS_HYDRO
 
@@ -34,25 +34,10 @@
 namespace ps_guard {
 
 // ---------------------------------------------------------------------
-//  AUDIT COUNTERS (host builds only; compiled out under AMREX_USE_GPU).
-//
-//  Why these exist: the upper bound below was added, the code rebuilt from
-//  clean, and the failing pipe-break case produced output IDENTICAL to eight
-//  significant figures -- meaning the guard never fired even though a cell
-//  with P1 = 2.62e10 Pa was demonstrably present in the same plotfile.  Four
-//  separate hypotheses were advanced for why, each costing a build-and-run
-//  cycle, none tested directly.
-//
-//  A guard that cannot be observed firing cannot be reasoned about.  Count it.
-//  `n_seen` counts every call, `n_reject` every substitution: a guard that is
-//  never REACHED and a guard that is reached but never TRIPS look identical
-//  from the outside, and they need different fixes.
+//  Phase-pressure guard counters, split by bound: `seen` per call,
+//  `reject_low` per substitution.  count_reject_high / n_reject_high are
+//  unreachable (no upper cap).  Retire-candidate: see docs/DESIGN_DECISIONS.md O-8.
 // ---------------------------------------------------------------------
-//  The counters are split BY BOUND.  A single "rejected" tally is not enough:
-//  the low bound (P < 1 Pa) predates this work and fires often, so a combined
-//  count of 745 234 rejections out of 35.5 M calls -- measured -- is
-//  indistinguishable from "the new upper bound never fires at all", which is
-//  exactly the question being asked.
 #if !defined(AMREX_USE_GPU)
 inline long& n_seen()        { static long n = 0; return n; }
 inline long& n_reject_low()  { static long n = 0; return n; }
@@ -68,39 +53,17 @@ AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_reject_high() noexcept {}
 #endif
 
 // ---------------------------------------------------------------------
-//  G3 constants -- per-phase pressure sanity.
-//
-//  P_FLOOR_PA: real-fluid cubics return negative P for deeply compressed or
-//  dome-adjacent states, and ps_max_wave_speed takes sqrt(gamma P / rho),
-//  which NaNs on P < 0.  1 Pa, matching the pre-existing floor.
-//
-//  P_RATIO_CAP -- REMOVED 2026-08-09 (Marc's decision, FINDINGS_hem_limit.md
-//  Addendum 5).  The upper bound (per-phase P rejected above 100x the stock
-//  mixture value) was CONTAINMENT for pole-adjacent trace-phase states
-//  (alpha_1 ~ 1e-5, rho_1 = m_1/alpha_1 at 99.6% of the PR pole M/b, giving
-//  P_1 = 2.62e10 Pa -- the "detonation seed" cell).  Measured consequence of
-//  the containment itself: the reject/accept decision is a DISCRETE predicate
-//  that flips cell-to-cell and step-to-step on trace-fiction cells, injecting
-//  grid-scale pressure noise ("satjet pepper", same failure class as the
-//  GERG_EXT_C sound-speed cliff).  Bisect record: half-res ML2 testbed
-//  roughness 1.06 with the cap, 0.12 without; full-res presence run then
-//  MATCHES the clean archive (0.273 vs 0.360 at t=2.66e-3).
-//
-//  The cure for the state the cap was containing is presence-discrete phase
-//  handling (DESIGN_ps_presence_discrete.md): rho_k is never formed from a
-//  vanishing alpha_k, so the pole-adjacent evaluation no longer exists.
-//  [PS-VALIDATE] rho_domain reports any recurrence; [PS-GUARD] rej_high
-//  stays as a wired-to-zero tally so a reintroduction is visible.
-//
-//  What remains below is the PRE-EXISTING low bound only (P >= 1 Pa,
-//  matching the archive semantics: P < 1 Pa or NaN -> substitute P_stock).
+//  G3: per-phase pressure floor.  P_FLOOR_PA [Pa] = 1: real-fluid cubics
+//  return negative P for deeply compressed or dome-adjacent states, and
+//  the wave-speed estimate takes sqrt(gamma P / rho), which NaNs on P < 0.
+//  Lower bound only; the upper (ratio) cap is rejected, see the header.
 // ---------------------------------------------------------------------
 constexpr amrex::Real P_FLOOR_PA  = amrex::Real(1.0);
 
 // ---------------------------------------------------------------------
-//  Is this per-phase pressure usable?  Written as a positive test so that
-//  NaN propagates to "not ok" without a separate isfinite() call.
-//  (Upper cap removed -- see the P_RATIO_CAP removal note above.)
+//  Is this per-phase pressure usable?  A positive test, so NaN propagates
+//  to "not ok" without a separate isfinite() call.  The reference argument
+//  is unused: the decision depends on P alone.
 // ---------------------------------------------------------------------
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
 bool phase_pressure_ok(amrex::Real P, amrex::Real /*P_stock*/) noexcept
@@ -109,29 +72,25 @@ bool phase_pressure_ok(amrex::Real P, amrex::Real /*P_stock*/) noexcept
 }
 
 // ---------------------------------------------------------------------
-//  Sanitize one per-phase pressure IN PLACE against the stock mixture value.
-//  Returns true if it was out of range and has been replaced.
-//
-//  Recovery is substitution by P_stock -- the single-fluid EOS evaluation on
-//  (rho, e), which is always sane -- rather than clamping to the floor, which
-//  would manufacture a huge pressure gradient at the recovered cell.  This is
-//  the recovery the original ps_augment_primitives already used; it is kept.
+//  Sanitize one per-phase pressure in place against the reference
+//  pressure P_stock (the host phase's pressure at every caller).  Returns
+//  true if it was out of range and has been replaced.  Recovery is
+//  substitution by the reference rather than clamping to the floor, which
+//  would manufacture a large pressure gradient at the recovered cell.
 // ---------------------------------------------------------------------
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
 bool sanitize_phase_pressure(amrex::Real& P, amrex::Real P_stock) noexcept
 {
     count_seen();
     if (phase_pressure_ok(P, P_stock)) return false;
-    // Only the low bound remains; !(P >= floor) also catches NaN.
-    // (count_reject_high is retained but unreachable -- see removal note.)
     count_reject_low();
     P = P_stock;
     return true;
 }
 
 // ---------------------------------------------------------------------
-//  Floor the stock mixture pressure itself before it is used as the
-//  substitution target.  Single-source so the four sites cannot drift.
+//  Floor the reference pressure itself before it is used as the
+//  substitution target.
 // ---------------------------------------------------------------------
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
 amrex::Real sanitize_stock_pressure(amrex::Real P_stock) noexcept
@@ -140,12 +99,10 @@ amrex::Real sanitize_stock_pressure(amrex::Real P_stock) noexcept
 }
 
 // ---------------------------------------------------------------------
-//  The volume-fraction mixture rule, with both phases sanitized.
-//  P_mix = a1 P1 + a2 P2 when BOTH phases are usable, else P_stock.
-//
-//  Falling back wholesale (rather than mixing a substituted phase) is
-//  deliberate: it keeps the outer machinery -- timestep estimator, plotfile
-//  derives -- decoupled from an unhealthy per-phase inversion.
+//  Volume-fraction mixture rule: P_mix = a1 P1 + a2 P2 when both phases
+//  are usable, else P_stock wholesale.  Falling back wholesale rather than
+//  mixing a substituted phase keeps the timestep estimator and plotfile
+//  derives decoupled from an unhealthy per-phase inversion.
 // ---------------------------------------------------------------------
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
 amrex::Real mixture_pressure(amrex::Real a1, amrex::Real P1,
@@ -158,61 +115,25 @@ amrex::Real mixture_pressure(amrex::Real a1, amrex::Real P1,
 }
 
 // ---------------------------------------------------------------------
-//  G1 -- per-phase density: UPPER clamp REMOVED 2026-08-09 (Marc's decision,
-//  FINDINGS_hem_limit.md Addendum 5, same bisect as the P_RATIO_CAP removal
-//  above).  Clamping rho_k at EOS::rho_max() before every EOS call replaced
-//  an off-domain evaluation (whose garbage pressure the old low-bound test
-//  then discarded wholesale) with an ON-domain evaluation whose garbage
-//  passed as trustworthy -- and the clamped/unclamped decision flips
-//  cell-to-cell on trace-fiction cells: the "satjet pepper".  The lower
-//  bound (rho_min, also catches NaN) is retained; it matches the archive's
-//  rho_floor semantics.  EOS::rho_min()/rho_max() remain as backend METADATA
-//  and are still used diagnostically by ps_validate_state (V6 rho_domain).
-//  The cure for pole-adjacent trace states is presence (see G5 below).
-//
-//  Original G1 rationale kept for the record:
-//
-//  The six-equation model forms rho_k = m_k / alpha_k.  That ratio is
-//  unbounded above as a phase vanishes: at alpha_1 = 1.85e-5, a mere
-//  m_1 = 0.03 kg/m3 of liquid puts rho_1 at 1644 kg/m3, which for Peng-
-//  Robinson CO2 is 99.6% of the hard-sphere pole M/b = 1650.4 where
-//  P = RT/(v_m - b) diverges.  Measured there: P_1 = 2.62e10 Pa, matching
-//  RT/(v-b) at v = 1.004b analytically.
-//
-//  Scale of the problem, measured with the audit counters in the failing
-//  pipe-break case: ~15 000 rejections per step out of ~423 000 guard calls
-//  on level 2 -- about 1300 distinct cells, ~3.6% of the fine grid, EVERY
-//  step.  Essentially every cell carrying a sliver of liquid.  This is not a
-//  localised seed; it is pervasive and has been present in every run.
-//
-//  Clamping the DENSITY (here) rather than the resulting pressure (above)
-//  protects everything downstream that consumes the per-phase state: the
-//  pressure relaxation, the Gibbs driving force for mass transfer, the wave
-//  speeds that set dt, and the per-phase energies.  Guarding P_k alone
-//  protects only P_mix.
-//
-//  Bounds come from the BACKEND (EOS::rho_min/rho_max), so this is fluid-
-//  and EOS-agnostic: PR/PRTab report 0.98*M/b (an exact analytic pole),
-//  GERG/GERGTab report their published validity edge.  Nothing here is
-//  tuned, and nothing here is CO2-specific.
-//
-//  NOTE this clamps at EVALUATION time.  The stored (alpha_k, m_k) pair is
-//  left alone, so rho_k = m_k/alpha_k recomputes to the same out-of-domain
-//  value next step and is clamped again.  The EOS is protected; the
-//  underlying state inconsistency is a separate question (see G5/G7).
+//  G1: per-phase density, lower bound only.  The bound is the backend's
+//  declared EOS::rho_min() (Category A metadata), so nothing here is tuned
+//  or CO2-specific; rho_max() stays metadata for the validator's V6 check.
+//  An upper clamp at rho_max before an EOS call would replace an
+//  off-domain evaluation, whose garbage the pressure test discards, with
+//  an on-domain evaluation whose garbage passes as trustworthy, and the
+//  clamped/unclamped decision flips cell-to-cell (the pepper mechanism).
+//  The clamp acts at evaluation time: the stored (alpha_k, m_k) pair is
+//  left alone.  count_rho_hi / n_rho_clamp_hi are unreachable.
+//  Retire-candidate: see docs/DESIGN_DECISIONS.md O-8.
 // ---------------------------------------------------------------------
 #if !defined(AMREX_USE_GPU)
-//  clean_state repairs.  A negative or non-finite partial mass is set to
-//  zero -- which makes that phase ABSENT, a representable state, rather than
-//  a fictitious sliver.  Counted because contract 4 requires every surviving
-//  repair to be named and counted.  A non-finite ALPHA is not repaired at
-//  all: it aborts (see CAMR::clean_state).
+//  clean_state repairs: a negative or non-finite partial mass is set to
+//  zero, which makes that phase Absent (a representable state) rather than
+//  a fictitious sliver; a non-finite alpha is not repaired, it aborts.
+//  m_mass_neg bounds as well as counts: the summed mass created by zeroing.
 inline long& n_mass_neg()       { static long n = 0; return n; }
 inline long& n_mass_nonfinite() { static long n = 0; return n; }
 inline void  count_mass_neg()       { ++n_mass_neg(); }
-//  Bound as well as count (contract 4): the summed magnitude of mass CREATED by
-//  clamping a negative partial mass to zero.  The census counted 44-52 events
-//  per two-phase run with no idea of the size.
 inline double& m_mass_neg()         { static double m = 0.0; return m; }
 inline void  add_mass_neg(double dm) { m_mass_neg() += dm; }
 inline void  count_mass_nonfinite() { ++n_mass_nonfinite(); }
@@ -232,58 +153,16 @@ AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
 amrex::Real clamp_phase_density(amrex::Real rho,
                                amrex::Real rho_min, amrex::Real rho_max) noexcept
 {
-    amrex::ignore_unused(rho_max);   // upper clamp removed -- see G1 note above
+    amrex::ignore_unused(rho_max);
     if (!(rho >= rho_min)) { count_rho_lo(); return rho_min; }  // also catches NaN
     return rho;
 }
 
 // ---------------------------------------------------------------------
-//  G5 -- SLAVED TRACE PHASE.  The structural fix, replacing four guards.
-//
-//  THE PROBLEM.  The six-equation model carries two phases in every cell,
-//  including cells where one phase does not exist.  In those cells the trace
-//  phase's state is not merely inaccurate, it is UNDEFINED: rho_k = m_k/alpha_k
-//  and e_k = UE_k/m_k are both ratios of cancellation-dominated small numbers,
-//  and the branch-locked EOS is then queried at a point where its branch has no
-//  root.  Measured at t=0 in the pipe-break case, EVERY cell in the domain
-//  starts at alpha_1 = 1e-6 with the "liquid" initialised as a literal copy of
-//  the vapour (same rho, same e, same T); by t = 2.6 ms those copies have
-//  drifted to rho_1 = 215..1644 kg/m3 and P_1 = 1e8..2.6e10 Pa.
-//
-//  WHY GUARDING FAILED.  A guard clamps one COMPONENT of a state that has no
-//  correct value in ANY component.  The tree already contains three partial
-//  attempts, none of which works alone and all of which are inactive in the
-//  production path: PS_P_CLIP (pressure only, dead), ps_two_fluid_flux
-//  (flux only, dead), ps_dilute_energy_closure (energy only, default off).
-//  Adding a fourth would not have helped either.
-//
-//  THE TREATMENT.  Below alpha_thr the trace phase stops being an independent
-//  degree of freedom.  It is SLAVED to the host phase: same pressure, same
-//  temperature, same sound speed.  Nothing is clamped because no independent
-//  state exists to go wrong -- the branch-locked EOS is simply never queried
-//  outside its domain.  This is the standalone's own construction
-//  (hem_pelanti_shyue.H:465-478, "substitute the surviving phase's intensive
-//  variables"), applied on a threshold rather than only after an EOS failure.
-//
-//  WHAT IS *NOT* TOUCHED.  The conserved state -- alpha_k, m_k, UE_k -- is left
-//  exactly as it is, and rho_k = m_k/alpha_k is still used for the MASS flux.
-//  Only the EOS-DERIVED intensive quantities (P, T, c) are slaved.  Mass and
-//  energy conservation are therefore untouched by construction; this is a
-//  statement about which thermodynamic state we believe, not about the
-//  bookkeeping.
-//
-//  THE THRESHOLD.  Derived, not tuned.  rho_k = m_k/alpha_k inherits a relative
-//  error eta/alpha_k, where eta is the scheme's per-step relative inconsistency
-//  in the mass variables (the hydro advances m_k with an ABSOLUTE error set by
-//  the mixture scale, not by m_k).  Requiring delta_rho_k/rho_k < eps gives
-//  alpha_thr > eta/eps.  MEASURED for this solver: eta_median = 2.1e-4,
-//  eta_max = 5.2e-4 per step.  At eps = 5 % that is alpha_thr = 4.2e-3 ..
-//  1.0e-2.  The value below sits at the conservative end of that band, and
-//  independently reproduces the 5e-3 / 1e-2 / 2e-2 thresholds already scattered
-//  through the code -- picked empirically, and evidently picked well.
-//
-//  Set to 0 to disable and recover the previous behaviour (requires a rebuild;
-//  this is constexpr because the call sites are AMREX_GPU_HOST_DEVICE).
+//  G5: slaved trace phase, threshold ALPHA_SLAVE_THR = 1e-2 (eta/eps at
+//  eta_max ~ 5e-4, eps = 5 %).  Superseded by the presence regimes
+//  (PS_presence.H, alpha_cond); slaved_phase has no caller.
+//  Retire-candidate: see docs/DESIGN_DECISIONS.md O-8.
 // ---------------------------------------------------------------------
 constexpr amrex::Real ALPHA_SLAVE_THR = amrex::Real(1.0e-2);
 
@@ -296,23 +175,16 @@ AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_slaved() noexcept {}
 #endif
 
 // ---------------------------------------------------------------------
-//  AUDIT 2026-08-24 B13 — surviving repairs/limiters that were UNCOUNTED
-//  (contract 4: every surviving repair is named and counted).
-//    flux_sanit   : the belt-and-suspenders loop at the end of
-//                   ps_physical_flux / ps_physical_flux_from_state replaced
-//                   a non-finite flux component with 0.  Every INPUT to those
-//                   functions is already ps_finite_or-guarded, so a hit here
-//                   means the arithmetic itself produced the non-finite
-//                   (e.g. inf*0) — a class the input guards cannot see.
-//    reflux_cap   : the task-#51 reflux α₁ co-move rate limit |Δα₁| ≤ 0.05
-//                   engaged at a coarse-fine cell.
-//    reflux_clamp : the co-moved α₁ hit the [amin, 1−amin] positivity clamp.
-//  Counting is always on (host builds; compiled out under AMREX_USE_GPU,
-//  like the W0 face audit); reported on the [PS-GUARD] line at the
-//  ps_diag_mass cadence and reset with the other guard counters.  NOTE the
-//  reflux counters accumulate in post_timestep and are therefore picked up
-//  by the FOLLOWING step's [PS-GUARD] report — same-interval, off-by-one
-//  in the label.
+//  Silent-limiter counters:
+//    flux_sanit   : a non-finite flux component was zeroed in the flux
+//                   sanitiser.  Every input is already finite-guarded, so
+//                   a hit means the arithmetic itself produced inf*0 or
+//                   the like, a class the input guards cannot see.
+//    reflux_cap   : the reflux alpha_1 co-move rate limit |d alpha_1| <= 0.05
+//                   engaged at a coarse-fine cell (CAMR::reflux).
+//    reflux_clamp : the co-moved alpha_1 hit the [amin, 1-amin] clamp.
+//  The reflux counters accumulate in post_timestep and appear on the
+//  following step's [PS-GUARD] line.
 // ---------------------------------------------------------------------
 #if !defined(AMREX_USE_GPU)
 inline long& n_flux_sanit()   { static long n = 0; return n; }
@@ -330,39 +202,28 @@ AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_reflux_clamp() noexcept {}
 #endif
 
 // ---------------------------------------------------------------------
-//  NSCBC-1 (2026-08-24): the ghost-cell NSCBC's zero-gradient fallbacks,
-//  SPLIT BY CAUSE (ground rule 2).  A fallback ghost is a legitimate safe
-//  exit, but each cause needs its own tally or "the new construction ran
-//  everywhere" and "the new construction fell back everywhere" are
-//  indistinguishable from outside:
-//    c     : the impedance sound speed came back non-finite/non-positive
-//            (pre-existing fallback, previously silent).
-//    lin   : |dP| too large for the linearized per-phase isentropic
-//            update (|Δρ_k| would exceed 20% of ρ_k) — refusing to
-//            linearize a huge far-field jump instead of manufacturing
-//            a state (the A1 p_amb=50x case lands here by design).
-//    sup   : supersonic INFLOW at the face — every characteristic enters,
-//            nothing is well-posed without a full ambient state.
-//    slots : 6-eq slots inconsistent with the mixture (m1+m2 far from ρ).
-//  Report + reset with the other guard counters ([PS-GUARD] line).
+//  NSCBC ghost-cell zero-gradient refusals, split by cause (PS_nscbc.H,
+//  docs/MODEL_AND_ALGORITHM.md §6.3).  A fallback ghost is a legitimate
+//  safe exit, but each cause needs its own tally or "ran everywhere" and
+//  "fell back everywhere" are indistinguishable from outside:
+//    c     : the impedance sound speed came back non-finite/non-positive.
+//    sup   : supersonic inflow at the face; every characteristic enters
+//            and nothing is well-posed without a full ambient state.
+//    slots : six-equation slots inconsistent with the mixture (m1+m2 far
+//            from rho).
+//    pack  : the sub-stepped isentropic pack refused (more than PACK_NMAX
+//            substeps needed, or a phase state left the EOS domain).
+//    flash : the flash-aware ghost closure fired (the ghost's mixture
+//            enthalpy fell inside the dome and it was re-closed as a
+//            saturated mixture); a diagnostic count, not a fallback.
+//  count_nscbc_zg_lin is unreachable.  Retire-candidate: see docs/DESIGN_DECISIONS.md O-8.
 // ---------------------------------------------------------------------
 #if !defined(AMREX_USE_GPU)
 inline long& n_nscbc_zg_c()     { static long n = 0; return n; }
 inline long& n_nscbc_zg_lin()   { static long n = 0; return n; }
 inline long& n_nscbc_zg_sup()   { static long n = 0; return n; }
 inline long& n_nscbc_zg_slots() { static long n = 0; return n; }
-//  NSCBC-3 fix (2026-08-27): the sub-stepped isentropic pack refused —
-//  the jump needs more than PACK_NMAX substeps, or a phase state left
-//  the EOS validity domain mid-integration.  Replaces the old 'lin'
-//  refusal class for large jumps ('lin' itself is gone with the
-//  one-shot linearized step; the counter slot is kept so historical
-//  logs still parse, and a nonzero lin after 2026-08-27 is a bug).
 inline long& n_nscbc_zg_pack()  { static long n = 0; return n; }
-//  Commit B (2026-08-27): the flash-aware ghost closure FIRED — the
-//  ghost's post-integration mixture enthalpy fell inside the saturation
-//  dome at P_g and the ghost was re-closed as an equilibrium (HEM)
-//  saturated mixture.  A diagnostic count, NOT a fallback: firing is
-//  the closure doing its job at a flashing vent.
 inline long& n_nscbc_flash()    { static long n = 0; return n; }
 inline void  count_nscbc_zg_c()     { ++n_nscbc_zg_c(); }
 inline void  count_nscbc_zg_lin()   { ++n_nscbc_zg_lin(); }
@@ -381,50 +242,17 @@ AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_nscbc_zg_slots() noexcept {}
 #endif
 
 // ---------------------------------------------------------------------
-//  CTOPRIM REFERENCE AUDIT  (2026-08-12)
-//
-//  ps_augment_primitives used to take its per-phase pressure reference from
-//  the SINGLE-FLUID mixture query that hydro_ctoprim leaves in q[QPRES] --
-//  EOS::REY2_prim(rho_mix, e_mix) -- and to LEAVE q[QPRES] at that value
-//  whenever either phase substituted.  The comment there argued the query "is
-//  always sane for PR within its calibrated range".  It is not.  For a
-//  two-phase cell (rho_mix, e_mix) pairs the light phase's VOLUME with the
-//  heavy phase's MASS and the inversion can have no root at all: that is the
-//  abort which stops B7-Rupture-Sonic at rho = 1.352e1 kg/m3,
-//  e = -1.1379e4 J/kg, 30 advances in.  A reference that can REFUSE cannot
-//  serve as a fallback.  The reference is now the HOST phase's pressure,
-//  matching PS_hllc's face_from_state and ps_physical_flux_from_state
-//  (b6d468c); ctoprim was the last of the three still asking the mixture.
-//
-//  WHAT THESE COUNT.  `ctop_sub` is a cell where an independent MINORITY
-//  phase's branch-locked pressure was rejected and replaced by the reference.
-//  That is exactly the set on which the old rule and the new one can disagree,
-//  and it is simultaneously the set on which the old code would have skipped
-//  the alpha-weighted q[QPRES] override (the badness predicate,
-//  phase_pressure_ok, ignores the reference -- see its signature -- so the
-//  DECISION to substitute is identical under both rules; only the substituted
-//  VALUE and the override branch differ).  If this reads zero over a run, no
-//  cell reached the reference, the rule change cannot have altered any value,
-//  and bit-identity of the accuracy numbers is a proof rather than a
-//  coincidence.
-//
-//  `ctop_seen` counts every VISIT to the reference.  Without it a zero in
-//  `ctop_sub` is ambiguous between "reached on every cell and never tripped"
-//  (the reassuring reading) and "never reached at all" (no information) --
-//  which is the precise ambiguity the n_seen/n_reject split above exists to
-//  resolve, and repeating that mistake one screen below its own lesson would
-//  be unforgivable.  ctop_sub == 0 with ctop_seen >> 0 is the measurement.
-//
-//  `ctop_host_floor` is the second, smaller behaviour change, named because it
-//  is a floor: the HOST phase's own pressure is no longer testable against an
-//  external reference (it IS the reference), so a host pressure below
-//  P_FLOOR_PA is floored to it rather than replaced by the mixture value.
-//
-//  The MAGNITUDE of a difference is deliberately not reported here.  It would
-//  need the single-fluid value alongside the host value, and that query is
-//  precisely what this change removes -- keeping it to measure the difference
-//  would keep the abort that motivated the change.  The count decides whether
-//  the magnitude is even a question.
+//  ctoprim pressure-reference counters (ps_augment_primitives).  The
+//  reference for an Independent minority phase is the host phase's
+//  pressure, not the single-fluid mixture query: for a two-phase cell
+//  (rho_mix, e_mix) pairs one phase's volume with the other's mass and the
+//  inversion can have no root, and a reference that can refuse cannot
+//  serve as a fallback.
+//    ctop_seen       : every visit to the reference.
+//    ctop_sub        : a minority phase's pressure rejected and replaced.
+//    ctop_host_floor : the host's own pressure (it is the reference, so
+//                      it cannot be substituted) floored to P_FLOOR_PA.
+// ---------------------------------------------------------------------
 #if !defined(AMREX_USE_GPU)
 inline long& n_ctop_seen()       { static long n = 0; return n; }
 inline long& n_ctop_sub()        { static long n = 0; return n; }
@@ -440,9 +268,8 @@ AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_ctop_sub()        noexcept {
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_ctop_host_floor() noexcept {}
 #endif
 
-// Which phase (if either) is slaved?  0 = neither, 1 = phase 1, 2 = phase 2.
-// If BOTH are below the threshold the cell is degenerate and we slave neither
-// (there is no host to slave to); the ordinary guards then apply.
+// Which phase (if either) is slaved: 0 = neither, 1 = phase 1, 2 = phase 2;
+// both below the threshold means no unique host.  No caller (see G5 above).
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
 int slaved_phase(amrex::Real alpha_1, amrex::Real alpha_2,
                  amrex::Real thr = ALPHA_SLAVE_THR) noexcept

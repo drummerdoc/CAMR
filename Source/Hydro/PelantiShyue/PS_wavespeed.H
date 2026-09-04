@@ -1,23 +1,24 @@
 #ifndef PS_WAVESPEED_H
 #define PS_WAVESPEED_H
 // =====================================================================
-//  PS_wavespeed.H — THE wave speed of the PS system, in one place.
+//  PS_wavespeed.H — the wave speed of the PS system, in one place, so
+//  the timestep estimator, its diagnostic twin, the flux and the NSCBC
+//  boundary impedance share one construction.
+//  Reference: docs/MODEL_AND_ALGORITHM.md §2.2.
 //
-//  Moved verbatim out of PS_umeth.cpp 2026-08-11.  It lived in a .cpp, which
-//  had two consequences: PS_reconstruction.H had to carry a private copy of
-//  ps_finite_or (`ps_recon_finite`, with a comment saying why), and the
-//  TIMESTEP could not use it -- so CAMR_estdt_hydro formed the CFL number from
-//  the SINGLE-FLUID mixture inversion instead, a speed the scheme never
-//  propagates with.  Timestep.H's own diagnostic comment already said as much:
-//  "c from a SINGLE-FLUID EOS call on the MIXTURE state, which is not a
-//  characteristic speed of the 7-equation system.  This reporter is what
-//  exposed that."  Putting the function in a header is what lets the estimator,
-//  its diagnostic twin and the flux share one speed.
+//  ps_phase_speeds_from_state builds the per-phase (rho_k, e_k, P_k, c_k)
+//  from a conserved NVAR vector with the presence dispatch: the host phase
+//  (larger alpha) is queried on its own branch; a corridor or absent
+//  phase, or one refused by checked promotion, takes the host's P and c.
+//  ps_frozen_cmix_from_state is the Wallis frozen mixture sound speed
+//  over it, c^2 = Y1 c1^2 + Y2 c2^2; ps_max_wave_speed_from_state returns
+//  |u_n| + c_mix, so dt_dir = dx_dir / lambda.
 //
-//  ps_max_wave_speed_from_state returns |u_n| + c_mix, so dt_dir = dx_dir/lam.
-//  NOTE it still clamps rho_k into the EOS domain (G1) and floors P_k/c_k;
-//  those are pre-existing guards on the flux path, unchanged by the move, and
-//  they are now shared by dt as well -- named here, not introduced here.
+//  Guards on this path (all in PS_guards.H): rho_k clamped from below at
+//  EOS::rho_min (counted), P_k floored at P_FLOOR_PA, a non-finite or
+//  non-positive c_k set to 1 m/s.  Every conserved read goes through
+//  ps_finite_or so one bad cell cannot poison the whole timestep.
+//  Dials: none (PsPres arrives by value).
 // =====================================================================
 #ifdef USE_PS_HYDRO
 
@@ -30,15 +31,12 @@
 #include "IndexDefines.H"
 #include "EOS.H"
 #include "PS_presence.H"
-#include "PS_promote.H"    // 3b: checked promotion
+#include "PS_promote.H"
 #include "PS_guards.H"
 
-using amrex::Real;   // matches PS_ctoprim.H / PS_hllc.H
+using amrex::Real;
 
-// ---------------------------------------------------------------------
-//  Finite-or-fallback: keeps a single bad cell from poisoning the whole
-//  timestep.  Used at every read of U(...)/q(...) in the flux helpers.
-// ---------------------------------------------------------------------
+// Finite-or-fallback for every conserved read in the flux helpers.
 AMREX_GPU_HOST_DEVICE
 AMREX_FORCE_INLINE
 Real
@@ -48,16 +46,13 @@ ps_finite_or(Real x, Real fallback) noexcept
 }
 
 
-//  NSCBC-1 (2026-08-24): the per-phase decomposition underneath the frozen
-//  mixture sound speed, extracted as a struct-returning helper so the NSCBC
-//  ghost pack can perturb each phase along its OWN branch (same host-slaving,
-//  same G1 clamps, same floors) instead of pushing a single-fluid mixture
-//  inversion into both phase-energy slots.  ps_frozen_cmix_from_state below
-//  is a thin Wallis wrapper over this — FP-identical to the pre-split body.
+//  Per-phase decomposition underneath the frozen mixture sound speed,
+//  returned as a struct so the NSCBC ghost pack can perturb each phase
+//  along its own branch with the same dispatch, clamps and floors.
 struct PsPhaseSpeeds {
     Real rho;                     // floored mixture density
     Real ux, uy, uz;              // mixture velocity
-    Real rho1, rho2;              // per-phase densities (G1-clamped)
+    Real rho1, rho2;              // per-phase densities (lower-clamped)
     Real e1, e2;                  // per-phase specific internal energies
     Real P1, P2, c1, c2;          // branch-locked P/c (floored)
     Real m1, m2;                  // non-negative partial masses
@@ -85,6 +80,7 @@ ps_phase_speeds_from_state(const Real U[NVAR], const PsPres& pr) noexcept
     const Real uz     = Real(0.0);
 #endif
     Real alpha_1 = ps_finite_or(U[UALPHA1], Real(1.0));
+    // alpha_floor and rho_floor are unused.  Retire-candidate: see docs/DESIGN_DECISIONS.md O-8.
     constexpr Real alpha_floor = Real(1.0e-6);
     if (alpha_1 < Real(0.0)) alpha_1 = Real(0.0);
     if (alpha_1 > Real(1.0)) alpha_1 = Real(1.0);
@@ -93,8 +89,8 @@ ps_phase_speeds_from_state(const Real U[NVAR], const PsPres& pr) noexcept
     const Real m1 = amrex::max(ps_finite_or(U[UM1RHO1], Real(0.0)), Real(0.0));
     const Real m2 = amrex::max(ps_finite_or(U[UM2RHO2], Real(0.0)), Real(0.0));
     constexpr Real rho_floor = Real(1.0e-6);
-    // G1: clamp into the EOS validity domain (see PS_guards.H).  Was
-    // floor-only, leaving rho_k free to reach the PR hard-sphere pole.
+    // Absent phase: mixture density as a placeholder (multiplied by m_k = 0
+    // downstream); otherwise the stored quotient, lower-clamped (G1).
     const PsRegime rg1 = ps_regime(alpha_1, m1, pr);
     const PsRegime rg2 = ps_regime(alpha_2, m2, pr);
     Real rho_1, rho_2;
@@ -109,20 +105,21 @@ ps_phase_speeds_from_state(const Real U[NVAR], const PsPres& pr) noexcept
     const Real E1_tot = ps_finite_or(U[UE1], Real(0.0));
     const Real E2_tot = ps_finite_or(U[UE2], Real(0.0));
     const Real e_mix  = ps_finite_or(U[UEINT], Real(0.0)) * inv_r;
+    // The e_mix substitution at m_k <= 1e-12 is a silent placeholder that
+    // predates the checked construction; recorded as an open cleanup item
+    // (docs/MODEL_AND_ALGORITHM.md §4.6).  It is never branch-queried: a
+    // phase that small is Absent or Corridor and takes the host's P, c.
     const Real e1 = (m1 > Real(1.0e-12)) ? E1_tot / m1 - ke_spec : e_mix;
     const Real e2 = (m2 > Real(1.0e-12)) ? E2_tot / m2 - ke_spec : e_mix;
 
     Real Y[NUM_SPECIES];
     Y[0] = Real(1.0);
     for (int n = 1; n < NUM_SPECIES; ++n) Y[n] = Real(0.0);
-    // Per-phase P and c via branch-locked EOS (task #185).  ONE solve per
-    // phase returns both (the state already carries P and c) — replaces the
-    // P-then-c pair, which the host EOS cache deduped but the device did not.
-    // Byte-identical result; device-clean 2->1 solves.
+    // One branch-locked solve per phase returns both P and c.
     Real P1, P2, c1, c2;
-    // S1: host (larger alpha) always queried on its own branch; a
-    // corridor/absent phase takes the host's c (continuous — the A3
-    // c = 1 m/s discontinuity cannot occur on this path).
+    // Presence dispatch: the host (larger alpha) is always queried on its
+    // own branch; a corridor/absent or promotion-refused phase takes the
+    // host's P and c, so c is continuous across the transition cells.
     const bool host_is_1 = (alpha_1 >= alpha_2);
     if (host_is_1) {
         EOS::REY2PCs_liquid(rho_1, e1, Y, P1, c1);
@@ -133,20 +130,9 @@ ps_phase_speeds_from_state(const Real U[NVAR], const PsPres& pr) noexcept
         if (ps_regime_reach(rg1, rho_1, e1, /*liquid=*/true, pr) == PsRegime::Independent) { EOS::REY2PCs_liquid(rho_1, e1, Y, P1, c1); }
         else                              { P1 = P2; c1 = c2; }
     }
-    // SINGLE-SOURCE floor (see PS_guards.H) -- was a fourth copy.
-    //
-    // DELIBERATELY FLOOR-ONLY HERE.  The other three sites apply the G3 upper
-    // bound relative to the stock single-fluid mixture pressure, but this
-    // function has no P_stock: obtaining one costs an extra EOS::REY2P per
-    // face per direction in the wave-speed hot path.  Since the result feeds
-    // c_mix and therefore dt, inventing a different criterion here would
-    // perturb the timestep of every run for no measured benefit.
-    //
-    // This site is instead protected AT SOURCE by G1 (clamp rho_k into the
-    // EOS validity domain before the branch-locked call) -- see
-    // GUARD_INVENTORY.md Part 4.  Once G1 lands, rho_k can no longer reach
-    // the PR hard-sphere pole and P1/c1 cannot blow up here in the first
-    // place.  Revisit this comment when G1 is in.
+    // Floors only (G3 floor, c fallback).  There is no reference pressure
+    // here: obtaining one would cost an extra EOS solve per face per
+    // direction in the wave-speed hot path and perturb every run's dt.
     if (P1 < ps_guard::P_FLOOR_PA || !std::isfinite(P1)) P1 = ps_guard::P_FLOOR_PA;
     if (P2 < ps_guard::P_FLOOR_PA || !std::isfinite(P2)) P2 = ps_guard::P_FLOOR_PA;
     if (!std::isfinite(c1) || c1 <= Real(0.0)) c1 = Real(1.0);
@@ -160,12 +146,10 @@ ps_phase_speeds_from_state(const Real U[NVAR], const PsPres& pr) noexcept
     return o;
 }
 
-//  AUDIT 2026-08-24 B8: the frozen mixture sound speed, extracted so the
-//  NSCBC boundary impedance shares THE one construction (host-slaving,
-//  G1 clamps, #199 Wallis form) instead of carrying a drifted copy.
-//  ps_max_wave_speed_from_state below is |u_n| + this.
-//  (NSCBC-1: now a Wallis wrapper over ps_phase_speeds_from_state above —
-//  same operations in the same order, FP-identical.)
+//  Frozen (Wallis) mixture sound speed over ps_phase_speeds_from_state.
+//  Mass fractions come from the conserved masses directly: exact for an
+//  Absent phase (m = 0) and well-conditioned everywhere else.  Falls back
+//  to max(c1, c2) if the square is not positive.
 AMREX_GPU_HOST_DEVICE
 AMREX_FORCE_INLINE
 Real
@@ -174,10 +158,6 @@ ps_frozen_cmix_from_state(const Real U[NVAR], const PsPres& pr) noexcept
     const PsPhaseSpeeds s = ps_phase_speeds_from_state(U, pr);
 
     Real c2_frozen;
-    // S1: the CORRECT Wallis form (task #199 — this copy was one of the
-    // three still carrying the erroneous extra alpha factor, feeding dt).
-    // Mass fractions from the conserved masses directly: exact for
-    // ABSENT (m = 0), well-conditioned everywhere else.
     const Real Y1 = s.m1 / s.rho;
     const Real Y2 = Real(1.0) - Y1;
     c2_frozen = ps_cmix2(Y1, Y2, s.c1, s.c2);
@@ -185,6 +165,7 @@ ps_frozen_cmix_from_state(const Real U[NVAR], const PsPres& pr) noexcept
                                    : amrex::max(s.c1, s.c2);
 }
 
+//  |u_n| + c_mix in direction idir: the CFL speed of the PS system.
 AMREX_GPU_HOST_DEVICE
 AMREX_FORCE_INLINE
 Real

@@ -1,39 +1,36 @@
 #ifndef PS_CTOPRIM_H
 #define PS_CTOPRIM_H
 // =====================================================================
-//  PS_ctoprim.H  —  extended conservative-to-primitive conversion
-//                   for the Pelanti-Shyue six-equation state.
+//  PS_ctoprim.H  —  conservative-to-primitive conversion for the
+//                   Pelanti-Shyue six-equation state, plus the
+//                   conserved-state derives that share its rules.
 //
-//  CAMR's stock Hydro_ctoprim.H writes the mixture primitives
-//  (QRHO, QU, QV, QW, QGAME, QPRES, QREINT, QTEMP) and the passive-
-//  scalar mass fractions (QFS…, QFX…, QFA…).  Under USE_PS_HYDRO the
-//  extended primitive block QALPHA1, QRHO1, QRHO2, QP1, QP2 must
-//  also be populated so that PS_umeth can access per-phase state at
-//  each face without re-inverting from conservatives.
+//  ps_augment_primitives runs per cell after the stock hydro_ctoprim
+//  (CAMR_construct_hydro_source.cpp) and fills the extended primitive
+//  block QALPHA1, QRHO1, QRHO2, QP1, QP2 and QPRES from the conserved
+//  slots.  It issues branch-locked EOS calls (REY2P_liquid / REY2P_vapor),
+//  so its GPU portability is that of the EOS backend.
 //
-//  This header provides a device-inline `ps_augment_primitives` that
-//  wraps the stock ctoprim call.  Its expected use is (Phase 4c-β):
+//  Contract (docs/MODEL_AND_ALGORITHM.md §4.6, §2.1): the phase state is
+//  a checked construction.  ps_phase_quot returns (rho_k, e_k) with an
+//  `exists` flag; the host phase (larger volume fraction) is always
+//  queried on its own branch and defines the cell; a minority phase is
+//  queried only if Independent and energy-reachable (PS_promote.H),
+//  otherwise it takes the host's pressure by definition.  No state is
+//  manufactured; the only floors are the counted ones in PS_guards.H.
+//  QPRES is always the volume-fraction mixture rule a1 P1 + a2 P2.
 //
-//      // in the umdrv driver, right after hydro_ctoprim(bx, q, qa, ...):
-//      #ifdef USE_PS_HYDRO
-//      if (do_ps_hydro) {
-//          amrex::ParallelFor(bx,
-//              [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
-//                  ps_augment_primitives(i, j, k, sarr, q);
-//              });
-//      }
-//      #endif
-//
-//  Because this routine is trivial arithmetic (no EOS calls), it is
-//  fully GPU-portable and adds negligible cost when enabled.
+//  Also here: ps_mixture_pressure_from_cons (plotfile pressure derive)
+//  and ps_phase_temp_from_cons (temp_1 / temp_2 derives).
+//  Dials: none (presence parameters arrive by value in PsPres).
 // =====================================================================
 
 #ifdef USE_PS_HYDRO
 
 #include "IndexDefines.H"
-#include "PS_guards.H"      // single-source phase-pressure sanity (G3)
-#include "PS_presence.H"    // S2: presence-discrete regimes
-#include "PS_promote.H"     // 3b: checked promotion
+#include "PS_guards.H"
+#include "PS_presence.H"
+#include "PS_promote.H"
 #include <AMReX_Array4.H>
 #include <AMReX_GpuQualifiers.H>
 
@@ -45,52 +42,29 @@ ps_augment_primitives(int i, int j, int k,
                       amrex::Array4<amrex::Real> const& q,
                       const PsPres& pr)
 {
-    // Read the extended conservative slots (populated by CAMR_initdata
-    // under the same #ifdef guard).
     const amrex::Real alpha_1  = u(i,j,k, UALPHA1);
-    const amrex::Real m1rho1   = u(i,j,k, UM1RHO1);   // α₁ ρ₁
-    const amrex::Real m2rho2   = u(i,j,k, UM2RHO2);   // α₂ ρ₂
-    const amrex::Real E1_tot   = u(i,j,k, UE1);       // α₁ ρ₁ E₁
-    const amrex::Real E2_tot   = u(i,j,k, UE2);       // α₂ ρ₂ E₂
+    const amrex::Real m1rho1   = u(i,j,k, UM1RHO1);   // alpha_1 rho_1
+    const amrex::Real m2rho2   = u(i,j,k, UM2RHO2);   // alpha_2 rho_2
+    const amrex::Real E1_tot   = u(i,j,k, UE1);       // alpha_1 rho_1 E_1
+    const amrex::Real E2_tot   = u(i,j,k, UE2);       // alpha_2 rho_2 E_2
 
-    // Volume-fraction clamp — α ∈ [0, 1].  (Historical note: this used
-    // to clamp into [α_floor, 1 − α_floor]; the presence machinery now
-    // owns the small-α semantics and the clamp is to the physical box.)
+    // alpha is clamped to its definitional box [0, 1] only, so ps_regime
+    // sees the true small-alpha values and Absent is reachable here.
+    // alpha_floor is unused.  Retire-candidate: see docs/DESIGN_DECISIONS.md O-8.
     constexpr amrex::Real alpha_floor = amrex::Real(1.0e-6);
     amrex::Real a1 = alpha_1;
     if (a1 < amrex::Real(0.0)) a1 = amrex::Real(0.0);
     if (a1 > amrex::Real(1.0)) a1 = amrex::Real(1.0);
     const amrex::Real a2 = amrex::Real(1.0) - a1;
-    //  Contract 3: regime computed honestly on BOTH paths (was: forced
-    //  Independent on legacy, i.e. asserting both phases exist).
-    //  NOTE: a1 is clamped only into [0, 1] above, so ps_regime sees the
-    //  true small-α values and Absent IS reachable here.  (An earlier
-    //  version of this note claimed an [α_floor, 1−α_floor] clamp made
-    //  Absent unreachable — that clamp no longer exists.)
     const PsRegime rg1 = ps_regime(a1, m1rho1, pr);
     const PsRegime rg2 = ps_regime(a2, m2rho2, pr);
 
-    // Per-phase densities ρ_k = (α_k ρ_k) / α_k .  LLF diffusion in
-    // the trace phase (α₂ ≈ 1e-6 initially) can drive α_k ρ_k
-    // slightly negative over many timesteps; clamp to a small
-    // positive floor to keep everything downstream finite.  A more
-    // physical remedy is the vanish-fold + mass-transfer relaxation
-    // (Phase 4d) which redistributes mass between phases; here we
-    // just guarantee positivity.
+    // rho_floor is declared and unused.  Retire-candidate: see docs/DESIGN_DECISIONS.md O-8.
     constexpr amrex::Real rho_floor = amrex::Real(1.0e-6);
-    // G1: clamp into the EOS validity domain (see PS_guards.H).  Was
-    // floor-only, which left rho_k free to reach the PR hard-sphere pole.
     const amrex::Real rho_mix_c = u(i,j,k, URHO);
     amrex::ignore_unused(rho_floor);
-    //  rho_k / e_k are formed together below, after ke_spec, by the checked
-    //  construction (contract 3).  They used to be built here, clamped into
-    //  the EOS domain, with e_k separately falling back to the MIXTURE energy
-    //  "to keep downstream EOS calls in a valid regime" -- i.e. manufacturing
-    //  a state rather than reporting that none exists.
 
-    // Per-phase specific internal energies e_k = E_k − ½ u²
-    // (per-phase kinetic energy uses the mixture velocity, which
-    // already lives in q at QU/QV/QW after the stock ctoprim call).
+    // Per-phase kinetic energy uses the mixture velocity, already in q.
     const amrex::Real ux = q(i,j,k, QU);
 #if (AMREX_SPACEDIM >= 2)
     const amrex::Real uy = q(i,j,k, QV);
@@ -105,14 +79,10 @@ ps_augment_primitives(int i, int j, int k,
     const amrex::Real ke_spec =
         amrex::Real(0.5) * (ux*ux + uy*uy + uz*uz);
 
-    // e_k = (α_k ρ_k E_k) / (α_k ρ_k) − ke .  Guarded by α_k ρ_k > 0.
-    // Fall back to the mixture specific internal energy if the
-    // per-phase partial mass goes bad — an approximation but keeps
-    // downstream EOS calls in a valid regime.
-    //  AUDIT 2026-08-24 (hydro finding 14): floor the denominator like every
-    //  comparable site (cf. ps_mixture_pressure_from_cons) — this runs on
-    //  grown boxes where unfilled ghost corners are least trustworthy.
-    //  Identical on all finite states.
+    // Checked construction: (rho_k, e_k) with an exists flag.  A phase with
+    // no state carries the mixture values as placeholders only; it is never
+    // branch-queried below.  The mixture density is floored because this
+    // runs on grown boxes where unfilled ghost corners are least trustworthy.
     const amrex::Real rho_mix_den =
         (std::isfinite(u(i,j,k, URHO)) && u(i,j,k, URHO) > amrex::Real(1.0e-6))
         ? u(i,j,k, URHO) : amrex::Real(1.0e-6);
@@ -124,90 +94,42 @@ ps_augment_primitives(int i, int j, int k,
     const amrex::Real e1   = q1.exists ? q1.e   : E_mix;
     const amrex::Real e2   = q2.exists ? q2.e   : E_mix;
 
-    // Per-phase pressures — branch-locked (task #185).
-    //
-    // The stock EOS auto-detects phase, which is wrong for the 6-eq
-    // module: when either phase sits at a state deep in the other
-    // phase's region (e.g., "phase 2 = vapor" held at (ρ, e) that
-    // lies deep in the compressed-liquid region of the PR cubic),
-    // auto-detect picks the wrong root and produces a P inconsistent
-    // with the metastable state the caller intended.  For the
-    // Pelanti relaxation this cascades — the Newton uses that
-    // inconsistent P as the driving force and pushes the mixture
-    // toward an unphysical equilibrium.
-    //
-    // Convention (matches the standalone driver's PsPhaseAPI):
-    //     Phase 1 = liquid branch  → EOS::REY2P_liquid
-    //     Phase 2 = vapor / SC     → EOS::REY2P_vapor
-    // Each wrapper calls hem::state_from_rho_e_phase, which forces
-    // the requested single-phase PR branch and returns the
-    // metastable extrapolation past the saturation dome when the
-    // physical root is absent.
+    // Per-phase pressures, branch-locked: phase 1 = liquid branch
+    // (EOS::REY2P_liquid), phase 2 = vapor / supercritical branch
+    // (EOS::REY2P_vapor).  Phase identity is asserted by the slot, never
+    // auto-detected: a phase held at a state deep in the other phase's
+    // region must return the metastable extrapolation on its own branch,
+    // or the relaxation Newton is driven by an inconsistent pressure.
     amrex::Real Y[NUM_SPECIES];
     Y[0] = amrex::Real(1.0);
     for (int n = 1; n < NUM_SPECIES; ++n) Y[n] = amrex::Real(0.0);
 
-    // G5 SLAVED TRACE PHASE (see PS_guards.H).  Below the threshold the trace
-    // phase is not an independent degree of freedom: query the HOST branch only
-    // and give the trace phase the host's pressure.  The branch-locked EOS is
-    // never evaluated at the trace phase's undefined (rho_k, e_k), so there is
-    // nothing for the pressure ceiling to catch.  Subsumes PS_P_CLIP.
+    // Presence dispatch (same rule as PS_hllc face_from_state): the host
+    // phase (larger volume fraction) is queried unconditionally and defines
+    // the cell; a minority phase is queried only if Independent and
+    // energy-reachable, else it takes the host's pressure by definition.
     amrex::Real P1, P2;
-    //  The HOST phase is the one with the larger volume fraction.  Hoisted out
-    //  of the fork below because the pressure REFERENCE now needs it too.
     const bool host_is_1 = (a1 >= a2);
-    // S2 presence dispatch (mirrors PS_hllc face_from_state): the host
-    // phase defines the cell; corridor/absent phases take its pressure
-    // by DEFINITION (transport-only corridor, design §1).
     if (host_is_1) {
         EOS::REY2P_liquid(rho1, e1, Y, P1);
-        //  3b: minority vapor branch query gated on energy reachability.
         if (ps_regime_reach(rg2, rho2, e2, /*liquid=*/false, pr) == PsRegime::Independent) { EOS::REY2P_vapor(rho2, e2, Y, P2); }
         else                              { P2 = P1; }
     } else {
         EOS::REY2P_vapor(rho2, e2, Y, P2);
-        //  3b: minority liquid branch query gated on energy reachability
-        //  (the ps_augment_primitives copy missed in the first 3b pass —
-        //  the demo2 branch-edge minority-liquid abort site).
         if (ps_regime_reach(rg1, rho1, e1, /*liquid=*/true, pr) == PsRegime::Independent) { EOS::REY2P_liquid(rho1, e1, Y, P1); }
         else                              { P1 = P2; }
     }
 
-    // Pressure floor — real-fluid PR can return negative P for
-    // deeply compressed or two-phase-envelope-adjacent states.
-    // Downstream ps_max_wave_speed calls sqrt(γ P / ρ) which NaNs
-    // on P < 0.
-    //
-    // THE REFERENCE IS THE HOST PHASE, not a single-fluid mixture query.
-    // This used to be `sanitize_stock_pressure(q(i,j,k,QPRES))` -- the value
-    // hydro_ctoprim's EOS::REY2_prim(rho_mix, e_mix) leaves behind -- on the
-    // argument that a single-fluid evaluation on (rho, e) "is always sane for
-    // PR within its calibrated range".  It is not: for a two-phase cell
-    // (rho_mix, e_mix) pairs the light phase's VOLUME with the heavy phase's
-    // MASS and the inversion can have no root at all.  That is the abort which
-    // stopped B7-Rupture-Sonic at rho = 1.352e1 kg/m3, e = -1.1379e4 J/kg,
-    // 30 advances in (measured 2026-08-11).  A reference that can REFUSE
-    // cannot be a fallback.
-    //
-    // The host phase always HAS a state: alpha_host >= 1/2 >> alpha_cond, so
-    // it is INDEPENDENT by construction whenever the cell is physical.  It is
-    // therefore both the correct fallback and a reference that cannot refuse.
-    // Same rule as PS_hllc's face_from_state and ps_physical_flux_from_state
-    // (b6d468c) -- whose own comment already named the ctoprim sites as the
-    // outliers "compar[ing] against the single-fluid EOS(rho,e) value".
-    // ctoprim was the last of the three; ps_mixture_pressure_from_cons (the
-    // plotfile derive) is the remaining one and is on the audit list.
-    //
-    // Because the host IS the reference it cannot be substituted, only
-    // floored -- counted as ctop_host_floor (see PS_guards.H).
-    // SINGLE-SOURCE (see PS_guards.H).  This test used to be local and
-    // one-sided -- it caught P too small / non-finite but not absurdly large --
-    // and was duplicated in three other functions with three different bodies.
+    // Pressure reference for the G3 guard is the host phase: it is
+    // Independent by construction whenever the cell is physical
+    // (alpha_host >= 1/2 >> alpha_cond), so it cannot refuse, which a
+    // single-fluid (rho_mix, e_mix) inversion can.  Being the reference it
+    // can only be floored (ctop_host_floor); an Independent minority phase
+    // is substituted (ctop_sub).  Counters: PS_guards.H.
     ps_guard::count_ctop_seen();
     amrex::Real& P_host = host_is_1 ? P1 : P2;
-    //  phase_pressure_ok's second argument is ignored by construction (see its
-    //  signature); passing 0 asks only "is this above P_FLOOR_PA?" without
-    //  restating the constant here.
+    // phase_pressure_ok ignores its second argument; 0 asks only
+    // "is this above P_FLOOR_PA?" without restating the constant.
     if (!ps_guard::phase_pressure_ok(P_host, amrex::Real(0.0))) {
         ps_guard::count_ctop_host_floor();
     }
@@ -218,46 +140,27 @@ ps_augment_primitives(int i, int j, int k,
     if (rg2 == PsRegime::Independent) P2_bad = ps_guard::sanitize_phase_pressure(P2, P_ref);
     if (P1_bad || P2_bad) ps_guard::count_ctop_sub();
 
-    // Write the extended primitive slots.
     q(i,j,k, QALPHA1) = a1;
     q(i,j,k, QRHO1  ) = rho1;
     q(i,j,k, QRHO2  ) = rho2;
     q(i,j,k, QP1    ) = P1;
     q(i,j,k, QP2    ) = P2;
 
-    // QPRES is ALWAYS the P-S 2014 volume-fraction rule now.  It used to be
-    // written only `if (!P1_bad && !P2_bad)`, otherwise leaving the
-    // single-fluid EOS result in place "so the outer hydro machinery
-    // (timestep estimator, plotfile derives) never sees a garbage pressure
-    // originating from an unhealthy per-phase inversion".  Three reasons that
-    // branch goes:
-    //   (1) the value it fell back to no longer exists -- see P_ref above.
-    //   (2) It is no longer needed.  A rejected phase now carries the HOST's
-    //       pressure, which is a state that EXISTS, so the alpha-weighted sum
-    //       is a convex combination of two real pressures rather than of one
-    //       real and one garbage.  Avoiding the latter was the entire reason
-    //       for the wholesale fallback.
-    //   (3) Neither consumer it named still reads this slot.  The timestep
-    //       estimator dispatches to ps_max_wave_speed_from_state, which reads
-    //       the CONSERVED state, not q (f0b22e1); the plotfile pressure
-    //       derive calls ps_mixture_pressure_from_cons on the State MultiFab,
-    //       not on this per-FAB scratch.  The only surviving reader of
-    //       q[QPRES] on the PS path is ps_physical_flux's P_mix
-    //       (PS_umeth.cpp:132), which wants the mixture rule.
+    // QPRES is the volume-fraction mixture rule unconditionally: a
+    // substituted phase carries the host's pressure, a state that exists,
+    // so the sum is a convex combination of two real pressures.  Its only
+    // reader on the PS path is the physical flux's P_mix (PS_umeth.cpp).
     q(i,j,k, QPRES) = a1 * P1 + a2 * P2;
 }
 
 // ---------------------------------------------------------------------
-//  ps_mixture_pressure_from_cons  (task #21)
-//
-//  Volume-fraction mixture pressure  P_mix = α₁ P₁ + α₂ P₂  from a LOCAL
-//  conservative NVAR vector, using the same branch-locked per-phase EOS
-//  and floors/fallbacks as ps_augment_primitives above.  Used by
-//  CAMR_derpres so the plotted `pressure` is the physical mixture pressure
-//  (matching the standalone driver's P_mix), rather than the single-fluid
-//  EOS(ρ_mix, e_mix), which dips spuriously at numerically-smeared
-//  two-phase contacts.  `P_stock` is the single-fluid EOS(ρ,e) pressure,
-//  used as the fallback when a per-phase inversion is non-physical.
+//  ps_mixture_pressure_from_cons: P_mix = a1 P1 + a2 P2 from a local
+//  conserved NVAR vector, with the same branch-locked queries and
+//  presence dispatch as ps_augment_primitives.  Used by the plotfile
+//  pressure derive so the plotted pressure is the mixture pressure rather
+//  than the single-fluid EOS(rho_mix, e_mix), which dips spuriously at
+//  smeared two-phase contacts.  P_stock is the single-fluid pressure the
+//  derive already holds; it is the reference and placeholder here.
 // ---------------------------------------------------------------------
 AMREX_GPU_HOST_DEVICE
 AMREX_FORCE_INLINE
@@ -290,15 +193,12 @@ ps_mixture_pressure_from_cons(const amrex::Real U[NVAR], amrex::Real P_stock,
     const Real E_mix   = U[UEINT] * inv_r;
 
     const Real m1 = U[UM1RHO1], m2 = U[UM2RHO2];
-    //  Contract 3 (see PS_presence.H): checked construction on BOTH paths.
-    //  Was: force rg = Independent on the legacy path, divide by alpha
-    //  regardless, clamp the quotient into the EOS domain, and substitute
-    //  E_mix for the phase energy when m was small.
+    // Checked construction (contract 3, PS_presence.H).
     const PsRegime rg1 = ps_regime(a1, m1, pr);
     const PsRegime rg2 = ps_regime(a2, m2, pr);
     const PsPhaseQuot q1 = ps_phase_quot(a1, m1, U[UE1], ke_spec, pr);
     const PsPhaseQuot q2 = ps_phase_quot(a2, m2, U[UE2], ke_spec, pr);
-    const Real rho1 = q1.exists ? q1.rho : rho;      // no state -> mixture, by definition
+    const Real rho1 = q1.exists ? q1.rho : rho;      // no state -> mixture placeholder
     const Real rho2 = q2.exists ? q2.rho : rho;
     const Real e1   = q1.exists ? q1.e   : E_mix;
     const Real e2   = q2.exists ? q2.e   : E_mix;
@@ -314,23 +214,17 @@ ps_mixture_pressure_from_cons(const amrex::Real U[NVAR], amrex::Real P_stock,
     if (ps_regime_reach(rg2, rho2, e2, /*liquid=*/false, pr) == PsRegime::Independent) { EOS::REY2P_vapor(rho2, e2, Y, P2);
                                         ps_guard::sanitize_phase_pressure(P2, P_ss); }
     else                              { P2 = P_ss; }
-    return a1 * P1 + a2 * P2;   // exact alpha: ABSENT contributes 0
+    return a1 * P1 + a2 * P2;   // exact alpha: an Absent phase contributes 0
 }
 
 // ---------------------------------------------------------------------
-//  ps_phase_temp_from_cons  (diagnostic derives temp_1 / temp_2)
-//
-//  Per-phase temperature T_k = T(rho_k, e_k) on the branch-locked EOS
-//  (phase 1 = Liquid, phase 2 = Vapor).  A VANISHED phase has no well-
-//  defined temperature: rho_k = m_k/alpha_k and e_k = UE_k/m_k degenerate
-//  to 0/0 (or floored garbage after the vanish-fold), and the branch EOS
-//  then extrapolates to a physically meaningless value (e.g. the liquid
-//  branch at vapor density -> cold metastable garbage).  So when phase k is
-//  below the two-phase threshold, has non-positive mass, or the EOS returns
-//  a non-physical T, we FALL BACK to the supplied mixture temperature
-//  T_mix (a defined, continuous value) rather than emitting garbage or a
-//  misleading zero.  Mirrors the #52 UTEMP construction and the
-//  ps_state_from_cons vanish substitution.  phase: 1 = liquid, 2 = vapor.
+//  ps_phase_temp_from_cons: diagnostic derive temp_1 / temp_2.  T_k on
+//  the branch-locked EOS (phase 1 = liquid, 2 = vapor).  A phase below
+//  the presence threshold a_eps, with non-positive mass, or whose branch
+//  query returns a T outside [T_lo, T_hi], reports the supplied mixture
+//  temperature T_mix (a defined, continuous value) rather than a
+//  meaningless extrapolation or a misleading zero.  Diagnostic only: this
+//  private threshold is not the presence corridor.
 // ---------------------------------------------------------------------
 AMREX_GPU_HOST_DEVICE
 AMREX_FORCE_INLINE
@@ -338,14 +232,13 @@ amrex::Real
 ps_phase_temp_from_cons(const amrex::Real U[NVAR], int phase, amrex::Real T_mix)
 {
     using amrex::Real;
-    constexpr Real a_eps  = Real(1.0e-3);   // two-phase presence threshold (#52)
-    constexpr Real T_lo   = Real(216.0);    // ~CO2 triple point (physical floor)
-    constexpr Real T_hi   = Real(1.0e4);
+    constexpr Real a_eps  = Real(1.0e-3);   // presence threshold for this derive
+    constexpr Real T_lo   = Real(216.0);    // K, ~CO2 triple point
+    constexpr Real T_hi   = Real(1.0e4);    // K
     const Real a1 = U[UALPHA1];
     if (!std::isfinite(a1)) return T_mix;
     const Real ak = (phase == 1) ? a1 : (Real(1.0) - a1);
     const Real mk = (phase == 1) ? U[UM1RHO1] : U[UM2RHO2];
-    // Vanished / absent phase -> temperature undefined; report mixture T.
     if (!(ak > a_eps) || !(mk > Real(0.0))) return T_mix;
 
     const Real rho_mix = U[URHO];
@@ -373,40 +266,17 @@ ps_phase_temp_from_cons(const amrex::Real U[NVAR], int phase, amrex::Real T_mix)
     EOS::REY2PTS_phase(rho_k, e_k, Y,
                        (phase == 1) ? hem::Phase3::Liquid : hem::Phase3::Vapor,
                        Pq, Tq, Sq);
-    // Reject non-physical extrapolations -> mixture-T fallback.
     if (!std::isfinite(Tq) || Tq <= T_lo || Tq >= T_hi) return T_mix;
     return Tq;
 }
 
 // ---------------------------------------------------------------------
-//  ps_flash_rate_from_cons  (REMOVED — see below)
-//
-//  This stateless proxy reproduced the integrator's Gibbs-driven MT source
-//  formula on the STORED state.  It reads ~0 everywhere for the showcase:
-//  with tau<<dt the near-instant MT flashes cells fully OUT of the two-phase
-//  coexistence band within a single step, so the post-step state carries no
-//  residual disequilibrium to measure, and the coexistence gate then admits
-//  essentially no cells.  The faithful flashing rate is the mass ACTUALLY
-//  transferred per unit time during the reaction substep (dm1/dt), which is
-//  recorded in CAMR::flash_src during advance and served via the
-//  CAMR::derive("flash_rate") override.  The dead proxy below is retained,
-//  commented, only as a record of why the stored-state approach fails.
-//
-//  Reproduces the integrator's Gibbs-driven finite-rate mass-transfer
-//  SOURCE expression (hem::ps_mass_transfer_finite_cell) evaluated on the
-//  local conservative state, so a plotted field shows WHERE and HOW FAST
-//  the two-phase mixture is flashing:
-//     mdot = (rho_mix / tau_g) * (g1 - g2) / g_ref     [kg m^-3 s^-1]
-//  with per-phase Gibbs g_k = h_k - T_k s_k (branch-locked EOS).
-//  SIGN: mdot > 0 = evaporation (liquid -> vapor, flashing);
-//        mdot < 0 = condensation.
-//  Same two-phase-coexistence gate as the MT source (alpha in the mixed
-//  band; both phase T in (T_triple, T_crit); finite Gibbs) -> 0 elsewhere.
-//  NOTE: this is the source FORMULA on the output state; it omits the
-//  bounded non-overshoot relaxation factor, so it slightly overstates the
-//  applied dm where the cell is near equilibrium (negligible for tau<<dt).
+//  ps_flash_rate_from_cons: a stored-state flash-rate proxy, kept as a
+//  record of why the stored-state approach fails (the flash_rate derive
+//  reads the mass actually transferred instead).
+//  Retire-candidate: see docs/DESIGN_DECISIONS.md X-27 and O-8.
 // ---------------------------------------------------------------------
-#if 0  // DEAD: stored-state proxy — reads ~0 for tau<<dt (see note above).
+#if 0
 AMREX_GPU_HOST_DEVICE
 AMREX_FORCE_INLINE
 amrex::Real
@@ -438,8 +308,6 @@ ps_flash_rate_from_cons(const amrex::Real U[NVAR], amrex::Real tau_g, amrex::Rea
     const Real uz = Real(0.0);
 #endif
     const Real ke = Real(0.5) * (ux*ux + uy*uy + uz*uz);
-    // G1 (see PS_guards.H).  This site previously had NO density guard at
-    // all -- it fed m_k/alpha_k straight to the branch-locked EOS.
     const Real rho1 = ps_guard::clamp_phase_density(m1 / a1, EOS::rho_min(), EOS::rho_max());
     const Real rho2 = ps_guard::clamp_phase_density(m2 / a2, EOS::rho_min(), EOS::rho_max());
     const Real e1 = U[UE1] / m1 - ke;
@@ -460,7 +328,7 @@ ps_flash_rate_from_cons(const amrex::Real U[NVAR], amrex::Real tau_g, amrex::Rea
     const Real mdot = (rho_mix / tau_g) * (g1 - g2) / g_ref;   // + = evaporation
     return std::isfinite(mdot) ? mdot : Real(0.0);
 }
-#endif // 0 (dead proxy)
+#endif // 0
 
 #endif // USE_PS_HYDRO
 #endif // PS_CTOPRIM_H

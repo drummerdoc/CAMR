@@ -1,28 +1,29 @@
 #ifndef PS_SOURCES_H
 #define PS_SOURCES_H
 // =====================================================================
-//  PS_sources.H  —  Pelanti-Shyue Phase 4g per-cell source dispatch
+//  PS_sources.H  —  Pelanti-Shyue post-relaxation per-cell sources
 //
-//  A single post-hydro driver, ps_apply_sources(S_new, dt), that runs
-//  the optional two-phase source terms ported from the standalone
-//  driver (ppm_1d_ps_wp.cpp).  It mirrors ps_apply_relaxation
-//  (PS_relaxation.H): construct the branch-locked EOS callback once,
-//  then a per-tile CPU loop over the enabled sources.
+//  ps_apply_sources(S_new, dt) runs, after ps_apply_relaxation, the
+//  per-cell source terms that are not part of the relaxation operator:
+//  (1) flash nucleation (hem::ps_flash_source_cell), (2) the split
+//  finite-rate mass-transfer source (hem::ps_mass_transfer_finite_cell;
+//  relaxation modes other than 5 only, since the X3 operator owns mass
+//  transfer at mode 5), (3) the triple-point / solid-region response.
+//  Algorithm and rate closures: docs/MODEL_AND_ALGORITHM.md §5.4–§5.6.
 //
-//  Every source is gated by a CAMR ParmParse dial that DEFAULTS TO
-//  OFF, so with a stock inputs file this driver early-returns and the
-//  solution is bit-for-bit identical to the pre-4g code.  The dials:
+//  Contract: host-side MFIter loop (std::function EOS callback), acting
+//  on the grown tile box of S_new.  Every source conserves mixture mass
+//  and energy (mass and interface enthalpy move between phases), so
+//  URHO, UEDEN and momentum are untouched except by the non-conservative
+//  triple-point CLIP action.  After a source moves mass, P1 = P2 is
+//  re-established per cell (the model's instantaneous mechanical
+//  closure) only where the state bitwise changed.
 //
-//      CAMR.ps_flash_tau           (Real, default 0)  -> task 4g-2
-//      CAMR.ps_mt_tau              (Real, default 0)  -> task 4g-4
-//      CAMR.ps_triple_point_action (int,  default 0)  -> task 4g-3
-//
-//  Scaffold policy (task 4g-1): the dispatch STRUCTURE lives here now;
-//  the individual per-cell kernels (already copied verbatim into
-//  hem_pelanti_shyue.H) are wired in their own follow-up tasks.  Until
-//  then, turning a dial ON fails LOUD (amrex::Abort) rather than
-//  silently doing nothing — so an un-wired dial can never be mistaken
-//  for a working feature.  Default-off remains a true no-op.
+//  Dials (all read once, here or at the named accessor):
+//      CAMR.ps_flash_tau (1e-7 s), CAMR.ps_mt_tau (1e-7 s),
+//      CAMR.ps_mt_gref (0), CAMR.ps_triple_point_action (0),
+//      CAMR.ps_src_p_reproject (1), CAMR.ps_mt_update_alpha (-1),
+//      CAMR.ps_mt_tau_model (0), CAMR.ps_mt_target (1).
 // =====================================================================
 
 #include "IndexDefines.H"
@@ -36,37 +37,28 @@
 #include <cmath>
 
 // -----------------------------------------------------------------
-//  Cached dial reads (one-shot ParmParse, matching the ps_flux /
-//  ps_do_relax pattern used elsewhere in the PS solver).
+//  Cached dial reads (one-shot ParmParse, read once on the host).
 // -----------------------------------------------------------------
 struct PsSourceDials {
-    //  THETA-DEFAULTS (2026-08-24): both rates default to the acceptance-
-    //  configuration value 1e-7 s, so bare code defaults reproduce the
-    //  acceptance table and the harness no longer re-states them.
-    //  flash_tau <= 0 still means the flash source is OFF (any_enabled);
-    //  mt_tau is a mode-4-only A/B knob — at the default ps_relax_mode=5
-    //  the X3 kernel owns MT (SRT rate, no tau dependence).
+    // CAMR.ps_flash_tau (1e-7 s): flash rate; <= 0 disables the flash
+    // source.  CAMR.ps_mt_tau (1e-7 s): split mass-transfer rate, relaxation
+    // modes != 5 only; <= 0 disables.  Both default to the acceptance
+    // configuration so bare code defaults reproduce the acceptance table.
     amrex::Real flash_tau          = amrex::Real(1.0e-7);
     amrex::Real mt_tau             = amrex::Real(1.0e-7);
-    // Reference Gibbs scale for the finite-rate MT driving force
-    // (task #32).  0 = legacy (mis-scaled, unstable at physical tau);
-    // >0 non-dimensionalises g_diff so tau is a true physical time.
-    // ~R_specific*T ~ 5e4 J/kg for CO2.
+    // CAMR.ps_mt_gref (0): reference Gibbs scale [J/kg] for the split MT
+    // driving force; 0 = dimensional g_diff, >0 non-dimensionalises it so
+    // tau is a physical time (~R_specific*T ~ 5e4 J/kg for CO2).
     amrex::Real mt_gref            = amrex::Real(0.0);
+    // CAMR.ps_triple_point_action (0): 0 off, 1 warn, 2 clip, 3 abort; see (3).
     int         triple_point_action = 0;
-    // B3 (STANDALONE_LESSONS_GAP, standalone task #222): re-establish
-    // mechanical equilibrium after a source moves mass.  The P-S closure
-    // assumes INSTANTANEOUS pressure relaxation, so P1=P2 must be
-    // re-established after every operator that disturbs it; flash and MT
-    // both do, and nothing downstream restored it.  Measured consequence
-    // at tau->0 (FINDINGS_hem_limit.md addendum A3-A5): cells stalled at
-    // the flash seed (alpha pinned at 0.98, P1=5.7 vs P2=25.6 bar) while
-    // the 0-D kernels drive the same state to ~32 bar -- the alpha DOF
-    // was blocked and the HEM evaporation wave never formed.  Applied
-    // per cell, ONLY where the source bitwise-changed the state, so
-    // un-nucleated metastable cells keep their metastable state.
-    // Default ON; CAMR.ps_src_p_reproject=0 recovers the previous
-    // behaviour bit-for-bit.
+    // CAMR.ps_src_p_reproject (1): re-establish P1 = P2 after a source moves
+    // mass; 0 = leave the post-source pressure disequilibrium (A/B only).
+    // The model closure is instantaneous mechanical relaxation, so an
+    // operator that disturbs P1 = P2 must restore it or the alpha degree of
+    // freedom is blocked and the evaporation wave never forms.  Applied only
+    // where the state bitwise changed, so un-nucleated metastable cells keep
+    // their metastable state.  See docs/DESIGN_DECISIONS.md R-12.
     int         src_p_reproject     = 1;
 
     bool any_enabled() const {
@@ -92,10 +84,10 @@ inline const PsSourceDials& ps_source_dials()
 }
 
 // -----------------------------------------------------------------
-//  ps_apply_sources  —  MFIter driver for the Phase 4g sources.
-//  Called from CAMR::CAMR_advance after ps_apply_relaxation, under
-//  `if (ps_hydro != 0)`.  `dt` is the level time step (the rate-based
-//  flash / mass-transfer sources integrate over it).
+//  ps_apply_sources: called from CAMR_advance after ps_apply_relaxation,
+//  under ps_hydro != 0.  dt is the level time step the rate-based
+//  sources integrate over; nghost grows the tile box.  Returns without
+//  touching S_new when no source is enabled.
 // -----------------------------------------------------------------
 inline void
 ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
@@ -103,43 +95,30 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
     BL_PROFILE("PS::ps_apply_sources()");
     const PsSourceDials& dials = ps_source_dials();
 
-    // Default-off fast path: nothing enabled -> true no-op (bit-exact).
     if (!dials.any_enabled()) return;
 
     amrex::ignore_unused(S_new, dt);
 
-    // Branch-locked per-phase EOS callback (same one the relaxation
-    // Newton uses); each wired source will pass this into its cell fn.
+    // Branch-locked per-phase EOS callback (the one the relaxation uses).
     const hem::PsPhaseAPI eos = ps_make_camr_eos_api();
     amrex::ignore_unused(eos);
 
     // -------------------------------------------------------------
-    //  (1) Flash nucleation source  — task 4g-2
-    //      hem::ps_flash_source_cell (Wagner Psat metastability trigger).
-    //      Per-cell: pack the CAMR conservative slots into the V6 layout
-    //      {α₁, α₁ρ₁, α₂ρ₂, |ρu|, α₁ρ₁E₁, α₂ρ₂E₂} exactly as
-    //      ps_mechanical_relax_cell does (momentum magnitude, since only
-    //      ½(V6[3]/ρ)² is used), run the flash, and write back the slots
-    //      it modifies (α, both masses, both phase energies).  The flash
-    //      conserves mixture mass and energy (transfers dm, dm·H_I between
-    //      phases), so URHO/UEDEN/momentum are untouched.  CPU-only
-    //      (std::function EOS callback), matching ps_apply_relaxation.
+    //  (1) Flash nucleation: hem::ps_flash_source_cell (Psat metastability
+    //      trigger).  Per cell, pack the conserved slots into the V6 layout
+    //      {a1, a1*rho1, a2*rho2, |rho u|, a1*rho1*E1, a2*rho2*E2} (momentum
+    //      magnitude suffices: only 1/2 (V6[3]/rho)^2 is used), run the
+    //      flash, write back alpha, both masses and both phase energies.
     // -------------------------------------------------------------
     if (dials.flash_tau > amrex::Real(0.0)) {
-        // EOS-heavy: Wagner Psat metastability trigger + PR state per cell.
         BL_PROFILE_VAR("PS::ps_source_flash()", ps_src_flash);
         const amrex::Real tau = dials.flash_tau;
-        const PsPres l_pr = ps_presence_params();   // S4 (one host read)
-        // S3: the flash seed level is the presence design's alpha_birth
-        // (single-sourced; 4e-2 since the 2026-08-15 Stage-5 re-derivation
-        // — it no longer coincides with the kernel's historical
-        // alpha_seed_target 0.02; the 4e-2 point was measured bit-identical
-        // on the battery before adoption, WORKLOG M-B).
+        const PsPres l_pr = ps_presence_params();
+        // The seed level is the presence design's alpha_birth (single-sourced).
         const amrex::Real l_seed = ps_presence_params().alpha_birth;
-        // E1b (DESIGN_ps_extinction.md §6): symmetric birth — the newborn
-        // phase grows at its SATURATION density (the (E.1) operator run
-        // backwards).  CAMR.ps_flash_project_sat: -1 auto (presence ON -> 1,
-        // legacy -> 0, bit-identical), 0 force off, 1 force on.
+        // Saturation-projection birth: the newborn phase grows at its
+        // saturation density.  CAMR.ps_flash_project_sat: -1 auto (resolves
+        // to 1), 0 force off, 1 force on; documented at its accessor.
         const int fl_proj_key = hem::ps_dial_flash_project_sat();
         const int l_fl_proj = (fl_proj_key >= 0) ? fl_proj_key
                               : (ps_presence_params().enabled != 0 ? 1 : 0);
@@ -152,16 +131,11 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                 const amrex::Real m1 = U(i,j,k, UM1RHO1);
                 const amrex::Real m2 = U(i,j,k, UM2RHO2);
                 if (!std::isfinite(a1)) { return; }
-                //  FLASH-FROM-ABSENT (F0; CAMR.ps_flash_from_absent,
-                //  DEFAULT 1 since 2026-08-17, WORKLOG G-DEF; set 0 for the
-                //  previous behaviour).  The old m<=0 early-out
-                //  excluded every genuinely single-phase cell -- exactly the
-                //  population the nucleator exists for -- so the flash fired
-                //  ZERO times in the whole acceptance battery (WORKLOG
-                //  2026-08-15 Stage 7).  With the dial on, a cell with
-                //  exactly ONE present phase is routed into the kernel
-                //  (which constructs the newborn via the saturation
-                //  projection); both-absent stays excluded.
+                // CAMR.ps_flash_from_absent (1, accessor in hem_pelanti_shyue.H):
+                // a cell with exactly one present phase is routed into the
+                // kernel, which constructs the newborn by saturation projection;
+                // both-absent stays excluded.  Genuinely single-phase cells are
+                // the population the nucleator exists for; 0 excludes them (A/B).
                 const bool one_absent = (hem::ps_dial_flash_from_absent() != 0) &&
                     ((m1 > amrex::Real(0.0)) != (m2 > amrex::Real(0.0)));
                 if (!one_absent && (m1 <= amrex::Real(0.0)
@@ -184,20 +158,17 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                 Uv[3] = std::sqrt(px*px + py*py + pz*pz);   // |ρu|
                 Uv[4] = U(i,j,k, UE1);
                 Uv[5] = U(i,j,k, UE2);
-                // S4 (design §5): under presence the flash is the SINGLE-PHASE
-                // nucleator only; a both-independent cell is MT/relaxation
-                // territory (mid-range: no flash).  Legacy: kernel's own
-                // 0.9/0.1 dominance gate applies unchanged.
+                // The flash is the single-phase nucleator only: a both-
+                // Independent cell is mass-transfer territory (docs §4.7).
                 if (ps_regime(a1, m1, l_pr) == PsRegime::Independent &&
                     ps_regime(amrex::Real(1.0) - a1, m2, l_pr) == PsRegime::Independent) {
                     return;
                 }
                 const hem::V6 Uv_pre = Uv;
-                //  [PS-FLASH-ABS] (F0 reachedness): with ps_flash_ev_diag >= 2
-                //  every ROUTED one-absent cell prints BEFORE the kernel call,
-                //  so "no events" splits into "driver never routed" vs
-                //  "kernel refused" (ground rule 3).  Capped per sweep.
-                const int fl_evd = hem::ps_diag_flash_ev();   // single read (AUDIT C.4)
+                // [PS-FLASH-ABS] (ps_flash_ev_diag >= 2): every routed one-absent
+                // cell prints before the kernel call, so "no events" splits into
+                // "driver never routed" vs "kernel refused".  Capped.
+                const int fl_evd = hem::ps_diag_flash_ev();
                 if (fl_evd >= 2 && one_absent) {
                     static int n_abs_rep = 0;
                     if (n_abs_rep < 40) {
@@ -209,26 +180,19 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                 }
                 if (hem::ps_flash_source_cell(Uv, eos, double(dt), double(tau),
                                               double(l_seed), 1.0e-6,
-                                              l_fl_proj)) {   // S3 birth + E1b sat-projection
-                    // B3 reproject: the flash moved mass; restore P1=P2
-                    // (alpha-adjusting; preserves m_k and mixture rho-E).
-                    // Bitwise change test = exact, not a tolerance.
+                                              l_fl_proj)) {
+                    // Reproject: the flash moved mass; restore P1 = P2
+                    // (alpha-adjusting; preserves m_k and mixture rho, E).
+                    // The bitwise change test is exact, not a tolerance.
                     if (dials.src_p_reproject != 0 &&
                         (Uv[0] != Uv_pre[0] || Uv[1] != Uv_pre[1] ||
                          Uv[4] != Uv_pre[4])) {
                         if (ps_mech_kernel() == 1) { hem::ps_pelanti_relax_cell(Uv, eos); }
                         else                        { hem::ps_pressure_relax_cell(Uv, eos); }
                     }
-                    //  [PS-FLASH-EV] (Stage 7; CAMR.ps_flash_ev_diag=1,
-                    //  default 0): one line per NUCLEATION EVENT (bitwise
-                    //  state change), carrying the cell and the alpha it
-                    //  seeded.  The Sigma kill test's production term is
-                    //  keyed to exactly these events -- interface is BORN
-                    //  where nucleation happens and nowhere else, which is
-                    //  the threshold-free discriminator candidate (a
-                    //  smeared contact never nucleates, so it can never
-                    //  acquire Sigma).
-                    const int fl_ev = hem::ps_diag_flash_ev();   // single read (AUDIT C.4)
+                    // [PS-FLASH-EV] (ps_flash_ev_diag = 1): one line per
+                    // nucleation event (bitwise state change) with the alpha seeded.
+                    const int fl_ev = hem::ps_diag_flash_ev();
                     if (fl_ev != 0 &&
                         (Uv[0] != Uv_pre[0] || Uv[1] != Uv_pre[1] ||
                          Uv[4] != Uv_pre[4])) {
@@ -244,19 +208,17 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                 }
             });
         }
-        // Report cumulative flash activations, but only when the count
-        // changes (so a quiescent run stays silent).
+        // Cumulative flash count, printed only when it changes.
         static int s_prev_flash = 0;
         const int nf = hem::ps_flash_source_count();
         if (nf > s_prev_flash) {
             amrex::Print() << "[ps_flash] cumulative cells flashed = " << nf << "\n";
             s_prev_flash = nf;
         }
-        //  [PS-FLASH-REF] (F0; CAMR.ps_flash_ev_diag >= 2): the kernel's
-        //  refusal-cause table per sweep, [PS-MTCAUSE]-style — "zero events"
-        //  decomposes by cause instead of staying a mystery.
+        // [PS-FLASH-REF] (ps_flash_ev_diag >= 2): the kernel's refusal-cause
+        // table per sweep, so "zero events" decomposes by cause.
         {
-            const int fl_evd2 = hem::ps_diag_flash_ev();   // single read (AUDIT C.4)
+            const int fl_evd2 = hem::ps_diag_flash_ev();
             if (fl_evd2 >= 2) {
                 static const char* fn[hem::PS_FLR_NCAUSE] = {
                     "FIRED", "tau", "eos", "a_nan", "not_dom", "m_guard",
@@ -283,39 +245,22 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
     }
 
     // -------------------------------------------------------------
-    //  (2) Finite-rate mass transfer — task 4g-4
-    //      hem::ps_mass_transfer_finite_cell: dm = 0.5·(ρ_mix/τ)·(g₁−g₂)·dt,
-    //      the Gibbs-driven finite-rate relaxation toward phase
-    //      equilibrium (g₁=g₂).  Requires the EOS API to supply per-phase
-    //      Gibbs g (= h − T·s) — see the ph.s/ph.g fix in
-    //      ps_make_camr_eos_api (task #28).  Transfers mass + interface
-    //      enthalpy between phases (mixture mass/energy conserved);
-    //      UALPHA1 changes only if PS_MT_UPDATE_ALPHA=1 (default off).
-    //      NOTE: task #1's coupled attempt drove mass the WRONG way and
-    //      was reverted; the ported cell fn has the sign fix + caps.
+    //  (2) Split finite-rate mass transfer: hem::ps_mass_transfer_finite_cell,
+    //      dm = (1 - exp(-dt/tau)) dm_eq toward Gibbs equilibrium g1 = g2,
+    //      with the interface enthalpy carried alongside the mass.  Skipped
+    //      at ps_relax_mode = 5, where the X3 coupled operator owns mass
+    //      transfer inside the relaxation stage; running both would apply
+    //      the operator twice per step.  The relaxation mode is read through
+    //      its single accessor, never a local copy, for the same reason.
     // -------------------------------------------------------------
-    //  F4 session 2: at ps_relax_mode=5 the X3 coupled source owns mass
-    //  transfer inside the relaxation stage; running this split MT source
-    //  too would apply the operator twice per step.  The flash block above
-    //  stays — nucleation is the upstream birth channel in both modes.
-    //  ONE read of the dial: ps_relax_mode() (PS_relaxation.H), not a local
-    //  copy.  MEASURED 2026-08-17 (WORKLOG G-DEF): with the code default
-    //  flipped to 5 in the accessor only, the local copy here still
-    //  defaulted to 0, so this split MT source ran ON TOP of X3 -- the
-    //  operator applied twice per step, and B2/B7/B9 aborted with
-    //  [PS-EOS] NO ROOT while B5/B11 drifted.  The four-way-copy lesson,
-    //  paid for a second time.
     if (dials.mt_tau > amrex::Real(0.0) && ps_relax_mode() != 5) {
-        // EOS-heavy: per-phase Gibbs g = h - T*s (EOS) drives finite-rate MT.
         BL_PROFILE_VAR("PS::ps_source_masstransfer()", ps_src_mt);
         const amrex::Real tau  = dials.mt_tau;
         const amrex::Real gref = dials.mt_gref;
-        const PsPres l_pr = ps_presence_params();   // S4 (one host read)
-        // E1 (DESIGN_ps_extinction.md, D1/D5 accepted 2026-08-10):
-        // density-preserving transfer dalpha_1 = -dm/rho_1.  Key
-        // CAMR.ps_mt_update_alpha: -1 auto (presence ON -> 1, legacy -> 0,
-        // keeping the legacy path bit-identical), 0 force off, 1 force on.
-        // Host-read once, captured by value (GPU rules §12.2).
+        const PsPres l_pr = ps_presence_params();
+        // CAMR.ps_mt_update_alpha (-1): density-preserving transfer
+        // dalpha_1 = -dm/rho_1 (the (E.1) rule); -1 auto (resolves to 1),
+        // 0 force off, 1 force on.  Host-read once, captured by value.
         static const int mt_upd_key = []() {
             int v = -1;
             amrex::ParmParse pp("CAMR");
@@ -324,38 +269,26 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
         }();
         const int l_mt_upd = (mt_upd_key >= 0) ? mt_upd_key
                                                : (l_pr.enabled != 0 ? 1 : 0);
-        // CAMR.ps_mt_diag >= 2 additionally enables the 5.2 contraction-ratio
-        // measurement inside the kernel (a second equilibrium solve per
-        // transferring cell), so level 1 keeps its present cost.  Host-read
-        // once, threaded by value (GPU rules 12.2).
-        const int mt_diag_lvl = hem::ps_diag_mt();   // single read (AUDIT C.4)
+        // ps_mt_diag >= 2 also enables the contraction-ratio measurement in
+        // the kernel (a second equilibrium solve per transferring cell).
+        const int mt_diag_lvl = hem::ps_diag_mt();
         const int l_mt_cr = (mt_diag_lvl >= 2) ? 1 : 0;
-        // D2 experiment: CAMR.ps_mt_h_weight.  0.5 = mean (default, previous
-        // behaviour bit-for-bit); negative = upwind by transfer direction.
+        // CAMR.ps_mt_h_weight: 0.5 = mean carrier; negative = upwind by
+        // transfer direction.  Documented at its accessor.
         const double l_mt_h_w = hem::ps_dial_mt_h_weight();
-        //  CAMR.ps_mt_tau_model: 0 = the constant CAMR.ps_mt_tau (default,
-        //  bit-identical); 1 = the HRM correlation per cell; 2 = ASY1, tau
-        //  DERIVED from the state (Lund & Aursand eq. 25: |dm_eq|/Gamma_SRT,
-        //  Stage-1 C6 -- no hand-set relaxation time; stratified-pipe
-        //  geometry placeholder via CAMR.ps_mt_srt_d / ps_mt_srt_delta).
-        //  Host-read once, threaded by value (GPU rules 12.2).
+        // CAMR.ps_mt_tau_model (0): 0 = the constant CAMR.ps_mt_tau; 2 = tau
+        // derived from the state as |dm_eq|/Gamma_SRT (Lund & Aursand eq. 25,
+        // geometry via CAMR.ps_mt_srt_d / ps_mt_srt_delta).  The kernel
+        // treats 1 exactly as 0 (only 2 is tested).
         static const int mt_tau_model = []() -> int {
             int v = 0; amrex::ParmParse pp("CAMR");
             pp.query("ps_mt_tau_model", v); return v; }();
         const int l_mt_tau_model = mt_tau_model;
-        //  CAMR.ps_mt_target: 1 = target consistent with the step's carrier
-        //  and (E.1) path -- THE DEFAULT since 2026-08-15 (Stage 3 F-X4,
-        //  REVIEW_RESPONSE.md decision 4): it restores the Lund & Aursand
-        //  Eq. 23 monotonicity premise and with it the provable
-        //  non-overshoot property, and it is the precondition for any
-        //  carrier (D17) measurement meaning anything.  The pre-flip table
-        //  is re-baselined in WORKLOG 2026-08-15; the old default rested on
-        //  two defects in partial cancellation.
-        //  0 = legacy target (fixed-alpha path, mean carrier -- kept for
-        //  A/B against the old baseline only), 2 = as 1 plus nested pressure
-        //  relaxation (measured 2026-08-11: makes the outer Gibbs Newton
-        //  non-smooth, 26 % failures -- offered separately, not folded in).
-        //  See hem::ps_mass_transfer_finite_cell's eq_solver_params.
+        // CAMR.ps_mt_target (1): 1 = target consistent with the step's carrier
+        // and (E.1) path, which keeps the Lund & Aursand eq. 23 monotonicity
+        // premise and the non-overshoot property; 0 = fixed-alpha target with
+        // mean carrier (A/B only); 2 = as 1 plus nested pressure relaxation
+        // (makes the outer Gibbs Newton non-smooth).  See docs/DESIGN_DECISIONS.md R-6.
         static const int mt_target = []() -> int {
             int v = 1; amrex::ParmParse pp("CAMR");
             pp.query("ps_mt_target", v); return v; }();
@@ -388,11 +321,10 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                 Uv[3] = std::sqrt(px*px + py*py + pz*pz);   // |ρu|
                 Uv[4] = U(i,j,k, UE1);
                 Uv[5] = U(i,j,k, UE2);
-                // S4 (design §5): MT acts only where BOTH phases are
-                // INDEPENDENT — corridor phases are transport-only and pure
-                // cells have nothing to transfer.  The kernel's own legacy
-                // cuts (alpha_mt_thr 5e-3 etc.) are then automatically
-                // satisfied (alpha_cond = 2e-2 > 5e-3) and inert.
+                // Mass transfer acts only where both phases are Independent:
+                // corridor phases are transport-only, pure cells have nothing
+                // to transfer.  The kernel's own smallness cuts (5e-3) are then
+                // inert since alpha_cond = 2e-2 exceeds them.
                 if (!(ps_regime(a1, m1, l_pr) == PsRegime::Independent &&
                       ps_regime(amrex::Real(1.0) - a1, m2, l_pr) == PsRegime::Independent)) {
                     return;
@@ -403,14 +335,12 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                                                       l_mt_cr, l_mt_h_w,
                                                       l_mt_tau_model,
                                                       l_mt_target)) {
-                    //  [PS-DM] (F4 session 4): transfer census, SPLIT form.
-                    //  Uv[1] is post-MT pre-reproject; the reproject is
-                    //  mechanical and conserves m_k, so this IS the dm.
+                    // [PS-DM] transfer census.  Uv[1] is post-MT, pre-reproject;
+                    // the reproject is mechanical and conserves m_k, so this is dm.
                     hem::ps_dm_census().add(std::abs(double(Uv[1] - Uv_pre[1])));
-                    // B3 reproject: only when MT actually transferred mass
-                    // (the kernel returns true on its internal gates too,
-                    // with Uv untouched -- the bitwise test excludes those,
-                    // so gated metastable cells are NOT relaxed here).
+                    // Reproject only when mass actually moved: the kernel also
+                    // returns true from its internal gates with Uv untouched,
+                    // and gated metastable cells must not be relaxed here.
                     if (dials.src_p_reproject != 0 &&
                         (Uv[1] != Uv_pre[1] || Uv[4] != Uv_pre[4])) {
                         if (ps_mech_kernel() == 1) { hem::ps_pelanti_relax_cell(Uv, eos); }
@@ -424,11 +354,10 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                 }
             });
         }
-        //  [PS-DM mt] per-sweep print (F4 session 4); print gated like
-        //  [PS-DT], reset unconditional so the census never straddles
-        //  sweeps.
+        // [PS-DM mt] per-sweep print under ps_pres_diag; the reset is
+        // unconditional so the census never straddles sweeps.
         {
-            const int dm_diag = hem::ps_diag_pres();   // single read (AUDIT C.4)
+            const int dm_diag = hem::ps_diag_pres();
             hem::PsDmCensus& dc = hem::ps_dm_census();
             if (dm_diag != 0 && dc.n > 0) {
                 amrex::AllPrint() << "[PS-DM mt] cells=" << dc.n
@@ -437,12 +366,9 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
             }
             dc.reset();
         }
-        //  CAMR.ps_coexist_action = 1 (X0-(i)): a band exit is a state this
-        //  liquid-vapour model cannot describe, so STOP rather than keep
-        //  producing numbers from it.  Deliberate and expected on B2/B7/B9.
-        //  MUST run BEFORE the diagnostics block below, which RESETS these
-        //  counters -- placing it after made the mode a silent no-op whenever
-        //  CAMR.ps_mt_diag was on, which is exactly how it was first measured.
+        // ps_coexist_action = 1 (see ps_coexist_action()): a band exit is a
+        // state this liquid-vapour model cannot describe, so stop.  Must run
+        // before the diagnostics block below, which resets these counters.
         if (ps_coexist_action() == 1) {
             const long ncx = hem::ps_mt_cause(hem::PS_MT_COEXIST);
             if (ncx > 0) {
@@ -467,11 +393,9 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
             }
         }
 
-        // ---- MT cost/convergence report (CAMR.ps_mt_diag = 1) -----------
-        // Answers: is the equilibrium Gibbs-Newton converging cheaply, or
-        // burning max_iter (=30) on most cells?  Printed per call (once per
-        // level per subcycle) so a run killed mid-step still yields data.
-        const int mt_diag = hem::ps_diag_mt();   // single read (AUDIT C.4)
+        // [ps_mt_diag] (ps_mt_diag = 1): equilibrium Gibbs-Newton cost and
+        // convergence per call, so a run killed mid-step still yields data.
+        const int mt_diag = hem::ps_diag_mt();
         if (mt_diag != 0) {
             hem::PsMtStats& st = hem::ps_mt_stats();
             const double per = (st.eqsolve > 0)
@@ -493,13 +417,9 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                                << " refused=" << st.cr_refused;
             }
             amrex::Print() << std::endl;
-            //  [PS-MTCAUSE] -- the early-return CAUSE SPLIT (2026-08-13).
-            //  Why it exists: on B9 the line above read seen=1..3, gated=0 and
-            //  eqsolve=0 on 102 of 103 steps, i.e. every cell entering the
-            //  kernel returned before the equilibrium solve, through one of ten
-            //  UNCOUNTED early exits.  `seen` minus `eqsolve` must now be fully
-            //  accounted for by the causes printed here; anything left over is
-            //  an exit this list has missed.  Same instrument as [PS-FLCAUSE].
+            // [PS-MTCAUSE]: the kernel's early-return cause split.  `seen`
+            // minus `eqsolve` must be fully accounted for by the causes
+            // printed; anything left over is an exit this list has missed.
             {
                 long tot = 0;
                 for (int c = 1; c < hem::PS_MT_NCAUSE; ++c) tot += hem::ps_mt_cause(c);
@@ -516,11 +436,10 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                         }
                     }
                     amrex::Print() << "   (total=" << tot << ")" << std::endl;
-                    //  The coexistence gate is the one whose closing quantity is
-                    //  otherwise unobservable: the plotfile Temp field is clamped
-                    //  UP to the triple point (CAMR.cpp:1702-1703), so a
-                    //  sub-triple-point per-phase T cannot be read from output.
-                    //  These T come straight from the branch-locked query.
+                    // [PS-MTCOEX]: the coexistence gate's closing quantity is
+                    // otherwise unobservable (the plotfile Temp is floored at
+                    // the triple point in computeTemp); these T come straight
+                    // from the branch-locked query.
                     if (hem::ps_mt_cause(hem::PS_MT_COEXIST) > 0) {
                         hem::PsMtCoexist& cx = hem::ps_mt_coexist();
                         amrex::Print()
@@ -534,10 +453,9 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                             << "  (T_triple=" << EOS::T_triple()
                             << ", T_crit="   << EOS::T_crit() << ")"
                             << std::endl;
-                        //  The driving force in the refused cells.  The gate
-                        //  returns before g_diff is formed, so this has never
-                        //  been measured where it matters.  grel is what the
-                        //  Gibbs screen (tol_g_rel = 1e-4) would have seen next.
+                        // [PS-MTDRIVE]: the driving force in the refused cells;
+                        // grel is what the Gibbs screen (tol_g_rel = 1e-4)
+                        // would have seen next.
                         amrex::Print()
                             << "[PS-MTDRIVE] g1-g2=[" << cx.gd_min << ", "
                             << cx.gd_max << "] J/kg"
@@ -565,22 +483,19 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
     }
 
     // -------------------------------------------------------------
-    //  (3) Triple-point / solid-CO2 avoidance — task 4g-3
-    //      Below the CO2 triple point (216.592 K, 5.18e5 Pa) the PR EOS
-    //      keeps extrapolating analytically into the (physically solid)
-    //      region.  Per-cell, check the DOMINANT phase's (T,P) against
-    //      hem::ps_below_triple_point and respond per CAMR.ps_triple_point_action:
-    //        1 = WARN  : count + report (diagnostic, no state change)
-    //        2 = CLIP  : raise the dominant phase's energy so T ≥ T_triple
-    //                    (EOS::RTY2E at fixed ρ) — prevents solid-region
-    //                    extrapolation; NON-conservative by design.
-    //        3 = ERROR : abort on first solid-region cell (regression use)
+    //  (3) Triple-point / solid-region response.  Below the CO2 triple
+    //      point the cubic EOS keeps extrapolating into the physically
+    //      solid region.  Per cell the dominant phase's (T, P) is tested
+    //      with hem::ps_below_triple_point; CAMR.ps_triple_point_action:
+    //        1 = WARN : count and report, no state change
+    //        2 = CLIP : raise the dominant phase's energy to T = T_triple at
+    //                   fixed rho (EOS::RTY2E); non-conservative by design
+    //        3 = ERROR: abort on the first solid-region cell
     // -------------------------------------------------------------
     if (dials.triple_point_action != 0) {
-        // EOS-heavy: dominant-phase state_from_rho_e_phase + optional RTY2E clip.
         BL_PROFILE_VAR("PS::ps_source_triple()", ps_src_tp);
         const int action = dials.triple_point_action;
-        const amrex::Real T_triple = EOS::T_triple();   // fluid triple point (EOS)
+        const amrex::Real T_triple = EOS::T_triple();
         for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
             const amrex::Box bx = mfi.growntilebox(nghost);
             amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
@@ -631,19 +546,15 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                     EOS::RTY2E(rho_d, T_triple, Y, e_clip);
                     const amrex::Real Ud_new = md*(e_clip + ke);
                     if (std::isfinite(Ud_new) && Ud_new > Ud) {
-                        const amrex::Real dU = Ud_new - Ud;   // internal-energy added
+                        const amrex::Real dU = Ud_new - Ud;
                         if (dom == 1) { U(i,j,k, UE1) = Ud_new; }
                         else          { U(i,j,k, UE2) = Ud_new; }
-                        // Keep the mixture energy slots consistent with the
-                        // clipped phase energy (CLIP is intentionally
-                        // non-conservative — it injects heat to hold the
-                        // fluid out of the solid region).  PS uses UEDEN
-                        // (not UEINT) for the mixture e, but update both.
+                        // Keep both mixture energy slots consistent with the
+                        // injected heat (PS reads UEDEN; UEINT follows).
                         U(i,j,k, UEDEN) += dU;
                         U(i,j,k, UEINT) += dU;
                     }
                 }
-                // action == 1 (WARN): counted only, no state change.
             });
         }
         static int s_prev_tp = 0;
@@ -655,20 +566,14 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
         }
         BL_PROFILE_VAR_STOP(ps_src_tp);
     }
-    // ---- [PS-HRM]: one report per step, AFTER both consumers -------------
-    //  theta is taken in ps_apply_relaxation and tau_mt here, so this is the
-    //  only point at which a step's whole HRM usage is visible.  Deliberately
-    //  NOT gated on either dial: the first version was gated on
-    //  ps_theta_model==1 and therefore printed NOTHING for a run using the
-    //  correlation on tau_mt -- a guard that cannot be observed firing, which
-    //  is the exact failure PS_guards.H:46-49 exists to prevent.  It printed a
-    //  clean zero and I nearly drew a conclusion from it.
+    // [PS-HRM] report: nothing writes these counters.
+    // Retire-candidate: see docs/DESIGN_DECISIONS.md O-8.
     {
         hem::PsHrmRange& r = hem::ps_hrm_range();
         long nfb = 0;
         for (int c = 1; c < hem::PS_HRM_NCAUSE; ++c) nfb += hem::ps_hrm_cause(c);
         if (r.n > 0 || nfb > 0) {
-            const int rx = hem::ps_diag_prdiag();   // single read (AUDIT C.4)
+            const int rx = hem::ps_diag_prdiag();
             if (rx != 0) {
                 static const char* hn[hem::PS_HRM_NCAUSE] = {
                     "ok","supercrit","psat_bad","denom","psi_zero","alpha_zero","nonfin" };
