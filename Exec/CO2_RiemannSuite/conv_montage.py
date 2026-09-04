@@ -16,7 +16,7 @@ import full_suite as F
 
 CONV = os.environ.get('CONV_OUT', 'conv_data')
 RES  = [int(x) for x in os.environ.get('RES', '128,256,512').split(',')]
-ANALYTIC = os.environ.get('ANALYTIC', '/Users/marcusd/src/SINTEF/co2-eos-cfd/suite/profiles')
+ANALYTIC = os.environ.get('ANALYTIC', F.ANALYTIC)
 
 def load_camr(name, N):
     pref = f'{CONV}/{name}_N{N}_'

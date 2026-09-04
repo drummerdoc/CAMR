@@ -17,8 +17,7 @@ import ps_plotfile as R
 CASES = ['B4-Cross-critical', 'B9-Deep-Expansion']
 EXACT = {'B4-Cross-critical': 'exact_B4_pr.csv',
          'B9-Deep-Expansion': 'exact_B9_pr.csv'}
-STANDALONE = os.environ.get('CO2_STANDALONE',
-                            '/Users/marcusd/src/SINTEF/co2-eos-cfd')
+REFS = F.REFS                 # vendored exact references (refs/exact)
 TAUS = [1e-4, 3e-5, 1e-5, 3e-6, 1e-6, 3e-7, 1e-7]
 N = int(os.environ.get('PS_N', 64))
 # HEM_MODE:  relax mode for the sweep (2 = legacy suite config; 4 = canonical
@@ -29,7 +28,7 @@ MODE  = int(os.environ.get('HEM_MODE', 2))
 FLASH = os.environ.get('HEM_FLASH', '0') == '1'
 
 def load_exact(name):
-    f = os.path.join(STANDALONE, 'suite', EXACT[name])
+    f = os.path.join(REFS, EXACT[name])
     d = np.loadtxt(f)          # columns: x rho u P T
     return dict(x=d[:,0], rho=d[:,1], u=d[:,2], P=d[:,3])
 

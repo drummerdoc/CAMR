@@ -7,8 +7,8 @@ import os, glob, csv, numpy as np
 import ps_plotfile as R
 # Standalone repo root.  Override with CO2_STANDALONE=... ; the old hard-coded
 # /sessions/<sandbox>/ path died with the sandbox that made it.
-STANDALONE = os.environ.get('CO2_STANDALONE', '/Users/marcusd/src/SINTEF/co2-eos-cfd')
-ANALYTIC   = STANDALONE + '/suite/profiles'
+import full_suite as F
+ANALYTIC   = F.ANALYTIC       # vendored exact references (refs/exact)
 
 def load_analytic(name):
     f=f'{ANALYTIC}/{name}.csv'

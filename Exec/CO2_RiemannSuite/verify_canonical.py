@@ -41,9 +41,7 @@ os.environ.setdefault('PS_FROZEN', '0')
 import full_suite as F           # main-guarded; safe to import
 import ps_plotfile as R
 
-STANDALONE = os.environ.get('CO2_STANDALONE',
-                            '/Users/marcusd/src/SINTEF/co2-eos-cfd')
-ANALYTIC = STANDALONE + '/suite/profiles'
+ANALYTIC = F.ANALYTIC          # vendored exact references (refs/exact)
 FAILS = []
 
 def check(name, ok, detail=''):
@@ -85,7 +83,7 @@ def load_frozen_analytic(name):
                 P=col['P[bar]'] * 1e5)
 
 def load_hem_analytic(short):
-    d = np.loadtxt(f'{STANDALONE}/suite/exact_{short}_pr.csv')
+    d = np.loadtxt(f'{F.REFS}/exact_{short}_pr.csv')
     return dict(x=d[:,0], rho=d[:,1], u=d[:,2], P=d[:,3])
 
 def load_plotfile(pref):

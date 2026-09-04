@@ -10,6 +10,12 @@ import ps_plotfile as R   # rd1d/hdr
 # hard-coded /sessions/<sandbox>/ path died with the sandbox that made it.
 STANDALONE = os.environ.get('CO2_STANDALONE', '/Users/marcusd/src/SINTEF/co2-eos-cfd')
 STD = os.environ.get('CO2_STANDALONE_BIN', STANDALONE + '/build/ppm_1d_ps_wp')
+# Exact-solution references (vendored copy of the standalone's suite/; see
+# refs/exact/PROVENANCE.md).  CO2_EXACT_REFS overrides, CO2_STANDALONE is
+# only needed for the standalone *binary* (mode 'std').
+REFS = os.environ.get('CO2_EXACT_REFS',
+                      os.path.join(os.path.dirname(os.path.abspath(__file__)), 'refs', 'exact'))
+ANALYTIC = REFS + '/profiles'
 # 1-D executable.  DISCOVERED, not hard-coded: the build name carries
 # DIM/COMP/profiling/MPI and (since 2026-08) the Eos_Model suffix, so any
 # hard-coded name goes stale the moment a build option changes.

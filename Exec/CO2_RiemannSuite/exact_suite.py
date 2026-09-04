@@ -13,7 +13,7 @@ solutions:
    A/C (single phase)  -> suite/profiles/<case>.csv   (frozen/exact Riemann)
    B   (two phase)     -> suite/exact_<short>_pr.csv  (HEM Riemann)
 
-Usage:  [EXE=...] [CO2_STANDALONE=...] python3 exact_suite.py [flux] [case ...]
+Usage:  [EXE=...] [CO2_EXACT_REFS=...] python3 exact_suite.py [flux] [case ...]
         flux defaults to 'wp'.
 """
 import os, sys, csv, subprocess
@@ -23,8 +23,7 @@ import full_suite as F
 import ps_plotfile as R           # plotfile reader (was run_ac_suite)
 
 EXE  = os.environ.get('EXE', F.CAMR)
-STAND = os.environ.get('CO2_STANDALONE',
-                       '/Users/marcusd/src/SINTEF/co2-eos-cfd')
+REFS = F.REFS                 # vendored exact references (refs/exact)
 N     = int(os.environ.get('NCELL', '64'))
 
 SINGLE = ('A1-Sod-strong','A2-Sod-weak','A3-Lax-like','A4-Double-rare',
@@ -65,17 +64,17 @@ TWOPHASE = {'B1-Comp-L-expand':'B1',        'B2-Evap-wave':'B2',
 FROZEN_BRACKET = {'B2-Evap-wave':'B2', 'B9-Deep-Expansion':'B9'}
 
 def load_profile(name):
-    rows=[l for l in open('%s/suite/profiles/%s.csv'%(STAND,name)) if not l.startswith('#') and l.strip()]
+    rows=[l for l in open('%s/profiles/%s.csv'%(REFS,name)) if not l.startswith('#') and l.strip()]
     h=[c.strip() for c in rows[0].split(',')]; d=list(csv.reader(rows[1:]))
     col={k:np.array([float(r[i]) for r in d]) for i,k in enumerate(h)}
     return dict(x=col['x[m]'], rho=col['rho[kg/m^3]'], u=col['u[m/s]'], P=col['P[bar]']*1e5)
 
 def load_hem(short):
-    d=np.loadtxt('%s/suite/exact_%s_pr.csv'%(STAND,short))
+    d=np.loadtxt('%s/exact_%s_pr.csv'%(REFS,short))
     return dict(x=d[:,0], rho=d[:,1], u=d[:,2], P=d[:,3])
 
 def load_frozen(short):
-    d=np.loadtxt('%s/suite/exact_%s_pr_frozen.csv'%(STAND,short))
+    d=np.loadtxt('%s/exact_%s_pr_frozen.csv'%(REFS,short))
     return dict(x=d[:,0], rho=d[:,1], u=d[:,2], P=d[:,3])
 
 def run(case, flux, pref):
