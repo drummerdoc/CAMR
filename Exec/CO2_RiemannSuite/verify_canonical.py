@@ -20,9 +20,9 @@ Checks:
      ps_src_p_reproject=0 vs 1 must DIFFER (0.845 vs 0.774 u-err on B9;
      re-baselined 2026-08-31, see the note at the check);
      identical results mean the PS_sources.H change is not in the binary.
-  5. presence gates (S1/S2) — NOTE CAMR.ps_presence is no longer read
-     (PsPres::enabled is hard-coded 1; T1-b 2026-08-17), so the flag in
-     these configs is inert and the check measures the default path.
+  5. presence gates (S1/S2) — NOTE CAMR.ps_presence is a retired key
+     (presence is always on; setting it aborts), so these configs no
+     longer set it and the check measures the default path.
      Kept because the A/C invariance it asserts is still worth asserting.
      Formerly: CAMR.ps_presence=1 must hold the frozen
      A/C battery at mean ~0.0350 with C1 exact, BOTH with the legacy
@@ -256,8 +256,7 @@ check('rp=0 vs rp=1 differ (change is live)', abs(res[0] - res[1]) > 0.05,
 # ---------------------------------------------------------------- check 5
 print('== 5. presence gates (S1/S2) ==')
 frozen_cfg5 = {'CAMR.ps_do_relax': 1, 'CAMR.ps_relax_mode': 0,
-               'CAMR.ps_mt_tau': 0, 'CAMR.ps_flash_tau': 0.0,
-               'CAMR.ps_presence': 1}
+               'CAMR.ps_mt_tau': 0, 'CAMR.ps_flash_tau': 0.0}
 for label, extra in (('corridor seeds (alpha_trace=1e-6)', {}),
                      ('exact-zero trace (alpha_trace=0)', {'prob.alpha_trace': 0.0})):
     vals = []; c1ok = None; fail = False
@@ -280,7 +279,7 @@ print('== 6. S3 transitions: zero-trace two-phase (fold + birth live) ==')
 m = run_case('B4-Cross-critical',
              {'CAMR.ps_do_relax': 1, 'CAMR.ps_relax_mode': 0,
               'CAMR.ps_mt_tau': 0, 'CAMR.ps_flash_tau': 0.0,
-              'CAMR.ps_presence': 1, 'prob.alpha_trace': 0.0},
+              'prob.alpha_trace': 0.0},
              'vz_B4f_')
 if m is None:
     check('S3 frozen B4 zero-trace', False, 'run failed (binary predates S3?)')
@@ -298,7 +297,7 @@ m = run_case('B9-Deep-Expansion',
              {'CAMR.ps_relax_mode': 4, 'CAMR.ps_theta_tau': 1e-7,
               'CAMR.ps_mt_tau': 1e-7, 'CAMR.ps_flash_tau': 1e-7,
               'CAMR.ps_flash_from_absent': 0,
-              'CAMR.ps_presence': 1, 'prob.alpha_trace': 0.0},
+              'prob.alpha_trace': 0.0},
              'vz_B9c_')
 if m is None:
     check('S3 canonical B9 zero-trace (flash birth)', False, 'run failed')
@@ -324,7 +323,7 @@ print('== 7. S4 operator gating (#88 retired under presence) ==')
 m = run_case('B5-Both-2P',
              {'CAMR.ps_do_relax': 1, 'CAMR.ps_relax_mode': 0,
               'CAMR.ps_mt_tau': 0, 'CAMR.ps_flash_tau': 0.0,
-              'CAMR.ps_presence': 1, 'prob.alpha_trace': 0.0},
+              'prob.alpha_trace': 0.0},
              'v4_B5_')
 if m is None:
     check('S4 frozen B5 presence-gated', False, 'run failed (binary predates S4?)')
@@ -336,7 +335,7 @@ else:
 m = run_case('B2-Evap-wave',
              {'CAMR.ps_relax_mode': 4, 'CAMR.ps_theta_tau': 1e-7,
               'CAMR.ps_mt_tau': 1e-7, 'CAMR.ps_flash_tau': 1e-7,
-              'CAMR.ps_presence': 1, 'CAMR.ps_mech_kernel': 1,
+              'CAMR.ps_mech_kernel': 1,
               'prob.alpha_trace': 0.0},
              'v4_B2_')
 if m is None:
