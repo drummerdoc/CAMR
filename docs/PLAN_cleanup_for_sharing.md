@@ -385,7 +385,25 @@ these go into Phase 3/4, which are physics questions):
   `ps_face_diag=0` the promote counters were never reset; they now reset on
   every `ps_diag_mass` print.
 
-### 3.8 Two configurations, stated once
+### 3.9 `[DECIDE-16]` threshold survey (Phase 4A)
+
+| Name | Value | Where | Gates | Assessment |
+|---|---|---|---|---|
+| `alpha_cond` | 2e-2 | `PS_presence.H` | Corridor↔Independent edge | distinct physics |
+| hysteresis `alpha_cond/2` | 1e-2 | `ps_presence_relax_gate` | relaxable band | derived, distinct |
+| `alpha_birth` | 4e-2 | `PS_presence.H` | flash seed | distinct |
+| `alpha_vanish` | 1e-8 | `PS_presence.H` | death edge | distinct dial (same value as `ALPHA_REFLUX_MIN`) |
+| `single_phase_threshold` | 5e-3 | hem dial | MT / pressure-relax skip | accidental "small"; inert under presence |
+| `alpha_mt_thr` | 5e-3 | `ps_mass_transfer_finite_cell` dial | finite-MT entry | same value/role → merge candidate |
+| `flash_alpha_thr` | 0.10 | flash dial | nucleation dominance | distinct physics |
+| `a_eps` | 1e-3 | `ps_phase_temp_from_cons` | derive presence | accidental (diagnostic) |
+| `alpha_blk` | 1e-2 | `PS_validate.H` | bulk/trace bucket | accidental (= α_cond/2 numerically) |
+| `ps_harvest_afloor` | 1e-4 | harvester dial | record floor | goes with `[DECIDE-7]` |
+| `ps_dilute_alpha0` | 0.02 | dilute-closure dial | weight width | dormant; = α_cond numerically |
+| `ALPHA_ROUNDOFF` | 1e-6 | `PS_constants.H` | round-off pure-cell gate | single-named now |
+| per-phase `rho_floor` | 1e-6 | `ps_state_from_cons` | ρ_k floor | different quantity from ρ_mix; left |
+
+### 3.10 Two configurations, stated once
 
 The 1-D acceptance battery runs bare defaults (`ps_relax_mode=5`,
 `ps_flash_from_absent=1`, τ = 1e-7); the 2-D pipe-break decks pin
@@ -790,7 +808,7 @@ Tag `pre-cleanup-2026-09-04` first.
 | 1 | Docs: write MODEL_AND_ALGORITHM (incl. the eight WORKLOG-only items), DESIGN_DECISIONS, VERIFICATION, RUNNING, FUTURE_WORK, tex revision; new README.md; module READMEs; then delete the 31 source files | doc-only | **DONE 09-04** (docs commit + separate deletion commit; revert the deletion with `git revert <sha>` if anything is missed — everything is also at tag `pre-cleanup-2026-09-04`) |
 | 2 | Stale-comment fix list §4.2 + comment policy pass, file by file (hem, PS_relaxation, PS_umeth, PS_hllc, PS_nscbc, PS_sources, PS_guards, PS_ctoprim, PS_presence/promote, EOS, core) | bit-identical fingerprint after each file (comment-only edits must produce an identical binary; `cmp` the exe as the fastest check) | **DONE 09-04** (`ad7532f…6d0b258`): 48 files, 26,714→23,095 lines (comment lines roughly halved); proof = comment-strip diff empty per file, stripped-exe disassembly identical except three `__LINE__` immediates, fingerprints IDENTICAL in both configurations. Deck banners deferred to Phase 6. Abort-message strings still carry dates/task numbers (they are code → Phase 3 `ps_retired_keys()` table) |
 | 3 | Dead code (a): the provably unreachable list; retired-key table; Make.package/README inventories | IDENTICAL fingerprints, identical restart windows | **DONE 09-04** (`8724fa6`, `8b84541`, `133a000`, `33d6b5c`) + `[DECIDE-26]` groups 1–2 (`693d051`, `dacb85b`). Proof: contraction-free build (`TINY_PROFILE=FALSE XTRA_CXXFLAGS=-ffp-contract=off`) IDENTICAL on 21/21 cases in both configurations against `PRE_nc_*`; the production -O3 build drifts at 1e-16 on four two-phase cases purely from FMA-contraction choices (verified by rebuilding both sides contraction-free). 2-D restart windows still pending the Mac run. |
-| 4 | Duplication/refactor §4.4 items 2–9, 11 (helpers, counters, constants at unchanged values, EOS contract header, file splits) | IDENTICAL | `[DECIDE-15]`, `[DECIDE-16]` |
+| 4 | Duplication/refactor §4.4 items 2–9, 11 (helpers, counters, constants at unchanged values, EOS contract header, file splits) | IDENTICAL | **DONE 09-04** (`82d6b58`, `3d90eb5`, `c65bf2b`, `7d9bda9`): each batch IDENTICAL on 21/21 contraction-free in both configurations; all four EOS backends compile. Left separate on purpose (different operation order): the two Catmull-Rom kernels, mode-0's own entry gate, the non-strict coexistence predicates in the MT/X3 kernels, `hem::co2_sat_state` (a NIST table, on the default flash path) |
 | 5 | Refactor item 1 (one cell state) | IDENTICAL expected; if not, present the diff as `[DECIDE-13]` | `[DECIDE-13]`, `[DECIDE-18]` |
 | 6 | Exec: decks, scripts, data, gate fixes (§5, §6) | gate green from a clean clone with no `CO2_STANDALONE` | `[DECIDE-19..22]`, `[DECIDE-24]` |
 | 7 | Selector retirements §4.3(b), one commit each, in the order 5, 7, 8, 9, 10, 4, 6, then 1/2/3 after the production run | IDENTICAL at defaults; abort on retired values verified | `[DECIDE-1..10]`, `[DECIDE-12]` |
@@ -820,8 +838,8 @@ paced by the run in phase 8.
 | 12 | 2-D production relaxation mode: keep mode 2 or move demo2/3 to mode 5 | move to 5 in the phase-8 run; it is the only way to make the 1-D and 2-D configurations one story and unblock 3 |
 | 13 | Accept any fingerprint change from unifying the five cell-state constructors | decide with the diff in hand |
 | 14 | Third-party PDFs in the shared tree | **DECIDED 09-04: out** — done (`b5b5a8b`), cited instead |
-| 15 | Drop the ignored `Y[]` species argument from the PS EOS contract | yes |
-| 16 | Which of the ten "small phase" thresholds are distinct physics | needs your derivation call; I will bring the table |
+| 15 | Drop the ignored `Y[]` species argument from the PS EOS contract | **DECIDED 09-04: yes** — done as `ps_pure_species()` replacing 17 carriers (the Y-taking surface is 15 functions, 3 shared with single-fluid, so the overload route was larger) |
+| 16 | Which of the ten "small phase" thresholds are distinct physics | **DECIDED 09-04: consolidate names, values unchanged.** Done for the true copies (`PS_constants.H`). The survey table is in §3.9; the candidate merges it exposes (`single_phase_threshold` = `alpha_mt_thr` = 5e-3, both inert under presence; `a_eps`, `alpha_blk`, `ps_dilute_alpha0` as accidental copies) are value decisions → Phase 7 with the mode retirements |
 | 17 | Reflux α co-move clamp `[1e-8, 1−1e-8]`, `\|Δα\| ≤ 0.05` vs ABSENT reachability | report only; rule 1/2 territory |
 | 18 | Silent `e_mix` fallback in face/wavespeed vs contract 3 | resolved by 13 if accepted |
 | 19 | Delete the four superseded `CO2_B4` decks and `inputs.decomp` | yes |
