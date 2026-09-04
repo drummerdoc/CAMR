@@ -5,3 +5,11 @@ host: Linux aarch64 (Cowork VM), g++ 11.4.0
 exe: CAMR1d.gnu.TPROF.PS.PR.ex built 2026-09-04, DIM=1 USE_MPI=FALSE COMP=gnu Eos_Model=PR
 gate: verify_canonical ALL PASS (A/C mean 0.0350, C1 exact, B12 R=0.0097; checks 3/6b STALE as documented)
 fingerprints: characterization/PRE_defaults.json (21 cases, exact_suite config), PRE_matched.json (21 cases, full_suite config)
+
+PRE_nc_*: same source state, built with TINY_PROFILE=FALSE XTRA_CXXFLAGS="-ffp-contract=off"
+(exe CAMR1d.gnu.PS.PR.ex). Use these for bit-identical refactor checks: with FP contraction
+enabled (the production -O3 build) a layout/inlining change can flip FMA decisions and move
+two-phase cases at 1e-16 without any semantic change; with contraction off the comparison is exact.
+Verified: Phase-3 dead-code removal is IDENTICAL on all 21 cases in both configurations under
+contract-off, while the contraction build showed 1e-16 drift on B3/B5/B6/B12 (matched) and
+B1/B3/B5/B6/B7 (defaults).
