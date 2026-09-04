@@ -219,3 +219,26 @@ evolution).  If too gentle, the single tuning knob is the normalization
 (a fraction of alpha_cond sharpens the taper, trading back toward the
 kink).  Measure, then tune if needed.  DECIDE-3 (default flip) still
 waits on this 2-D result.
+
+
+---
+
+## 11. 2-D demo3 A/B CONFIRMS the softened taper (2026-09-05) — mode 2 accepted
+
+demo3 step-50 centerline (y=0.5), mode 0 vs softened mode 2:
+                             mode 0    hard m2     softened m2
+  zigzag max|d2a1| x.013-.030  1.18e-3  ~0(removed)  1.06e-3 (~5x smaller amp)
+  front  max|d2a1| x.034-.046  2.74e-3  5.45e-3(KINK) 1.06e-3 (smooth, no kink)
+  spurious extrema (sign-flip) 4        -            2 (halved)
+  A/C mean (1-D)               0.0350   0.0351       0.0350 (exact)
+The softened taper removes the alpha_cond kink (front d2 2.74->1.06e-3,
+vs the hard switch's 5.45e-3), damps the original zigzag ~5x in amplitude
+(residual ~+/-1e-4 in alpha, 0.2% of the 0.05 reservoir), smooths the
+front, halves the spurious extrema, and holds A/C at 0.0350 exactly.  The
+small residual is left as-is: sharpening the normalization to kill it
+trades back toward the kink for marginal gain.  MODE 2 (softened)
+ACCEPTED on the evidence.
+
+[DECIDE-3] flip CAMR.ps_lw_skip_contact default 0 -> 2 (recommended); the
+selector stays for A/B and retires to single-path later, per the
+ps_star_relaxed pattern.  Awaiting Marc.
