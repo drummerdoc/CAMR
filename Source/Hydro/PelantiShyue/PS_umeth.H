@@ -1,39 +1,24 @@
 #ifndef PS_UMETH_H
 #define PS_UMETH_H
 // =====================================================================
-//  PS_umeth.H  —  Pelanti-Shyue six-equation wave-propagation solver
-//                 entry point (co2-eos-cfd Phase 4c).
+//  PS_umeth.H  —  Pelanti-Shyue six-equation wave-propagation hydro
+//                 interior: entry point and flux-selector accessors.
 //
-//  Signature mirrors MOL_umeth so that Hydro_umdrv.cpp can dispatch
-//  between Godunov / MOL / PS_WP behind a single runtime int flag
-//  (`CAMR.ps_hydro`).
-//
-//  Phase 4c-α (this commit): the definition in PS_umeth.cpp is a
-//  stub that calls amrex::Abort with a message pointing at the
-//  Phase 4c-β implementation task.  The plumbing is real; the
-//  algorithm is not.
-//
-//  Phase 4c-β (done): the production fluctuation kernel is
-//  PS_HLLC::fluctuations in PS_hllc.H, accumulated into `dsdt_arr`
-//  by the ParallelFor kernels in PS_umeth.cpp.  (The old plan to
-//  lift hem::ps_hllc_fluctuations was overtaken — that hem copy is
-//  dead code awaiting removal.)  See ../README.md §4c.
+//  The signature mirrors MOL_umeth so Hydro_umdrv.cpp dispatches between
+//  Godunov / MOL / PS behind the single runtime flag CAMR.ps_hydro.  The
+//  fluctuation kernel is PS_HLLC::fluctuations (PS_hllc.H), driven by the
+//  ParallelFor kernels in PS_umeth.cpp.  See docs/MODEL_AND_ALGORITHM.md
+//  §1-§3 and the header of PS_umeth.cpp for the contract.
 // =====================================================================
 
 #include "IndexDefines.H"
 #include <AMReX_Array4.H>
 #include <AMReX_Box.H>
 
-// ---------------------------------------------------------------------
-//  Single-read accessors for the solver-selection dials (AUDIT 2026-08-24
-//  C.4).  CAMR.ps_flux used to be read (ps_recon / ps_alpha_limiter retired 2026-08-27)
-//  at 2-3 independent ParmParse sites (one live in PS_umeth, banner copies
-//  in CAMR_advance / CAMR_construct_hydro_source, a dead CAMR:: registry
-//  static) with hand-matched defaults.  These host-side accessors are now
-//  the only readers; the banners print the RESOLVED selection, so the log
-//  can no longer assert a flux that never ran.
-// ---------------------------------------------------------------------
-int         ps_flux_selector();          // 2 = wp, the ONLY flux (single-path 2026-08-26; llf/hllc keys Abort)
+//  Single host-side readers of the flux selector; every banner prints
+//  the resolved value these return, so the log never names a flux that
+//  did not run.
+int         ps_flux_selector();          // 2 = wp, the only interior flux; other names abort
 const char* ps_flux_name();              // resolved name for banners
 
 void PS_umeth(
@@ -66,9 +51,9 @@ void PS_umeth(
     const amrex::Real smallu,
     const int slope_order,
     const PassMap* lpmap,
-    // Task #22 P2: when do_bl_fluct, copy the per-face phase-energy
-    // WP-vs-Godunov defect (UE1,UE2) into fcorr* (NUM_PS_FLUCT=2 comps)
-    // for the Berger-LeVeque fluctuation register.  Ignored otherwise.
+    // do_bl_fluct / fcorr* (NUM_PS_FLUCT=2 comps) feed the phase-energy
+    // fluctuation register (CAMR.ps_bl_reflux=1); the wp interior leaves
+    // fcorr* at zero.  Retire-candidate: see docs/DESIGN_DECISIONS.md §7 (O-5).
     const bool do_bl_fluct = false,
     AMREX_D_DECL(
         amrex::Array4<amrex::Real> const& fcorr1 = {},

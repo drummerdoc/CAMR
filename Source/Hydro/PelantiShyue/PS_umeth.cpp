@@ -1,24 +1,27 @@
 // =====================================================================
-//  PS_umeth.cpp  —  Pelanti-Shyue six-equation solver.
+//  PS_umeth.cpp  —  Pelanti-Shyue six-equation hydro interior.
 //
-//  SINGLE-PATH since 2026-08-26: the Berger-LeVeque wave-propagation
-//  (fluctuation) interior — CAMR.ps_flux=wp, the acceptance flux — is
-//  the ONLY interior flux path.  The historical llf (Rusanov split)
-//  and hllc (Pelanti 2022) face-Riemann paths and the CTU scaffold
-//  were deleted after the probe-#27/#32 + WP-CF-2D adjudication:
-//  with ps_bl_reflux=2 wp serves every deck family (and outlives
-//  hllc on XC2D-AMR), llf was standing red on B2/B7/B11, and CTU
-//  P1 never grew past a zero transverse correction.  ps_flux=llf /
-//  ps_flux=hllc / a set ps_ctu key now Abort with retirement
-//  messages.  The deleted formulations survive in git history and
-//  in PRIMER_godunov_vs_wave_propagation.md.
+//  Algorithm: Berger-LeVeque wave propagation (CAMR.ps_flux=wp, the only
+//  interior flux).  ps_wp_face forms the A±ΔQ fluctuations per face from
+//  raw cell averages via the HLLC fan of PS_hllc.H; an optional limited
+//  correction flux (LeVeque, one scalar limiter per wave) gives second
+//  order; optional transverse, shear-dissipation and viscous terms are
+//  added in 2-D/3-D.  See docs/MODEL_AND_ALGORITHM.md §1-§3.
 //
-//  Body: ps_wp_face computes the A±ΔQ fluctuation per face from raw
-//  cell averages (BL-1b), with BL-2 limited correction fluxes
-//  (ps_wp_order=2, the acceptance order) and optional BL-3a
-//  transverse terms; conserved slots go through flx (recovered F*),
-//  non-conserved slots {α, UE1, UE2} through a per-cell deposit
-//  into dsdt.  See docs/design/camr_ps_bl_wp_design.md.
+//  Contract: conserved slots receive the recovered interface flux
+//  F* = ½[(F_L + A⁻) + (F_R − A⁺)] in flx and telescope through
+//  hydro_consup; the non-conserved slots {UALPHA1, UE1, UE2} get flx = 0
+//  and a per-cell deposit -(A⁺_lo + A⁻_hi)/dx [- ΔF̃/dx] written to dsdt.
+//  pdivu is zeroed (pressure work already sits in F[UEDEN]).  Every raw
+//  wave satisfies W[URHO] = W[UM1RHO1]+W[UM2RHO2] and W[UEDEN] =
+//  W[UE1]+W[UE2]; the correction only ever scales whole waves so these
+//  identities survive.  A face whose star state is refused falls back to
+//  an identity-consistent local Lax-Friedrichs flux; no state is repaired.
+//
+//  Dials (CAMR.*, each read once at its accessor below): ps_flux (wp),
+//  ps_llf_identity (1), ps_wp_order (1; acceptance uses 2), ps_wp_limiter
+//  (vanleer), ps_wp_proj_scale (1), ps_lw_skip_contact (2),
+//  ps_wp_transverse (0), ps_shear_diss (0), ps_mu (0).
 // =====================================================================
 
 #include "PS_umeth.H"
@@ -35,9 +38,9 @@
 
 #include "EOS.H"
 #include "PS_hllc.H"
-#include "PS_presence.H"   // S1 presence params (threaded, no defaults)        // Task #187: Pelanti 2022 HLLC flux
-#include "PS_promote.H"   // 3b: checked promotion (energy reachability)
-#include "PS_guards.H"      // single-source phase-pressure sanity (G3)
+#include "PS_presence.H"
+#include "PS_promote.H"
+#include "PS_guards.H"
 #include "PS_ctoprim.H"
 #include "PS_wavespeed.H"
 
@@ -45,30 +48,22 @@
 
 using namespace amrex;
 
-// =====================================================================
-//  _from_state variants of the flux and wave-speed helpers, taking a
-//  local NVAR array of the conservative state and deriving the
-//  extended primitives inline.  Used by the MUSCL reconstruction path
-//  (the deleted MUSCL path), where the reconstructed face states were not
-//  cell-centred and so cannot be read from the q Array4.
-//
-//  This is essentially PS_ctoprim's ps_augment_primitives, unrolled
-//  to a local-array signature.  It duplicates the EOS::REY2P and
-//  RPY2Cs work of ctoprim per face; the (ρ, e) → State cache in the
-//  PR backend catches the redundant back-to-back solves
-//  when adjacent faces share a phase state.  Two EOS calls per phase
-//  per face is the intrinsic cost of 2nd-order in space.
-//
-//  Produces F(U) with the standard Euler form on the mixture slots
-//  and the P-S 2014 eqs. (1)-(4) form on the 6-eq slots, at the
-//  mixture pressure P_mix = α₁P₁ + α₂P₂ (#211; the #85 two-pressure
-//  option was retired 2026-08-26).
-// =====================================================================
+// ---------------------------------------------------------------------
+//  ps_physical_flux_from_state: F(U) in direction idir from one cell's
+//  conserved array U.  Euler form on the mixture slots, Pelanti-Shyue
+//  (2014) eqs. (1)-(4) on the six-equation slots, with the phase-energy
+//  work term at the mixture pressure P_mix = α₁P₁ + α₂P₂ (a per-phase
+//  pressure there is bit-identical at mechanical equilibrium;
+//  docs/DESIGN_DECISIONS.md H-3).  Per-phase (ρ_k, e_k, P_k)
+//  are built by the same presence dispatch as ps_augment_primitives
+//  (PS_ctoprim.H); the PR (ρ, e) → state cache absorbs the repeated
+//  per-face EOS solves.  Non-finite flux entries are zeroed and counted.
+// ---------------------------------------------------------------------
 AMREX_GPU_HOST_DEVICE
 AMREX_FORCE_INLINE
 void
 ps_physical_flux_from_state(int idir, const Real U[NVAR], Real F[NVAR],
-                            const PsPres& pr) noexcept   // S1
+                            const PsPres& pr) noexcept
 {
     // Derive mixture primitives.
     const Real rho    = amrex::max(ps_finite_or(U[URHO], Real(1.0e-6)), Real(1.0e-6));
@@ -102,17 +97,10 @@ ps_physical_flux_from_state(int idir, const Real U[NVAR], Real F[NVAR],
     const Real m1 = amrex::max(ps_finite_or(U[UM1RHO1], Real(0.0)), Real(0.0));
     const Real m2 = amrex::max(ps_finite_or(U[UM2RHO2], Real(0.0)), Real(0.0));
     constexpr Real rho_floor = Real(1.0e-6);
-    // G1: clamp into the EOS validity domain (see PS_guards.H).  Was
-    // floor-only, leaving rho_k free to reach the PR hard-sphere pole.
-    //  Contract 3: the phase state is a CHECKED construction, on BOTH paths.
-    //  The legacy branch used to force rg = Independent (asserting a phase
-    //  exists), divide by alpha unconditionally, clamp the quotient into the
-    //  EOS domain, and substitute e_mix for the phase energy whenever m was
-    //  small -- four separate manufactures, after which both branch-locked
-    //  EOS queries ran regardless.  That is how a vapour slot acquired a
-    //  mixture-like energy and a liquid slot reached m/alpha = 1.1e4 kg/m3.
-    //  The presence branch already did this correctly ("definition, not
-    //  repair"); the two are now one path.
+    // alpha_floor / rho_floor are unreferenced.
+    // Retire-candidate: see docs/DESIGN_DECISIONS.md §7 (O-8).
+    // Phase state is a checked construction (ps_regime + ps_phase_quot),
+    // never a repaired quotient.
     const PsRegime rg1 = ps_regime(alpha_1, m1, pr);
     const PsRegime rg2 = ps_regime(alpha_2, m2, pr);
     const Real ke_spec = Real(0.5) * (ux*ux + uy*uy + uz*uz);
@@ -120,9 +108,8 @@ ps_physical_flux_from_state(int idir, const Real U[NVAR], Real F[NVAR],
                                          ps_finite_or(U[UE1], Real(0.0)), ke_spec, pr);
     const PsPhaseQuot q2 = ps_phase_quot(alpha_2, m2,
                                          ps_finite_or(U[UE2], Real(0.0)), ke_spec, pr);
-    //  No state -> the mixture stands in, BY DEFINITION.  Not a clamp: a
-    //  phase that does not exist has no intensive properties of its own, and
-    //  its alpha weight is zero in the mixture rule below.
+    // A phase with no state takes the mixture values by definition; its
+    // alpha weight in the mixture pressure below is zero.
     const Real rho_1 = q1.exists ? q1.rho : rho;
     const Real rho_2 = q2.exists ? q2.rho : rho;
     const Real e1    = q1.exists ? q1.e   : e_mix;
@@ -132,26 +119,12 @@ ps_physical_flux_from_state(int idir, const Real U[NVAR], Real F[NVAR],
     Y[0] = Real(1.0);
     for (int n = 1; n < NUM_SPECIES; ++n) Y[n] = Real(0.0);
 
-    // Per-phase P via branch-locked EOS (task #185): phase 1 -> liquid
-    // branch, phase 2 -> vapor/SC branch.  No mixture query here -- see below.
-    //  HOST DISPATCH, mirroring ps_augment_primitives (PS_ctoprim.H) and
-    //  PS_hllc's face_from_state.  This function is described above as
-    //  "essentially PS_ctoprim's ps_augment_primitives, unrolled to a
-    //  local-array signature" -- but it never tracked that function's presence
-    //  conversion.  It still asked EOS::REY2P for a SINGLE-FLUID mixture
-    //  pressure and handed that to corridor/absent phases, with the comment
-    //  that the query "is well-defined even inside the saturation dome":
-    //  true INSIDE the dome, false in general.  For a two-phase cell
-    //  (rho_mix, e_mix) pairs the light phase's VOLUME with the heavy phase's
-    //  MASS and can have no root at all -- the abort that stopped B2, B7 and
-    //  B9 (measured 2026-08-11).  The host phase always HAS a state, so it is
-    //  both the correct fallback and a reference that cannot refuse.
-    //
-    //  ONE rule: wherever a phase's own pressure is unavailable -- no state,
-    //  not independent, or a non-physical branch-locked result -- it takes the
-    //  HOST's.  That is what sanitize_phase_pressure already does (it
-    //  SUBSTITUTES its reference), so passing the host pressure makes the
-    //  fallback and the guard the same rule instead of two.
+    // Branch-locked per-phase pressures (phase 1 liquid, phase 2 vapour/SC);
+    // no single-fluid mixture query, which can have no root in a two-phase
+    // cell.  Host dispatch: the host phase (larger alpha) always has a state
+    // and defines the cell; a phase whose own pressure is unavailable (no
+    // state, not Independent, or a non-physical branch result) takes the
+    // host's, which is the same substitution sanitize_phase_pressure makes.
     Real P1, P2;
     const bool host_is_1 = (alpha_1 >= alpha_2);
     if (host_is_1) {
@@ -171,7 +144,6 @@ ps_physical_flux_from_state(int idir, const Real U[NVAR], Real F[NVAR],
     }
     const Real P_mix = alpha_1 * P1 + alpha_2 * P2;
 
-    // ---- Assemble the flux exactly as ps_physical_flux does --------
     for (int n = 0; n < NVAR; ++n) F[n] = Real(0.0);
 
     F[URHO ] = rho * un;
@@ -187,8 +159,6 @@ ps_physical_flux_from_state(int idir, const Real U[NVAR], Real F[NVAR],
     F[UTEMP] = Real(0.0);
 
     for (int n = 0; n < NUM_SPECIES; ++n) {
-        // Face UFS from face U (rather than face Y × face URHO — the
-        // latter would need a Y reconstruction).
         F[UFS + n] = ps_finite_or(U[UFS + n], Real(0.0)) * un;
     }
 #if (NUM_ADV > 0)
@@ -203,17 +173,12 @@ ps_physical_flux_from_state(int idir, const Real U[NVAR], Real F[NVAR],
     F[UALPHA1] = alpha_1 * un;
     F[UM1RHO1] = ps_finite_or(U[UM1RHO1], Real(0.0)) * un;
     F[UM2RHO2] = ps_finite_or(U[UM2RHO2], Real(0.0)) * un;
-    // Task #211 — mixture P for phase-energy flux (see companion note in
-    // ps_physical_flux above).  P1, P2 are still needed for the
-    // wave-speed helpers and for ps_augment_primitives output; they are
-    // NOT used in the flux.
-    // (#85 two-pressure option retired 2026-08-26 — see ps_physical_flux.)
+    // Phase-energy work term at the mixture pressure (H-3).
     const Real Pe1 = P_mix;
     const Real Pe2 = P_mix;
     F[UE1    ] = (ps_finite_or(U[UE1], Real(0.0)) + alpha_1 * Pe1) * un;
     F[UE2    ] = (ps_finite_or(U[UE2], Real(0.0)) + alpha_2 * Pe2) * un;
 
-    //  AUDIT 2026-08-24 B13: counted, as in ps_physical_flux above.
     for (int n = 0; n < NVAR; ++n) {
         if (!std::isfinite(F[n])) { F[n] = Real(0.0); ps_guard::count_flux_sanit(); }
     }
@@ -223,28 +188,16 @@ ps_physical_flux_from_state(int idir, const Real U[NVAR], Real F[NVAR],
 
 
 // ---------------------------------------------------------------------
-//  ps_wp_face  (Berger-LeVeque wave-propagation interior, BL-1b)
-//
-//  Compute the A±ΔQ fluctuation at ONE face (index (i,j,k) in the
-//  direction-`idir` nodal FAB; left cell (iL,jL,kL), right cell
-//  (i,j,k)) from RAW CELL-AVERAGED states, and write:
-//    * CONSERVED slots -> the recovered single-valued interface flux
-//      F* = F(U_Lcell) + A⁻ΔQ  into flx.  With cell-averaged states,
-//      A⁺+A⁻ = ΔF = F(U_R)-F(U_L), so consup's -div(F*) telescopes
-//      EXACTLY to the fluctuation update -(A⁺_{i-1/2}+A⁻_{i+1/2})/dx.
-//    * NON-CONSERVED slots {UALPHA1,UE1,UE2} -> flx = 0 and A⁻/A⁺
-//      stashed into `wpf` (comp 0/1 = A⁻/A⁺ UALPHA1, 2/3 = UE1,
-//      4/5 = UE2) for the per-cell deposit.
-//
-//  Reconstruction is deliberately NOT used: MUSCL/PPM face states
-//  destabilise R-star on cross-critical B4 in the WP form and turn the
-//  α contact jump into curvature (smooth-α freeze).  See
-//  camr_ps_alpha_transport_map.md and ppm_1d_ps_wp.cpp:488.  2nd-order
-//  accuracy is BL-2's limited correction fluxes, not reconstruction.
-//
-//  Invalid face -> locally-conservative LLF flux for the conserved
-//  slots + symmetric ∓½λΔU fluctuation split for the non-conserved
-//  slots (mirrors the standalone's ps_llf_fallback path).
+//  ps_wp_face: the A±ΔQ fluctuations at one face (nodal index (i,j,k) in
+//  direction idir; left cell (iL,jL,kL), right cell (i,j,k)) from raw
+//  cell averages.  Writes, on the valid face box only: conserved slots
+//  -> recovered flux F* into flx (A⁺+A⁻ = ΔF, so consup's -div(F*)
+//  telescopes to the fluctuation update); {UALPHA1,UE1,UE2} -> flx = 0
+//  and A⁻/A⁺ into wpf (comps 0/1 alpha, 2/3 UE1, 4/5 UE2).  With
+//  store_waves the raw waves and speeds go to wv (may extend into ghost
+//  faces).  No reconstruction: face states are cell averages; second
+//  order comes from the correction pass (docs/MODEL_AND_ALGORITHM.md §3.1).
+//  A refused face takes a local Lax-Friedrichs flux (llf_id: see below).
 // ---------------------------------------------------------------------
 AMREX_GPU_DEVICE
 AMREX_FORCE_INLINE
@@ -253,11 +206,11 @@ ps_wp_face(int idir, int i, int j, int k, int iL, int jL, int kL,
            amrex::Array4<const amrex::Real> const& uin,
            amrex::Array4<amrex::Real> const& flx,
            amrex::Array4<amrex::Real> const& wpf,
-           amrex::Array4<amrex::Real> const& wv,   // wave/speed store (BL-2); unused if store_waves=false
+           amrex::Array4<amrex::Real> const& wv,
            bool store_waves,
-           amrex::Box vbox,                 // flx/wpf written only here; waves may extend into ghost faces
+           amrex::Box vbox,
            const PsPres& l_pres,
-           int llf_id = 1) noexcept                // A4: identity-consistent LLF fallback (see below)
+           int llf_id = 1) noexcept
 {
     using amrex::Real;
     const bool in_valid = vbox.contains(amrex::IntVect(AMREX_D_DECL(i,j,k)));
@@ -272,21 +225,17 @@ ps_wp_face(int idir, int i, int j, int k, int iL, int jL, int kL,
 
     PS_HLLC::Fluctuations flu;
     const bool ok = PS_HLLC::fluctuations(idir, UL, UR, flu, l_pres,
-                                          i, j, k);   // face loc, 0a diag
+                                          i, j, k);
 
     Real Am[NVAR], Ap[NVAR], flx_loc[NVAR];
     if (ok) {
         for (int n = 0; n < NVAR; ++n) {
             Am[n]      = flu.Am[n];
             Ap[n]      = flu.Ap[n];
-            // Symmetrized recovered flux (task #47):
-            //   F* = ½[(F_L + A⁻) + (F_R − A⁺)].
-            // Identically F_L + A⁻ when the consistency identity
-            // A⁻ + A⁺ = F_R − F_L holds; where it does NOT (the PS
-            // non-conservative α / star-pressure split), the plain
-            // F_L + A⁻ form is left-biased and breaks y-reflection
-            // symmetry at mirror faces (pipe-break gap-edge asymmetry).
-            // The symmetric average removes the bias.
+            // Symmetrised recovered flux F* = ½[(F_L + A⁻) + (F_R − A⁺)]:
+            // equals F_L + A⁻ where A⁻ + A⁺ = ΔF holds; where it does not
+            // (non-conservative slots) the one-sided form is left-biased
+            // and breaks reflection symmetry at mirror faces.
             flx_loc[n] = Real(0.5) * ((FL[n] + Am[n]) + (FR[n] - Ap[n]));
         }
     } else {
@@ -296,27 +245,18 @@ ps_wp_face(int idir, int i, int j, int k, int iL, int jL, int kL,
         const Real lam     = std::isfinite(lam_raw) ? lam_raw : Real(0.0);
         for (int n = 0; n < NVAR; ++n) {
             const Real half = Real(0.5) * lam * (UR[n] - UL[n]);
-            Am[n]      = -half;                    // symmetric fluct split
+            Am[n]      = -half;
             Ap[n]      =  half;
             flx_loc[n] = Real(0.5) * (FL[n] + FR[n]) - half;   // LLF flux
         }
-        //  AUDIT 2026-08-24 A4 (Marc's call, phase 1): the split above gives
-        //  the NON-CONSERVED slots pure diffusion — Am+Ap = 0 ≠ ΔF — while
-        //  UEDEN gets the full LLF flux through flx_loc.  A refused face
-        //  therefore transported total energy but no phase energy, measured
-        //  as the sole source of B7's stage-A phase-energy identity defect
-        //  (PS_hllc.H W0 notes: correlation 22/22, cells-affected ==
-        //  faces-failed + 1 exactly).  Identity-consistent split:
-        //    UE1/UE2:  Am = ½(ΔF − λΔU),  Ap = ½(ΔF + λΔU)   (Am+Ap = ΔF,
-        //              matching the LLF flux difference UEDEN sees);
-        //    α:        the WP-consistent advective form ū·Δα with
-        //              ū = ½(u_nL + u_nR) — NOT ΔF[UALPHA1] = Δ(α·u_n),
-        //              which would re-introduce the spurious α∇·u term the
-        //              WP α form exists to avoid.  ū is symmetric, so
-        //              mirror faces (u_nL = −u_nR → ū = 0) keep exact
-        //              y-reflection symmetry.
-        //  CAMR.ps_llf_identity=0 recovers the previous pure-diffusion
-        //  fallback bit-for-bit (ps_src_p_reproject escape idiom).
+        //  Identity-consistent split for the non-conserved slots (llf_id):
+        //  the pure-diffusion split above has Am+Ap = 0 on UE1/UE2 while
+        //  UEDEN receives the full LLF flux difference, so a refused face
+        //  would move total energy but no phase energy.  UE1/UE2 take
+        //  Am = ½(ΔF − λΔU), Ap = ½(ΔF + λΔU) (Am+Ap = ΔF); alpha takes the
+        //  advective form ū·Δα, ū = ½(u_nL + u_nR), not Δ(α·u_n), which would
+        //  re-introduce the spurious α∇·u term; ū is symmetric so mirror
+        //  faces keep exact reflection symmetry.  docs §2.6.
         if (llf_id != 0) {
             const int nslots[2] = { UE1, UE2 };
             for (int q = 0; q < 2; ++q) {
@@ -346,12 +286,8 @@ ps_wp_face(int idir, int i, int j, int k, int iL, int jL, int kL,
             Ap[UALPHA1] = Real(0.5) * ubar * da + halfa;
         }
 #if !defined(AMREX_USE_GPU) && defined(CAMR_PS_DIAG)
-        //  Diagnostic (CAMR.ps_llf_diag, default 0 = off).  Reports the faces
-        //  where fluctuations() failed and this LLF fallback actually fired,
-        //  with lam decomposed on the state that sets it.  See FINDINGS
-        //  Addenda 10d/10e: dt is sized from a single-fluid mixture sound
-        //  speed while THIS lam is the frozen two-phase speed, so a fallback
-        //  firing where lam exceeds the assumed speed runs above CFL 1.
+        //  CAMR.ps_llf_diag (0): print each face where the LLF fallback
+        //  fired, with lam decomposed on the left state that sets it.
         {
             static const int lld = []() { int v = 0; amrex::ParmParse pp("CAMR");
                                           pp.query("ps_llf_diag", v); return v; }();
@@ -389,9 +325,9 @@ ps_wp_face(int idir, int i, int j, int k, int iL, int jL, int kL,
 #endif
     }
 
-    // Conserved slots via consup; non-conserved via the per-cell deposit.
-    // flx/wpf live on the valid face box only; ghost faces (grown box, BL-2)
-    // contribute waves for the correction stencil but must not write flx.
+    // flx/wpf live on the valid face box only; ghost faces of the grown
+    // wave box contribute waves to the correction stencil but must not
+    // write flx.
     if (in_valid) {
         for (int n = 0; n < NVAR; ++n) flx(i,j,k,n) = ps_finite_or(flx_loc[n], Real(0.0));
         flx(i,j,k, UTEMP)   = Real(0.0);   // T recomputed at ctoprim
@@ -407,10 +343,8 @@ ps_wp_face(int idir, int i, int j, int k, int iL, int jL, int kL,
         wpf(i,j,k, 5) = ps_finite_or(Ap[UE2],     Real(0.0));
     }
 
-    // BL-2: stash the raw waves W[l][n] and speeds s[l] for the limited
-    // correction-flux pass.  On an invalid (LLF-fallback) face the waves
-    // are set to zero → the correction skips it (1st-order there), exactly
-    // like the standalone's ps_llf_fallback path.
+    // Raw waves W[l][n] and speeds s[l] for the correction pass; a refused
+    // face stores zero waves so the correction skips it (first order there).
     if (store_waves) {
         for (int l = 0; l < 3; ++l) {
             const Real sl = ok ? flu.s[l] : Real(0.0);
@@ -422,18 +356,15 @@ ps_wp_face(int idir, int i, int j, int k, int iL, int jL, int kL,
 }
 
 // ---------------------------------------------------------------------
-//  ps_wp_tvterm  (BL-3a/BL-4 contact-only transverse fluctuation term)
-//
-//  Accumulates into g[NVAR] the transverse correction to the direction-`d`
-//  flux at d-face (i,j,k), from the CONTACT wave of the transverse-`t`
-//  fluctuations advected in `d` at the d-material velocity (LeVeque rpt2,
-//  contact-only).  Direction-generic ⇒ one code path for 2D (x↔y) and 3D
-//  (all 6 (d,t) pairs).  Contact wave only (l=1): its transverse speed is
-//  the material velocity, so the term is an EXACT no-op for flow with no
-//  d-velocity component (e.g. 1-D-aligned B4) — the acoustic waves are NOT
-//  transported (that path is FP-unstable; see camr_ps_bl_wp_design.md
-//  BL-3a).  DOMAIN-boundary guard drops contributions whose perpendicular-d
-//  column/row is an out-of-domain (corner) ghost.
+//  ps_wp_tvterm: LeVeque transverse correction (rpt2 form) to the
+//  direction-d flux at d-face (i,j,k), accumulated into g[NVAR].  The
+//  contact wave (l=1) of the four neighbouring t-face fluctuations is
+//  transported in d at the d-velocity of that t-face, upwinded by sign.
+//  Its transverse speed is the material velocity, so the term is an exact
+//  no-op for flow with no d-velocity (1-D-aligned cases stay bit-identical).
+//  Direction-generic: one path for 2-D and all six 3-D (d,t) pairs.
+//  Contributions whose perpendicular column is an out-of-domain ghost are
+//  dropped.  mode 2 adds the acoustic waves (see below).  docs §3.5.
 AMREX_GPU_DEVICE
 AMREX_FORCE_INLINE
 void
@@ -442,7 +373,7 @@ ps_wp_tvterm(int d, int t, int i, int j, int k,
              amrex::Array4<amrex::Real> const& wv_t,
              const int* domlo, const int* domhi,
              amrex::Real dt, amrex::Real dxt, amrex::Real g[NVAR],
-             int mode = 1) noexcept   // 1=contact-only (BL-3a); 2=+acoustic (BL-3b)
+             int mode = 1) noexcept   // 1 = contact only; 2 = + acoustic
 {
     using amrex::Real;
     const int di=(d==0), dj=(d==1), dk=(d==2);
@@ -481,44 +412,22 @@ ps_wp_tvterm(int d, int t, int i, int j, int k,
                    + cM0*Apm(i-di,   j-dj,   k-dk,   n,+1) + cM1*Apm(i-di+ti,j-dj+tj,k-dk+tk,n,-1) );
     }
 
-    // ---- BL-3b (mode 2): exact ACOUSTIC transverse coupling ----------------
-    //  EXPERIMENTAL (task #18) — analytic acoustic eigen-projection.  NOTE
-    //  (AUDIT 2026-08-24 A1): every measurement quoted in the design doc's
-    //  coarse-res validation and GATE 3 was taken with the c-vs-snd defect
-    //  below in place (the eigenvector's energy component carried the z-cell
-    //  INDEX where the sound speed belongs — H in 2D instead of H∓ud·snd).
-    //  The defect is now fixed; the corrected operator re-passed the
-    //  coarse-res stability/symmetry probe (see the design doc's A1
-    //  addendum), but the "oe(u) halved" effectiveness number is PRE-FIX
-    //  and must be re-measured if mode 2 is ever pursued — moot for now,
-    //  since GATE 3's revised diagnosis routes the checkerboard to shear
-    //  dissipation, not acoustics.  This mode replaced an earlier
-    //  FD-Jacobian HLL split that blew up (604 bar).  Still DEFAULT OFF
-    //  (ps_wp_transverse<2) — see BL3b_transverse_acoustic_design.md.
-    //  Add the d-projected contribution of the acoustic transverse waves l=0
-    //  (S_L) and l=2 (S_R), which BL-3a omits.  For each contributing t-face,
-    //  the acoustic FLUCTUATION asdq = s_t,l * W_t[l] is split into d-going
-    //  pieces by the HLL d-fan (speeds s∓ = u_d ∓ c at the t-face reference
-    //  state Qbar):
-    //     Ghat = F_d(Qbar+asdq) - F_d(Qbar)        (≈ Â_d asdq)
-    //     B⁻asdq = s⁻(s⁺ asdq − Ghat)/(s⁺−s⁻)      (−d going; feeds hi-d column)
-    //     B⁺asdq = s⁺(Ghat − s⁻ asdq)/(s⁺−s⁻)      (+d going; feeds lo-d column)
-    //  Same four-t-face gather + domain guards (mCp/mCm) as the contact term,
-    //  same −h prefactor.  This is the momentum-pressure transverse coupling
-    //  the contact wave cannot provide (fixes the near-orifice x_velocity
-    //  odd-even decoupling; task #18/#41/#59).  See BL3b_transverse_acoustic_design.md.
-    //  DEFAULT OFF (ps_wp_transverse<2): reproduces BL-3a exactly.
+    // ---- mode 2: acoustic transverse coupling (experimental, off) --------
+    //  Adds the d-projected contribution of the acoustic transverse waves
+    //  l=0 (S_L) and l=2 (S_R): each fluctuation asdq = s_t,l·W_t[l] is
+    //  projected analytically onto the local-Γ Euler acoustic eigenvectors
+    //  in d with the frozen mixture c, λ± = u_d ± c, r± = [ρ:1, m_d:λ±,
+    //  m_t:u_t, E:H±u_d c], strengths a± = (dp ± ρc du_d)/(2c²) with
+    //  dp = (Γ−1)(dE − u_d dm_d + ½u_d²dρ), and upwinded by the sign of λ.
+    //  Same four-t-face gather, domain guards and −h prefactor as the
+    //  contact term.  Phase slots are partitioned by mass fraction Y_k and
+    //  energy fraction f_k so the linear identities hold; alpha is not
+    //  moved by acoustics; UEINT is recomputed at ctoprim and left 0.
+    //  This mode makes a single-fluid mixture EOS query with a 1 m/s c
+    //  floor, which the rest of the PS path forbids.
+    //  Retire-candidate: see docs/DESIGN_DECISIONS.md §5 (F-2).
     if (mode >= 2) {
-        // Analytic acoustic eigen-projection of the transverse fluctuation
-        // asdq = s_t,l·W_t[l] onto the d-direction eigenbasis, λ-sign upwinded.
-        // Local-Γ (gam1) Euler acoustic eigenvectors with the FROZEN mixture c:
-        //   λ± = u_d ± c ; r± = [ρ:1, m_d:λ±, m_t:u_t, E:H±u_dc]
-        //   strengths a± = (dp ± ρc du_d)/(2c²),  dp = (Γ−1)(dE − u_d dm_d + ½u_d²dρ)
-        // Phase slots partitioned so the acoustic wave keeps UM1RHO1+UM2RHO2=ρ
-        // and UE1+UE2=UEDEN consistent (mass-fraction Y_k and energy-fraction
-        // f_k); α is NOT moved by acoustics (contact term handles it). UEINT is
-        // recomputed from UEDEN−ke at ctoprim, so it is left 0 here.
-        // want_minus=true → keep only λ<0 waves (−d going); false → λ>0 (+d).
+        // want_minus=true keeps only λ<0 waves (−d going); false keeps λ>0.
         auto bsplit = [&](int a,int b,int c,int l,bool want_minus,Real out[NVAR]) noexcept {
             for (int n=0;n<NVAR;++n) out[n]=Real(0.0);
             const Real st = wv_t(a,b,c,3*NVAR+l);
@@ -553,10 +462,7 @@ ps_wp_tvterm(int d, int t, int i, int j, int k,
                 out[UM1RHO1]+=w*Y1;        out[UM2RHO2]+=w*Y2;
                 out[UE1]+=w*f1*Hc;         out[UE2]+=w*f2*Hc;
             };
-            //  AUDIT 2026-08-24 A1: these four calls used `c` — the lambda's
-            //  int z-CELL-INDEX parameter — where the sound speed belongs, so
-            //  the acoustic eigenvector's energy component was H (2D, k=0)
-            //  or H∓ud*k (3D) instead of H∓ud*snd.  Fixed to `snd`.
+            // `snd` is the sound speed; `c` is the z-index lambda parameter.
             if(want_minus){ if(lm<Real(0.0)) add(lm,am,H-ud*snd); if(lp<Real(0.0)) add(lp,ap,H+ud*snd); }
             else          { if(lm>Real(0.0)) add(lm,am,H-ud*snd); if(lp>Real(0.0)) add(lp,ap,H+ud*snd); }
             for(int n=0;n<NVAR;++n) out[n]=ps_finite_or(out[n],Real(0.0));
@@ -576,23 +482,17 @@ ps_wp_tvterm(int d, int t, int i, int j, int k,
 }
 
 // ---------------------------------------------------------------------
-//  ps_shear_diss_face  (task #18: targeted transverse-shear dissipation)
-//
-//  Damps the numerical y-direction odd-even (checkerboard) in the X-velocity
-//  (and generally the d-direction odd-even in each transverse velocity) that
-//  the acoustic/contact waves cannot touch (linearly-degenerate shear field,
-//  λ=u ⇒ no upwind dissipation).  Adds a CONSERVATIVE, flux-form dissipation
-//  of the transverse momentum in the d-direction, gated by a Jameson-style
-//  odd-even SENSOR s∈[0,1] so it is 2nd-order-vanishing in smooth flow (s→0
-//  for any locally-linear u_t profile) and only bites at grid-scale zig-zag:
-//     Φ[UM_t] = −coef · s · (ρ̄ λ̄) · (u_t,R − u_t,L)   (d-face flux)
-//     s = |Δ_LR − ½(Δ_LL+Δ_RR)| / (|Δ_LR| + ½|Δ_LL| + ½|Δ_RR| + ε)
-//  Consistent energy flux Φ[E] = ū_t·Φ[UM_t] (conserves total energy; the
-//  removed KE becomes heat via the flux divergence), partitioned to UE1/UE2
-//  by mass fraction so UE1+UE2=UEDEN stays consistent; α untouched.  All ops
-//  symmetric ⇒ machine-precision y-reflection symmetry preserved.  Skipped
-//  within 2 cells of a domain edge (1st-order-safe, like the other terms).
-//  coef = CAMR.ps_shear_diss (default 0 = off).
+//  ps_shear_diss_face: conservative flux-form dissipation of the
+//  transverse momentum across d-face (i,j,k), damping the grid-scale
+//  odd-even in the transverse velocity that the linearly degenerate shear
+//  field (λ=u, no upwind dissipation) cannot.  Gated by a Jameson sensor
+//  s∈[0,1] so it vanishes to second order in smooth flow:
+//     Φ[UM_t] = −coef · s · ¼(ρ_L+ρ_R)(λ_L+λ_R) · (u_t,R − u_t,L),
+//     s = |Δ_LR − ½(Δ_LL+Δ_RR)| / (|Δ_LR| + ½|Δ_LL| + ½|Δ_RR| + ε).
+//  Energy flux ū_t·Φ keeps total energy, partitioned to UE1/UE2 by mass
+//  fraction; alpha untouched; skipped within two cells of a domain edge.
+//  coef = CAMR.ps_shear_diss (see PS_umeth).  docs §3.6.
+//  Retire-candidate: see docs/DESIGN_DECISIONS.md §5 (F-3).
 AMREX_GPU_DEVICE
 AMREX_FORCE_INLINE
 void
@@ -649,18 +549,15 @@ ps_shear_diss_face(int d, int i, int j, int k,
 }
 
 // ---------------------------------------------------------------------
-//  ps_viscous_face  (physical Newtonian viscosity, task #60 follow-on)
-//
-//  Adds the deviatoric Newtonian viscous stress to the d-direction flux at
-//  face (i,j,k):  momentum flux += -tau_{d,c},  energy flux += -u_c tau_{d,c},
-//  with  tau_{dd}=mu(2 du_d/dd - 2/3 div u),  tau_{dt}=mu(du_t/dd + du_d/dt).
-//  This gives the shear layer a FINITE, physical thickness (~mu/(rho U)) so
-//  the Kelvin-Helmholtz roll-up is a resolved physical mode rather than a
-//  grid-scale odd-even of the (dissipation-free) linearly-degenerate contact.
-//  Conservative (flux form -> refluxes), continuous, symmetric.  Viscous
-//  heating partitioned to UE1/UE2 by mass fraction so UE1+UE2=UEDEN.
-//  Transverse gradients use the two cells straddling the face; skipped within
-//  one cell of a transverse domain edge.  mu = CAMR.ps_mu [Pa s] (0 = off).
+//  ps_viscous_face: deviatoric Newtonian stress added to the d-direction
+//  flux at face (i,j,k): momentum flux += -tau_{d,c}, energy flux +=
+//  -u_c tau_{d,c}, tau_{dd} = mu(2 du_d/dd - 2/3 div u), tau_{dt} =
+//  mu(du_t/dd + du_d/dt).  Gives the shear layer a finite thickness
+//  ~mu/(rho U) so Kelvin-Helmholtz roll-up is a resolved mode rather than
+//  grid-scale odd-even.  Flux form (refluxes), symmetric; viscous heating
+//  partitioned to UE1/UE2 by mass fraction.  Transverse gradients from the
+//  two straddling cells; skipped within one cell of a transverse domain
+//  edge.  mu = CAMR.ps_mu [Pa s] (see PS_umeth).  docs §3.6.
 AMREX_GPU_DEVICE
 AMREX_FORCE_INLINE
 void
@@ -723,20 +620,17 @@ ps_viscous_face(int d, int i, int j, int k,
 }
 
 // ---------------------------------------------------------------------
-//  Solver-selection dial accessors (declared in PS_umeth.H; AUDIT C.4).
-//  One ParmParse read per knob, process-wide.
+//  Solver-selection dial accessors (declared in PS_umeth.H).  One
+//  ParmParse read per key, process-wide; the resolved value is force-added
+//  so job_info records what actually ran.
 // ---------------------------------------------------------------------
+//  CAMR.ps_flux (wp): the interior flux.  wp is the only interior flux
+//  (docs/DESIGN_DECISIONS.md H-2); any other name aborts so a deck
+//  that names a flux that does not exist fails loudly.  The key survives
+//  so decks can state the flux explicitly and job_info records it.
 int ps_flux_selector()
 {
     static const int v = []() -> int {
-        //  SINGLE-PATH (2026-08-26): wp — the Berger-LeVeque fluctuation
-        //  interior, the acceptance flux — is the ONLY interior flux path.
-        //  The llf and hllc split paths were DELETED (probe #27/#32 +
-        //  WP-CF-2D adjudication; the formulations survive in git
-        //  history), so a deck that names them must fail loudly rather
-        //  than silently run something else (retired-key idiom).  The
-        //  dial itself survives so decks can — and the pinned ones do —
-        //  state the flux explicitly, and so job_info keeps recording it.
         std::string s = "wp";
         amrex::ParmParse pp("CAMR");
         pp.query("ps_flux", s);
@@ -748,11 +642,8 @@ int ps_flux_selector()
                           "CAMR.ps_wp_order=2, the acceptance order) or unset "
                           "the key.").c_str());
         }
-        //  AUDIT 2026-08-24 B5/C.6: force-add the RESOLVED canonical name so
-        //  job_info records which solver actually ran (gerg_ext_c idiom) —
-        //  including when the deck was silent.
         pp.add("ps_flux", std::string("wp"));
-        return 2;   // wp keeps its historical mode number
+        return 2;   // wp's selector value
     }();
     return v;
 }
@@ -762,20 +653,24 @@ const char* ps_flux_name()
     return (ps_flux_selector() == 2) ? "wp" : "invalid";
 }
 
-//  ps_recon_selector and ps_alpha_limiter_minmod were DELETED
-//  2026-08-27 with their dials (ledger housekeeping, Marc's scope
-//  call): reconstruction and the WP-alpha transport limiter both
-//  served the split paths deleted 2026-08-26; since then the dials
-//  were banner/job_info-only.  Set keys abort in PS_umeth() below
-//  (retired-key idiom); PS_reconstruction.H went with them.
 
-
+// ---------------------------------------------------------------------
+//  PS_umeth: the hydro interior for one box (signature shared with
+//  MOL_umeth for dispatch in Hydro_umdrv.cpp; q, qa, q1-3, a1-3, vol and
+//  the small_* arguments are unused — wp works from uin_arr).  Reads the
+//  dials once (host side, captured by value into the kernels), runs Pass 1
+//  (fluctuations), Pass 2 (limited correction), the transverse / shear /
+//  viscous terms and Pass 3 (non-conserved deposit), and returns.
+//  do_bl_fluct / fcorr* are accepted and left untouched: wp embeds its
+//  phase-energy defect inside the fluctuations, so the register they feed
+//  receives zero (docs/DESIGN_DECISIONS.md O-5).
+// ---------------------------------------------------------------------
 void
 PS_umeth(const Box& bx,
          const int* /*bclo*/, const int* /*bchi*/,
-         const int* domlo, const int* domhi,   // used by BL-3a transverse guard
+         const int* domlo, const int* domhi,   // transverse-term domain guard
          Array4<const Real> const& uin_arr,
-         Array4<const Real> const& /*q*/,     // unused since single-path: wp works from uin_arr
+         Array4<const Real> const& /*q*/,
          Array4<const Real> const& /*qa*/,
          Array4<Real> const& dsdt_arr,
          AMREX_D_DECL(Array4<Real> const& flx1,
@@ -790,7 +685,7 @@ PS_umeth(const Box& bx,
          Array4<Real> const& pdivu,
          Array4<const Real> const& /*vol*/,
          const GpuArray<Real, AMREX_SPACEDIM> dx,
-         const Real dt,   // used by the BL-2/BL-3a correction terms (dt_l)
+         const Real dt,
          const Real /*small*/,
          const Real /*small_dens*/,
          const Real /*small_pres*/,
@@ -804,15 +699,9 @@ PS_umeth(const Box& bx,
 {
     BL_PROFILE("PS_umeth()");
 
-    //  CAMR.ps_recon and CAMR.ps_alpha_limiter RETIRED 2026-08-27
-    //  (ledger housekeeping; Marc confirmed the full-scrub scope).
-    //  Reconstruction and the WP-alpha transport limiter served the
-    //  split paths deleted 2026-08-26 — wp deliberately works from raw
-    //  cell averages (see ps_wp_face) and carries its own van Leer
-    //  limiter in the BL-2 correction (ps_wp_unlimited is its
-    //  diagnostic bypass).  Set keys abort rather than silently
-    //  no-oping (retired-key idiom); the keys were scrubbed from every
-    //  deck in the same commit.
+    //  Retired keys abort by presence.  ps_recon: wp works from raw cell
+    //  averages; ps_alpha_limiter: replaced by the correction's van Leer
+    //  limiter (ps_wp_limiter).  docs/DESIGN_DECISIONS.md §6.
     static const bool s_recon_retired = []() {
         amrex::ParmParse pp("CAMR");
         if (pp.contains("ps_recon")) {
@@ -833,22 +722,12 @@ PS_umeth(const Box& bx,
     }();
     amrex::ignore_unused(s_recon_retired);
 
-    // SINGLE-PATH (2026-08-26): ps_flux_selector() returns 2 (wp) or
-    // Aborts — llf/hllc were deleted.  The read is kept (a) as the
-    // retired-key gate and (b) for the B5/C.6 job_info record.
-    const int use_hllc = ps_flux_selector();   // single read (AUDIT C.4)
+    // Flux selector: always 2 (wp) or an abort; read here so the retired-key
+    // gate runs and job_info records the flux.
+    const int use_hllc = ps_flux_selector();
 
-    // #85 (level-b): per-phase P_k energy flux (two-pressure / disequilibrium
-    // form).  Host-read once here; captured by value into the [=] face kernels
-    // (GPU-safe) and threaded to the flux / HLLC / defect calls.  Default 0 =
-    // mixture-P (#211), bit-identical.
-    //  ps_pk_energy_flux (#85) RETIRED 2026-08-26 (Marc's call): no
-    //  finite-rate mechanical-relaxation program is foreseen, and the dial
-    //  was never measured beneficial — near-inert by construction at
-    //  instantaneous mechanical relaxation (P_1 = P_2 every step; measured
-    //  0.01% on B7's e1_min, nil on B2/B9).  The mixture-P (#211) form is
-    //  the only form; the derivation survives in git.  A set key aborts
-    //  rather than silently no-oping (retired-key idiom):
+    //  Retired key ps_pk_energy_flux: replaced by the mixture-pressure
+    //  phase-energy flux (H-3).
     static const bool s_pk_ef_retired = []() {
         amrex::ParmParse pp("CAMR");
         if (pp.contains("ps_pk_energy_flux")) {
@@ -861,40 +740,27 @@ PS_umeth(const Box& bx,
     }();
     amrex::ignore_unused(s_pk_ef_retired);
 
-    //  A4 (2026-08-24): identity-consistent LLF fallback for the
-    //  non-conserved slots.  Default ON; CAMR.ps_llf_identity=0 recovers the
-    //  pre-A4 pure-diffusion fallback bit-for-bit.  Host-read once, threaded
-    //  by value into the face kernels (GPU rules 12.2).
+    //  CAMR.ps_llf_identity (1): identity-consistent LLF fallback on the
+    //  non-conserved slots (ps_wp_face); 0 = pure-diffusion split, kept for
+    //  A/B only (refuted; docs/DESIGN_DECISIONS.md H-6, O-9).
     const int llf_id = []() -> int {
         static int c = -1;
         if (c < 0) { int v = 1; amrex::ParmParse pp("CAMR");
                      pp.query("ps_llf_identity", v);
-                     pp.add("ps_llf_identity", v);   // B5/C.6 -> job_info
+                     pp.add("ps_llf_identity", v);
                      c = v; }
         return c;
     }();
 
-    // S1: presence-discrete params (DESIGN_ps_presence_discrete.md).  One
-    // host-side ParmParse read, captured by value into every kernel below —
-    // the GPU-clean pattern (§12.2).  Default disabled = bit-identical.
+    // Presence parameters: one host-side read, captured by value into every
+    // kernel (see ps_presence_params, PS_presence.H).
     const PsPres l_pres = ps_presence_params();
 
-    // The wp interior (the only path) is the self-contained block below:
-    // it fills flx (recovered F* on the conserved slots) + a per-cell
-    // deposit for the non-conservative slots {α, UE1, UE2}, then
-    // returns.  BL-1b; see docs/design/camr_ps_bl_wp_design.md §9.
-
-    // BL-2: wave-propagation order for ps_flux=wp.
-    //   CAMR.ps_wp_order = 1 (default) → 1st-order fluctuations (BL-1).
-    //                    = 2           → + LeVeque van-Leer-limited
-    //                                     correction fluxes (2nd order in
-    //                                     smooth flow; limiter → 1st order
-    //                                     at discontinuities).  Applied to
-    //                                     ALL three waves incl. the contact
-    //                                     (α); the limiter keeps B4's sharp
-    //                                     contact 1st-order-safe while
-    //                                     lifting smooth α (ADV2D) to 2nd
-    //                                     order — see camr_ps_alpha_transport_map.md.
+    // CAMR.ps_wp_order (default 1; the acceptance configuration uses 2):
+    // 1 = first-order fluctuations only; 2 = plus the limited correction
+    // fluxes on all three waves (second order in smooth flow, first order
+    // at discontinuities).  Any other value resolves to 1.  The default is
+    // an open item (docs/DESIGN_DECISIONS.md O-4).
     auto ps_wp_order_cached = []() -> int
     {
         static int cached = -1;
@@ -908,11 +774,9 @@ PS_umeth(const Box& bx,
     };
     const int wp_order = ps_wp_order_cached();
 
-    // BL-2 diagnostic: CAMR.ps_wp_limiter = "vanleer" (default, TVD) or
-    // "none" (UNLIMITED φ=1 → pure Lax-Wendroff correction).  Unlimited is
-    // NOT monotone (oscillates at discontinuities like B4) and is intended
-    // only for smooth order-of-accuracy verification (ADV2D), where the van
-    // Leer limiter clips smooth extrema and masks the design 2nd-order rate.
+    // CAMR.ps_wp_limiter (vanleer): "none"/"unlimited" sets φ=1 (pure
+    // Lax-Wendroff correction).  Unlimited is not monotone and is meant only
+    // for smooth order-of-accuracy checks, where van Leer clips extrema.
     auto ps_wp_unlimited_cached = []() -> int
     {
         static int cached = -1;
@@ -926,9 +790,9 @@ PS_umeth(const Box& bx,
     };
     const int wp_unlimited = ps_wp_unlimited_cached();
 
-    // W2-2b: nondimensionalise the wave components before projecting.
-    // CAMR.ps_wp_proj_scale = 1 (default) or 0 (raw components, W2-2 as first
-    // landed) for A/B without a rebuild.
+    // CAMR.ps_wp_proj_scale (1): nondimensionalise the wave components
+    // before the limiter projection; 0 = raw components (refuted, A/B only;
+    // docs/DESIGN_DECISIONS.md L-1, O-9).
     auto ps_wp_projscale_cached = []() -> int
     {
         static const int cached = []() {
@@ -938,25 +802,17 @@ PS_umeth(const Box& bx,
     };
     const int wp_proj_scale = ps_wp_projscale_cached();
 
-    // C2 (DESIGN_ps_contact_lw.md): skip the Lax-Wendroff correction on the
-    // CONTACT wave (l=1), which carries the non-conservative alpha jump —
-    // applying LW there smears alpha into the phase densities/energies
-    // (STANDALONE_LESSONS_GAP C2).  CAMR.ps_lw_skip_contact:
-    //   0 = off (contact corrected; the pre-2026-09-05 baseline)
-    //   1 = BLANKET skip (standalone PS_LW_SKIP_CONTACT; measures the A/C
-    //       cost of dropping the contact correction everywhere, [DECIDE-1a])
-    //   2 = regime-gated (single-phase faces keep it) — PENDING DECIDE-2,
-    //       not yet wired; set 0 or 1 for now.
-    // Whole-wave drop only (the W2-2 linear identities forbid per-slot skip).
+    // CAMR.ps_lw_skip_contact (2): weight of the correction on the contact
+    // wave, which carries the non-conservative alpha jump; correcting it at
+    // a material interface smears alpha into the phase densities/energies,
+    // while skipping it everywhere costs single-phase contact sharpening.
+    //   0 = full correction; 1 = blanket skip; 2 = smoothstep taper in
+    //   |Δα|/α_cond (weight 1 in uniform regions, 0 across a jump ≥ α_cond,
+    //   no new threshold).  Modes 0/1 are kept for A/B (docs/
+    //   DESIGN_DECISIONS.md H-5, O-1).  Applied to the whole wave only.
     auto ps_lw_skip_contact_cached = []() -> int
     {
         static const int cached = []() {
-            //  DEFAULT 2 (softened regime taper) since 2026-09-05 [DECIDE-3]:
-            //  validated on the 1-D A/C battery (mean 0.0350 preserved) and
-            //  the 2-D demo3 A/B (alpha_cond kink removed, near-orifice zigzag
-            //  ~5x smaller, spurious extrema halved).  0 = off (A/B baseline),
-            //  1 = blanket (A/C-cost measurement).  Retire to single-path
-            //  later per the ps_star_relaxed pattern.
             int v = 2; amrex::ParmParse pp("CAMR");
             pp.query("ps_lw_skip_contact", v);
             if (v != 0 && v != 1 && v != 2) {
@@ -969,18 +825,10 @@ PS_umeth(const Box& bx,
     };
     const int wp_lw_skip = ps_lw_skip_contact_cached();
 
-    // BL-3a: contact-only transverse fluctuation coupling (2D).
-    //   CAMR.ps_wp_transverse = 0 (default) → directionally split (BL-1/2).
-    //                         = 1           → add the LeVeque transverse
-    //                                          correction: each normal
-    //                                          fluctuation A±ΔQ is advected
-    //                                          at the TRANSVERSE material
-    //                                          (contact) velocity and folded
-    //                                          into the transverse flux
-    //                                          (conserved slots) / deposit
-    //                                          ({α,UE1,UE2}).  ∝ v_t ⇒ exact
-    //                                          no-op for 1-D-aligned flow
-    //                                          (v_t=0, e.g. B4).  2D only.
+    // CAMR.ps_wp_transverse (0): 0 = directionally split; 1 = contact-only
+    // transverse correction (ps_wp_tvterm; the validated 2-D setting);
+    // 2 = plus acoustic waves (experimental, F-2).  Clamped to [0,2].
+    // 2-D/3-D only.
     auto ps_wp_transverse_cached = []() -> int
     {
         static int cached = -1;
@@ -988,22 +836,19 @@ PS_umeth(const Box& bx,
             int v = 0;
             amrex::ParmParse pp("CAMR");
             pp.query("ps_wp_transverse", v);
-            // 0 = off; 1 = contact-only (BL-3a); 2 = contact + exact acoustic
-            // (BL-3b, task #18).  Preserve the value (was clamped to 0/1).
             cached = (v < 0) ? 0 : (v > 2 ? 2 : v);
         }
         return cached;
     };
 #if (AMREX_SPACEDIM >= 2)
-    const int wp_transverse = ps_wp_transverse_cached();   // BL-3a (2D) / BL-4 (3D)
+    const int wp_transverse = ps_wp_transverse_cached();
 #else
-    const int wp_transverse = 0;   // no transverse in 1D
+    const int wp_transverse = 0;
     amrex::ignore_unused(ps_wp_transverse_cached);
 #endif
 
-    // Targeted transverse-shear dissipation (task #18): damps the numerical
-    // near-jet transverse odd-even (checkerboard) in the transverse velocity.
-    // CAMR.ps_shear_diss = coefficient (default 0 = off); ~0.1-0.5 typical.
+    // CAMR.ps_shear_diss (0 = off): coefficient of the sensor-gated
+    // transverse-shear dissipation (ps_shear_diss_face); negative → 0.
     auto ps_shear_diss_cached = []() -> amrex::Real
     {
         static amrex::Real cached = -1.0;
@@ -1022,9 +867,8 @@ PS_umeth(const Box& bx,
     amrex::ignore_unused(ps_shear_diss_cached);
 #endif
 
-    // Physical Newtonian viscosity (task #60): gives the shear layer a finite
-    // thickness so KH is a resolved physical mode, not grid-scale odd-even.
-    // CAMR.ps_mu = dynamic viscosity [Pa s] (default 0 = inviscid).
+    // CAMR.ps_mu (0 = inviscid): dynamic viscosity [Pa s] for
+    // ps_viscous_face; the pipe-break decks run an effective 2 Pa s.
     auto ps_mu_cached = []() -> amrex::Real {
         static amrex::Real cached = -1.0;
         if (cached < amrex::Real(0.0)) {
@@ -1040,12 +884,7 @@ PS_umeth(const Box& bx,
     amrex::ignore_unused(ps_mu_cached);
 #endif
 
-    // CAMR.ps_ctu RETIRED 2026-08-26 with the single-path deletion: the
-    // CTU scaffold (P1 — never grew past a zero transverse correction)
-    // left with the split paths it was built to couple.  A SET key —
-    // either value, the KEY is retired — aborts rather than silently
-    // no-oping (retired-key idiom).  Design history:
-    // docs/design/camr_ps_ctu_design.md, camr_ps_ctu_P1_plan.md.
+    // Retired key ps_ctu: transverse coupling is ps_wp_transverse.
     static const bool s_ps_ctu_retired = []() {
         amrex::ParmParse pp("CAMR");
         if (pp.contains("ps_ctu")) {
@@ -1072,14 +911,9 @@ PS_umeth(const Box& bx,
         }
     }
 
-    // hydro_umdrv creates pdivu as an uninitialised FArrayBox and
-    // relies on the solver body to write into it.  Godunov / MOL do
-    // that inside their kernels; the wp interior does not compute a
-    // P∇·u term separately (P-work already sits in F[UEDEN]), so
-    // we MUST explicitly zero pdivu to prevent hydro_consup from
-    // Saxpying uninitialised memory into dsdt.  Missing this zeroing
-    // step manifests as a deterministic FPE crash after ~12 steps
-    // as garbage floats accumulate in dsdt.
+    // hydro_umdrv hands over pdivu uninitialised and hydro_consup adds it
+    // to dsdt; wp has no separate P∇·u term (the pressure work sits in
+    // F[UEDEN]), so pdivu must be zeroed here.
     amrex::ParallelFor(bx,
     [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
     {
@@ -1095,35 +929,26 @@ PS_umeth(const Box& bx,
     const Box zfbx = amrex::surroundingNodes(bx, 2);
 #endif
 
-    // ========== Berger-LeVeque wave-propagation interior (BL-1b) =======
-    //  CAMR.ps_flux=wp — THE interior flux (single-path since 2026-08-26).
-    //  Self-contained A±ΔQ fluctuation step ported from the standalone
-    //  ppm_1d_ps_wp.cpp (task #40).  Fills flx (recovered F* on conserved
-    //  slots) and a per-cell deposit for the non-conservative slots
-    //  {UALPHA1, UE1, UE2}, then RETURNS.  Works from raw cell averages
-    //  (see ps_wp_face for why reconstruction is not used).  2nd-order
-    //  accuracy is BL-2's limited correction fluxes.
-    //  use_hllc == 2 is guaranteed by ps_flux_selector() (aborts
-    //  otherwise); the guard is kept for structure.
+    // ========== wave-propagation interior ===============================
+    //  The selector value 2 is wp; ps_flux_selector() admits nothing else.
     if (use_hllc == 2) {
-        const bool o2 = (wp_order == 2);            // BL-2 correction fluxes
-        const bool tv = (wp_transverse != 0);       // BL-3a transverse (2D)
-        const bool unlim = (wp_unlimited != 0);     // bypass van Leer (diag)
-        const bool pscale = (wp_proj_scale != 0);   // W2-2b scaled projection
+        const bool o2 = (wp_order == 2);            // correction fluxes
+        const bool tv = (wp_transverse != 0);       // transverse term
+        const bool unlim = (wp_unlimited != 0);     // bypass van Leer
+        const bool pscale = (wp_proj_scale != 0);   // scaled projection
         const bool store_w = o2 || tv;              // need the raw waves?
         const int  wc = store_w ? (3*NVAR + 3) : 1; // wave/speed store width
         const int  fc = o2 ? 3 : 1;                 // Ftilde store {α,UE1,UE2}
         const Real dt_l = dt;
 
-        // Per-face store of the non-conservative fluctuations A⁻/A⁺:
-        //   comp 0/1 = UALPHA1, 2/3 = UE1, 4/5 = UE2.  The wave store is
-        //   GROWN by 1: in the face-normal direction for the BL-2 upwind
-        //   stencil (box-seam safety), and ISOTROPICALLY (all dirs) when the
-        //   BL-3a transverse gather is on (it reads the perpendicular
-        //   neighbour faces).  Ghost faces come from uin_arr's ghost cells.
+        // Per-face store of the non-conserved fluctuations A⁻/A⁺ (comps
+        // 0/1 UALPHA1, 2/3 UE1, 4/5 UE2).  The wave store is grown by one
+        // in the normal direction for the correction's upwind stencil and
+        // isotropically when the transverse gather reads the perpendicular
+        // neighbour faces; ghost faces come from uin_arr's ghost cells.
         auto wbox = [&](const amrex::Box& fb, int nrm) {
-            if (tv)  return amrex::grow(fb, 1);        // all dirs (transverse gather)
-            if (o2)  return amrex::grow(fb, nrm, 1);   // normal dir (BL-2 upwind)
+            if (tv)  return amrex::grow(fb, 1);
+            if (o2)  return amrex::grow(fb, nrm, 1);
             return fb;
         };
         const amrex::Box wxbx = wbox(xfbx, 0);
@@ -1152,14 +977,11 @@ PS_umeth(const Box& bx,
         auto const& wp_ft_z    = wp_ft_z_fab.array();
 #endif
 
-        // ---- Pass 1: 1st-order fluctuations → F* (conserved flx),
-        //      A⁻/A⁺ (non-conserved store), and (BL-2/BL-3a) raw waves/speeds.
-        //      Loops over the grown wave box but writes flx/wpf only on
-        //      the valid face box (guarded inside ps_wp_face). ----
-        //  EOS-heavy: ps_wp_face computes the P-S frozen HLLC wave speeds,
-        //  each of which needs a per-face state_from_rho_e_phase (PR).  NOTE:
-        //  on a GPU build these ParallelFors are async, so this timer only
-        //  reflects real kernel time in the serial/CPU (TinyProfiler) build.
+        // ---- Pass 1: fluctuations → F* (conserved flx), A⁻/A⁺ (non-
+        //      conserved store) and raw waves/speeds.  Loops over the grown
+        //      wave box; flx/wpf are written only on the valid face box.
+        //  EOS-heavy (per-face branch-locked solves).  On a GPU build the
+        //  ParallelFors are async, so the timer is meaningful on CPU only.
         BL_PROFILE_VAR("PS::wp_face_riemann()", ps_wp_face_prof);
         amrex::ParallelFor(wxbx,
         [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
@@ -1179,13 +1001,12 @@ PS_umeth(const Box& bx,
 #endif
         BL_PROFILE_VAR_STOP(ps_wp_face_prof);
 
-        // ---- Pass 2 (BL-2): LeVeque van-Leer-limited correction fluxes. ----
-        //  F̃_f = Σ_l ½|s_l|(1−|s_l|Δt/Δx) φ(θ_l) W_l   (per-component van
-        //  Leer, robust for the non-orthogonal 6-eq waves).  Added to the
-        //  conserved-slot flux (telescopes through consup) and stored for
-        //  the {α,UE1,UE2} deposit.  Upwind neighbour taken per wave sign;
-        //  at a face with no in-box upwind neighbour the correction is
-        //  dropped (1st-order at the boundary — matches the standalone).
+        // ---- Pass 2: LeVeque limited correction fluxes (docs §3). ----
+        //  F̃_f = Σ_l w_l ½|s_l|(1−|s_l|Δt/Δx) φ(θ_l) W_l, one scalar φ per
+        //  wave, w_l the contact keep-weight.  Added to the conserved-slot
+        //  flux (telescopes through consup) and stored for the {α,UE1,UE2}
+        //  deposit.  Upwind neighbour per wave sign; a face with no in-box
+        //  upwind neighbour drops the term (first order there).
         if (o2) {
             auto correct = [=] AMREX_GPU_DEVICE
                 (int idir, int i, int j, int k, const amrex::Box fbox,
@@ -1194,30 +1015,12 @@ PS_umeth(const Box& bx,
                  amrex::Array4<amrex::Real> const& ft, Real dxd) noexcept
             {
                 const Real dtdx = dt_l / dxd;
-                //  C2 contact-wave skip predicate (DESIGN_ps_contact_lw.md).
-                //  mode 1: blanket.  mode 2: skip only at a genuine material
-                //  interface, detected THRESHOLD-FREE as a presence-regime
-                //  change across the face (Independent<->Corridor<->Absent) in
-                //  either phase.  Uniform trace (A/C's alpha=1e-6 everywhere)
-                //  is Corridor on both sides -> same regime -> NOT skipped, so
-                //  single-phase contact sharpening (the 0.0350 edge) is kept;
-                //  the demo3 jet edge (alpha 0.05 Independent vs 1e-6 Corridor)
-                //  IS a regime change -> skipped.  Dropping the WHOLE contact
-                //  wave preserves the W2-2 linear identities.
-                //  C2 contact-wave keep-weight (DESIGN_ps_contact_lw.md).
-                //  Applied as ONE scalar on the whole contact wave (l=1), so
-                //  the W2-2 linear identities are preserved (scaling a wave by
-                //  a scalar keeps W[URHO]=W[UM1RHO1]+W[UM2RHO2] etc.).
-                //    mode 0: wc_keep=1 (full contact correction, baseline).
-                //    mode 1: wc_keep=0 (blanket drop).
-                //    mode 2: SOFTENED regime taper ([DECIDE-B]) -- scale the
-                //      contact correction smoothly DOWN with the alpha jump
-                //      across the face, normalized by alpha_cond (reuses the
-                //      presence constant; NO new threshold).  |dalpha|=0
-                //      (uniform trace / single-phase) -> 1 (A/C preserved);
-                //      |dalpha|>=alpha_cond (material interface) -> 0 (skipped);
-                //      smoothstep between -> no on/off kink at the alpha_cond
-                //      contour (the mode-2 hard-switch artifact).
+                //  Contact-wave keep-weight wc_keep, one scalar on the whole
+                //  wave l=1 (a scalar multiple keeps the linear identities).
+                //  Mode 0: 1.  Mode 1: 0.  Mode 2: 1 − smoothstep(|Δα|/α_cond):
+                //  a uniform region at any level (including a uniform trace)
+                //  keeps the full correction, a jump ≥ α_cond drops it, and
+                //  there is no on/off contour to imprint a kink.  docs §3.4.
                 Real wc_keep = Real(1.0);
                 if (wp_lw_skip == 1) {
                     wc_keep = Real(0.0);
@@ -1245,70 +1048,20 @@ PS_umeth(const Box& bx,
                     if (!fbox.contains(amrex::IntVect(AMREX_D_DECL(ni,nj,nk)))) continue;
                     const Real asl   = std::abs(sl);
                     const Real coef0 = Real(0.5) * asl * (Real(1.0) - asl * dtdx);
-                    //  W2-2 (DESIGN_ps_wp_front.md §10): ONE SCALAR LIMITER PER
-                    //  WAVE, not one per component.
-                    //
-                    //  LeVeque's wave-propagation limiter is a scalar per wave
-                    //  family, obtained by PROJECTING the upwind wave onto this
-                    //  one and applying the resulting factor to the whole wave
-                    //  vector:
-                    //      theta^p = <W_up^p , W_f^p> / <W_f^p , W_f^p>
-                    //      W~^p    = phi(theta^p) * W^p
-                    //  This code limited each COMPONENT separately instead, on
-                    //  the stated grounds that the 6-eq waves are non-orthogonal.
-                    //  Orthogonality is not what the projection needs -- theta is
-                    //  a projection of the SAME wave family at the neighbouring
-                    //  interface, and the <W_f,W_f> denominator is what handles
-                    //  degeneracy -- but the cost of the deviation was severe.
-                    //
-                    //  Scaling every component of a wave by ONE number preserves
-                    //  the wave's DIRECTION in state space.  Scaling them by
-                    //  different numbers bends it, and a bent wave is no longer a
-                    //  wave of this system.  Consequences that were all observed
-                    //  and separately patched before the cause was identified:
-                    //
-                    //   * Every raw wave satisfies the linear identities exactly
-                    //     (W[URHO] = W[UM1RHO1]+W[UM2RHO2] and W[UEDEN] =
-                    //     W[UE1]+W[UE2]), because both the cell state and
-                    //     ps_star_state's star state satisfy them.  A scalar
-                    //     scaling therefore preserves them FOR FREE.  Bending
-                    //     broke them -- measured energyid 0.71 at 2nd order (§8),
-                    //     which is what W2-1 was invented to paper over.
-                    //   * W2-1 restored the SUM by fiat while the wave stayed
-                    //     bent, so the SPLIT kept drifting: the 1.2e4 J/kg per
-                    //     step liquid drain that aborts B7/B2/B9.
-                    //   * min(phi_1,phi_2) pair-limiting (§9.3) failed because it
-                    //     is still not scalar-per-wave -- one factor for the two
-                    //     energies, others for mass and momentum, bending the
-                    //     wave a different way.
-                    //
-                    //  PREDICTION, asserted below: with this in place W2-1's two
-                    //  assignments become no-ops to round-off.  If they do not,
-                    //  this reasoning is wrong.
+                    //  One scalar limiter per wave (LeVeque):
+                    //      θ = <W_up, W_f>_D / <W_f, W_f>_D,   W̃ = φ(θ) W_f,
+                    //  with <a,b>_D = Σ_n a_n b_n / (|U_L,n| + |U_R,n|)² when
+                    //  pscale (raw components otherwise).  Scaling a whole wave
+                    //  by one number preserves its direction in state space and
+                    //  therefore the linear identities every raw wave satisfies;
+                    //  per-component factors bend the wave and drift the
+                    //  phase-energy split.  The nondimensional inner product
+                    //  stops the energy components (orders of magnitude larger
+                    //  than mass) from setting φ alone; it changes only which
+                    //  scalar comes out, φ is still applied to the raw wave.
+                    //  See docs/MODEL_AND_ALGORITHM.md §3.3.
                     Real phi = Real(1.0);
                     if (!unlim) {
-                        //  W2-2b: the projection must be taken in a
-                        //  NONDIMENSIONAL inner product.
-                        //
-                        //  Raw conservative components span orders of magnitude,
-                        //  so an unscaled <W,W> is dominated by whichever has the
-                        //  largest absolute scale — for CO2 that is always the
-                        //  energies.  Measured on B8-Wall-Reflection (pure liquid,
-                        //  rho ~ 621, |u| ~ 50, e ~ -1.3e5): the energy components
-                        //  contribute ~1e13 to <W,W> against momentum's ~1e7 and
-                        //  mass's ~1e2 — six orders.  The single scalar phi was
-                        //  therefore set by the energy wave alone, and density,
-                        //  momentum and alpha inherited it.  That is what cost B8
-                        //  ~12 % when W2-2 landed, on a case with NO two-phase
-                        //  content at all (alpha_1 = 1.0 in all 64 cells), so the
-                        //  regression could only have been the limiter.
-                        //
-                        //  Scale each component by the magnitude the two adjacent
-                        //  cells actually carry, so every component contributes
-                        //  its RELATIVE change.  Note this changes only WHICH
-                        //  scalar comes out: phi is still applied to the raw wave,
-                        //  so the direction-preservation that W2-2 is for — and
-                        //  with it the linear identities — is untouched.
                         const int oi = (idir == 0) ? 1 : 0;
                         const int oj = (idir == 1) ? 1 : 0;
                         const int ok2 = (idir == 2) ? 1 : 0;
@@ -1319,13 +1072,11 @@ PS_umeth(const Box& bx,
                             const Real Wup = wv(ni,nj,nk, l*NVAR + n);
                             Real inv = Real(1.0);
                             if (pscale) {
-                                //  A component that is identically zero on both
-                                //  sides carries no information and is skipped --
-                                //  this is the norm, not an edge case: in a
-                                //  single-phase cell the absent phase's slots are
-                                //  EXACTLY zero (B8).  Fall back to the wave's own
-                                //  magnitude if the cells are zero but the star
-                                //  state is not (phase birth).
+                                //  A component identically zero in both cells
+                                //  (an absent phase's slots) carries no
+                                //  information and is skipped; if the wave is
+                                //  non-zero there (phase birth) it is scaled by
+                                //  its own magnitude.
                                 const Real sc =
                                     std::abs(uin_arr(i-oi, j-oj, k-ok2, n))
                                   + std::abs(uin_arr(i,    j,    k,    n));
@@ -1338,15 +1089,11 @@ PS_umeth(const Box& bx,
                             wdotw += wf * wf;
                             wdotu += wf * wu;
                         }
-                        //  A wave of zero strength contributes nothing whatever
-                        //  phi is; leave it at 1 rather than dividing by zero.
+                        //  A zero-strength wave contributes nothing whatever phi
+                        //  is; leave it at 1 rather than dividing by zero.
                         if (wdotw > Real(0.0)) {
                             const Real theta = wdotu / wdotw;
-                            //  van Leer, phi(theta) = (theta+|theta|)/(1+|theta|).
-                            //  Identical to the ps_vanleer(a,b) = 2ab/(a+b) form
-                            //  used before, which is 2*theta/(1+theta) for
-                            //  theta > 0 and 0 otherwise -- same limiter, applied
-                            //  to a projected theta instead of a per-component one.
+                            //  van Leer, phi = (theta+|theta|)/(1+|theta|).
                             const Real at = std::abs(theta);
                             phi = (theta + at) / (Real(1.0) + at);
                         }
@@ -1355,22 +1102,13 @@ PS_umeth(const Box& bx,
                         Ft[n] += wl * coef0 * phi * wv(i, j, k, l*NVAR + n);
                     }
                 }
-                // W2-1 (DESIGN_ps_wp_front.md §7, Marc-approved 2026-08-10):
-                // the per-component van-Leer limiter breaks the linear
-                // inter-slot identities at fronts (measured: 1st-order
-                // massid 1e-13/energyid 5e-5 vs 2nd-order 5e-3/0.71 on
-                // B9-stiff).  Under presence, LIMIT THE PHASE SLOTS and
-                // DERIVE the mixture slots as their sums — identities exact
-                // by construction, conservation untouched (still a flux),
-                // no new constants.  Legacy path: per-component, bit-identical.
-                //  W2-1, now a MEASURED no-op rather than a repair.  Under
-                //  scalar-per-wave limiting the identities hold by construction
-                //  (see the derivation above), so these assignments must not
-                //  change anything.  The residual they would have removed is
-                //  accumulated host-side so the claim is checked every run
-                //  instead of being asserted once here.  Kept as the assignment
-                //  (not deleted) so the unlimited and legacy paths, which do NOT
-                //  get scalar limiting, still behave exactly as before.
+                //  Mixture correction derived from the phase corrections,
+                //  F̃[ρ] = F̃[m1]+F̃[m2], F̃[ρE] = F̃[E1]+F̃[E2] (H-4).  Under
+                //  scalar-per-wave limiting these hold already; the relative
+                //  residual is accumulated host-side and printed as [PS-W21],
+                //  which must read round-off.  The assignments still act on
+                //  the unlimited path.
+                //  Retire-candidate ([PS-W21]): see docs/DESIGN_DECISIONS.md §7 (O-8).
 #if !defined(AMREX_USE_GPU)
                 {
                     const Real dR = Ft[URHO]  - (Ft[UM1RHO1] + Ft[UM2RHO2]);
@@ -1417,20 +1155,11 @@ PS_umeth(const Box& bx,
 #endif
         }
 
-        // ---- BL-3a: contact-only transverse fluctuation coupling (2D). ----
-        //  Each normal fluctuation A±ΔQ is advected at the TRANSVERSE material
-        //  velocity and folded into the transverse flux (conserved slots) /
-        //  the {α,UE1,UE2} deposit store.  Since the correction ∝ v_t, it is
-        //  an exact no-op for 1-D-aligned flow (v_t=0, e.g. B4).  Race-free
-        //  per-transverse-face gather (LeVeque/CLAWPACK rpt2 form, contact-
-        //  only: B±(AΔQ)=v_t^± AΔQ).  gtv_{x,y} hold the {α,UE1,UE2} parts
-        //  for the Pass-3 deposit; conserved parts are added to flx here.
-        //  Direction-generic (2D & 3D) via ps_wp_tvterm: each d-face gets the
-        //  contact-wave transverse contribution from every t≠d.  Conserved
-        //  slots → flx_d (refluxes via FluxRegister); {α,UE1,UE2} → gtv_d for
-        //  the Pass-3 deposit.  Contact-only ⇒ bit-exact no-op for 1-D-aligned
-        //  flow (BL-3a).  BL-4 = the 3D pairs (single-transverse; the double-
-        //  transverse 2nd-order corner term is deferred).
+        // ---- Transverse term (ps_wp_tvterm), race-free per-face gather. ----
+        //  Each d-face collects the contribution from every t≠d; conserved
+        //  slots go to flx_d (refluxes), {α,UE1,UE2} to gtv_d for the Pass-3
+        //  deposit.  In 3-D the single-transverse pairs are included; the
+        //  double-transverse corner term is not.
         const int gc = tv ? 3 : 1;   // {α,UE1,UE2} transverse deposit store
         amrex::FArrayBox gtv_x_fab(xfbx, gc, amrex::The_Async_Arena());
         auto const& gtv_x = gtv_x_fab.array();
@@ -1489,12 +1218,8 @@ PS_umeth(const Box& bx,
         }
 #endif
 
-        // ---- Targeted transverse-shear dissipation (task #18). ----
-        //  Conservative flux-form damping of the transverse-velocity odd-even
-        //  (checkerboard) in the near-jet; added to flx_d (refluxes via the
-        //  FluxRegister and telescopes through consup's -div(flx)).  Sensor-
-        //  gated ⇒ 2nd-order-vanishing in smooth flow.  Default off
-        //  (CAMR.ps_shear_diss = 0).
+        // ---- Shear dissipation and viscosity: flux-form terms added to
+        //      flx_d (reflux and telescope through consup). ----
 #if (AMREX_SPACEDIM >= 2)
         if (shear_diss > Real(0.0)) {
             amrex::ParallelFor(xfbx, [=] AMREX_GPU_DEVICE (int i,int j,int k) noexcept {
@@ -1507,10 +1232,6 @@ PS_umeth(const Box& bx,
 #endif
         }
 
-        // ---- Physical Newtonian viscosity (task #60): adds -tau to the
-        //  conserved momentum/energy flux at each face (refluxes; telescopes
-        //  through consup).  Gives the shear layer a finite thickness so KH is
-        //  resolved rather than grid-scale.  Default off (CAMR.ps_mu = 0).
         if (ps_mu > Real(0.0)) {
             amrex::ParallelFor(xfbx, [=] AMREX_GPU_DEVICE (int i,int j,int k) noexcept {
                 ps_viscous_face(0, i,j,k, uin_arr, flx1, domlo,domhi, ps_mu, dx.data()); });
@@ -1523,12 +1244,11 @@ PS_umeth(const Box& bx,
         }
 #endif
 
-        // ---- Pass 3: per-cell deposit of the non-conservative fluctuations.
-        //  dsdt(n) = -(A⁺_lowface + A⁻_highface)/dx  [ - (F̃_high - F̃_low)/dx
-        //  if BL-2 ]  summed over directions, for n ∈ {UALPHA1, UE1, UE2}.
-        //  Low face of cell i = face index i (right cell i → A⁺); high face =
-        //  index i+1 (left cell i → A⁻).  Conserved slots go through consup's
-        //  -div(flx); flx is 0 on these three slots so consup adds nothing.
+        // ---- Pass 3: per-cell deposit of the non-conserved fluctuations.
+        //  dsdt(n) = -(A⁺_lowface + A⁻_highface)/dx [- (F̃_hi - F̃_lo)/dx]
+        //  [- (G_hi - G_lo)/dx] summed over directions, n ∈ {UALPHA1, UE1,
+        //  UE2}.  Low face of cell i is face index i (A⁺), high face i+1
+        //  (A⁻).  flx is 0 on these slots so consup adds nothing.
         amrex::ParallelFor(bx,
         [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
             Real da = Real(0.0), de1 = Real(0.0), de2 = Real(0.0);
@@ -1542,7 +1262,7 @@ PS_umeth(const Box& bx,
                     de1 -= (wp_ft_x(i+1,j,k,1) - wp_ft_x(i,j,k,1)) * inv;
                     de2 -= (wp_ft_x(i+1,j,k,2) - wp_ft_x(i,j,k,2)) * inv;
                 }
-                if (tv) {   // BL-3a transverse (gadd_x on x-faces → x-divergence)
+                if (tv) {
                     da  -= (gtv_x(i+1,j,k,0) - gtv_x(i,j,k,0)) * inv;
                     de1 -= (gtv_x(i+1,j,k,1) - gtv_x(i,j,k,1)) * inv;
                     de2 -= (gtv_x(i+1,j,k,2) - gtv_x(i,j,k,2)) * inv;
@@ -1559,7 +1279,7 @@ PS_umeth(const Box& bx,
                     de1 -= (wp_ft_y(i,j+1,k,1) - wp_ft_y(i,j,k,1)) * inv;
                     de2 -= (wp_ft_y(i,j+1,k,2) - wp_ft_y(i,j,k,2)) * inv;
                 }
-                if (tv) {   // BL-3a transverse (gadd_y on y-faces → y-divergence)
+                if (tv) {
                     da  -= (gtv_y(i,j+1,k,0) - gtv_y(i,j,k,0)) * inv;
                     de1 -= (gtv_y(i,j+1,k,1) - gtv_y(i,j,k,1)) * inv;
                     de2 -= (gtv_y(i,j+1,k,2) - gtv_y(i,j,k,2)) * inv;
@@ -1577,7 +1297,7 @@ PS_umeth(const Box& bx,
                     de1 -= (wp_ft_z(i,j,k+1,1) - wp_ft_z(i,j,k,1)) * inv;
                     de2 -= (wp_ft_z(i,j,k+1,2) - wp_ft_z(i,j,k,2)) * inv;
                 }
-                if (tv) {   // BL-4 transverse (gadd_z on z-faces → z-divergence)
+                if (tv) {
                     da  -= (gtv_z(i,j,k+1,0) - gtv_z(i,j,k,0)) * inv;
                     de1 -= (gtv_z(i,j,k+1,1) - gtv_z(i,j,k,1)) * inv;
                     de2 -= (gtv_z(i,j,k+1,2) - gtv_z(i,j,k,2)) * inv;
@@ -1589,46 +1309,21 @@ PS_umeth(const Box& bx,
             dsdt_arr(i,j,k, UE2)     = ps_finite_or(de2, Real(0.0));
         });
 
-        // ---- Coarse-fine (AMR) treatment for wp mode (task #5) ----
-        //  * CONSERVED slots (URHO, momenta, UEDEN, UEINT, UM1RHO1, UM2RHO2,
-        //    species) reflux through the standard AMReX FluxRegister via flx
-        //    (recovered F* + the flux-form F̃ correction — B&L 1998 §4a notes
-        //    the 2nd-order correction is flux-differencing form even for
-        //    non-conservative systems, so it refluxes conservatively).  This
-        //    is automatic and unchanged from the hllc path.
-        //  * α (UALPHA1) is C-F-corrected by the capacity-form co-move in
-        //    CAMR::reflux() (CAMR.ps_bl_reflux>1): α is moved with its
-        //    already-refluxed mass α₁ρ₁, which preserves ρ₁/P₁ (no §3f
-        //    artifact) and is independent of the flux mode — so it works for
-        //    wp with no wp-specific data.
-        //  * The phase-energy DEFECT register (CAMRPSFluctReg, ps_bl_reflux=1)
-        //    has NO wp analogue: wp embeds the WP-vs-Godunov defect INSIDE the
-        //    fluctuations rather than as the one-sided `wp_corr` source that
-        //    register was built for.  So wp leaves `fcorr` at its zero init
-        //    (the defect Reflux is then a harmless no-op).  The residual
-        //    1st-order UE1/UE2 phase-split C-F fix-up (a two-sided A±ΔQ
-        //    register) is deferred — low-payoff per camr_ps_bl_reflux_design.md
-        //    §3e (C-F fluctuation gaps are ~1e-4, resolution-dominated).
-        //  wp + AMR is validated at ps_bl_reflux=2 — THE DEFAULT since
-        //  2026-08-26 (WP-CF-2D): on a genuinely-2D contact (XC2D) the
-        //  =0 mode dies at coarse step 22 (reflux corrects m_k but not α;
-        //  the C-F layer's broken ρ_k = m_k/α decomposition reaches fine
-        //  ghosts via cell_cons_interp), while =2 runs to stop_time.
-        //  1-D-in-x validation (inputs-cf-contact to t_final) held at =0
-        //  only because its y-face deposits vanish.
+        // ---- Coarse-fine treatment ----
+        //  Conserved slots reflux through the AMReX FluxRegister via flx
+        //  (F* plus the flux-form correction, which Berger & LeVeque show
+        //  refluxes conservatively even for a non-conservative first-order
+        //  operator).  Alpha is corrected by the capacity-form co-move with
+        //  its refluxed mass in CAMR::reflux() (CAMR.ps_bl_reflux=2), which
+        //  needs no wp-specific data.  fcorr* stay at their zero init; the
+        //  first-order UE1/UE2 phase-split coarse-fine fix-up is not done
+        //  (gaps ~1e-4, resolution-dominated).  docs §4.9.
         amrex::ignore_unused(do_bl_fluct);
         return;
-    } // ===== end BL wave-propagation interior (use_hllc==2) =====
+    } // ===== end wave-propagation interior (use_hllc==2) =====
 
-    // SINGLE-PATH (2026-08-26): the llf/hllc split face loop, the CTU
-    // dispatch, and the end-of-file WP-α cell kernel + phase-energy
-    // defect tail that served them were DELETED (they are unreachable —
-    // ps_flux_selector() admits only wp, which returns above).  The
-    // formulations survive in git history and in
-    // PRIMER_godunov_vs_wave_propagation.md.  fcorr*/do_bl_fluct stay in
-    // the signature as the task-#22 P2 landing pad for a future wp-form
-    // fluctuation register (see CAMR.cpp: ps_bl_reflux=1 is a historical
-    // no-op; =2, the default, is the α capacity-form co-move).
+    // Unreachable: ps_flux_selector() admits only wp, which returns above.
+    // Retire-candidate: see docs/DESIGN_DECISIONS.md §7 (O-5, O-8).
     amrex::ignore_unused(AMREX_D_DECL(fcorr1, fcorr2, fcorr3));
     amrex::Abort("PS_umeth: unreachable — ps_flux_selector() admitted a "
                  "non-wp flux; the single-path invariant is broken.");

@@ -1,108 +1,56 @@
 #ifndef PS_NSCBC_H
 #define PS_NSCBC_H
 // =====================================================================
-//  PS_nscbc.H  —  Ghost-cell non-reflecting outflow BC for PS mode,
-//                  using 2nd-order-extrapolated characteristic
-//                  invariants with Poinsot-Lele soft relaxation.
+//  PS_nscbc.H  —  Characteristic-invariant non-reflecting outflow ghost
+//                  state for the Pelanti-Shyue six-equation model.
 //
-//  Design rationale
-//  ----------------
-//  The full time-derivative-based Poinsot-Lele NSCBC (JCP 101, 1992)
-//  computes L_i characteristic amplitudes from interior spatial
-//  derivatives, replaces the incoming L_1 with a relaxation term,
-//  and integrates ∂q/∂t at the boundary.  That formulation requires
-//  persistent boundary state or an ODE step per BC fill, both of
-//  which sit awkwardly on top of AMReX's FillPatch ghost mechanism.
+//  Algorithm: the characteristic-invariant form of the Poinsot-Lele
+//  NSCBC (JCP 101, 1992), which fits the FillPatch ghost pattern without
+//  persistent boundary state.  With u_out the outward normal velocity and
+//  ρc the Wallis frozen impedance of the boundary cell (as the flux):
+//      R+ = u_out + P/(ρc)  leaves; extrapolated (minmod slope, 3 cells)
+//      R- = u_out − P/(ρc)  enters; set from the far field (u=0, P_amb)
+//                           with the restoring pull −σ(P_N − P_amb)/(ρc)
+//      u_g = ½(R+ + R-),  P_g = ½ρc(R+ − R-).
+//  Ghost thermodynamics never inverts (ρ, P): each present phase moves
+//  along its own isentrope by the common dP, in one linearised step or
+//  as a sub-stepped choked expansion fan with HEM re-closure inside the
+//  dome.  See docs/MODEL_AND_ALGORITHM.md §6.3.
 //
-//  A cleaner formulation that gives the same non-reflecting property
-//  for a subsonic outflow, and fits the ghost-cell pattern exactly,
-//  is the "characteristic invariant" NSCBC:
-//
-//    Outgoing acoustic invariant  R_+ = u + P/(ρc)   (u+c wave)
-//    Incoming acoustic invariant  R_- = u - P/(ρc)   (u-c wave)
-//    Entropy                     S   = ρ - P/c²    (u   wave, linearised)
-//
-//    For a right-outflow at subsonic flow (0 < u < c):
-//      * R_+ leaves the domain — extrapolate from interior with a
-//        2nd-order backward FD stencil (three interior cells).
-//      * S   leaves the domain — likewise extrapolated (or copied).
-//      * R_- enters the domain — SET from the far-field condition
-//        (u_amb = 0, P = P_amb) giving R_-_target = −P_amb/(ρc).
-//        Poinsot-Lele soft relaxation subtracts σ·(P_N − P_amb)/(ρc)
-//        so the boundary pressure is anchored to P_amb over time
-//        without reflecting outgoing waves.
-//
-//  Ghost primitives are recovered from R_+_extrapolated and R_-_target:
-//      u_g = ½ (R_+ + R_-)
-//      P_g = ½ ρc (R_+ − R_-)
-//  Density and internal energy at the ghost come from the interior
-//  entropy plus the ghost pressure via EOS::RYP2E.
-//
-//  Key differences from the older prob.H::bcnormal path:
-//    1. R_+ is 2nd-order extrapolated (three-cell backward stencil)
-//       rather than sampled at a single cell.  This is the *only*
-//       algorithmic difference for σ = 0 (both give exact match at
-//       flat-flow / trivial-gradient states).  In gradient regions
-//       the higher-order extrapolation cuts residual reflection.
-//    2. Sound speed uses the Wallis frozen mixture c (matches
-//       PS_umeth's LLF diffusion coefficient — impedance-consistent
-//       at the boundary).
-//    3. Optional σ·(P_N − P_amb) relaxation term on R_-.
-//    4. P-S mixture-identity preservation in the ghost pack
-//       (α_1 ρ_1 + α_2 ρ_2 = ρ_g, similarly for total energies).
-//    5. Sub/super/inflow Mach-number dispatch with zero-gradient
-//       and ambient-inflow fallbacks.
-//    6. EOS-failure fallback to zero-gradient copy.
-//
-//  This is NOT the full Poinsot-Lele NSCBC — it uses the
-//  characteristic-invariant formulation of the same underlying
-//  physics.  For flows with strong outgoing gradients (typical in a
-//  blowdown), it is measurably better than the single-cell
-//  extrapolation while remaining numerically robust.  A future
-//  upgrade to the full time-derivative NSCBC would need to plumb
-//  boundary state persistence through the framework.
+//  Contract: input the three-cell inward stencil of conserved states;
+//  output the conserved ghost state with ρ_g = m1_g + m2_g exactly.
+//  Supersonic outflow copies; supersonic inflow, a non-finite impedance,
+//  inconsistent six-equation slots and an unresolvable fan refuse to a
+//  counted zero-gradient copy ([PS-GUARD] nscbc_zg *).  No state is
+//  manufactured.  Dials (ps_bc_nscbc_sigma, _order, _flash, p_amb) are
+//  read in Utils/BCfill.cpp and arrive through Params.
 // =====================================================================
 
 #ifdef USE_PS_HYDRO
 
-#include "PS_presence.H"   // S2
+#include "PS_presence.H"
 #include "IndexDefines.H"
 #include "EOS.H"
-#include "PS_wavespeed.H"   // B8: the one wave-speed construction
+#include "PS_wavespeed.H"
 #include <AMReX_GpuQualifiers.H>
 #include <cmath>
 
 
 namespace PS_NSCBC {
 
-// Runtime tunables passed in from BCfill.cpp.
+// Runtime tunables, resolved in BCfill.cpp (dials documented there).
 struct Params {
-    amrex::Real P_amb   = amrex::Real(1.01325e5);   // Pa, ambient outside
-    amrex::Real sigma   = amrex::Real(0.25);        // Poinsot-Lele soft-relax σ
-    // Commit B (2026-08-27): flash-aware ghost re-closure.  1 = ON
-    // (default; HEM saturated re-closure when the ghost's mixture
-    // enthalpy at P_g falls inside the dome), 0 = OFF (frozen-
-    // composition pack, the commit-A behavior, kept for A/B).
-    // (The probe-only value 2 — the refuted end-state energy-lever
-    // variant — no longer parses: BCfill aborts on anything but 0/1.)
+    amrex::Real P_amb   = amrex::Real(1.01325e5);   // Pa, far-field pressure of this face
+    amrex::Real sigma   = amrex::Real(0.25);        // Poinsot-Lele restoring pull on R-
+    // 1 = choked fan with HEM re-closure; 0 = frozen fan (A/B).  BCfill
+    // aborts on any other value.
     int         flash   = 1;
-    PsPres      pres{};                              // S2 presence params (by value)
-    amrex::Real L_ref   = amrex::Real(1.0);          // m, domain length (unused
-                                                     // in this invariant form
-                                                     // but kept for API stability)
-    // R+ extrapolation order:
-    //   1 = 0-th-order copy   (R+_ghost = R+_N).  Matches the standalone
-    //       ppm_1d_ps_wp driver's applyBCs NONREFLECTING behaviour.
-    //   2 = minmod-limited 2nd-order backward FD across three interior
-    //       cells (default).  Documented at the top of this file.
-    // Exposed as a runtime tunable so a bit-for-bit cross-check with the
-    // standalone can be performed without recompiling.
+    PsPres      pres{};                              // presence params (by value)
+    // L_ref is never read.  Retire-candidate: see docs/DESIGN_DECISIONS.md §7 (O-8).
+    amrex::Real L_ref   = amrex::Real(1.0);
+    // R+ extrapolation: 1 = copy R+_N (reproduces the standalone driver's
+    // NONREFLECTING fill bit-for-bit); 2 = minmod slope over three cells.
     int         nscbc_order = 2;
-    //  NSCBC-1 (2026-08-24) shipped as Params::v2 a choice between this
-    //  construction and the original one; the legacy alternative was
-    //  DELETED 2026-08-27 (see the retirement note above _hem_reclose)
-    //  and the member went with it — a set CAMR.ps_bc_nscbc_v2 key
-    //  aborts in BCfill.cpp.
 };
 
 
@@ -126,9 +74,10 @@ _zero_gradient_ghost(const amrex::Real s_N[NVAR],
     for (int n = 0; n < NVAR; ++n) s_ghost[n] = s_N[n];
 }
 
-// Extract mixture primitives from a cell.  Fills species Y[] as well.
-// On EOS failure the pressure is set to 1 Pa so the caller can detect
-// pathology (the calling code guards with std::isfinite and floors).
+// Mixture primitives and species Y[] of one cell; P is the stock
+// single-fluid inversion, used only inside the acoustic invariants as a
+// consistent stencil quantity (the pack never reads it).  A failed or
+// sub-1 Pa inversion returns P = 1 Pa.
 AMREX_GPU_HOST_DEVICE
 AMREX_FORCE_INLINE
 void
@@ -163,9 +112,9 @@ _cell_primitives(const amrex::Real s[NVAR],
     if (!std::isfinite(P) || P < Real(1.0)) P = Real(1.0);
 }
 
-// Wallis frozen sound speed at a cell, matching PS_umeth's
-// ps_max_wave_speed.  Reads mixture and per-phase state and returns
-// a strictly positive c (falls back to max(c_1, c_2) or 1 m/s).
+// Wallis frozen sound speed at a cell via ps_frozen_cmix_from_state;
+// only s and pr are read.  No caller.
+// Retire-candidate: see docs/DESIGN_DECISIONS.md §7 (O-8).
 AMREX_GPU_HOST_DEVICE
 AMREX_FORCE_INLINE
 amrex::Real
@@ -180,48 +129,20 @@ _wallis_c_at_cell(const amrex::Real s[NVAR],
                   const PsPres&     pr) noexcept
 {
     using amrex::Real;
-    //  AUDIT 2026-08-24 B8: this was the THIRD drifted wave-speed copy —
-    //  no regime dispatch, an unguarded m_k/alpha_k division that went
-    //  inf -> NaN on pure-phase cells with trace opposite mass (after the
-    //  alpha clamp changed to [0,1]), branch-locked EOS queried
-    //  unconditionally with c = 1 m/s floors (the A3 discontinuity, kept
-    //  alive at the boundary), a Y-weighted c^2 form that #199 refuted,
-    //  and a threaded `pr` parameter that was never read.  Now THE one
-    //  construction (PS_wavespeed.H ps_frozen_cmix_from_state):
-    //  host-slaving, G1 density clamps, #199 Wallis form — and `pr`
-    //  finally does its job.  rho_mix/e_mix/velocities/P_mix/Y are
-    //  retained in the signature for call-site stability but no longer
-    //  read: the consolidated form works from the conserved state alone.
     amrex::ignore_unused(rho_mix, e_mix, ux, uy, uz, P_mix, Y);
     return ps_frozen_cmix_from_state(s, pr);
 }
 
 
 // ---------------------------------------------------------------------
-//  _outflow_face_legacy (the original construction: linearized mixture
-//  entropy invariant + RYP2E (rho,P) inversion) was DELETED 2026-08-27
-//  (Marc's call).  The measured dossier: it aborts A1 (NSCBC-1's
-//  positive-feedback reversed-flow pump), never absorbs outgoing
-//  acoustics (probe #28 LEGACY-FLUSH, R ~ 1.15 — worse than
-//  zero-gradient — and asymmetric: sleeps on inflow-directed faces),
-//  and its single virtue — the accidental HEM flash of its in-dome
-//  lever rule (-7.6% on the #31 vent) — is strictly dominated by the
-//  deliberate choked-fan closure (-1.2%).  A set CAMR.ps_bc_nscbc_v2
-//  key (either value) aborts in BCfill.cpp (retired-key idiom).  The
-//  formulation survives in git history.
-// ---------------------------------------------------------------------
-
-// ---------------------------------------------------------------------
-//  _hem_reclose — equilibrium (HEM) saturated re-closure of a marching
-//  mixture at pressure P, used per-substep inside the expansion-fan
-//  integration (commit B second design, 2026-08-27).  If the mixture's
-//  specific enthalpy at P lies inside the saturation dome
-//  [h_l(P), h_v(P)], the phase states are reset to the ON-BRANCH
-//  saturation states at T_sat(P) (no (rho,P) inversion anywhere), the
-//  quality comes from the enthalpy lever, and alpha/m/rho are
-//  assembled exactly from x and the saturation densities.  Returns
-//  true when it fired.  At substep scale the enthalpy-vs-energy lever
-//  fork is second-order; the enthalpy form is used.
+//  _hem_reclose: equilibrium (HEM) saturated re-closure of the marching
+//  mixture at pressure P, per fan substep.  If the mixture enthalpy at P
+//  lies inside the dome [h_l(P), h_v(P)], the phase states are reset to
+//  the on-branch saturation states at T_sat(P) (60-step bisection on
+//  EOS::Psat; no (rho,P) inversion), the quality x from the enthalpy
+//  lever, and alpha/m/rho assembled exactly from x and the saturation
+//  densities.  Returns true and counts nscbc_flash when it fires.  At
+//  substep scale the enthalpy-vs-energy lever fork is second order.
 // ---------------------------------------------------------------------
 AMREX_GPU_HOST_DEVICE
 AMREX_FORCE_INLINE
@@ -281,60 +202,17 @@ _hem_reclose(amrex::Real P,
 }
 
 // ---------------------------------------------------------------------
-//  NSCBC-1 (2026-08-24): v2 ghost construction.
-//
-//  What was wrong with the legacy construction, both halves MEASURED on
-//  A1 with CAMR.ps_bc_use_nscbc=1 (WORKLOG entry of this date):
-//
-//  (a) THE DRIVER — the reversed-flow branch was a positive-feedback
-//      pump.  On detecting u_out < 0 it anchored the ghost energy to
-//      P_amb at the interior density while COPYING the full interior
-//      velocity, inward normal component included.  With the harness's
-//      far field at 50x the interior pressure (A1 x-hi), every fill
-//      re-endorsed the reversal it was reacting to: measured Mach ~15
-//      inflow jet and a P = P_amb plateau by step 160.  The abort at
-//      step 161 was downstream wreckage — at |u| ~ 5 km/s the kinetic
-//      energy (~1.3e7 J/kg) swamps the phase-energy bookkeeping, front
-//      cells crash into the dome, flash nucleates liquid, and a vapour
-//      slot ends up 38 kJ/kg below the T = 1 K reachable bound.
-//      v2: ONE subsonic characteristic branch for BOTH flow signs.  For
-//      -1 < Mach < 1 the invariant algebra is well-posed as-is (R+ still
-//      leaves the domain while u_out > -c; R- is imposed from the far
-//      field), and u_g comes from the SAME invariants as P_g, so the
-//      anchoring cannot manufacture momentum.  Supersonic INFLOW falls
-//      back to zero-gradient, counted ([PS-GUARD] nscbc_zg sup) — every
-//      characteristic enters and nothing is well-posed without a full
-//      ambient state.
-//
-//  (b) THE LATENT TRAP — the pack.  Ghost internal energy came from
-//      EOS::RYP2E(rho_g, P_g) = state_from_P_rho, whose subcritical
-//      in-dome answer is the SATURATION-MIXTURE lever-rule energy; that
-//      mixture e was then written into BOTH phase-energy slots
-//      (UE_k = m_k E_g), handing a near-pure vapour cell a liquid-
-//      contaminated e the branch-locked EOS may have no root for.  (Not
-//      A1's trigger — the measured A1 x-lo ghosts stay supercritical
-//      and admissible — but reachable whenever P_g dips below P_c with
-//      rho_g inside the dome.)
-//      v2: per-phase ISENTROPIC pack.  Each phase present is perturbed
-//      along its own branch by the common acoustic dP:
-//          drho_k = dP / c_k^2,   de_k = (P_k / rho_k^2) drho_k,
-//      with (rho_k, e_k, P_k, c_k) from ps_phase_speeds_from_state —
-//      the SAME host-slaved, G1-clamped decomposition the wave speed
-//      uses.  Ghost phase states are small perturbations of admissible
-//      interior states, so they stay admissible; the mixture is then
-//      ASSEMBLED from the phases (rho_g = m1_g + m2_g exactly), and no
-//      (rho,P) inversion is performed anywhere.  UTEMP is zero-gradient
-//      (diagnostic slot; v2 performs no inversion to fill it).
-//      NSCBC-3 FIX (2026-08-27): the pack step is no longer a single
-//      linearized jump guarded by a value bound (LIN_ETA = 0.2, whose
-//      refusal silently turned the blowdown vent into a mirror) — it is
-//      a SUB-STEPPED integration of the isentrope ODE with the EOS
-//      re-evaluated every substep; see the pack section below.  Refusals
-//      are now [PS-GUARD] nscbc_zg pack (unresolvable jump or EOS
-//      validity exit), and 'lin' can no longer fire.
-//
-//  (The legacy alternative this construction replaced was deleted
-//  2026-08-27; a set CAMR.ps_bc_nscbc_v2 key aborts in BCfill.cpp.)
+//  _outflow_face_v2: the ghost construction (outflow_face forwards here).
+//  One subsonic characteristic branch serves both flow signs: for
+//  -1 < M < 1 R+ still leaves the domain, R- is imposed from the far
+//  field, and u_g and P_g come from the same invariants, so the pressure
+//  anchoring cannot manufacture momentum (a separate reversed-flow branch
+//  that copies the interior velocity is a positive-feedback pump).
+//  Thermodynamics: per-phase isentropic pack, drho_k = dP/c_k²,
+//  de_k = (P_k/rho_k²) drho_k, from the same host-slaved decomposition
+//  the wave speed uses, so ghost phase states are perturbations of
+//  admissible interior states; the mixture is assembled from the phases.
+//  UTEMP is zero-gradient (diagnostic slot).
 // ---------------------------------------------------------------------
 AMREX_GPU_HOST_DEVICE
 AMREX_FORCE_INLINE
@@ -350,12 +228,9 @@ _outflow_face_v2(const amrex::Real s_N  [NVAR],
                  amrex::Real       s_ghost[NVAR]) noexcept
 {
     using amrex::Real;
-    amrex::ignore_unused(dx_normal);   // reserved for future full-NSCBC
+    amrex::ignore_unused(dx_normal);   // the invariant form needs no length
 
     // ---- 1. Mixture primitives at N, N-1, N-2 ---------------------
-    // P here is the stock mixture inversion, used ONLY inside the
-    // acoustic invariants (a consistent stencil quantity; the pack
-    // below works from dP and per-phase states, never from (rho,P)).
     Real rho_N,   ux_N,   uy_N,   uz_N,   e_N,   P_N;
     Real rho_Nm1, ux_Nm1, uy_Nm1, uz_Nm1, e_Nm1, P_Nm1;
     Real rho_Nm2, ux_Nm2, uy_Nm2, uz_Nm2, e_Nm2, P_Nm2;
@@ -374,8 +249,7 @@ _outflow_face_v2(const amrex::Real s_N  [NVAR],
     const Real un_int_Nm2 = pick_un(ux_Nm2, uy_Nm2, uz_Nm2);
 
     // ---- 2. Per-phase decomposition + Wallis impedance at N -------
-    // ONE decomposition serves both the impedance c_N (same Wallis
-    // combination as the legacy path / PS_umeth) and the per-phase
+    // One decomposition serves both the impedance c_N and the per-phase
     // isentropic pack below.
     const PsPhaseSpeeds ph = ps_phase_speeds_from_state(s_N, p.pres);
     const Real Yw1 = ph.m1 / ph.rho;
@@ -407,8 +281,7 @@ _outflow_face_v2(const amrex::Real s_N  [NVAR],
 
     // ---- 3. Mach dispatch -----------------------------------------
     if (Mach_N >= Real(1.0)) {
-        // Supersonic outflow: no characteristic enters — zero-gradient
-        // copy is exact (unchanged from legacy; not a fallback).
+        // Supersonic outflow: no characteristic enters; the copy is exact.
         _zero_gradient_ghost(s_N, s_ghost);
         return;
     }
@@ -421,16 +294,13 @@ _outflow_face_v2(const amrex::Real s_N  [NVAR],
     }
 
     // ---- 4. Subsonic (either sign): characteristic invariants -----
-    // Identical algebra to the legacy subsonic-outflow branch; for
-    // -1 < Mach < 0 it is the well-posed reversed-flow treatment the
-    // legacy inflow branch should have been (see header note (a)).
     const Real rho_c = ph.rho * c_N;
 
     const Real Rp_N   = un_out_N   + P_N   / rho_c;
     const Real Rp_Nm1 = un_out_Nm1 + P_Nm1 / rho_c;
     const Real Rp_Nm2 = un_out_Nm2 + P_Nm2 / rho_c;
 
-    Real dRp_scaled;                            // dx · ∂R_+/∂x |_N
+    Real dRp_scaled;                            // dx · ∂R_+/∂x |_N, minmod
     if (p.nscbc_order <= 1) {
         dRp_scaled = Real(0.0);
     } else {
@@ -455,58 +325,42 @@ _outflow_face_v2(const amrex::Real s_N  [NVAR],
     Real un_out_g = Real(0.5) * (Rp_ghost + Rm_target);
     Real P_g      = Real(0.5) * rho_c * (Rp_ghost - Rm_target);
 
+    // Ghost pressure floor max(1e-3 P_amb, 1 Pa).
     const Real P_floor = amrex::max(Real(1.0e-3) * p.P_amb, Real(1.0));
     if (!std::isfinite(P_g) || P_g < P_floor) P_g = P_floor;
     if (!std::isfinite(un_out_g)) un_out_g = un_out_N;
 
-    // ---- 5. Ghost thermodynamics: one-substep linear pack, or the
-    //          choked expansion fan (commit B second design) ----------
-    //  NSCBC-3 fix + choked-fan ghost (2026-08-27).  The old ONE-SHOT
-    //  linearized pack step (refused wholesale above LIN_ETA = 0.2 —
-    //  the silent vent-to-mirror wall, NSCBC-3) and the linear
-    //  frozen-impedance invariant solve are BOTH small-signal devices.
-    //  Measured against the boundary-free reference (#31 oracle
-    //  diagnostic, WORKLOG 2026-08-27): the physical vent is an
-    //  expansion FAN along which the impedance rho*c collapses as the
-    //  fluid flashes — a frozen-rho*c linear solve holds the vent
-    //  plane at 41 bar where the truth reaches 6, and re-dressing the
-    //  ghost's composition at that wrong (u, P) only weakens the
-    //  coupling further (the deleted end-state flash closure,
-    //  measured -44.8%).
-    //
-    //  DISPATCH: if the LINEAR target's jump |P_g - P_N| fits ONE
-    //  pack substep (|drho_k| <= PACK_ETA rho_k for every present
-    //  phase), take the small-signal path — the linear invariant
-    //  solve above plus the single linearized pack step, BIT-FOR-BIT
-    //  the historical arithmetic (sigma soft-relax and the R+ minmod
-    //  extrapolation live here).  Every previously-green class
-    //  (suite runs at either target, flush, recirculation, legacy
-    //  comparisons) rides this branch.
-    //
-    //  Otherwise: integrate the FAN from the boundary state toward
-    //  the face ambient P_amb —
-    //    per adaptive substep (|drho_k| <= PACK_ETA rho_k):
-    //      (i)   each present phase along its own isentrope,
-    //            d(rho_k)/dP = 1/c_k^2, d(e_k)/dP = P_k/(rho_k^2 c_k^2),
-    //            with (P_k, c_k) re-evaluated from the branch-locked
-    //            EOS (host/slave rules as ps_phase_speeds_from_state);
-    //      (ii)  HEM re-closure at the current P when the mixture
-    //            enthalpy sits inside the saturation dome
-    //            (_hem_reclose above; CAMR.ps_bc_nscbc_flash = 1
-    //            default, 0 = frozen fan for A/B) — THIS is where
-    //            flash physics enters: it softens rho*c along the fan;
-    //      (iii) du_out = -dP/(rho c)_mix with the CURRENT Wallis
-    //            impedance of the CURRENT (possibly flashed) mixture;
-    //      (iv)  TERMINATE at P = P_amb (subsonic vent) or when
-    //            u_out reaches the current c_mix (CHOKED vent — the
-    //            sonic plateau the reference measures).
-    //  All ghost layers receive the fan-end state.  A fan needing
-    //  more than FAN_NMAX substeps, or an EOS-validity exit mid-fan,
-    //  refuses to the counted zero-gradient ([PS-GUARD] nscbc_zg
-    //  pack) exactly as the old bound did — loudly, in the counters.
-    constexpr Real PACK_ETA = Real(0.05);  // max |drho_k|/rho_k per substep
-    constexpr int  FAN_NMAX = 256;         // fan substep ceiling
-    constexpr Real m_tiny   = Real(1.0e-12);
+    // ---- 5. Ghost thermodynamics: one linear pack step, or the choked
+    //          expansion fan --------------------------------------------
+    //  The linear frozen-impedance invariant solve is a small-signal
+    //  device.  A blowdown vent is an expansion fan along which ρc
+    //  collapses as the fluid flashes; a frozen-ρc solve holds the vent
+    //  plane far above the true pressure and vents too little, while a
+    //  value bound that refuses the large jump turns the vent into a
+    //  mirror, silently.  So the dispatch is on the jump: if
+    //  |P_g − P_N| fits one substep (|drho_k| <= PACK_ETA rho_k for
+    //  every present phase) the single linearised step is taken;
+    //  otherwise the fan is integrated from the boundary state toward
+    //  this face's P_amb in adaptive substeps capped the same way, each
+    //    (i)   moving each present phase along its isentrope with
+    //          (P_k, c_k) re-evaluated from the branch-locked EOS under
+    //          the host/slave rules of ps_phase_speeds_from_state;
+    //    (ii)  re-closing the mixture as HEM saturated when its enthalpy
+    //          at the current P lies inside the dome (_hem_reclose;
+    //          p.flash = 1), which is where flash physics enters and
+    //          softens ρc along the fan;
+    //    (iii) accumulating du_out = −dP/(ρ̄ c_path), c_path² = dP/dρ_mix
+    //          along the marched path (frozen Wallis form as fallback on
+    //          a degenerate substep);
+    //    (iv)  terminating at P_amb or at the critical-flow throat, the
+    //          state of maximal G = ρu along the path (the substep past
+    //          the maximum is reverted).
+    //  All ghost layers receive the fan-end state.  More than FAN_NMAX
+    //  substeps or a phase leaving [rho_min, rho_max] mid-fan refuses to
+    //  the counted zero-gradient ghost (nscbc_zg pack).  docs §6.3.
+    constexpr Real PACK_ETA = Real(0.05);  // max |drho_k|/rho_k per substep (5 % strain)
+    constexpr int  FAN_NMAX = 256;         // fan substep ceiling (a 100 bar-to-choke march needs ~100)
+    constexpr Real m_tiny   = Real(1.0e-12);   // kg/m³, phase-presence threshold for the pack
     const bool p1_present = (ph.m1 > m_tiny);
     const bool p2_present = (ph.m2 > m_tiny);
     const bool host_is_1  = (ph.alpha1 >= ph.alpha2);
@@ -525,8 +379,7 @@ _outflow_face_v2(const amrex::Real s_N  [NVAR],
     Real rho_g;
 
     if (std::abs(P_g - P_N) <= cap0) {
-        // ---- Small-signal branch: the historical single linear step,
-        //      bit-for-bit. -------------------------------------------
+        // ---- Small-signal branch: one linearised isentropic step. ----
         const Real dP = P_g - P_N;
         if (p1_present) {
             const Real drho1 = dP / (ph.c1 * ph.c1);
@@ -545,28 +398,18 @@ _outflow_face_v2(const amrex::Real s_N  [NVAR],
         rho_g = m1_g + m2_g;
     } else {
         // ---- Choked-fan branch ------------------------------------
-        //  REVISED SAME DAY (the first fan choked at |u| >= frozen
-        //  Wallis c, which collapses at the first flash sliver and
-        //  froze the fan just under the dome edge — measured ~40 bar
-        //  plane vs the reference's 6).  The physical vent condition
-        //  is the classical CRITICAL-FLOW one: the fan ends where the
-        //  mass flux G = rho_mix * u_out is MAXIMAL along the
-        //  isentrope (the throat), and the velocity accumulates with
-        //  the PATH's own equilibrium slope,
-        //      c_path^2 = dP / d(rho_mix)  along the marched
-        //  (isentrope + HEM re-closure) path — the equilibrium sound
-        //  speed, measured from the integration itself rather than
-        //  assumed from a frozen mixture rule (falls back to the
-        //  frozen Wallis form on a degenerate substep).
+        //  The choke is the critical-flow condition on the path's own
+        //  equilibrium slope, not |u| >= c_frozen: the frozen Wallis c
+        //  collapses at the first flash sliver and would freeze the fan
+        //  just under the dome edge.
         Real r1 = ph.rho1, ee1 = ph.e1, Pk1 = ph.P1, ck1 = ph.c1;
         Real r2 = ph.rho2, ee2 = ph.e2, Pk2 = ph.P2, ck2 = ph.c2;
         Real fm1 = ph.m1, fm2 = ph.m2, fal1 = ph.alpha1;
         Real u_out = un_out_N;
         Real P_cur = P_N;
-        //  flash != 0 (default): the full choked fan toward the face
-        //  ambient.  flash == 0 (A/B opt-out): the commit-A behavior —
-        //  march the phases to the LINEAR-solve target P_g, no HEM, no
-        //  choke, ghost velocity stays the linear-invariant value.
+        //  flash != 0: full choked fan toward the face ambient.
+        //  flash == 0 (A/B): march the phases to the linear target P_g,
+        //  no HEM, no choke; the ghost velocity stays the invariant value.
         const bool full_fan = (p.flash != 0);
         const Real P_t = full_fan
             ? amrex::max(p.P_amb, amrex::max(Real(1.0e-3) * p.P_amb, Real(1.0)))
@@ -674,9 +517,8 @@ _outflow_face_v2(const amrex::Real s_N  [NVAR],
             _zero_gradient_ghost(s_N, s_ghost);
             return;
         }
-        // Fan-end state overrides the linear-solve ghost (u, P); in the
-        // flash==0 A/B form P_cur == the linear P_g and u_out was never
-        // touched, so (u, P) stay the linear-invariant values (commit A).
+        // Fan-end state overrides the linear-solve ghost (u, P); with
+        // flash == 0, P_cur == P_g and u_out is untouched.
         P_g      = P_cur;
         un_out_g = full_fan ? u_out : un_out_g;
         e1_g = ee1;  e2_g = ee2;
@@ -711,7 +553,7 @@ _outflow_face_v2(const amrex::Real s_N  [NVAR],
 #endif
     s_ghost[UEINT] = rhoe_g;
     s_ghost[UEDEN] = rhoe_g + rho_g * ke_spec_g;
-    s_ghost[UTEMP] = s_N[UTEMP];   // diagnostic slot: zero-gradient (see hdr)
+    s_ghost[UTEMP] = s_N[UTEMP];   // diagnostic slot: zero-gradient
     for (int n = 0; n < NUM_SPECIES; ++n)
         s_ghost[UFS + n] = Y_N[n] * rho_g;
 
@@ -728,35 +570,15 @@ _outflow_face_v2(const amrex::Real s_N  [NVAR],
 
 
 // ---------------------------------------------------------------------
-//  outflow_face — THE ghost construction (single since 2026-08-27:
-//  the legacy alternative was deleted; see the retirement note above
-//  _hem_reclose).
-//
-//  Ghost-cell state at an outflow face on any of the six boundaries
-//  {x-lo, x-hi, y-lo, y-hi, z-lo, z-hi}, characteristic-invariant
-//  NSCBC formulation (v2 construction + choked fan + HEM flash).
-//
-//  Arguments
-//    s_N, s_Nm1, s_Nm2  Interior states in a 3-cell backward stencil
-//                        walking INWARD from the boundary.  Caller
-//                        (BCfill.cpp) is responsible for reading the
-//                        right cells in the right order.
-//    dx_normal          Cell size along the boundary-normal direction.
-//    idir               Boundary-normal direction (0=x, 1=y, 2=z).
-//    sgn                AMReX BC convention:  +1 for low-side face
-//                        (iv[idir] < domlo), -1 for high-side face
-//                        (iv[idir] > domhi).
-//    layer_offset       Which ghost layer this call fills (1 = nearest
-//                        the domain, 2 = second-nearest, …).
-//    p                  Runtime tunables (P_amb, σ, flash, …).
-//
-//  Returns via  s_ghost[NVAR]  the conservative ghost state.
-//
-//  Direction handling.  Let  n_sgn = -sgn  be the outward-normal
-//  sign along +idir (+1 for hi, -1 for lo).  All invariants and the
-//  fan integration work in the "outward velocity" frame
-//  u_out ≡ n_sgn · u_int_normal; the final ghost velocity converts
-//  back before writing to s_ghost.
+//  outflow_face: the ghost state at an outflow face on any of the six
+//  boundaries (the entry point BCfill.cpp calls; forwards to
+//  _outflow_face_v2).  s_N, s_Nm1, s_Nm2 are the interior states walking
+//  inward from the boundary (the caller reads them in that order);
+//  idir is the normal direction; sgn is the AMReX convention (+1 low
+//  side, -1 high side); layer_offset is the ghost layer (1 = nearest).
+//  Invariants and the fan work in the outward frame u_out = -sgn·u_n
+//  and convert back before writing s_ghost.  The forwarder is a
+//  retire-candidate: see docs/DESIGN_DECISIONS.md §7 (O-8).
 // ---------------------------------------------------------------------
 AMREX_GPU_HOST_DEVICE
 AMREX_FORCE_INLINE
@@ -776,12 +598,8 @@ outflow_face(const amrex::Real s_N  [NVAR],
 }
 
 
-// ---------------------------------------------------------------------
-//  Backwards-compatible thin wrapper for callers that still use the
-//  original right_x_outflow name.  Equivalent to outflow_face on the
-//  right x-face (idir=0, sgn=-1).  New code should call outflow_face
-//  directly with explicit idir/sgn.
-// ---------------------------------------------------------------------
+//  outflow_face on the high x-face (idir=0, sgn=-1).  No caller.
+//  Retire-candidate: see docs/DESIGN_DECISIONS.md §7 (O-8).
 AMREX_GPU_HOST_DEVICE
 AMREX_FORCE_INLINE
 void

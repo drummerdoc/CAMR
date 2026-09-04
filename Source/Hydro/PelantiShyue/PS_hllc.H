@@ -1,65 +1,38 @@
 #ifndef PS_HLLC_H
 #define PS_HLLC_H
 // =====================================================================
-//  PS_hllc.H  —  Pelanti 2022 HLLC flux for the P-S 6-equation model.
+//  PS_hllc.H  —  HLLC Riemann fan and wave decomposition for the
+//                Pelanti-Shyue six-equation model (the face solver of the
+//                wave-propagation interior in PS_umeth.cpp).
 //
-//  Port of the standalone driver's ps_pelanti_hllc_flux
-//  (co2-eos-cfd/src/hem/hem_pelanti_shyue.H:963), rewritten to CAMR's
-//  NVAR conservative layout.  This is the "HLLC_v" of COTT
-//  (musta_df_mc.f90:1721-1858) which uses MIXTURE pressure with
-//  PER-PHASE density in the star-state phase-energy formula — the
-//  formulation the standalone verified against B4-Cross-critical
-//  analytic R-star at N=200.
+//  Algorithm: three waves per face (S_L, S_M, S_R).  face_from_state
+//  builds the per-side state with branch-locked per-phase (P_k, c_k) under
+//  the presence dispatch; wave_speeds gives Davis outer speeds and Toro's
+//  HLLC contact speed on the mixture; ps_star_state builds each side's
+//  star vector with the relaxed-alpha construction (common pressure rise
+//  dP behind each acoustic wave, each phase strained by its own bulk
+//  modulus; the COTT "HLLC_v" pairing of mixture P with per-phase rho in
+//  the phase energies); fluctuations forms the waves and sums them into
+//  A∓ΔQ.  See docs/MODEL_AND_ALGORITHM.md §2.
 //
-//  Why this exists: CAMR's default LLF Rusanov flux cannot preserve
-//  the P-S star state on cross-critical Riemann fans.  On B4 the LLF
-//  smearing of the α_1 contact drives u_R-star badly wrong (analytic
-//  +9 m/s, LLF gets -50 to +90 depending on setup) and produces
-//  spurious P oscillations 25-140 bar around the star region.  HLLC
-//  advects α_1 at the contact speed S_M and uses per-phase star-state
-//  densities, which is what preserves R-star to standalone / analytic
-//  accuracy.
-//
-//  Layout mapping standalone V6 ↔ CAMR NVAR:
-//      V6[0] = α_1              ↔ NVAR[UALPHA1]
-//      V6[1] = α_1 ρ_1          ↔ NVAR[UM1RHO1]
-//      V6[2] = α_2 ρ_2          ↔ NVAR[UM2RHO2]
-//      V6[3] = ρ u_n            ↔ NVAR[UMX/UMY/UMZ] depending on idir
-//      V6[4] = α_1 ρ_1 E_1      ↔ NVAR[UE1]
-//      V6[5] = α_2 ρ_2 E_2      ↔ NVAR[UE2]
-//   plus mixture slots (URHO, UEDEN, UEINT, UTEMP, UFS...) which
-//   HLLC handles by combining F_L, F_R with the star-state formulas
-//   above where they have a natural analog, and via LLF-style
-//   diffusion for auxiliary slots (UTEMP, UFS...) that don't
-//   participate in the star state.
-//
-//  α_1 handling (task #202): this file writes F[UALPHA1] = 0 on the
-//  subsonic paths and the per-cell WP-α kernel in PS_umeth.cpp runs
-//  for BOTH the LLF and HLLC paths.  (The claim in earlier versions
-//  of this header — that HLLC supplies F[UALPHA1] = α · S_M directly
-//  and the WP-α kernel must be skipped — is WRONG in general; see
-//  the task #202 note at the flux-assembly site below.  A latent
-//  exception remains: the supersonic S_L≥0 / S_R≤0 branches still
-//  emit F[UALPHA1] = α·u_n — see AUDIT 2026-08-24 B9.)
-//
-//  Falls back to the caller-supplied fallback flux when the HLLC
-//  computation hits a pathology (non-finite intermediate, negative
-//  denominator, star-state ρ ≤ 0).
+//  Contract: input is the NVAR conserved array of each cell; output the
+//  waves, speeds and fluctuations.  Every raw wave satisfies
+//  W[URHO] = W[UM1RHO1]+W[UM2RHO2] and W[UEDEN] = W[UE1]+W[UE2].  A face
+//  that cannot produce a star state is refused with a named cause
+//  (PsFlCause) and the caller falls back to LLF; no state is repaired.
+//  Every early return is counted (host builds).  No dials are read here.
 // =====================================================================
 
 #ifdef USE_PS_HYDRO
 
 #include "IndexDefines.H"
 #include "EOS.H"
-#include "PS_guards.H"      // G1/G3 -- THIS is the live wp face state, see below
-#include "PS_presence.H"   // S1: presence-discrete regimes (CAMR.ps_presence)
-#include "PS_promote.H"    // 3b: checked promotion (energy reachability)
+#include "PS_guards.H"
+#include "PS_presence.H"
+#include "PS_promote.H"
 #include <AMReX_GpuQualifiers.H>
 #include <cmath>
 
-// The idir-normal and idir-tangential unit-vector triple.  For
-// idir = 0 (x-face) the normal is X and tangentials are Y and Z; for
-// idir = 1 the normal is Y and tangentials are X, Z; etc.
 namespace PS_HLLC {
 
 AMREX_GPU_HOST_DEVICE
@@ -70,7 +43,7 @@ amrex::Real _finite_or(amrex::Real x, amrex::Real fallback) noexcept
 }
 
 // -------------------------------------------------------------------
-//  Per-face-side state extracted from a CAMR NVAR array.
+//  Per-side face state extracted from a CAMR NVAR array.
 // -------------------------------------------------------------------
 struct Face {
     amrex::Real alpha_1, alpha_2;
@@ -84,14 +57,22 @@ struct Face {
     amrex::Real P_1, P_2;        // per-phase branch-locked pressure
     amrex::Real P_mix;           // α₁ P₁ + α₂ P₂ (P-S 2014 eq. 5)
     amrex::Real c_frozen;        // Wallis frozen mixture c
-    amrex::Real c_1, c_2;        // per-phase c (guarded); read only by the
+    amrex::Real c_1, c_2;        // per-phase c (floored); read only by the
                                  // relaxed-alpha star closure
     bool        valid;
 };
 
-// Extract Face from a CAMR NVAR-conservative local array.  Uses
-// branch-locked per-phase EOS (task #185) so the P_1 / P_2 pair is
-// consistent with the rest of the pipeline.
+// -------------------------------------------------------------------
+//  face_from_state: the Face on one side from that cell's conserved
+//  array — the live per-face state of the wp interior.  rho_mix is
+//  floored at 1e-6 kg/m³; alpha is clamped to [0,1] with no interior
+//  floor (exact 0 and 1 mean Absent).  Per-phase (P_k, c_k) come from
+//  the branch-locked EOS under the presence dispatch: the host phase
+//  (larger alpha) defines the cell, a non-Independent phase takes the
+//  host's P and c, an Absent phase also takes the host's rho, e, E as
+//  placeholders multiplied by m_k = 0 downstream.  valid = rho_mix and
+//  c_frozen finite and positive.  docs §2.1.
+// -------------------------------------------------------------------
 AMREX_GPU_HOST_DEVICE
 AMREX_FORCE_INLINE
 Face face_from_state(int idir, const amrex::Real U[NVAR],
@@ -101,65 +82,34 @@ Face face_from_state(int idir, const amrex::Real U[NVAR],
     Face f;
     f.valid = false;
 
-    // Mixture density from partial masses.
     f.m_1 = amrex::max(_finite_or(U[UM1RHO1], Real(0.0)), Real(0.0));
     f.m_2 = amrex::max(_finite_or(U[UM2RHO2], Real(0.0)), Real(0.0));
     f.rho_mix = amrex::max(f.m_1 + f.m_2, Real(1.0e-6));
 
-    // Volume fraction with a floor to keep per-phase densities finite.
-    // Task #210: value MUST equal the alpha_floor used elsewhere in
-    // the PS pipeline — PS_ctoprim.H and
-    // ps_max_wave_speed in PS_umeth.cpp all use 1e-6, and standalone
-    // ppm_1d_ps_wp.cpp defaults PS_ALPHA_FLOOR to 1e-6 in
-    // ps_state_from_cons.  Non-uniform floors produce a state-
-    // dependent shift in the HLLC face state (rho_k = m_k / α_k_clamped)
-    // that decouples CAMR's HLLC path from every other clamp in the
-    // pipeline.  If the trace phase truly vanishes below 1e-6, the
-    // fold-vanish source term (ps_apply_vanish_fold) is the correct
-    // handler — not a lower HLLC floor.
-    //
-    // History: task #197 briefly lowered this to 1e-10 to match a
-    // standalone run using PS_ALPHA_FLOOR=1e-10; task #210 reverts
-    // that after we established the standalone winning-config default
-    // is 1e-6 and after we confirmed 1e-6 gives bit-exact match.
+    // alpha_floor is unreferenced (there is no alpha floor on this path).
+    // Retire-candidate: see docs/DESIGN_DECISIONS.md §7 (O-8).
     constexpr Real alpha_floor = Real(1.0e-6);
     Real a1 = _finite_or(U[UALPHA1], Real(1.0));
-    // S1 presence path: NO floor.  alpha stays exact (0 and 1 are legal
-    // and meaningful: ABSENT).  Clamp only the [0,1] bounds; violations
-    // are ps_validate_state's to report, not this constructor's to hide.
+    // Bounds only; out-of-range values are ps_validate_state's to report.
     if (a1 < Real(0.0)) a1 = Real(0.0);
     if (a1 > Real(1.0)) a1 = Real(1.0);
     f.alpha_1 = a1;
     f.alpha_2 = Real(1.0) - a1;
 
-    // G1: clamp rho_k into the EOS validity domain (see PS_guards.H).
-    //
-    // THIS FUNCTION IS THE LIVE PER-FACE STATE for ps_flux=wp:
-    //     PS_umeth.cpp ps_wp_face -> PS_HLLC::fluctuations -> face_from_state
-    // It was floor-only, so every face built rho_k = m_k/alpha_k unbounded and
-    // could reach the PR hard-sphere pole (1650.4 kg/m3 for CO2), where
-    // P = RT/(v_m-b) diverges.  G1 and G3 were previously applied to ten sites
-    // across PS_ctoprim.H and PS_umeth.cpp -- none of them this one -- which is
-    // why the audit counters showed the pressure guard firing 375 000 times
-    // with no effect on the failure: the flux never went through it.
-    //
-    // Third occurrence of this pattern (G1, G3, and the #199 c_frozen fix have
-    // each been applied to some-but-not-all copies, missing PS_hllc.H every
-    // time).  See GUARD_INVENTORY.md.
+    // rho_floor is unreferenced.
+    // Retire-candidate: see docs/DESIGN_DECISIONS.md §7 (O-8).
     constexpr Real rho_floor = Real(1.0e-6);
-    // S1 presence path: regimes decide how (or whether) rho_k is formed.
-    // Deferred until after the regime classification below when enabled;
-    // legacy path forms them here exactly as before.
+    // pr.enabled is hard-wired 1; the Independent branch is never taken.
+    // Retire-candidate: see docs/DESIGN_DECISIONS.md §7 (O-8).
     const PsRegime rg1 = pr.enabled ? ps_regime(f.alpha_1, f.m_1, pr)
                                     : PsRegime::Independent;
     const PsRegime rg2 = pr.enabled ? ps_regime(f.alpha_2, f.m_2, pr)
                                     : PsRegime::Independent;
-    // INDEPENDENT: m/alpha is well-conditioned by construction (alpha >=
-    // alpha_cond); G1 stays as containment until S4 turns it into an
-    // assertion.  CORRIDOR: the ratio is noise; form it G1-clamped only
-    // because it enters the star-state q_k denominator, where its
-    // contribution is bounded by m_k (tiny).  ABSENT: never divide;
-    // placeholder = host's density, set after the host is known below.
+    // Independent: m/alpha is well-conditioned (alpha >= alpha_cond) and
+    // is clamped into the EOS domain (G1, PS_guards.H).  Corridor: the
+    // ratio is noise but enters the star-state q_k denominator, where
+    // its contribution is bounded by the tiny m_k; formed clamped.
+    // Absent: never divided; the host's density is substituted below.
     f.rho_1 = (rg1 == PsRegime::Absent) ? Real(0.0)
             : ps_guard::clamp_phase_density(f.m_1 / amrex::max(f.alpha_1, Real(1.0e-300)),
                                             EOS::rho_min(), EOS::rho_max());
@@ -194,31 +144,17 @@ Face face_from_state(int idir, const amrex::Real U[NVAR],
     f.e_1 = f.E_1 - ke_spec;
     f.e_2 = f.E_2 - ke_spec;
 
-    // Species-array carrier (pure CO₂ in the current PR shim).
+    // Species carrier (pure CO₂).
     Real Y[NUM_SPECIES];
     Y[0] = Real(1.0);
     for (int n = 1; n < NUM_SPECIES; ++n) Y[n] = Real(0.0);
 
-    // Branch-locked per-phase pressure + sound speed (task #185).  One solve
-    // per phase yields both P and c (host cache deduped this; device did not).
-    // G5 SLAVED TRACE PHASE (see PS_guards.H).  Same treatment as
-    // ps_augment_primitives, applied at the LIVE wp face state.  Below the
-    // threshold the trace phase takes the host's P and c; its branch-locked EOS
-    // is never queried at an undefined (rho_k, e_k).  Note this also removes
-    // the c = 1 m/s fallback for a failed trace phase (standalone gap item A3):
-    // a trace phase now carries the host's sound speed, which is physically
-    // continuous, instead of 1 m/s, which manufactured a discontinuity in
-    // c_frozen and hence in S_L/S_R at exactly the alpha-transition cells.
+    // Branch-locked per-phase P and c, one solve per phase, host dispatch
+    // as in ps_augment_primitives: the host's query defines the cell; a
+    // Corridor/Absent phase takes the host's intensives (the corridor
+    // closure is the definition of that phase's thermodynamics, not a
+    // repair), so its EOS is never queried at an undefined (rho_k, e_k).
     Real c1, c2;
-    // S1 presence dispatch.  The HOST phase (larger alpha) is always
-    // INDEPENDENT when the cell is physical (alpha_host >= 1/2 >>
-    // alpha_cond); its branch-locked query defines the cell.  A
-    // CORRIDOR/ABSENT phase takes the host's intensives — the corridor
-    // closure is the DEFINITION of that phase's thermodynamics (design
-    // §1), replacing G5-slaving-as-repair, the A3 c=1 fallback, and the
-    // A6 e_mix substitution in this constructor.  For an ABSENT phase
-    // every contribution downstream is multiplied by m_k = 0; the host
-    // placeholders exist so no expression is undefined.
     const bool host_is_1 = (f.alpha_1 >= f.alpha_2);
     if (host_is_1) {
         EOS::REY2PCs_liquid(f.rho_1, f.e_1, Y, f.P_1, c1);
@@ -239,38 +175,27 @@ Face face_from_state(int idir, const amrex::Real U[NVAR],
             if (rg1 == PsRegime::Absent) { f.rho_1 = f.rho_2; f.e_1 = f.e_2; f.E_1 = f.E_2; }
         }
     }
-    // G3: two-sided per-phase pressure sanity against the mixture scale
-    // (see PS_guards.H).  Was one-sided (floor only), so a trace phase deep in
-    // its metastable extrapolation could inject an arbitrarily large P_k into
-    // f.P_mix below -- which then sets S_L/S_R/S_M/P_star in wave_speeds() and
-    // propagates into the fluctuations that become the flux.
-    //
-    // P_stock here is the mixture pressure the OTHER phase implies; using the
-    // majority phase's pressure as the reference keeps this consistent with the
-    // ctoprim sites, which compare against the single-fluid EOS(rho,e) value.
+    // G3 (PS_guards.H): per-phase pressure floor against the host's
+    // pressure as the reference, consistent with the ctoprim sites.  A
+    // slaved phase's pressure is the host's already, so only an
+    // Independent minority phase carries a P worth testing.
     {
         const Real P_ref = (f.alpha_1 >= f.alpha_2) ? f.P_1 : f.P_2;
         const Real P_stock = ps_guard::sanitize_stock_pressure(P_ref);
-        // Slaved (corridor/absent) pressures ARE the host's — sanitizing
-        // them against the host is a no-op; only an independent minority
-        // phase carries its own P worth testing.
         if (rg1 == PsRegime::Independent) ps_guard::sanitize_phase_pressure(f.P_1, P_stock);
         if (rg2 == PsRegime::Independent) ps_guard::sanitize_phase_pressure(f.P_2, P_stock);
     }
     f.P_mix = f.alpha_1 * f.P_1 + f.alpha_2 * f.P_2;
+    // Both c_k are floored to 1 m/s on a non-finite or non-positive EOS
+    // return (docs §8.3, guard inventory).
     if (!std::isfinite(c1) || c1 <= Real(0.0)) c1 = Real(1.0);
     if (!std::isfinite(c2) || c2 <= Real(0.0)) c2 = Real(1.0);
-    f.c_1 = c1;                  // guarded per-phase speeds (relaxed-alpha closure)
+    f.c_1 = c1;
     f.c_2 = c2;
 
-    // Wallis frozen mixture sound speed:  c² = Y₁ c₁² + Y₂ c₂²
-    // with Y_k = α_k ρ_k / ρ_mix.  Matches the standalone driver
-    // (co2-eos-cfd hem_pelanti_shyue.H:552-562 c_mode=1) — Y₂ is
-    // computed as (1 - Y₁), not (α₂ρ₂/ρ_mix), to make the L cell's
-    // Y₂ bit-exactly zero when α₁ = 1 (the standalone convention).
-    // Task #199: previously used α_k·Y_k with an erroneous extra α_k
-    // factor, which gave a ~2e-7 rel diff on the R-far cell vs the
-    // standalone.  Removed.
+    // Wallis frozen mixture sound speed c² = Y₁c₁² + Y₂c₂², Y_k = α_kρ_k/ρ_mix
+    // (ps_cmix2, the single construction every consumer uses).  Y₂ is
+    // formed as 1 − Y₁ so it is bit-exactly zero at α₁ = 1.
     const Real Y1 = f.alpha_1 * f.rho_1 / f.rho_mix;
     const Real Y2 = Real(1.0) - Y1;
     const Real c2_frozen = ps_cmix2(Y1, Y2, c1, c2);
@@ -284,29 +209,18 @@ Face face_from_state(int idir, const amrex::Real U[NVAR],
 
 
 // -------------------------------------------------------------------
-//  REFUSAL CAUSES for the wp fluctuation path (2026-08-12).
-//
-//  `fluctuations()` returns false from six syntactically distinct places and
-//  the face then falls back to LLF.  Until now a single `n_fl_fail` counter
-//  covered all of them, which is not enough to act on: if the refusals are
-//  SPURIOUS the fix is to stop refusing, and the fallback's internal
-//  consistency is moot; if they are LEGITIMATE the fallback must be made
-//  identity-consistent.  Those are different pieces of work, and the counter
-//  could not tell them apart.
-//
-//  Measured 2026-08-12 (B7, exact_suite HEM leg): a refused face is the sole
-//  source of B7's stage-A phase-energy identity defect -- correlation 22/22
-//  with no counterexamples, and cells-affected == faces-failed + 1 exactly.
-//  See WORKLOG.md.
+//  Refusal causes.  fluctuations() refuses from several places and the
+//  face falls back to LLF; counting per cause separates a spurious
+//  refusal (fix: stop refusing) from a legitimate one (fix: keep the
+//  fallback consistent), which are different pieces of work.  docs §2.6.
 // -------------------------------------------------------------------
 enum PsFlCause {
     PS_FL_OK         = 0,
     PS_FL_FACE       = 1,   // face_from_state invalid (rho_mix <= 0 or c <= 0)
     PS_FL_WS_DENOM   = 2,   // mixture mass-flux denominator degenerate
     PS_FL_WS_SM      = 3,   // contact speed non-finite
-    PS_FL_WS_PSTAR   = 4,   // RETIRED 2026-08-12; number kept so the cause
-                            // numbering in the worklog stays comparable.  Can
-                            // no longer fire -- the test is gone.
+    PS_FL_WS_PSTAR   = 4,   // unused slot; never set.
+                            // Retire-candidate: see docs/DESIGN_DECISIONS.md §7 (O-8).
 
     PS_FL_ST_DENOM   = 5,   // star: S_K - S_M degenerate
     PS_FL_ST_MASSNEG = 6,   // star: a partial mass came out negative
@@ -317,17 +231,16 @@ enum PsFlCause {
 };
 
 // -------------------------------------------------------------------
-//  Davis wave speeds + HLLC contact speed for a P-S face.
+//  wave_speeds: Davis outer speeds and the HLLC contact speed for a face.
+//  Each side uses its own frozen c, so the fan is at least as wide as
+//  the local sound speed whatever the composition asymmetry; the fan
+//  only has to bound the waves (docs §2.2).  S_M from the mixture mass
+//  and momentum balance (Toro §10.4) using P_mix.  cause names the
+//  refusing test (PS_FL_OK on success) on every return.
 // -------------------------------------------------------------------
 struct WaveSpeeds {
     amrex::Real S_L, S_M, S_R;
-    //  There was a `P_star` here -- the PVRS linearised contact pressure --
-    //  written on every successful face and READ NOWHERE.  Removed 2026-08-12
-    //  together with the positivity test it existed to feed; see the block
-    //  above wave_speeds().
     bool        valid;
-    //  Which test refused, for the W0 refusal-cause audit (see face_diag).
-    //  0 = none.  Set on every early return so the caller never has to guess.
     int         cause;
 };
 
@@ -341,14 +254,9 @@ WaveSpeeds wave_speeds(const Face& fL, const Face& fR) noexcept
     w.cause = PS_FL_FACE;
     if (!fL.valid || !fR.valid) return w;
 
-    // Davis outer wave speeds (baseline; matches the standalone default
-    // when PS_WAVE_SPEED is unset).  Using each side's own frozen c
-    // ensures the fan is at least as wide as the local sound speed
-    // regardless of asymmetric phase composition.
     const Real S_L = amrex::min(fL.u_n - fL.c_frozen, fR.u_n - fR.c_frozen);
     const Real S_R = amrex::max(fL.u_n + fL.c_frozen, fR.u_n + fR.c_frozen);
 
-    // HLLC contact speed from mixture mass/momentum balance (Toro §10.4).
     const Real denom = fL.rho_mix * (S_L - fL.u_n)
                      - fR.rho_mix * (S_R - fR.u_n);
     w.cause = PS_FL_WS_DENOM;
@@ -360,39 +268,10 @@ WaveSpeeds wave_speeds(const Face& fL, const Face& fR) noexcept
     w.cause = PS_FL_WS_SM;
     if (!std::isfinite(S_M)) return w;
 
-    //  RETIRED 2026-08-12 -- the PVRS contact-pressure positivity test.
-    //
-    //      P_star = P_L + rho_L (S_L - u_L)(S_M - u_L)
-    //      if (!finite(P_star) || P_star <= 0) refuse the face
-    //
-    //  Measured cause of 33/33 fluctuation refusals on B7-Rupture-Sonic, and
-    //  through them of the phase-energy identity defect that aborted the run
-    //  63 steps later (WORKLOG 2026-08-12).  Three reasons it went:
-    //
-    //  1. P_star was READ NOWHERE.  It was computed only in order to be
-    //     tested.  The star states are built from S_K and S_M alone, and
-    //     hllc_flux takes its pressures from the face state, so the test could
-    //     only ever subtract information.
-    //  2. It is the PVRS linearisation, whose textbook failure mode is the
-    //     strong double-rarefaction: it returns a negative pressure where the
-    //     exact solution has a small positive one (Toro 9.5 -- the reason
-    //     adaptive/two-rarefaction estimates exist).  B7 is 100 bar liquid
-    //     discharging into 1 bar vapour, precisely that regime.  So P_star <= 0
-    //     was a failure of the ESTIMATE, never evidence of a bad state -- and
-    //     the states it rejected were demonstrably fine, because ps_star_state's
-    //     own five tests were never once REACHED on a refused face (the audit
-    //     reported star side L=0 R=0).
-    //  3. It was built from the L side only, so it was not symmetric under
-    //     swapping L and R even though the face is.
-    //
-    //  What still guards this path: ps_star_state's five tests, which inspect
-    //  quantities that are actually USED (the contraction denominator, the star
-    //  partial masses and density, the per-phase mass-flux denominators, and the
-    //  star phase energies).  A face that would genuinely produce a bad star
-    //  state is still refused there.
-    //
-    //  The same test survives at hem_pelanti_shyue.H:837-843, equally unread; it
-    //  is in the ps_flux family, which has no production caller, and dies with it.
+    //  No contact-pressure positivity test here by decision: the PVRS
+    //  estimate fails on strong double rarefactions and its value is read
+    //  nowhere; ps_star_state's tests inspect the quantities actually used.
+    //  docs §2.2.
     w.S_L    = S_L;
     w.S_M    = S_M;
     w.S_R    = S_R;
@@ -403,15 +282,11 @@ WaveSpeeds wave_speeds(const Face& fL, const Face& fR) noexcept
 
 
 // -------------------------------------------------------------------
-//  Star-state partial masses -- SINGLE-SOURCED (four-way-copy lesson,
-//  STATUS_multiphase.md 6.1).  m_k* = m_k r_K for BOTH phases: this is
-//  the per-phase mass Rankine-Hugoniot jump across a single acoustic
-//  discontinuity in a one-velocity model, m_k*(S_K - S_M) = m_k(S_K - u),
-//  and is FORCED whatever the alpha/energy partition does.  The retired
-//  ps_rk_model=1 dial (D7) violated exactly this and is gone
-//  (DESIGN_ps_star_relaxed.md s2; the key now aborts, PS_presence.H).
-//  The relaxed-alpha construction moves ALPHA and the ENERGY SPLIT
-//  instead -- see ps_star_state below.
+//  ps_star_masses: m_k* = r_K m_k for both phases — the per-phase mass
+//  Rankine-Hugoniot jump across one discontinuity at S_K in a
+//  one-velocity model, m_k*(S_K − S_M) = m_k(S_K − u).  Forced whatever
+//  the volume or energy partition does; single-sourced so no star
+//  construction can disagree (docs §2.3, C5).
 // -------------------------------------------------------------------
 AMREX_GPU_HOST_DEVICE
 AMREX_FORCE_INLINE
@@ -424,48 +299,29 @@ void ps_star_masses(const Face& fK, amrex::Real r_K,
 }
 
 #if !defined(AMREX_USE_GPU)
-//  Relaxed-alpha fallback counter (host-only; the star builder below is
-//  device-callable, so the counter lives here and is a no-op on GPU).
-//  Counts faces where the relaxed construction fell back to the B.14
-//  form (degenerate closure / Newton failure / alpha* out of (0,1)).
-//  Reported and reset with the W0 face audit in CAMR_advance.cpp.
+//  Host-only counter of faces where the relaxed-alpha construction fell
+//  back to the equal-strain form; reported as [PS-RELAXFB] and reset with
+//  the face audit in CAMR_advance.cpp.
 namespace face_diag { inline long& n_relax_fb() { static long n = 0; return n; } }
 #endif
 
-// -------------------------------------------------------------------
-//  hllc_flux (the Pelanti 2022 HLLC Godunov flux) was DELETED
-//  2026-08-26 with the single-path retirement (CAMR.ps_flux=hllc
-//  aborts; wp is the only interior flux).  The star construction it
-//  shared with the fluctuation form lives on in ps_star_state below;
-//  the full Godunov flux survives in git history.
-// -------------------------------------------------------------------
-
 // ===================================================================
-//  Wave-propagation (Berger-LeVeque) fluctuation form — task #40 (BL-1)
-//  ---------------------------------------------------------------------
-//  Port of hem_pelanti_shyue.H::ps_hllc_fluctuations to the CAMR NVAR
-//  layout.  Produces the two fluctuations A^-ΔQ (left-going) and A^+ΔQ
-//  (right-going) plus the 3 waves W[l]/speeds s[l] (for the BL-2 limited
-//  correction fluxes).  For a NON-conservative slot (α, and the phase
-//  energies with their mixture-P star state) A^+ ≠ -A^- and the
-//  non-conservative contribution is embedded at the face automatically;
-//  for a conservative slot A^+ + A^- = ΔF and the recovered interface
-//  flux F* = F_L + A^-ΔQ feeds the standard FluxRegister.
-//
-//  ps_star_state builds one side's HLLC star vector in NVAR layout
-//  (the one star construction since the Godunov-flux path's deletion,
-//  2026-08-26).
+//  ps_star_state: the HLLC star vector U_star (NVAR layout) on side K
+//  behind the wave at S_K, from that side's Face and conserved array.
+//  Returns false with *cause set on every refusal (degenerate S_K − S_M,
+//  negative star partial mass, rho* <= 0, vanishing q_k, non-finite
+//  E_k*); nothing is clamped.  Conserved-slot components follow the
+//  standard mixture HLLC algebra; alpha and the phase energies come from
+//  the relaxed-alpha construction below.  docs §2.3, §2.6.
 // ===================================================================
 AMREX_GPU_HOST_DEVICE
 AMREX_FORCE_INLINE
 bool ps_star_state(int idir, const Face& fK, const amrex::Real UK[NVAR],
                    amrex::Real S_K, amrex::Real S_M,
                    amrex::Real U_star[NVAR],
-                   int* cause = nullptr) noexcept  // W0 refusal-cause audit
+                   int* cause = nullptr) noexcept
 {
     using amrex::Real;
-    //  Every early return names itself.  `cause` is optional so the signature
-    //  stays usable from paths that do not audit.
 #define PS_ST_REFUSE(c) do { if (cause) *cause = (c); return false; } while (0)
     const Real denom = S_K - S_M;
     if (!std::isfinite(denom) || std::abs(denom) < Real(1.0e-30))
@@ -480,36 +336,34 @@ bool ps_star_state(int idir, const Face& fK, const amrex::Real UK[NVAR],
     const Real q2 = fK.rho_2 * (S_K - fK.u_n);
     if (std::abs(q1) < Real(1.0e-30) || std::abs(q2) < Real(1.0e-30))
         PS_ST_REFUSE(PS_FL_ST_Q);
-    const Real Pe1 = fK.P_mix;   // #211 mixture-P (the #85 option is retired)
+    const Real Pe1 = fK.P_mix;   // mixture P in the phase energies (H-3)
     const Real Pe2 = fK.P_mix;
 
-    //  Star alpha and per-phase energies: the RELAXED-ALPHA construction
-    //  (DESIGN_ps_star_relaxed.md; single path since acceptance 2026-08-31,
-    //  [DECIDE-6] -- the campaign selector is deleted).  Behind the wave the
-    //  phases sit at
-    //  mechanical equilibrium at a common pressure rise dP; each phase takes
-    //  the strain its own bulk modulus B_k = rho_k c_k^2 admits:
-    //      s_k = dP/B_k,  rho_k* = rho_k(1+s_k),  alpha_k* = alpha_k r_K/(1+s_k)
-    //  with dP the unique root of the volume closure
-    //      f(dP) = alpha_1 r_K/(1+dP/B1) + alpha_2 r_K/(1+dP/B2) - 1 = 0
-    //  (f monotone decreasing; closed-form Wood-weighted seed; THREE Newton
-    //  steps, a fixed count -- no convergence threshold exists to tune).  The
-    //  energy split pays each phase P dV for ITS OWN volume change,
-    //      E_k* = E_k + (S_M-u) S_M + P_mix s_k / (rho_k (1+s_k)),
-    //  and the volume closure makes  sum m_k* E_k*  equal the B.14 mixture
-    //  sum EXACTLY -- so every conserved-slot star component (URHO, momenta,
-    //  UEDEN, UEINT, partial masses, species) is unchanged between the two
-    //  constructions; only UALPHA1/UE1/UE2 waves move.  Equal bulk moduli
-    //  (every single-phase cell, and c-slaved corridor faces with equal
-    //  rho_k) reduce algebraically to B.14.  Degeneracy falls back to the
-    //  B.14 equal-strain form for that face and is counted (n_relax_fb),
-    //  never clamped -- measured ZERO fallbacks across the 1-D suite and
-    //  225 steps of 2-D production.  Exact alpha in {0,1} skips the solve:
-    //  the forms are algebraically identical there and the presence design
-    //  needs those values preserved bit-exactly.
-    //  B.14 equal-strain values first: the degeneracy fallback and the
-    //  exact single-phase (alpha in {0,1}) path; the relaxed construction
-    //  overwrites them on success.
+    //  Relaxed-alpha star state (docs §2.3).  Constraints per side, all
+    //  inherited from the mixture HLLC algebra: (C1) m1*+m2* = r_K rho,
+    //  (C2) u* = S_M, (C3) sum m_k* E_k* = rho* E*_HLLC, (C4) a1*+a2* = 1,
+    //  (C5) m_k* = r_K m_k.  Closure: behind the wave both phases sit at a
+    //  common pressure rise dP, each strained by its own bulk modulus
+    //  B_k = rho_k c_k²:
+    //      s_k = dP/B_k,  rho_k* = rho_k(1+s_k),  alpha_k* = alpha_k r_K/(1+s_k),
+    //  and (C4) is one monotone scalar equation in dP,
+    //      f(dP) = alpha_1 r_K/(1+dP/B1) + alpha_2 r_K/(1+dP/B2) − 1 = 0,
+    //  seeded by the Wood-weighted linearisation and solved with three
+    //  Newton steps at a fixed count (no tolerance to tune).  Energy: each
+    //  phase keeps the kinetic term and is paid P dV for its own volume
+    //  change, E_k* = E_k + (S_M−u) S_M + P s_k/(rho_k(1+s_k)); with
+    //  f(dP) = 0 the sum m_k* E_k* equals the equal-strain mixture sum
+    //  exactly, so (C3) holds and every conserved-slot star component is
+    //  unchanged — only the UALPHA1/UE1/UE2 wave components move.  Equal
+    //  bulk moduli (every single-phase cell, c-slaved corridor faces)
+    //  reduce to the equal-strain form; the equal-strain form is what the
+    //  literal Pelanti B.14 gives and it over-compresses the stiff phase
+    //  by the bulk-modulus ratio.  Degeneracy (non-finite B_k, 1+s_k <= 0,
+    //  vanishing derivative, alpha* outside (0,1)) falls back to the
+    //  equal-strain form for that face and is counted, never clamped.
+    //  Exact alpha in {0,1} skips the solve: the forms coincide there and
+    //  presence needs those values bit-exact.
+    //  Equal-strain values first; the relaxed solve overwrites on success.
     Real a1s = fK.alpha_1;
     Real E1s = fK.E_1 + (S_M - fK.u_n) * (S_M + Pe1 / q1);
     Real E2s = fK.E_2 + (S_M - fK.u_n) * (S_M + Pe2 / q2);
@@ -561,7 +415,7 @@ bool ps_star_state(int idir, const Face& fK, const amrex::Real UK[NVAR],
 #if !defined(AMREX_USE_GPU)
     if (!relaxed_done &&
         fK.alpha_1 > Real(0.0) && fK.alpha_1 < Real(1.0)) {
-        ++face_diag::n_relax_fb();   // fell back to B.14, counted
+        ++face_diag::n_relax_fb();   // equal-strain fallback, counted
     }
 #endif
     amrex::ignore_unused(relaxed_done);
@@ -586,8 +440,7 @@ bool ps_star_state(int idir, const Face& fK, const amrex::Real UK[NVAR],
 #endif
     U_star[UEINT]   = rhos * e_mix_s;
     U_star[UEDEN]   = rhos * (e_mix_s + ke);   // = m1s·E1s + m2s·E2s
-    U_star[UALPHA1] = a1s;   // B.14: = fK.alpha_1 (contact-only); relaxed:
-                             // alpha jumps across the acoustic waves too
+    U_star[UALPHA1] = a1s;   // alpha jumps across the acoustic waves too
     U_star[UM1RHO1] = m1s;
     U_star[UM2RHO2] = m2s;
     U_star[UE1]     = m1s * E1s;
@@ -599,49 +452,37 @@ bool ps_star_state(int idir, const Face& fK, const amrex::Real UK[NVAR],
 }
 
 // -------------------------------------------------------------------
-//  W0 FACE AUDIT (DESIGN_ps_wp_front.md §3/§5; Marc 2026-08-10:
-//  "implement after measurements" — this IS the measurement).  Host-only
-//  counters in the ps_guard style; compiled out on GPU; zero effect on
-//  the numerics.  Face classes:
-//     0  II — every (side, phase) Independent: the full 6-eq algebra's
-//              intended domain
-//     1  C  — at least one Corridor participant, no Absent
-//     2  A  — at least one Absent participant (a presence front)
-//  Per class: faces seen by the defect correction, faces where a small-q
-//  guard DROPPED the correction (§2.4 dropout mechanism), largest |defect|
-//  actually applied, largest |E_k*| formed (§2.3 singularity mechanism).
+//  Face audit (host-only, compiled out on GPU, no effect on the
+//  numerics; printed as [PS-FACE] / [PS-FLCAUSE] / [PS-RELAXFB] /
+//  [PS-W21] under CAMR.ps_face_diag, see CAMR_advance.cpp).  Face
+//  classes: 0 = every (side, phase) Independent; 1 = at least one
+//  Corridor, no Absent; 2 = at least one Absent (a presence front).
 // -------------------------------------------------------------------
 #if !defined(AMREX_USE_GPU)
 namespace face_diag {
+// n_seen / n_drop / max_def / max_estar are never written.
+// Retire-candidate: see docs/DESIGN_DECISIONS.md §7 (O-8).
 inline long&   n_seen(int c)    { static long n[3] = {0,0,0};   return n[c]; }
 inline long&   n_drop(int c)    { static long n[3] = {0,0,0};   return n[c]; }
 inline double& max_def(int c)   { static double v[3] = {0,0,0}; return v[c]; }
 inline double& max_estar(int c) { static double v[3] = {0,0,0}; return v[c]; }
-// fluctuations() (the wp path's engine — task-#207 defect is embedded here,
-// so on ps_flux=wp THESE are the live counters):
+// Per class: faces seen by fluctuations(), faces refused, and the largest
+// per-fluctuation identity mismatch |Δ(UE1+UE2) − ΔUEDEN|.
 inline long&   n_fl_seen(int c) { static long n[3] = {0,0,0};   return n[c]; }
 inline long&   n_fl_fail(int c) { static long n[3] = {0,0,0};   return n[c]; }
 inline double& max_incmis(int c){ static double v[3] = {0,0,0}; return v[c]; }
-//  Location of max_incmis -- (i,j,k,idir) of the face holding each class max
-//  (work item 0a, HANDOFF_shock_phase_compression.md Part 3; FINDINGS A.5/B.4:
-//  a maximum with no location cannot be attributed).  Same name-the-cell
-//  pattern as V7/V8 in PS_validate.H.  Index is the face's high-side cell
-//  (i,j,k) as ps_wp_face sees it; -9999 = nothing recorded.
+//  Location of max_incmis: the face's high-side cell (i,j,k) and idir as
+//  ps_wp_face sees it; -9999 = nothing recorded.
 inline int& mis_i(int c)  { static int v[3] = {-9999,-9999,-9999}; return v[c]; }
 inline int& mis_j(int c)  { static int v[3] = {-9999,-9999,-9999}; return v[c]; }
 inline int& mis_k(int c)  { static int v[3] = {-9999,-9999,-9999}; return v[c]; }
 inline int& mis_dir(int c){ static int v[3] = {-1,-1,-1}; return v[c]; }
-//  Refusal cause (PsFlCause), NOT keyed by face class -- the class attribution
-//  is already known from n_fl_fail, and a 10 x 3 table is unreadable.
+//  Refusals per cause (PsFlCause), not keyed by class; and per side whose
+//  star state refused (0 = L, 1 = R).
 inline long& n_fl_cause(int c) { static long n[PS_FL_NCAUSE] = {0}; return n[c]; }
-//  Which SIDE's star state refused: 0 = L, 1 = R.  Answers "is it systematically
-//  one side" without doubling the cause table.
 inline long& n_fl_side(int s_)  { static long n[2] = {0,0}; return n[s_]; }
-//  W2-2 check (2026-08-12).  Under scalar-per-wave limiting the BL-2 correction
-//  must satisfy the linear identities BEFORE W2-1's assignment fixes them up,
-//  because every raw wave satisfies them and a scalar scaling preserves that.
-//  These accumulate the worst relative residual W2-1 still has to remove.  They
-//  must read at round-off; anything larger falsifies the derivation.
+//  Worst relative residual of the correction-flux sum identities before
+//  the derived assignments in PS_umeth.cpp; must read round-off.
 inline double& max_w21_mass()   { static double v = 0.0; return v; }
 inline double& max_w21_energy() { static double v = 0.0; return v; }
 inline void reset() {
@@ -658,9 +499,8 @@ inline void reset() {
 }
 #endif
 
-//  Classify a face from the two cell states (regimes of both phases on
-//  both sides).  Branch-only; used by the audit now and available to a
-//  future regime-dispatched flux (design W2).
+//  wp_face_class: audit class of a face from the regimes of both phases
+//  on both sides (0 all Independent, 1 Corridor present, 2 Absent present).
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
 int wp_face_class(const amrex::Real UL[NVAR], const amrex::Real UR[NVAR],
                   const PsPres& pr) noexcept
@@ -687,19 +527,29 @@ struct Fluctuations {
     bool        valid;
 };
 
+// -------------------------------------------------------------------
+//  fluctuations: the wave decomposition of one face from the two cell
+//  arrays.  W1 = U_L* − U_L (S_L), W2 = U_R* − U_L* (S_M), W3 = U_R − U_R*
+//  (S_R); s·W sums into Am for s < 0 and Ap for s > 0 (a zero-speed wave
+//  contributes to neither).  Returns false, with the cause and side
+//  counted on host builds, when the face state, the wave speeds or
+//  either star state is refused.  For a non-conserved slot Ap ≠ −Am and
+//  the non-conservative product is embedded at the face; for a conserved
+//  slot Am + Ap = ΔF.  fi/fj/fk locate the face for the audit only.
+// -------------------------------------------------------------------
 AMREX_GPU_HOST_DEVICE
 AMREX_FORCE_INLINE
 bool fluctuations(int idir, const amrex::Real UL[NVAR], const amrex::Real UR[NVAR],
                   Fluctuations& f, const PsPres& pr,
-                  int fi = -9999, int fj = -9999, int fk = -9999) noexcept   // S1
-{                            // fi/fj/fk: face location, diagnostics only (0a)
+                  int fi = -9999, int fj = -9999, int fk = -9999) noexcept
+{
     amrex::ignore_unused(fi, fj, fk);
     using amrex::Real;
     f.valid = false;
     for (int n = 0; n < NVAR; ++n) { f.Am[n] = Real(0.0); f.Ap[n] = Real(0.0); }
 
 #if !defined(AMREX_USE_GPU)
-    const int fcls_fl = wp_face_class(UL, UR, pr);   // W0 audit (wp path)
+    const int fcls_fl = wp_face_class(UL, UR, pr);
     ++face_diag::n_fl_seen(fcls_fl);
 #endif
 #if !defined(AMREX_USE_GPU)
@@ -742,10 +592,9 @@ bool fluctuations(int idir, const amrex::Real UL[NVAR], const amrex::Real UR[NVA
         f.Ap[n] = _finite_or(f.Ap[n], Real(0.0));
     }
 #if !defined(AMREX_USE_GPU)
-    {   // W0: per-face identity-increment mismatch |Δ(UE1+UE2) - ΔUEDEN|
-        // for each fluctuation.  The star states are identity-consistent
-        // by construction, so a nonzero here falsifies the §2 consistency
-        // argument; zero shifts suspicion to the fallback flips / C-F.
+    {   // Per-fluctuation identity mismatch |Δ(UE1+UE2) − ΔUEDEN|; the star
+        // states satisfy the identity by (C3), so this must read round-off
+        // on all-Independent faces (docs §2.5).
         const double misM = std::abs(double(f.Am[UE1]) + double(f.Am[UE2])
                                      - double(f.Am[UEDEN]));
         const double misP = std::abs(double(f.Ap[UE1]) + double(f.Ap[UE2])
@@ -753,7 +602,7 @@ bool fluctuations(int idir, const amrex::Real UL[NVAR], const amrex::Real UR[NVA
         const double mis = std::max(misM, misP);
         if (mis > face_diag::max_incmis(fcls_fl)) {
             face_diag::max_incmis(fcls_fl) = mis;
-            face_diag::mis_i(fcls_fl)   = fi;   // 0a: name the face
+            face_diag::mis_i(fcls_fl)   = fi;
             face_diag::mis_j(fcls_fl)   = fj;
             face_diag::mis_k(fcls_fl)   = fk;
             face_diag::mis_dir(fcls_fl) = idir;
@@ -763,16 +612,6 @@ bool fluctuations(int idir, const amrex::Real UL[NVAR], const amrex::Real UR[NVA
     f.valid = true;
     return true;
 }
-
-
-// -------------------------------------------------------------------
-//  wp_phase_energy_defect (the per-face WP-vs-divergence phase-energy
-//  correction, task #207) was DELETED 2026-08-26 with the split paths
-//  it corrected: wp embeds the same physics INSIDE its fluctuations
-//  (A^+ into R, A^- into L), so no divergence-form defect exists to
-//  correct.  Derivation and formula survive in git history and in
-//  PRIMER_godunov_vs_wave_propagation.md.
-// -------------------------------------------------------------------
 
 }  // namespace PS_HLLC
 
