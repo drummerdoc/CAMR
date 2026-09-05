@@ -41,12 +41,10 @@ CAMR.ps_hydro    = 1
 CAMR.ps_flux     = wp
 CAMR.ps_wp_order = 2
 CAMR.ps_bc_use_nscbc = 0
-CAMR.ps_wp_transverse = 0   # no transverse acoustic coupling: the full coupling (2) is
-                            # unstable at fine resolution (alpha1 -> 1 overshoot, dt
-                            # collapse); the shear layer is resolved by ps_mu instead.
-                            # 1 (contact-only) is the middle option.
+CAMR.ps_wp_transverse = 0   # directionally split (no transverse term); the shear
+                            # layer is resolved by ps_mu instead.  1 = contact-only
+                            # transverse term.
 CAMR.ps_bl_reflux     = 2   # consistent two-phase C-F reflux (alpha co-moves); required for two-phase AMR
-CAMR.ps_shear_diss    = 0.0 # off: physical viscosity (ps_mu) instead of artificial shear dissipation
 CAMR.ps_mu            = 2.0 # effective Newtonian viscosity [Pa s]: resolves the orifice shear layer
 
 CAMR.ps_do_relax  = 1
