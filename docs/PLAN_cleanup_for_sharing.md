@@ -413,7 +413,77 @@ the default to 2 (recommended) changes exactly those decks; their references
 | `ALPHA_ROUNDOFF` | 1e-6 | `PS_constants.H` | round-off pure-cell gate | single-named now |
 | per-phase `rho_floor` | 1e-6 | `ps_state_from_cons` | ρ_k floor | different quantity from ρ_mix; left |
 
-### 3.11 Two configurations, stated once
+### 3.11 What has to run before modes 1/2/4 (and the `ps_relax_mode` selector) can go
+
+Retiring the selector means the 2-D production decks move from mode 2
+(θ = τ_MT = 1e-3 s, flash off) to the coupled X3 operator at the acceptance
+defaults (θ = 1e-7 s, SRT mass transfer, flash on). The 1-D side is already
+there: `exact_suite.py` and the fingerprints run mode 5 at bare defaults. What
+is missing is the 2-D evidence, and the gate checks that still name modes 2/4.
+In order, each with its acceptance criterion (rule 3: quality, not survival):
+
+1. **demo2 in mode 5, full deck to 2.5 ms** (`inputs.satjet_demo2` with
+   `CAMR.ps_relax_mode=5` and the three τ keys removed; 6 ranks, ~50 min):
+   completes with zero aborts; the health line reads zero (`[PS-VALIDATE]`,
+   `[PS-GUARD]` floors, `[PS-RELAXFB]`, `[PS-PROMOTE]` refusals);
+   `accept_2d.py` on the step-50 and step-500 plotfiles (early ladder: mirror
+   asymmetry ≤ 5e-10 at step 50; `--no-asym` later); `compare_pair.py` against
+   the mode-2 run at the same times: roughness ratio within ~1, liquid
+   inventory within 1e-3, and a physical account of any difference (mode 5 is
+   the equilibrium-approaching closure, so the jet should flash more and be
+   colder: T₁−T₂ in the jet collapses from the 40–70 K the mode-2 run shows).
+2. **The two restart windows in mode 5** (`chk_sj2_03550→3605`, `03650→3700`,
+   ~65 min total): restart from the mode-2 checkpoints, no abort through the
+   shock passage, `fingerprint_plt.py` + `accept_2d.py` recorded as the new
+   BASE window references (the mode-2 windows are then history).
+3. **demo3 in mode 5 to step 50** (with `n_error_buf 4`): the centreline
+   `max|∂²α₁|` metric ≤ the recorded mode-2 value 1.06e-3 and no spurious
+   extrema beyond the 2 recorded; confirms the C-F artefact fix under X3.
+4. **DT7 shock tube at N = 248** (already mode 5): unchanged — it is the
+   literature anchor and must not move when the selector goes.
+5. **1-D gate re-baseline** (`verify_canonical.py`): check 2 (B4 flatness across
+   τ, mode 4) becomes a mode-5 θ-independence statement or is dropped (X3 has
+   no τ); check 3 (mode 2 B9 0.752) is re-recorded in mode 5 (the acceptance
+   table already has that row: B9 u-error 0.7673 at defaults); check 5b (B2
+   front stability with `ps_mech_kernel=1`, mode 4) becomes a mode-5 B2
+   `max|u|` record. `hem_limit.py`'s τ-sweep becomes a θ-sweep.
+6. Then the deletions: `ps_pt_equilibrium_relax_cell`, `ps_ptg_relax_cell`,
+   `hem::ps_iso_pressure_relax_cell` + `PsPrStats`, `ps_canonical_relax_cell`,
+   `ps_mech_close`, `ps_mech_kernel`, `ps_pr_fd1`, `ps_mt_form`, `ps_mt_nest_pr`,
+   `ps_mt_explicit`, `ps_mt_gref`, `ps_mt_bootstrap`, `ps_mt_step_frac`,
+   `ps_mt_alpha_thr`, `ps_theta_tau` as a rate (keep θ ≤ 0 = instantaneous?
+   — `[DECIDE-12b]`), `ps_mt_tau` as a rate, `ps_relax_mode` itself (~1,000
+   lines), and with them `[DECIDE-1]` (`ps_lw_skip_contact` 0/1) and
+   `[DECIDE-2]` (3b/3c opt-outs), which were waiting for the same run.
+
+Items 1–3 need MPI (the Mac); 4–5 run here. Rule 6 applies: 5 before 1.
+
+### 3.12 Phase-7 finding (2026-09-05): the xhi boundary in the demo3 production run
+
+`DEMO3A` at steps 4200–5200 (t ≈ 16–21 ms): the two-phase jet (α₁ ≈ 0.05,
+ρ ≈ 58 kg/m³, u ≈ 300 m/s, P ≈ 13 bar) reaches xhi and stagnates against it —
+a standing compression ~10 cells inside the boundary (P 13 → 57–70 bar,
+u 300 → 25 m/s, ρ → 160–200) while the target far field is 20 bar. The
+boundary behaves as a wall. Mechanism (hypothesis; to be confirmed by
+measurement, rule 7): the Wood mixture sound speed of that jet is tens of m/s,
+so the outflow is *supersonic* in the mixture sense, and NSCBC has a single
+subsonic branch — the fan integrates from P_N toward P_amb and terminates at
+the G-max throat, so the ghost outflow velocity is capped at the throat speed,
+far below the incoming 300 m/s; the interior decelerates against a slower
+ghost and a shock forms. σ and the R⁺ order cannot fix a wrong branch, and
+the σ(P−P_amb) term with P_amb = 20 bar pushes the boundary pressure *up*
+from the jet's 13 bar as well. Two measurements that settle it, both cheap
+on the Mac: (a) restart `DEMO3A` from a checkpoint before impact (~step 4000)
+for ~300 steps with `CAMR.ps_bc_nscbc_xhi=0` (the linearised-invariant path)
+and compare the xhi column — if the stagnation disappears the fan is the cause;
+(b) print the boundary Mach number from the run (`ps_face_diag` or a one-line
+diagnostic of u_n/c_wood at i = nx−1). The fix, if confirmed, is the standard
+characteristic analysis, not a tunable: a supersonic-outflow branch
+(u_n ≥ c_mix → all characteristics leave → zero-gradient ghost, which the code
+already has as `_zero_gradient_ghost`). That is a `[DECIDE-27]` with a
+derivation to bring first.
+
+### 3.13 Two configurations, stated once
 
 The 1-D acceptance battery runs bare defaults (`ps_relax_mode=5`,
 `ps_flash_from_absent=1`, τ = 1e-7); the 2-D pipe-break decks pin
@@ -821,7 +891,7 @@ Tag `pre-cleanup-2026-09-04` first.
 | 4 | Duplication/refactor §4.4 items 2–9, 11 (helpers, counters, constants at unchanged values, EOS contract header, file splits) | IDENTICAL | **DONE 09-04** (`82d6b58`, `3d90eb5`, `c65bf2b`, `7d9bda9`): each batch IDENTICAL on 21/21 contraction-free in both configurations; all four EOS backends compile. Left separate on purpose (different operation order): the two Catmull-Rom kernels, mode-0's own entry gate, the non-strict coexistence predicates in the MT/X3 kernels, `hem::co2_sat_state` (a NIST table, on the default flash path) |
 | 5 | Refactor item 1 (one cell state) | IDENTICAL expected; if not, present the diff as `[DECIDE-13]` | **DONE 09-05** (`a16cd96` step 1 identical; `bc4b78c` step 2 accepted — the five constructions were five different state definitions; gate numbers unchanged, acceptance table moves in the 4th decimal on B2/B7/B11; `BASE_nc_*` and `exact_suite_BASE.txt` are the new references, `b6e611e`) |
 | 6 | Exec: decks, scripts, data, gate fixes (§5, §6) | gate green from a clean clone with no `CO2_STANDALONE` | **DONE 09-05** for the tracked tree (35 files removed, decks re-bannered, demo3 pins `ps_lw_skip_contact=2`, TBlowdown `inputs-x` = base + 7 keys, gate restructured to 7 checks, `sym_compare.py`/`accept_2d.py` added, GERG probes moved to `Source/EOS/GERG/tools/`). Run data untouched: `Exec/triage_run_data.sh` echoes the §5.3 triage and applies it only with `--apply` (`[DECIDE-22]` is yours to run). `CO2_Sod` kept, upstream cases untouched (`[DECIDE-20/21]` defaults). |
-| 7 | Selector retirements §4.3(b), one commit each, in the order 5, 7, 8, 9, 10, 4, 6, then 1/2/3 after the production run | IDENTICAL at defaults; abort on retired values verified | `[DECIDE-1..10]`, `[DECIDE-12]` |
+| 7 | Selector retirements §4.3(b), one commit each, in the order 5, 7, 8, 9, 10, 4, 6, then 1/2/3 after the production run | IDENTICAL at defaults; abort on retired values verified | **4–10 DONE 09-05** (IDENTICAL 21/21 contraction-free vs BASE, all backends compile, gate green, retired values abort). **1/2/3 wait for the mode-5 production evidence (§3.12).** PS+EOS+core source now ~17.6 k lines vs 31.7 k at the start |
 | 8 | Production run (demo2 mode 5 or 2 per `[DECIDE-12]`; demo3 with `ps_lw_skip_contact=2` pinned); NSCBC restart from `chk_sj2_02900`; confirm the demo3 C-F artefact is gone; then the deferred retirements 1/2/3 | 2-D acceptance script | — |
 
 Phases 2–5 are the bulk of the work and are mechanical; a realistic estimate
@@ -837,13 +907,13 @@ paced by the run in phase 8.
 | 1 | Retire `ps_lw_skip_contact` 0/1 | yes, after the phase-8 run |
 | 2 | Retire `ps_promote_checked=0` / `ps_floor_indep=0` (corridor DECIDE-10) | yes, after the phase-8 run |
 | 3 | Retire `ps_relax_mode` 1/2/4 and the mode-≠5 sub-dials (~1,000 lines) | yes, contingent on 12 |
-| 4 | `ps_wp_order` default 1 → 2 | yes |
-| 5 | Delete the FluctuationRegister plumbing; `ps_bl_reflux` → bool | yes |
-| 6 | Delete BL-3b acoustic mode and `ps_shear_diss` | delete both |
-| 7 | Delete harvester / warm-start / MLP aliases | yes |
-| 8 | Delete the listed investigation diagnostics (keep list given) | yes |
-| 9 | Delete refuted A/B loser branches | yes |
-| 10 | Reduce `ps_state_from_cons` to one branch | yes |
+| 4 | `ps_wp_order` default 1 → 2 | **DECIDED 09-05: yes** — done (`3647db6`); TBlowdown and B4 references re-recorded at the default |
+| 5 | Delete the FluctuationRegister plumbing; `ps_bl_reflux` → bool | **DECIDED 09-05 ("retire what you can"): done** (`a9af7f4`…`ec85ccf`) |
+| 6 | Delete BL-3b acoustic mode and `ps_shear_diss` | **DECIDED 09-05 ("retire what you can"): done** (`a9af7f4`…`ec85ccf`) |
+| 7 | Delete harvester / warm-start / MLP aliases | **DECIDED 09-05 ("retire what you can"): done** (`a9af7f4`…`ec85ccf`) |
+| 8 | Delete the listed investigation diagnostics (keep list given) | **DECIDED 09-05 ("retire what you can"): done** (`a9af7f4`…`ec85ccf`) |
+| 9 | Delete refuted A/B loser branches | **DECIDED 09-05 ("retire what you can"): done** (`a9af7f4`…`ec85ccf`) |
+| 10 | Reduce `ps_state_from_cons` to one branch | **DECIDED 09-05 ("retire what you can"): done** (`a9af7f4`…`ec85ccf`) |
 | 11 | Ship an `archive/` with WORKLOG/FINDINGS/HANDOFFs | **DECIDED 09-04: no** — tag `pre-cleanup-2026-09-04` is the archive |
 | 12 | 2-D production relaxation mode: keep mode 2 or move demo2/3 to mode 5 | move to 5 in the phase-8 run; it is the only way to make the 1-D and 2-D configurations one story and unblock 3 |
 | 13 | Accept any fingerprint change from unifying the five cell-state constructors | **DECIDED 09-05: accepted** (diff: B2 P 0.1521→0.1516, B7 u 0.7460→0.7465, B11 P 0.1658→0.1657; B12 asymmetry 9.3e-9→4.7e-9) |
@@ -859,7 +929,8 @@ paced by the run in phase 8.
 | 23 | Standalone `suite/exact_*.csv` committed on your side before vendoring | **DECIDED 09-04: vendor.** Note: only `profiles/*.csv` were committed in the standalone; the `exact_*.csv` were untracked there, so the CAMR copy (`refs/exact/`, commit `60db9d7`) is now the only version-controlled one — commit them in co2-eos-cfd too |
 | 24 | B4-flatness reference configuration (margin 0.10 vs 0) | **DECIDED 09-04: 0.10** (code default); drop the dead env in check 2 in Phase 6 |
 | 25 | GPU builds silently take the strict relax gate and the `bcnormal` outflow path (`#if !GPU` branches) — abort instead? | yes (rule 9) |
-| 26 | Which of the §3.6 candidate defects to fix in Phase 3/4 — **DECIDED 09-04: groups 1 and 2 fixed** (`693d051`, `dacb85b`); group 3 (physics/convention) left as documented | fix the rule-17/20 ones (silent aliases/maps → abort; uncounted P=1 Pa in NSCBC), the health-line gating, the GPU stubs, the GERG alias precedence, Make.package; leave the physics questions (eta1 branch, dt≤0 conventions, derpres) as documented |
+| 26 | Which of the §3.6 candidate defects to fix in Phase 3/4 — **DECIDED 09-04: groups 1 and 2 fixed** (`693d051`, `dacb85b`); group 3 (physics/convention) left as documented |
+| 27 | NSCBC supersonic-outflow branch for impinging two-phase jets (§3.12) | measure first (two tests listed), then derive; not a σ/p_amb tuning question | fix the rule-17/20 ones (silent aliases/maps → abort; uncounted P=1 Pa in NSCBC), the health-line gating, the GPU stubs, the GERG alias precedence, Make.package; leave the physics questions (eta1 branch, dt≤0 conventions, derpres) as documented |
 
 ---
 

@@ -1,12 +1,10 @@
 # Source/EOS/PR — analytic Peng–Robinson CO₂ backend
 
-The reference backend of the acceptance battery: a device-inline Peng–Robinson equation of state for pure CO₂ ($T_c = 304.13$ K, $P_c = 7.3773\times10^6$ Pa, $\omega = 0.22394$, $M = 0.04401$ kg/mol, ideal-gas $c_p$ polynomial $a_0..a_4$, no volume shift; `EOS::co2_fluid()`), exposed through CAMR's `namespace EOS` free-function contract. SI units throughout; `NUM_SPECIES = 3` is a build-graph shim and every function ignores `Y`. Selected with `Eos_Model := PR` in the Exec `GNUmakefile`; no tables, no dials on the solution path.
+The reference backend of the acceptance battery: a device-inline Peng–Robinson equation of state for pure CO₂ ($T_c = 304.13$ K, $P_c = 7.3773\times10^6$ Pa, $\omega = 0.22394$, $M = 0.04401$ kg/mol, ideal-gas $c_p$ polynomial $a_0..a_4$, no volume shift; `EOS::co2_fluid()`), exposed through CAMR's `namespace EOS` free-function contract. SI units throughout; `NUM_SPECIES = 3` is a build-graph shim and every function ignores `Y`. Selected with `Eos_Model := PR` in the Exec `GNUmakefile`; no tables, no dials on the solution path. The former warm-start hooks (`ps_warmstart_Tinit.H`, `state_from_rho_e_phase_fixed`, the `T_init` argument of `co2_solve_rho_e`, keys `eos_warmstart`/`eos_warmstart_fixed`) are deleted; a set key aborts.
 
 | File | Purpose |
 |---|---|
-| `EOS.H` | The backend: the PR $(\rho,e)$ solves and their warm-start gates; includes the three headers below. |
-| `pr_base.H` | The fluid (`co2_fluid()`), `T_crit`/`T_triple`/`P_crit`/`P_triple`, the density domain, `Psat`, `co2_sat_LV`; shared with `../PRTab`. |
-| `pr_contract.H` | The contract surface — ring caches, hot-path inversions, the branch-locked per-phase entries, ideal-gas integrals — built on the solves the including backend supplies (`USE_PRTAB_EOS` routes the caches to the PRTab table solves); ends by including `../EOS_contract.H`, the tail every CO₂ backend shares (`_liquid`/`_vapor` wrappers, ideal-gas forwarders, `Y2X`/`X2Y`). |
+| `EOS.H` | The contract: hot-path inversions and the branch-locked per-phase surface. |
 | `hem_pr_state.H` | PR state machinery shared with the standalone driver: cubic roots, $T(\rho,e)$ bracketed solves on $[T_{\min},T_{\max}] = [1, 5000]$ K, metastable branch continuation, `hem::Phase3`. |
 | `hem_saturation_amrex.H` | Saturation curve: $P_{\mathrm{sat}}(T)$, saturated liquid/vapour states. |
 
