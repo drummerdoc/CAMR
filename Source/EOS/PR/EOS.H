@@ -28,9 +28,6 @@
 //  Units are SI throughout: rho [kg/m3], P [Pa], e [J/kg], T [K].
 //  NUM_SPECIES = 3 keeps the build graph shared with the other
 //  backends; CO2 is one species and every entry ignores Y.
-//
-//  Dials: CAMR.eos_warmstart (0), CAMR.eos_warmstart_fixed (0) — see
-//  ps_eos_warmstart() below.
 // =====================================================================
 
 #include <AMReX.H>
@@ -42,13 +39,6 @@
 #include "PhysicsConstants.H"
 
 #include "hem_pr_state.H"
-// Seed for the fixed-iteration warm-started solve (eos_warmstart_fixed).
-#include "ps_warmstart_Tinit.H"
-
-// Iteration count of the fixed-iteration seeded branch solve.
-#ifndef PS_EOS_WS_NITER
-#define PS_EOS_WS_NITER 3
-#endif
 
 #define NUM_SPECIES 3
 
@@ -65,74 +55,17 @@ namespace EOS {
 
   // Pure, device-clean auto-detect (rho,e)->State solve: the single
   // source of truth the host cache wraps and the device pass calls
-  // directly.  T_init=-1 selects the deterministic phase-default seed.
+  // directly.  The solver seeds itself from its deterministic
+  // phase-default and takes no warm-start.
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-  hem::State co2_solve_rho_e(amrex::Real rho, amrex::Real e,
-                             amrex::Real T_init = amrex::Real(-1.0))
-  { return hem::state_from_rho_e(co2_fluid(), rho, e, T_init); }
+  hem::State co2_solve_rho_e(amrex::Real rho, amrex::Real e)
+  { return hem::state_from_rho_e(co2_fluid(), rho, e); }
 
-  // Warm-start gate.  On the host a runtime toggle so the fixed-iteration
-  // path can be compared with the robust solver without a rebuild; on the
-  // device (no ParmParse-backed static) the compile-time macro
-  // PS_EOS_WARMSTART.
-#if !defined(__CUDA_ARCH__) && !defined(__HIP_DEVICE_COMPILE__) && !defined(__SYCL_DEVICE_ONLY__)
-  // CAMR.eos_warmstart (0): seed a cache miss from the ring's most recent
-  // T; 1 makes the converged state depend on traversal order, so the
-  // default keeps bit-for-bit run-to-run independence.  The seed is only
-  // honoured by the fixed-iteration solve (eos_warmstart_fixed); the
-  // robust bracketed solvers discard it.
-  // Retire-candidate: see docs/DESIGN_DECISIONS.md §5.
-  inline bool ps_eos_warmstart()
-  {
-      static const bool v = []() {
-          int w = 0; amrex::ParmParse pp("CAMR");
-          pp.query("eos_warmstart", w); return (w != 0);
-      }();
-      return v;
-  }
-
-  // CAMR.eos_warmstart_fixed (0): 1 replaces the bracketed branch solve
-  // with PS_EOS_WS_NITER seeded Newton steps (state_from_rho_e_phase_fixed).
-  // Retire-candidate: see docs/DESIGN_DECISIONS.md §5.
-  inline bool ps_eos_warmstart_fixed()
-  {
-      static const bool e = []() {
-          int v = 0; amrex::ParmParse pp("CAMR");
-          pp.query("eos_warmstart_fixed", v); return v != 0;
-      }();
-      return e;
-  }
-#endif
-
-  // Pure branch-locked (rho,e)->State solve on the requested PR branch;
-  // the fixed-iteration seeded variant is selected by the gate above.
+  // Pure branch-locked (rho,e)->State solve on the requested PR branch.
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   hem::State co2_solve_rho_e_phase(amrex::Real rho, amrex::Real e,
-                                   hem::Phase3 phase,
-                                   amrex::Real T_init = amrex::Real(-1.0))
-  {
-      const int ph = (phase == hem::Phase3::Liquid) ? 1 : 2;
-#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__) || defined(__SYCL_DEVICE_ONLY__)
-  #if defined(PS_EOS_WARMSTART)
-      const amrex::Real seed = (T_init > amrex::Real(0.0) && std::isfinite(T_init))
-                                 ? T_init
-                                 : amrex::Real(ps_warmstart_Tinit(double(rho), double(e), ph));
-      return hem::state_from_rho_e_phase_fixed(co2_fluid(), rho, e, phase, seed,
-                                               PS_EOS_WS_NITER);
-  #else
-      return hem::state_from_rho_e_phase(co2_fluid(), rho, e, phase, T_init);
-  #endif
-#else
-      if (ps_eos_warmstart_fixed()) {
-          const amrex::Real seed = (T_init > amrex::Real(0.0) && std::isfinite(T_init))
-                                     ? T_init
-                                     : amrex::Real(ps_warmstart_Tinit(double(rho), double(e), ph));
-          return hem::state_from_rho_e_phase_fixed(co2_fluid(), rho, e, phase, seed,
-                                                   PS_EOS_WS_NITER);
-      }
-      return hem::state_from_rho_e_phase(co2_fluid(), rho, e, phase, T_init);
-#endif
-  }
+                                   hem::Phase3 phase)
+  { return hem::state_from_rho_e_phase(co2_fluid(), rho, e, phase); }
 
   // Ring caches, auto-detect / branch-locked entries, inversions,
   // ideal-gas integrals, and (via EOS_contract.H) the shared tail.

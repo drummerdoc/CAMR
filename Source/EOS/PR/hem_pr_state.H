@@ -881,41 +881,6 @@ bool ps_newton_solve_T(const PRFluid& f, amrex::Real v_m,
     return false;   // max_iter reached: no root found on this branch
 }
 
-//  ps_newton_solve_T_fixed — the same damped Newton step without the
-//  early-out: a fixed trip count so every device lane does identical work
-//  given a near-converged seed (ps_warmstart_Tinit).  Enough steps match
-//  the robust solver to its tolerance; fewer trade a bounded truncation
-//  for uniform cost.
-//  Retire-candidate: see docs/DESIGN_DECISIONS.md §5.
-AMREX_GPU_HOST_DEVICE
-AMREX_FORCE_INLINE
-void ps_newton_solve_T_fixed(const PRFluid& f, amrex::Real v_m,
-                             amrex::Real e_mol_target, amrex::Real& T, int niter)
-{
-    for (int it = 0; it < niter; ++it) {
-        amrex::Real e_dep, s_dep, cv_dep;
-        departureFunctions(f, T, v_m, e_dep, s_dep, cv_dep);
-        const amrex::Real e_mol        = e_ig_per_mole(f, T) + e_dep;
-        const amrex::Real cv_mol_total = R_gas * cv_ig_over_R(f, T) + cv_dep;
-        const amrex::Real r            = e_mol - e_mol_target;
-
-        amrex::Real dT = -r / cv_mol_total;
-        if (amrex::Math::abs(dT) > amrex::Real(0.3)*T)
-            dT = (dT > amrex::Real(0) ? amrex::Real(1) : amrex::Real(-1))
-               * amrex::Real(0.3)*T;
-        T += dT;
-        if (T < amrex::Real(1)) { T = amrex::Real(1); PS_CENSUS(n_T_clamp);
-#if defined(CAMR_PS_DIAG) && !defined(AMREX_USE_GPU)
-            if ((hem::strict() & 4))
-                hem::strict_abort("Newton T-iterate clamped to 1 K",
-                    "iteration step limiter; signature of a solve walking "
-                    "toward a nonexistent root",
-                    f.M/v_m, e_mol_target/f.M, double(T), 0);
-#endif
-        }
-    }
-}
-
 // =====================================================================
 //  state_from_rho_e — auto-detect (rho,e) -> State: the mixture query
 //  used outside the solution path (docs/MODEL_AND_ALGORITHM.md §7.2).
@@ -1108,26 +1073,6 @@ inline State state_from_rho_e_phase(const PRFluid& f, amrex::Real rho,
                       double(rho), double(e_target), double(out.e), double(out.T),
                       (phase == Phase3::Liquid) ? 1 : 2);
     return out;
-}
-
-//  state_from_rho_e_phase_fixed — branch-locked (rho,e) -> State by niter
-//  seeded Newton steps (uniform trip count, no convergence branch), then
-//  state_from_T_v on the requested branch.  Unbracketed: no refusal.
-//  Retire-candidate: see docs/DESIGN_DECISIONS.md §5.
-AMREX_GPU_HOST_DEVICE
-AMREX_FORCE_INLINE
-State state_from_rho_e_phase_fixed(const PRFluid& f, amrex::Real rho,
-                                   amrex::Real e_target, Phase3 phase,
-                                   amrex::Real T_seed, int niter)
-{
-    const amrex::Real v_m = v_PR_from_rho(f, rho);
-    const amrex::Real e_mol_target = e_target * f.M;
-    amrex::Real T = (T_seed > amrex::Real(0.0) && std::isfinite(T_seed))
-                        ? T_seed
-                        : ((phase == Phase3::Liquid) ? amrex::Real(0.7)*f.pr.Tc
-                                                     : amrex::Real(1.0)*f.pr.Tc);
-    ps_newton_solve_T_fixed(f, v_m, e_mol_target, T, niter);
-    return state_from_T_v(f, T, v_m, phase);
 }
 
 // =====================================================================

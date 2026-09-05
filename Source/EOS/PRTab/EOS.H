@@ -62,20 +62,12 @@ namespace EOS {
   // CAMR.eos_table (1): use the table for the forward solve; 0 = the
   // exact PR solve, so one PRTab build reproduces its analytic parent.
   // Host runtime only; the device path is always the table.
-  // CAMR.eos_mlp is a deprecated alias; setting both aborts.
-  // Retire-candidate (the alias): see docs/DESIGN_DECISIONS.md §5.
 #if !defined(__CUDA_ARCH__) && !defined(__HIP_DEVICE_COMPILE__) && !defined(__SYCL_DEVICE_ONLY__)
   inline bool prtab_enabled()
   {
       static const bool e = []() {
-          amrex::ParmParse pp("CAMR");
-          if (pp.contains("eos_table") && pp.contains("eos_mlp")) {
-              amrex::Abort("Both CAMR.eos_table and its deprecated alias "
-                           "CAMR.eos_mlp are set -- remove eos_mlp");
-          }
-          int v = 1;
-          pp.query("eos_table", v); pp.query("eos_mlp", v);
-          return v != 0;
+          int v = 1; amrex::ParmParse pp("CAMR");
+          pp.query("eos_table", v); return v != 0;
       }();
       return e;
   }
@@ -95,19 +87,11 @@ namespace EOS {
   // CAMR.eos_table_auto (1): table on the auto-detect (mixture) path too;
   // 0 = exact PR there while the branch-locked path keeps the table, the
   // causal test that separates auto-path from branch-table error.
-  // CAMR.eos_mlp_auto is a deprecated alias; setting both aborts.
-  // Retire-candidate (the alias): see docs/DESIGN_DECISIONS.md §5.
   inline bool prtab_auto_enabled()
   {
       static const bool a = []() {
-          amrex::ParmParse pp("CAMR");
-          if (pp.contains("eos_table_auto") && pp.contains("eos_mlp_auto")) {
-              amrex::Abort("Both CAMR.eos_table_auto and its deprecated alias "
-                           "CAMR.eos_mlp_auto are set -- remove eos_mlp_auto");
-          }
-          int v = 1;
-          pp.query("eos_table_auto", v); pp.query("eos_mlp_auto", v);
-          return v != 0;
+          int v = 1; amrex::ParmParse pp("CAMR");
+          pp.query("eos_table_auto", v); return v != 0;
       }();
       return a;
   }

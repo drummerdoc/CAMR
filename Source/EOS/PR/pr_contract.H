@@ -74,14 +74,7 @@
 #ifdef USE_PRTAB_EOS
           st = prtab_state_from_rho_e(rho, e);
 #else
-          // Miss: solve, optionally seeded from the most recently written
-          // slot (see ps_eos_warmstart).
-          const bool s_warmstart = ps_eos_warmstart();
-          const int mru = (next_slot + NSLOTS - 1) % NSLOTS;
-          const amrex::Real T_init = (s_warmstart && rho_cache[mru] > amrex::Real(0))
-                                      ? state_cache[mru].T
-                                      : amrex::Real(-1.0);
-          st = co2_solve_rho_e(rho, e, T_init);
+          st = co2_solve_rho_e(rho, e);
 #endif
           rho_cache  [next_slot] = rho;
           e_cache    [next_slot] = e;
@@ -144,14 +137,7 @@
 #ifdef USE_PRTAB_EOS
           st = prtab_state_from_rho_e_phase(rho, e, phase);
 #else
-          // Miss: solve, optionally seeded from this branch's most recently
-          // written slot (see ps_eos_warmstart).
-          const bool s_warmstart = ps_eos_warmstart();
-          const int mru = (next_slot[p] + NSLOTS - 1) % NSLOTS;
-          const amrex::Real T_init = (s_warmstart && rho_cache[p][mru] > amrex::Real(0))
-                                      ? state_cache[p][mru].T
-                                      : amrex::Real(-1.0);
-          st = co2_solve_rho_e_phase(rho, e, phase, T_init);
+          st = co2_solve_rho_e_phase(rho, e, phase);
 #endif
           rho_cache  [p][next_slot[p]] = rho;
           e_cache    [p][next_slot[p]] = e;
