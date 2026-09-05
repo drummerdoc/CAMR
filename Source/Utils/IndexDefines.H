@@ -146,14 +146,6 @@
 #define UE1     (UPS + 3)   // α₁ ρ₁ E₁ (per-phase total energy) [J/m³]
 #define UE2     (UPS + 4)   // α₂ ρ₂ E₂                          [J/m³]
 
-// Width of the per-face phase-energy fluctuation register (fcorr):
-//   [0] = UE1 defect, [1] = UE2 defect, contiguous with UE1/UE2 so one
-//   destcomp = UE1 offset applies the whole register.
-// Under wp the deposit is zero; α₁ is coarse-fine corrected by the
-// capacity-form co-move in CAMR::reflux() and needs no slot here.
-// See docs/MODEL_AND_ALGORITHM.md §1.5.
-#define NUM_PS_FLUCT 2
-
 // PS primitive slots (filled by PS_ctoprim)
 #define QALPHA1 (QPS + 0)   // α₁
 #define QRHO1   (QPS + 1)   // ρ₁ per-phase density

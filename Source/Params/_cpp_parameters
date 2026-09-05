@@ -48,15 +48,12 @@ do_mol                       int          0
 ps_hydro                     int          0
 
 
-# Coarse-fine reflux of the PS non-conservative slots (CAMR::reflux;
-# docs/MODEL_AND_ALGORITHM.md §1.5, §4.9).
-# 0 = conservative FluxRegister only.
-# 1 = also apply the phase-energy fluctuation register; under wp it
-#     deposits zero (retire-candidate, docs/DESIGN_DECISIONS.md §7 O-5).
-# 2 = default: additionally co-move α with its refluxed partial mass in
-#     capacity form, Δα = Δm₁/ρ₁, so ρ_k = m_k/α_k stays consistent across
-#     the coarse-fine layer.
-ps_bl_reflux                 int          2
+# Coarse-fine α co-move in CAMR::reflux (docs/MODEL_AND_ALGORITHM.md
+# §1.5, §4.9): after the conservative FluxRegister has refluxed the
+# partial masses, α₁ is moved with its own mass in capacity form,
+# Δα = Δm₁/ρ₁, so ρ_k = m_k/α_k stays consistent across the coarse-fine
+# layer.  0 = off, nonzero = on (decks historically set 2).
+ps_bl_reflux                 int          1
 
 # React fuel + air -> product
 do_react                     int          0

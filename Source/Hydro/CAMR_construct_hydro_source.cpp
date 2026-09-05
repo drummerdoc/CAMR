@@ -103,26 +103,6 @@ CAMR::construct_hydro_source (const MultiFab& S,
               flux[dir].setVal<RunOn::Device>(0.);
             }
 
-            // Face scratch for the PS phase-energy fluctuation register
-            // (NUM_PS_FLUCT=2), allocated only when CAMR.ps_bl_reflux!=0;
-            // PS_umeth fills it (zero under wp) and it is deposited into
-            // fluct_reg below.  See docs/MODEL_AND_ALGORITHM.md §1.5.
-            amrex::GpuArray<amrex::FArrayBox, AMREX_SPACEDIM> fcorr_fab;
-#ifdef USE_PS_HYDRO
-            const bool do_bl_fluct =
-                (ps_hydro != 0) && (ps_bl_reflux != 0) && do_reflux;
-            if (do_bl_fluct) {
-              for (int dir = 0; dir < AMREX_SPACEDIM; ++dir) {
-                const Box& effbx = amrex::surroundingNodes(bx, dir);
-                fcorr_fab[dir].resize(effbx, NUM_PS_FLUCT,
-                                      amrex::The_Async_Arena());
-                fcorr_fab[dir].setVal<RunOn::Device>(0.);
-              }
-            }
-#else
-            const bool do_bl_fluct = false;
-#endif
-
             auto const& sarr    = S.const_array(mfi);
             auto const& hyd_src = src_to_fill.array(mfi);
 
@@ -204,14 +184,6 @@ CAMR::construct_hydro_source (const MultiFab& S,
 
             const GpuArray<const Array4<      Real>, AMREX_SPACEDIM>
               flx_arr{{AMREX_D_DECL(flux[0].array(), flux[1].array(), flux[2].array())}};
-            // Face-array view of the fluctuation scratch (empty unless
-            // do_bl_fluct).
-            const GpuArray<const Array4<Real>, AMREX_SPACEDIM> fcorr_arr =
-                do_bl_fluct
-                ? GpuArray<const Array4<Real>, AMREX_SPACEDIM>{{AMREX_D_DECL(
-                      fcorr_fab[0].array(), fcorr_fab[1].array(),
-                      fcorr_fab[2].array())}}
-                : GpuArray<const Array4<Real>, AMREX_SPACEDIM>{};
             const amrex::GpuArray<const Array4<const Real>, AMREX_SPACEDIM>
               a{{AMREX_D_DECL(area[0].array(mfi), area[1].array(mfi), area[2].array(mfi))}};
 
@@ -331,8 +303,7 @@ CAMR::construct_hydro_source (const MultiFab& S,
                        dt, ppm_type, plm_iorder, use_pslope,
                        use_flattening, transverse_reset_density,
                        small, small_dens, small_pres, CAMRConstants::smallu, difmag,
-                       flx_arr, a, volume.array(mfi), lpmap,
-                       do_bl_fluct, fcorr_arr);
+                       flx_arr, a, volume.array(mfi), lpmap);
 
             //
             // Here fac_for_reflux = 1.0 if doing Godunov, 0.5 if doing MOL
@@ -348,36 +319,6 @@ CAMR::construct_hydro_source (const MultiFab& S,
                        {{AMREX_D_DECL(&(flux[0]), &(flux[1]), &(flux[2]))}},
                        dxDp, fac_for_reflux*dt, amrex::RunOn::Device);
                 }
-#if defined(USE_PS_HYDRO) && !defined(AMREX_USE_EB)
-                // Deposit the PS phase-energy defect into the one-sided
-                // fluctuation register (CAMRPSFluctReg); the one-sided
-                // kernels carry the sign and the low-branch/hi-side
-                // selection.  Retire-candidate: see
-                // docs/DESIGN_DECISIONS.md §7 O-5.
-                if (do_bl_fluct) {
-                    // Pass the cell size dx, not dxDp (cell volume): the
-                    // defect is applied in the interior as -wp_corr/dx, a
-                    // raw per-face quantity, so the register scales it by
-                    // dt/dx[idim].
-                    const amrex::Real* dxr = dx.data();
-                    if (level < finest_level) {
-                        getFluctReg(level + 1).CrseAddOneSided(mfi,
-                            {{AMREX_D_DECL(&(fcorr_fab[0]), &(fcorr_fab[1]),
-                                           &(fcorr_fab[2]))}},
-                            dxr, fac_for_reflux*dt, 0, 0, NUM_PS_FLUCT,
-                            amrex::RunOn::Device);
-                    }
-                    if (level > 0) {
-                        getFluctReg(level).FineAddOneSided(mfi,
-                            {{AMREX_D_DECL(&(fcorr_fab[0]), &(fcorr_fab[1]),
-                                           &(fcorr_fab[2]))}},
-                            dxr, fac_for_reflux*dt, 0, 0, NUM_PS_FLUCT,
-                            amrex::RunOn::Device);
-                    }
-                    // The α coarse-fine correction is the capacity-form
-                    // co-move in CAMR::reflux(); there is no α register.
-                }
-#endif
             } // do_reflux
 
 #ifdef AMREX_USE_EB

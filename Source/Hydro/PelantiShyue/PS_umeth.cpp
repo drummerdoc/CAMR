@@ -5,8 +5,7 @@
 //  interior flux).  ps_wp_face forms the A±ΔQ fluctuations per face from
 //  raw cell averages via the HLLC fan of PS_hllc.H; an optional limited
 //  correction flux (LeVeque, one scalar limiter per wave) gives second
-//  order; optional transverse, shear-dissipation and viscous terms are
-//  added in 2-D/3-D.  See docs/MODEL_AND_ALGORITHM.md §1-§3.
+//  order; optional transverse and viscous terms are added in 2-D/3-D.  See docs/MODEL_AND_ALGORITHM.md §1-§3.
 //
 //  Contract: conserved slots receive the recovered interface flux
 //  F* = ½[(F_L + A⁻) + (F_R − A⁺)] in flx and telescope through
@@ -19,9 +18,8 @@
 //  an identity-consistent local Lax-Friedrichs flux; no state is repaired.
 //
 //  Dials (CAMR.*, each read once at its accessor below): ps_flux (wp),
-//  ps_llf_identity (1), ps_wp_order (2), ps_wp_limiter
-//  (vanleer), ps_wp_proj_scale (1), ps_lw_skip_contact (2),
-//  ps_wp_transverse (0), ps_shear_diss (0), ps_mu (0).
+//  ps_wp_order (2), ps_wp_limiter (vanleer), ps_lw_skip_contact (2),
+//  ps_wp_transverse (0), ps_mu (0).
 // =====================================================================
 
 #include "PS_umeth.H"
@@ -134,7 +132,7 @@ ps_physical_flux_from_state(int idir, const Real U[NVAR], Real F[NVAR],
 //  store_waves the raw waves and speeds go to wv (may extend into ghost
 //  faces).  No reconstruction: face states are cell averages; second
 //  order comes from the correction pass (docs/MODEL_AND_ALGORITHM.md §3.1).
-//  A refused face takes a local Lax-Friedrichs flux (llf_id: see below).
+//  A refused face takes an identity-consistent local Lax-Friedrichs flux.
 // ---------------------------------------------------------------------
 AMREX_GPU_DEVICE
 AMREX_FORCE_INLINE
@@ -146,8 +144,7 @@ ps_wp_face(int idir, int i, int j, int k, int iL, int jL, int kL,
            amrex::Array4<amrex::Real> const& wv,
            bool store_waves,
            amrex::Box vbox,
-           const PsPres& l_pres,
-           int llf_id = 1) noexcept
+           const PsPres& l_pres) noexcept
 {
     using amrex::Real;
     const bool in_valid = vbox.contains(amrex::IntVect(AMREX_D_DECL(i,j,k)));
@@ -186,15 +183,15 @@ ps_wp_face(int idir, int i, int j, int k, int iL, int jL, int kL,
             Ap[n]      =  half;
             flx_loc[n] = Real(0.5) * (FL[n] + FR[n]) - half;   // LLF flux
         }
-        //  Identity-consistent split for the non-conserved slots (llf_id):
-        //  the pure-diffusion split above has Am+Ap = 0 on UE1/UE2 while
+        //  Identity-consistent split for the non-conserved slots: the
+        //  pure-diffusion split above has Am+Ap = 0 on UE1/UE2 while
         //  UEDEN receives the full LLF flux difference, so a refused face
         //  would move total energy but no phase energy.  UE1/UE2 take
         //  Am = ½(ΔF − λΔU), Ap = ½(ΔF + λΔU) (Am+Ap = ΔF); alpha takes the
         //  advective form ū·Δα, ū = ½(u_nL + u_nR), not Δ(α·u_n), which would
         //  re-introduce the spurious α∇·u term; ū is symmetric so mirror
         //  faces keep exact reflection symmetry.  docs §2.6.
-        if (llf_id != 0) {
+        {
             const int nslots[2] = { UE1, UE2 };
             for (int q = 0; q < 2; ++q) {
                 const int n = nslots[q];
@@ -300,7 +297,7 @@ ps_wp_face(int idir, int i, int j, int k, int iL, int jL, int kL,
 //  no-op for flow with no d-velocity (1-D-aligned cases stay bit-identical).
 //  Direction-generic: one path for 2-D and all six 3-D (d,t) pairs.
 //  Contributions whose perpendicular column is an out-of-domain ghost are
-//  dropped.  mode 2 adds the acoustic waves (see below).  docs §3.5.
+//  dropped.  docs §3.5.
 AMREX_GPU_DEVICE
 AMREX_FORCE_INLINE
 void
@@ -308,21 +305,17 @@ ps_wp_tvterm(int d, int t, int i, int j, int k,
              amrex::Array4<const amrex::Real> const& uin,
              amrex::Array4<amrex::Real> const& wv_t,
              const int* domlo, const int* domhi,
-             amrex::Real dt, amrex::Real dxt, amrex::Real g[NVAR],
-             int mode = 1) noexcept   // 1 = contact only; 2 = + acoustic
+             amrex::Real dt, amrex::Real dxt, amrex::Real g[NVAR]) noexcept
 {
     using amrex::Real;
     const int di=(d==0), dj=(d==1), dk=(d==2);
     const int ti=(t==0), tj=(t==1), tk=(t==2);
 #if (AMREX_SPACEDIM == 3)
     const int UM_d = (d==0)?UMX : (d==1)?UMY : UMZ;
-    const int UM_t = (t==0)?UMX : (t==1)?UMY : UMZ;
 #elif (AMREX_SPACEDIM == 2)
     const int UM_d = (d==0)?UMX : UMY;
-    const int UM_t = (t==0)?UMX : UMY;
 #else
     const int UM_d = UMX;   // 1D: transverse term is never invoked
-    const int UM_t = UMX;
 #endif
     // d-velocity at the t-face whose high-side cell is (a,b,c):
     auto ud = [&](int a,int b,int c) noexcept -> Real {
@@ -347,141 +340,6 @@ ps_wp_tvterm(int d, int t, int i, int j, int k,
         g[n] += -h*( cP0*Apm(i,      j,      k,      n,+1) + cP1*Apm(i+ti,   j+tj,   k+tk,   n,-1)
                    + cM0*Apm(i-di,   j-dj,   k-dk,   n,+1) + cM1*Apm(i-di+ti,j-dj+tj,k-dk+tk,n,-1) );
     }
-
-    // ---- mode 2: acoustic transverse coupling (experimental, off) --------
-    //  Adds the d-projected contribution of the acoustic transverse waves
-    //  l=0 (S_L) and l=2 (S_R): each fluctuation asdq = s_t,l·W_t[l] is
-    //  projected analytically onto the local-Γ Euler acoustic eigenvectors
-    //  in d with the frozen mixture c, λ± = u_d ± c, r± = [ρ:1, m_d:λ±,
-    //  m_t:u_t, E:H±u_d c], strengths a± = (dp ± ρc du_d)/(2c²) with
-    //  dp = (Γ−1)(dE − u_d dm_d + ½u_d²dρ), and upwinded by the sign of λ.
-    //  Same four-t-face gather, domain guards and −h prefactor as the
-    //  contact term.  Phase slots are partitioned by mass fraction Y_k and
-    //  energy fraction f_k so the linear identities hold; alpha is not
-    //  moved by acoustics; UEINT is recomputed at ctoprim and left 0.
-    //  This mode makes a single-fluid mixture EOS query with a 1 m/s c
-    //  floor, which the rest of the PS path forbids.
-    //  Retire-candidate: see docs/DESIGN_DECISIONS.md §5 (F-2).
-    if (mode >= 2) {
-        // want_minus=true keeps only λ<0 waves (−d going); false keeps λ>0.
-        auto bsplit = [&](int a,int b,int c,int l,bool want_minus,Real out[NVAR]) noexcept {
-            for (int n=0;n<NVAR;++n) out[n]=Real(0.0);
-            const Real st = wv_t(a,b,c,3*NVAR+l);
-            Real dR=st*ps_finite_or(wv_t(a,b,c,l*NVAR+URHO ),Real(0.0));   // dρ
-            Real dMd=st*ps_finite_or(wv_t(a,b,c,l*NVAR+UM_d),Real(0.0));   // dm_d
-            Real dE=st*ps_finite_or(wv_t(a,b,c,l*NVAR+UEDEN),Real(0.0));   // dE_tot
-            // reference state Qbar (average of the two t-straddling cells)
-            auto qb=[&](int n){return Real(0.5)*( ps_finite_or(uin(a-ti,b-tj,c-tk,n),Real(0.0))
-                                                + ps_finite_or(uin(a,   b,   c,   n),Real(0.0)) );};
-            Real rho=qb(URHO); if(!(std::isfinite(rho)&&rho>Real(1e-30))) rho=Real(1e-30);
-            const Real invr=Real(1.0)/rho;
-            const Real ud=qb(UM_d)*invr, ut=qb(UM_t)*invr, e=qb(UEINT)*invr;
-            Real Y[NUM_SPECIES]; ps_pure_species(Y);
-            Real P,g1; EOS::REY2P(rho,e,Y,P); EOS::REY2Gam(rho,e,Y,g1);
-            Real c2=g1*P*invr; if(!(std::isfinite(c2)&&c2>Real(1.0))) c2=Real(1.0);
-            const Real snd=std::sqrt(c2);
-            const Real Etot=qb(UEDEN); const Real H=(Etot+P)*invr;
-            const Real du=(dMd-ud*dR)*invr;
-            const Real dp=(g1-Real(1.0))*(dE-ud*dMd+Real(0.5)*ud*ud*dR);
-            const Real ap=(dp+rho*snd*du)/(Real(2.0)*c2);   // u+c wave strength
-            const Real am=(dp-rho*snd*du)/(Real(2.0)*c2);   // u−c wave strength
-            const Real lp=ud+snd, lm=ud-snd;
-            const Real m1=amrex::max(qb(UM1RHO1),Real(0.0)), m2=amrex::max(qb(UM2RHO2),Real(0.0));
-            Real ms=m1+m2; if(!(ms>Real(1e-30))) ms=Real(1e-30);
-            const Real Y1=m1/ms, Y2=Real(1.0)-Y1;
-            const Real ue1=qb(UE1), ue2=qb(UE2); const Real ues=ue1+ue2;
-            const Real f1=(std::abs(ues)>Real(1e-30))?ue1/ues:Y1, f2=Real(1.0)-f1;
-            auto add=[&](Real lam,Real amp,Real Hc){
-                const Real w=lam*amp;
-                out[URHO]+=w;              out[UM_d]+=w*lam;   out[UM_t]+=w*ut;
-                out[UEDEN]+=w*Hc;          out[UFS]+=w;
-                out[UM1RHO1]+=w*Y1;        out[UM2RHO2]+=w*Y2;
-                out[UE1]+=w*f1*Hc;         out[UE2]+=w*f2*Hc;
-            };
-            // `snd` is the sound speed; `c` is the z-index lambda parameter.
-            if(want_minus){ if(lm<Real(0.0)) add(lm,am,H-ud*snd); if(lp<Real(0.0)) add(lp,ap,H+ud*snd); }
-            else          { if(lm>Real(0.0)) add(lm,am,H-ud*snd); if(lp>Real(0.0)) add(lp,ap,H+ud*snd); }
-            for(int n=0;n<NVAR;++n) out[n]=ps_finite_or(out[n],Real(0.0));
-        };
-        Real bm0[NVAR], bm1[NVAR], bp0[NVAR], bp1[NVAR];
-        for (int l=0; l<3; l+=2) {   // l = 0 (S_L) and l = 2 (S_R)
-            // hi-d column (guard mCp): −d-going pieces from its two t-faces.
-            bsplit(i,       j,       k,       l, true,  bm0);
-            bsplit(i+ti,    j+tj,    k+tk,    l, true,  bm1);
-            // lo-d column (guard mCm): +d-going pieces from its two t-faces.
-            bsplit(i-di,    j-dj,    k-dk,    l, false, bp0);
-            bsplit(i-di+ti, j-dj+tj, k-dk+tk, l, false, bp1);
-            for (int n=0;n<NVAR;++n)
-                g[n] += -h*( mCp*(bm0[n]+bm1[n]) + mCm*(bp0[n]+bp1[n]) );
-        }
-    }
-}
-
-// ---------------------------------------------------------------------
-//  ps_shear_diss_face: conservative flux-form dissipation of the
-//  transverse momentum across d-face (i,j,k), damping the grid-scale
-//  odd-even in the transverse velocity that the linearly degenerate shear
-//  field (λ=u, no upwind dissipation) cannot.  Gated by a Jameson sensor
-//  s∈[0,1] so it vanishes to second order in smooth flow:
-//     Φ[UM_t] = −coef · s · ¼(ρ_L+ρ_R)(λ_L+λ_R) · (u_t,R − u_t,L),
-//     s = |Δ_LR − ½(Δ_LL+Δ_RR)| / (|Δ_LR| + ½|Δ_LL| + ½|Δ_RR| + ε).
-//  Energy flux ū_t·Φ keeps total energy, partitioned to UE1/UE2 by mass
-//  fraction; alpha untouched; skipped within two cells of a domain edge.
-//  coef = CAMR.ps_shear_diss (see PS_umeth).  docs §3.6.
-//  Retire-candidate: see docs/DESIGN_DECISIONS.md §5 (F-3).
-AMREX_GPU_DEVICE
-AMREX_FORCE_INLINE
-void
-ps_shear_diss_face(int d, int i, int j, int k,
-                   amrex::Array4<const amrex::Real> const& uin,
-                   amrex::Array4<amrex::Real> const& flx,
-                   const int* domlo, const int* domhi,
-                   amrex::Real coef, const PsPres& l_pres) noexcept
-{
-    using amrex::Real;
-    if (coef <= Real(0.0)) return;
-    const int di=(d==0), dj=(d==1), dk=(d==2);
-    const int Id=(d==0)?i:(d==1)?j:k;
-    if (Id-2 < domlo[d] || Id+1 > domhi[d]) return;   // need LL,L,R,RR in-domain
-    auto ut=[&](int a,int b,int c,int comp) noexcept -> Real {
-        Real r=uin(a,b,c,URHO); r=(std::isfinite(r)&&r>Real(1e-30))?r:Real(1e-30);
-        return ps_finite_or(uin(a,b,c,comp),Real(0.0))/r; };
-    Real UL[NVAR],UR[NVAR];
-    for(int n=0;n<NVAR;++n){ UL[n]=ps_finite_or(uin(i-di,j-dj,k-dk,n),Real(0.0));
-                             UR[n]=ps_finite_or(uin(i,   j,   k,   n),Real(0.0)); }
-    Real rL=UL[URHO],rR=UR[URHO]; rL=(rL>Real(1e-30))?rL:Real(1e-30); rR=(rR>Real(1e-30))?rR:Real(1e-30);
-    const Real lamL=ps_max_wave_speed_from_state(d, UL, l_pres), lamR=ps_max_wave_speed_from_state(d, UR, l_pres);
-    const Real scale=Real(0.25)*(rL+rR)*(lamL+lamR);   // ≈ ρ c (acoustic impedance)
-    Real m1=Real(0.5)*(amrex::max(UL[UM1RHO1],Real(0.0))+amrex::max(UR[UM1RHO1],Real(0.0)));
-    Real m2=Real(0.5)*(amrex::max(UL[UM2RHO2],Real(0.0))+amrex::max(UR[UM2RHO2],Real(0.0)));
-    Real ms=m1+m2; if(!(ms>Real(1e-30))) ms=Real(1e-30);
-    const Real Y1=m1/ms, Y2=Real(1.0)-Y1;
-#if (AMREX_SPACEDIM >= 2)
-    for(int t=0;t<AMREX_SPACEDIM;++t){
-        if(t==d) continue;
-#if (AMREX_SPACEDIM == 3)
-        const int UM_t=(t==0)?UMX:(t==1)?UMY:UMZ;
-#else
-        const int UM_t=(t==0)?UMX:UMY;
-#endif
-        const Real uLL=ut(i-2*di,j-2*dj,k-2*dk,UM_t);
-        const Real uL =ut(i-di,  j-dj,  k-dk,  UM_t);
-        const Real uR =ut(i,     j,     k,     UM_t);
-        const Real uRR=ut(i+di,  j+dj,  k+dk,  UM_t);
-        const Real dLL=uL-uLL, dLR=uR-uL, dRR=uRR-uR;
-        const Real num=std::abs(dLR-Real(0.5)*(dLL+dRR));
-        const Real den=std::abs(dLR)+Real(0.5)*std::abs(dLL)+Real(0.5)*std::abs(dRR)+Real(1e-12);
-        const Real s=num/den;                       // 0 smooth → 1 odd-even
-        const Real Phi=-coef*s*scale*dLR;           // transverse-momentum diss flux
-        const Real Ef =Real(0.5)*(uL+uR)*Phi;       // consistent energy flux
-        flx(i,j,k,UM_t) =ps_finite_or(flx(i,j,k,UM_t) +Phi,   Real(0.0));
-        flx(i,j,k,UEDEN)=ps_finite_or(flx(i,j,k,UEDEN)+Ef,    Real(0.0));
-        flx(i,j,k,UE1)  =ps_finite_or(flx(i,j,k,UE1)  +Y1*Ef, Real(0.0));
-        flx(i,j,k,UE2)  =ps_finite_or(flx(i,j,k,UE2)  +Y2*Ef, Real(0.0));
-    }
-#else
-    amrex::ignore_unused(m1,m2,ms,Y1,Y2,scale,coef,ut,i,j,k,di,dj,dk,rL,rR);
-#endif
 }
 
 // ---------------------------------------------------------------------
@@ -590,11 +448,8 @@ const char* ps_flux_name()
 //  MOL_umeth for dispatch in Hydro_umdrv.cpp; q, qa, q1-3, a1-3, vol and
 //  the small_* arguments are unused — wp works from uin_arr).  Reads the
 //  dials once (host side, captured by value into the kernels), runs Pass 1
-//  (fluctuations), Pass 2 (limited correction), the transverse / shear /
+//  (fluctuations), Pass 2 (limited correction), the transverse and
 //  viscous terms and Pass 3 (non-conserved deposit), and returns.
-//  do_bl_fluct / fcorr* are accepted and left untouched: wp embeds its
-//  phase-energy defect inside the fluctuations, so the register they feed
-//  receives zero (docs/DESIGN_DECISIONS.md O-5).
 // ---------------------------------------------------------------------
 void
 PS_umeth(const Box& bx,
@@ -622,11 +477,7 @@ PS_umeth(const Box& bx,
          const Real /*small_pres*/,
          const Real /*smallu*/,
          const int /*slope_order*/,
-         const PassMap* /*lpmap*/,
-         const bool do_bl_fluct,
-         AMREX_D_DECL(Array4<Real> const& fcorr1,
-                      Array4<Real> const& fcorr2,
-                      Array4<Real> const& fcorr3))
+         const PassMap* /*lpmap*/)
 {
     BL_PROFILE("PS_umeth()");
 
@@ -634,19 +485,6 @@ PS_umeth(const Box& bx,
     // runs and job_info records the flux.  (Retired keys abort at startup:
     // PS_retired_keys.H.)
     ps_flux_selector();
-
-    //  CAMR.ps_llf_identity (1): identity-consistent LLF fallback on the
-    //  non-conserved slots (ps_wp_face); 0 = pure-diffusion split, kept for
-    //  A/B only (refuted; docs/DESIGN_DECISIONS.md H-6, O-9).
-    const int llf_id = []() -> int {
-        static const int c = []() -> int {
-            const int v = ps_dial_int("ps_llf_identity", 1);
-            if (v != 0 && v != 1) {
-                amrex::Abort("CAMR.ps_llf_identity must be 0 or 1");
-            }
-            return v; }();
-        return c;
-    }();
 
     // Presence parameters: one host-side read, captured by value into every
     // kernel (see ps_presence_params, PS_presence.H).
@@ -684,16 +522,6 @@ PS_umeth(const Box& bx,
     };
     const int wp_unlimited = ps_wp_unlimited_cached();
 
-    // CAMR.ps_wp_proj_scale (1): nondimensionalise the wave components
-    // before the limiter projection; 0 = raw components (refuted, A/B only;
-    // docs/DESIGN_DECISIONS.md L-1, O-9).
-    auto ps_wp_projscale_cached = []() -> int
-    {
-        static const int cached = ps_dial_int("ps_wp_proj_scale", 1);
-        return cached;
-    };
-    const int wp_proj_scale = ps_wp_projscale_cached();
-
     // CAMR.ps_lw_skip_contact (2): weight of the correction on the contact
     // wave, which carries the non-conservative alpha jump; correcting it at
     // a material interface smears alpha into the phase densities/energies,
@@ -717,15 +545,18 @@ PS_umeth(const Box& bx,
     const int wp_lw_skip = ps_lw_skip_contact_cached();
 
     // CAMR.ps_wp_transverse (0): 0 = directionally split; 1 = contact-only
-    // transverse correction (ps_wp_tvterm; the validated 2-D setting);
-    // 2 = plus acoustic waves (experimental, F-2).  Any other value aborts.
-    // 2-D/3-D only.
+    // transverse correction (ps_wp_tvterm; the validated 2-D setting).
+    // Any other value aborts.  2-D/3-D only.
     auto ps_wp_transverse_cached = []() -> int
     {
         static const int cached = []() -> int {
             const int v = ps_dial_int("ps_wp_transverse", 0);
-            if (v != 0 && v != 1 && v != 2) {
-                amrex::Abort("CAMR.ps_wp_transverse must be 0, 1 or 2");
+            if (v == 2) {
+                amrex::Abort("CAMR.ps_wp_transverse=2 is retired: the acoustic "
+                    "transverse coupling is deleted; use 1 (contact-only)");
+            }
+            if (v != 0 && v != 1) {
+                amrex::Abort("CAMR.ps_wp_transverse must be 0 or 1");
             }
             return v; }();
         return cached;
@@ -735,22 +566,6 @@ PS_umeth(const Box& bx,
 #else
     const int wp_transverse = 0;
     amrex::ignore_unused(ps_wp_transverse_cached);
-#endif
-
-    // CAMR.ps_shear_diss (0 = off): coefficient of the sensor-gated
-    // transverse-shear dissipation (ps_shear_diss_face); negative → 0.
-    auto ps_shear_diss_cached = []() -> amrex::Real
-    {
-        static const amrex::Real cached = []() -> amrex::Real {
-            const amrex::Real v = ps_dial_real("ps_shear_diss", 0.0);
-            return (v > amrex::Real(0.0)) ? v : amrex::Real(0.0); }();
-        return cached;
-    };
-#if (AMREX_SPACEDIM >= 2)
-    const amrex::Real shear_diss = ps_shear_diss_cached();
-#else
-    const amrex::Real shear_diss = amrex::Real(0.0);
-    amrex::ignore_unused(ps_shear_diss_cached);
 #endif
 
     // CAMR.ps_mu (0 = inviscid): dynamic viscosity [Pa s] for
@@ -806,7 +621,6 @@ PS_umeth(const Box& bx,
         const bool o2 = (wp_order == 2);            // correction fluxes
         const bool tv = (wp_transverse != 0);       // transverse term
         const bool unlim = (wp_unlimited != 0);     // bypass van Leer
-        const bool pscale = (wp_proj_scale != 0);   // scaled projection
         const bool store_w = o2 || tv;              // need the raw waves?
         const int  wc = store_w ? (3*NVAR + 3) : 1; // wave/speed store width
         const int  fc = o2 ? 3 : 1;                 // Ftilde store {α,UE1,UE2}
@@ -856,18 +670,18 @@ PS_umeth(const Box& bx,
         BL_PROFILE_VAR("PS::wp_face_riemann()", ps_wp_face_prof);
         amrex::ParallelFor(wxbx,
         [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
-            ps_wp_face(0, i, j, k, i-1, j, k, uin_arr, flx1, wp_fluct_x, wp_wave_x, store_w, xfbx, l_pres, llf_id);
+            ps_wp_face(0, i, j, k, i-1, j, k, uin_arr, flx1, wp_fluct_x, wp_wave_x, store_w, xfbx, l_pres);
         });
 #if (AMREX_SPACEDIM >= 2)
         amrex::ParallelFor(wybx,
         [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
-            ps_wp_face(1, i, j, k, i, j-1, k, uin_arr, flx2, wp_fluct_y, wp_wave_y, store_w, yfbx, l_pres, llf_id);
+            ps_wp_face(1, i, j, k, i, j-1, k, uin_arr, flx2, wp_fluct_y, wp_wave_y, store_w, yfbx, l_pres);
         });
 #endif
 #if (AMREX_SPACEDIM == 3)
         amrex::ParallelFor(wzbx,
         [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
-            ps_wp_face(2, i, j, k, i, j, k-1, uin_arr, flx3, wp_fluct_z, wp_wave_z, store_w, zfbx, l_pres, llf_id);
+            ps_wp_face(2, i, j, k, i, j, k-1, uin_arr, flx3, wp_fluct_z, wp_wave_z, store_w, zfbx, l_pres);
         });
 #endif
         BL_PROFILE_VAR_STOP(ps_wp_face_prof);
@@ -921,8 +735,8 @@ PS_umeth(const Box& bx,
                     const Real coef0 = Real(0.5) * asl * (Real(1.0) - asl * dtdx);
                     //  One scalar limiter per wave (LeVeque):
                     //      θ = <W_up, W_f>_D / <W_f, W_f>_D,   W̃ = φ(θ) W_f,
-                    //  with <a,b>_D = Σ_n a_n b_n / (|U_L,n| + |U_R,n|)² when
-                    //  pscale (raw components otherwise).  Scaling a whole wave
+                    //  with <a,b>_D = Σ_n a_n b_n / (|U_L,n| + |U_R,n|)².
+                    //  Scaling a whole wave
                     //  by one number preserves its direction in state space and
                     //  therefore the linear identities every raw wave satisfies;
                     //  per-component factors bend the wave and drift the
@@ -941,13 +755,13 @@ PS_umeth(const Box& bx,
                             if (n == UTEMP) continue;   // not a wave component
                             const Real Wf  = wv(i, j, k,  l*NVAR + n);
                             const Real Wup = wv(ni,nj,nk, l*NVAR + n);
+                            //  A component identically zero in both cells
+                            //  (an absent phase's slots) carries no
+                            //  information and is skipped; if the wave is
+                            //  non-zero there (phase birth) it is scaled by
+                            //  its own magnitude.
                             Real inv = Real(1.0);
-                            if (pscale) {
-                                //  A component identically zero in both cells
-                                //  (an absent phase's slots) carries no
-                                //  information and is skipped; if the wave is
-                                //  non-zero there (phase birth) it is scaled by
-                                //  its own magnitude.
+                            {
                                 const Real sc =
                                     std::abs(uin_arr(i-oi, j-oj, k-ok2, n))
                                   + std::abs(uin_arr(i,    j,    k,    n));
@@ -975,33 +789,8 @@ PS_umeth(const Box& bx,
                 }
                 //  Mixture correction derived from the phase corrections,
                 //  F̃[ρ] = F̃[m1]+F̃[m2], F̃[ρE] = F̃[E1]+F̃[E2] (H-4).  Under
-                //  scalar-per-wave limiting these hold already; the relative
-                //  residual is accumulated host-side and printed as [PS-W21],
-                //  which must read round-off.  The assignments still act on
-                //  the unlimited path.
-                //  Retire-candidate ([PS-W21]): see docs/DESIGN_DECISIONS.md §7 (O-8).
-#if !defined(AMREX_USE_GPU)
-                {
-                    const Real dR = Ft[URHO]  - (Ft[UM1RHO1] + Ft[UM2RHO2]);
-                    const Real dE = Ft[UEDEN] - (Ft[UE1] + Ft[UE2]);
-                    const Real sR = std::abs(Ft[URHO])  + std::abs(Ft[UM1RHO1])
-                                  + std::abs(Ft[UM2RHO2]);
-                    const Real sE = std::abs(Ft[UEDEN]) + std::abs(Ft[UE1])
-                                  + std::abs(Ft[UE2]);
-                    if (sR > Real(0.0)) {
-                        const double q = std::abs(double(dR)) / double(sR);
-                        if (q > ps_counters().max_w21_mass) {
-                            ps_counters().max_w21_mass = q;
-                        }
-                    }
-                    if (sE > Real(0.0)) {
-                        const double q = std::abs(double(dE)) / double(sE);
-                        if (q > ps_counters().max_w21_energy) {
-                            ps_counters().max_w21_energy = q;
-                        }
-                    }
-                }
-#endif
+                //  scalar-per-wave limiting these hold already to round-off;
+                //  the assignments still act on the unlimited path.
                 Ft[URHO]  = Ft[UM1RHO1] + Ft[UM2RHO2];
                 Ft[UEDEN] = Ft[UE1] + Ft[UE2];
                 // Conserved slots: add F̃ to the recovered flux.
@@ -1047,9 +836,9 @@ PS_umeth(const Box& bx,
             // x-faces: transverse from y (+ z in 3D).
             amrex::ParallelFor(xfbx, [=] AMREX_GPU_DEVICE (int i,int j,int k) noexcept {
                 Real g[NVAR]; for(int n=0;n<NVAR;++n) g[n]=Real(0.0);
-                ps_wp_tvterm(0,1,i,j,k, uin_arr, wp_wave_y, domlo,domhi, dt_l, dx[1], g, wp_transverse);
+                ps_wp_tvterm(0,1,i,j,k, uin_arr, wp_wave_y, domlo,domhi, dt_l, dx[1], g);
 #if (AMREX_SPACEDIM == 3)
-                ps_wp_tvterm(0,2,i,j,k, uin_arr, wp_wave_z, domlo,domhi, dt_l, dx[2], g, wp_transverse);
+                ps_wp_tvterm(0,2,i,j,k, uin_arr, wp_wave_z, domlo,domhi, dt_l, dx[2], g);
 #endif
                 for(int n=0;n<NVAR;++n){
                     if      (n==UALPHA1) gtv_x(i,j,k,0)=ps_finite_or(g[n],Real(0.0));
@@ -1061,9 +850,9 @@ PS_umeth(const Box& bx,
             // y-faces: transverse from x (+ z in 3D).
             amrex::ParallelFor(yfbx, [=] AMREX_GPU_DEVICE (int i,int j,int k) noexcept {
                 Real g[NVAR]; for(int n=0;n<NVAR;++n) g[n]=Real(0.0);
-                ps_wp_tvterm(1,0,i,j,k, uin_arr, wp_wave_x, domlo,domhi, dt_l, dx[0], g, wp_transverse);
+                ps_wp_tvterm(1,0,i,j,k, uin_arr, wp_wave_x, domlo,domhi, dt_l, dx[0], g);
 #if (AMREX_SPACEDIM == 3)
-                ps_wp_tvterm(1,2,i,j,k, uin_arr, wp_wave_z, domlo,domhi, dt_l, dx[2], g, wp_transverse);
+                ps_wp_tvterm(1,2,i,j,k, uin_arr, wp_wave_z, domlo,domhi, dt_l, dx[2], g);
 #endif
                 for(int n=0;n<NVAR;++n){
                     if      (n==UALPHA1) gtv_y(i,j,k,0)=ps_finite_or(g[n],Real(0.0));
@@ -1076,8 +865,8 @@ PS_umeth(const Box& bx,
             // z-faces: transverse from x + y.
             amrex::ParallelFor(zfbx, [=] AMREX_GPU_DEVICE (int i,int j,int k) noexcept {
                 Real g[NVAR]; for(int n=0;n<NVAR;++n) g[n]=Real(0.0);
-                ps_wp_tvterm(2,0,i,j,k, uin_arr, wp_wave_x, domlo,domhi, dt_l, dx[0], g, wp_transverse);
-                ps_wp_tvterm(2,1,i,j,k, uin_arr, wp_wave_y, domlo,domhi, dt_l, dx[1], g, wp_transverse);
+                ps_wp_tvterm(2,0,i,j,k, uin_arr, wp_wave_x, domlo,domhi, dt_l, dx[0], g);
+                ps_wp_tvterm(2,1,i,j,k, uin_arr, wp_wave_y, domlo,domhi, dt_l, dx[1], g);
                 for(int n=0;n<NVAR;++n){
                     if      (n==UALPHA1) gtv_z(i,j,k,0)=ps_finite_or(g[n],Real(0.0));
                     else if (n==UE1)     gtv_z(i,j,k,1)=ps_finite_or(g[n],Real(0.0));
@@ -1089,20 +878,9 @@ PS_umeth(const Box& bx,
         }
 #endif
 
-        // ---- Shear dissipation and viscosity: flux-form terms added to
-        //      flx_d (reflux and telescope through consup). ----
+        // ---- Viscosity: flux-form term added to flx_d (refluxes and
+        //      telescopes through consup). ----
 #if (AMREX_SPACEDIM >= 2)
-        if (shear_diss > Real(0.0)) {
-            amrex::ParallelFor(xfbx, [=] AMREX_GPU_DEVICE (int i,int j,int k) noexcept {
-                ps_shear_diss_face(0, i,j,k, uin_arr, flx1, domlo,domhi, shear_diss, l_pres); });
-            amrex::ParallelFor(yfbx, [=] AMREX_GPU_DEVICE (int i,int j,int k) noexcept {
-                ps_shear_diss_face(1, i,j,k, uin_arr, flx2, domlo,domhi, shear_diss, l_pres); });
-#if (AMREX_SPACEDIM == 3)
-            amrex::ParallelFor(zfbx, [=] AMREX_GPU_DEVICE (int i,int j,int k) noexcept {
-                ps_shear_diss_face(2, i,j,k, uin_arr, flx3, domlo,domhi, shear_diss, l_pres); });
-#endif
-        }
-
         if (ps_mu > Real(0.0)) {
             amrex::ParallelFor(xfbx, [=] AMREX_GPU_DEVICE (int i,int j,int k) noexcept {
                 ps_viscous_face(0, i,j,k, uin_arr, flx1, domlo,domhi, ps_mu, dx.data()); });
@@ -1185,12 +963,10 @@ PS_umeth(const Box& bx,
         //  (F* plus the flux-form correction, which Berger & LeVeque show
         //  refluxes conservatively even for a non-conservative first-order
         //  operator).  Alpha is corrected by the capacity-form co-move with
-        //  its refluxed mass in CAMR::reflux() (CAMR.ps_bl_reflux=2), which
-        //  needs no wp-specific data.  fcorr* stay at their zero init; the
-        //  first-order UE1/UE2 phase-split coarse-fine fix-up is not done
-        //  (gaps ~1e-4, resolution-dominated).  docs §4.9.
-        amrex::ignore_unused(do_bl_fluct);
-        amrex::ignore_unused(AMREX_D_DECL(fcorr1, fcorr2, fcorr3));
+        //  its refluxed mass in CAMR::reflux() (CAMR.ps_bl_reflux), which
+        //  needs no wp-specific data.  The first-order UE1/UE2 phase-split
+        //  coarse-fine fix-up is not done (gaps ~1e-4, resolution-dominated).
+        //  docs §4.9.
     } // ===== end wave-propagation interior =====
 }
 
@@ -1222,11 +998,7 @@ PS_umeth(const amrex::Box& /*bx*/,
          const amrex::Real /*small_pres*/,
          const amrex::Real /*smallu*/,
          const int /*slope_order*/,
-         const PassMap* /*lpmap*/,
-         const bool /*do_bl_fluct*/,
-         AMREX_D_DECL(amrex::Array4<amrex::Real> const& /*fcorr1*/,
-                      amrex::Array4<amrex::Real> const& /*fcorr2*/,
-                      amrex::Array4<amrex::Real> const& /*fcorr3*/))
+         const PassMap* /*lpmap*/)
 {
     amrex::Abort("PS_umeth called without USE_PS_HYDRO — bug in build system.");
 }

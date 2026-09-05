@@ -14,7 +14,7 @@ Compiled only when the Exec `GNUmakefile` sets `USE_PS_HYDRO = TRUE` (adds `-DUS
 | `PS_relax.H` | Relaxation dispatch (`CAMR.ps_relax_mode`, default 5 = coupled X3), the EOS callback `ps_make_camr_eos_api`, relax-gate hysteresis, sweep reports. |
 | `PS_floors.H` | `ps_apply_floor` (`ps_pres_floor` / `ps_temp_floor`), the URHO and UE1+UE2 identity resyncs. |
 | `PS_folds.H` | Grid drivers of the phase folds (vanish, vacuum, corridor and energy reaps, T-floor) with the `[PS-FOLD]` audit. |
-| `PS_diag.H` | Opt-in read-only walkers: `ps_report_*`, the EOS state harvester, the dormant dilute-energy closure. |
+| `PS_diag.H` | Shared diagnostic dial (`CAMR.ps_diag_alpha`). |
 | `PS_sources.H` | Post-hydro source driver: flash nucleation, split mass transfer (non-default modes), mechanical re-projection. |
 | `hem_pelanti_shyue.H` | Umbrella over the AMReX-free `hem` kernel library (include this one). |
 | `hem_eos_api.H` | `V6`, `PsPhase`, the `PsPhaseAPI` EOS contract, the fold mechanics, dial accessors, `ps_state_from_cons`. |
@@ -25,7 +25,6 @@ Compiled only when the Exec `GNUmakefile` sets `USE_PS_HYDRO = TRUE` (adds `-DUS
 | `PS_guards.H` | Single-source guards, floors and their counters. |
 | `PS_validate.H` | `CAMR.ps_validate=1` state-invariant tripwire (reports, never repairs). |
 | `PS_zerod_test.H` | 0-D self-tests (`CAMR.ps_ptg_selftest`, `ps_relax_sweep`, `ps_x3_test`). |
-| `PS_FluctuationRegister.H` | Coarse-fine register for the phase-energy defect (`CAMR.ps_bl_reflux=1`; the default 2 uses the standard register with an α co-move). |
 | `Make.package`, `SOURCE_STAMP` | Build list; provenance of the copied algorithm header. |
 
 The argument for each choice is in `docs/MODEL_AND_ALGORITHM.md`: ch. 1 (wave propagation vs Godunov), 2 (star state), 3 (limiter, contact taper), 4 (presence), 5 (extinction, coexistence gate), 8 (guards), 9 (GPU); formal statement in `docs/camr_ps_model.tex`.

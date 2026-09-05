@@ -86,11 +86,6 @@ CAMR::CAMR_advance (Real time,
     if (level < finest_level && do_reflux) {
 
         getFluxReg(level + 1).reset();
-#if defined(USE_PS_HYDRO) && !defined(AMREX_USE_EB)
-        if (ps_bl_reflux != 0) {
-            getFluctReg(level + 1).reset();       // phase-energy defect register
-        }
-#endif
 
     }
 
@@ -149,11 +144,10 @@ CAMR::CAMR_advance (Real time,
         return v;
     }();
     static const int ps_strang_cached = ps_dial_int("ps_strang", 0);
-    // CAMR.ps_diag_alpha (accessor in PS_relaxation.H): report the alpha_1
+    // CAMR.ps_diag_alpha (accessor in PS_diag.H): report the alpha_1
     // range at labelled points so a drive toward a pure phase can be
     // attributed to mass transfer (jump across the relax bracket) or to
     // advection/C-F (high on entry).
-    // Retire-candidate: see docs/DESIGN_DECISIONS.md §7 O-8.
     auto diag_a1 = [&](const amrex::MultiFab& S, const char* label) {
         if (ps_diag_alpha() == 0) return;
         amrex::Print() << "[PS-DIAG] L" << level << " step "
@@ -302,12 +296,10 @@ CAMR::CAMR_advance (Real time,
                            << " pmix_fail=" << nm_ << "\n";
             pc.reset_guards();
             // Face audit, gated on CAMR.ps_face_diag (0); the counters
-            // themselves cost a few compares per face.  The [PS-FACE] and
-            // [PS-W21] lines are retire-candidates: see
-            // docs/DESIGN_DECISIONS.md §7 O-8.  The health lines
-            // ([PS-RELAXFB], [PS-PROMOTE], [PS-FLOORBUDGET], [PS-FLCAUSE])
-            // print under ps_diag_mass alone; their counters reset at the
-            // same cadence either way.
+            // themselves cost a few compares per face.  The health lines
+            // ([PS-RELAXFB], [PS-PROMOTE], [PS-FLCAUSE]) print under
+            // ps_diag_mass alone; their counters reset at the same cadence
+            // either way.
             {
                 static const int fd = ps_dial_int("ps_face_diag", 0);
                 if (fd != 0) {
@@ -377,30 +369,6 @@ CAMR::CAMR_advance (Real time,
                                        << ": promote_refuse = " << npr
                                        << "  floor_skip = " << nfs << "\n";
                     }
-                    //  CAMR.ps_floor_budget: of the skipped floor legs, how
-                    //  many carried a reachable vs unreachable own-branch
-                    //  state, the pressure-floor energy not manufactured,
-                    //  and the most negative skipped e_k.
-                    //  Retire-candidate: see docs/DESIGN_DECISIONS.md §7 O-8.
-                    {
-                        amrex::Long nre = pc.floor_reach;
-                        amrex::Long nun = pc.floor_unreach;
-                        amrex::Real eav = pc.floor_e_avoided;
-                        amrex::Real emn = pc.floor_min_e;
-                        amrex::ParallelDescriptor::ReduceLongSum(nre);
-                        amrex::ParallelDescriptor::ReduceLongSum(nun);
-                        amrex::ParallelDescriptor::ReduceRealSum(eav);
-                        amrex::ParallelDescriptor::ReduceRealMin(emn);
-                        if (nre > 0 || nun > 0) {
-                            amrex::Print() << "[PS-FLOORBUDGET] L" << level
-                                << " step " << parent->levelSteps(level)
-                                << " " << label
-                                << ": skip reachable = " << nre
-                                << "  unreachable = " << nun
-                                << "  e_manufacture_avoided = " << eav
-                                << " J  min_skip_e = " << emn << " J/kg\n";
-                        }
-                    }
                     pc.reset_promote();
                 }
                 //  Refusal-cause breakdown for the wp fluctuation path;
@@ -433,20 +401,6 @@ CAMR::CAMR_advance (Real time,
                         amrex::Print() << "  | star side L=" << sL
                                        << " R=" << sR << "\n";
                     }
-                }
-                //  Residual before the fixup; under scalar-per-wave
-                //  limiting it is round-off.  Face-audit line, under
-                //  ps_face_diag with [PS-FACE].
-                if (fd != 0) {
-                    double wm = pc.max_w21_mass;
-                    double we = pc.max_w21_energy;
-                    amrex::ParallelDescriptor::ReduceRealMax(wm);
-                    amrex::ParallelDescriptor::ReduceRealMax(we);
-                    amrex::Print() << "[PS-W21] L" << level << " step "
-                                   << parent->levelSteps(level) << " "
-                                   << label
-                                   << ": residual before fixup  mass="
-                                   << wm << "  energy=" << we << "\n";
                 }
                 pc.reset_face();
             }
@@ -491,16 +445,11 @@ CAMR::CAMR_advance (Real time,
                                  int ng, bool do_print) {
         diag_mass(S, "A enter (post-hydro/C-F)");
         PS_CELL_PROBE(S, "A  enter (post-hydro)   ");
-        //  Per-phase T extremes per stage (CAMR.ps_t2_diag; EOS-heavy,
-        //  read-only).  Retire-candidate: see docs/DESIGN_DECISIONS.md §7 O-8.
-        ps_report_T2stage(S, "A  enter (post-hydro raw)", geom, ng);
         ps_resync_mixture_mass(S, ng);  // URHO == UM1RHO1 + UM2RHO2 after hydro/C-F
         diag_mass(S, "A2 post mass resync");
         PS_CELL_PROBE(S, "A2 post mixture resync ");
         ps_resync_phase_energy(S, ng);
         PS_CELL_PROBE(S, "A3 post phase-E resync ");  // UE1 + UE2 == UEDEN after C-F interp/regrid
-        ps_dilute_energy_closure(S, ng);
-        PS_CELL_PROBE(S, "A4 post dilute closure "); // gated thermal-eq closure of vanishing-phase e_k
         // Folds run before the floor, as in the standalone's clamp_cons6:
         // ps_apply_floor is what raises e_k to meet the temperature floor,
         // and it must see the cells the folds have just rewritten.
@@ -511,18 +460,10 @@ CAMR::CAMR_advance (Real time,
         PS_CELL_PROBE(S, "A6 post TFLOOR fold    ");
         ps_apply_floor(S, ng);
         PS_CELL_PROBE(S, "A7 post FLOOR          ");          // positivity floor
-        ps_report_T2stage(S, "A7 post folds/floor", geom, ng);
         clean_state(S, false);   // intermediate: skip the UTEMP diagnostic sweep
         diag_mass(S, "B post floor/fold/clean");
         PS_CELL_PROBE(S, "B  post clean_state    ");
         diag_a1(S, "reaction pre-relax");   // entering: reflects hydro/advection/C-F
-        ps_report_temps(S, "pre-relax (post-hydro)", geom, ng);
-        //  Gated investigation reports on the state the relaxation is about
-        //  to act on (ps_diag_morph, ps_psat_diag, ps_t2_diag).
-        //  Retire-candidate: see docs/DESIGN_DECISIONS.md §7 O-8.
-        ps_report_morphology(S, "pre-relax ", level, parent->levelSteps(level));
-        ps_report_psat(S, "pre-relax ", ng);
-        ps_report_T2stage(S, "B  post clean (pre-relax)", geom, ng);
         if (ps_do_relax_cached != 0) {
             ps_apply_relaxation(S, dt_r, ng, do_print);   // dt_r for the finite-rate legs
             clean_state(S, false); // intermediate: skip the UTEMP diagnostic sweep
@@ -530,13 +471,8 @@ CAMR::CAMR_advance (Real time,
         diag_mass(S, "C post relaxation (P/T/MT)");
         PS_CELL_PROBE(S, "C  post relaxation     ");
         diag_a1(S, "reaction post-relax");  // jump here => MT/relaxation is the driver
-        ps_report_temps(S, "post-relax", geom, ng);
-        ps_report_T2stage(S, "C  post relaxation", geom, ng);
-        ps_report_energy_overshoot(S, "post-relax", ng);         // gated
-        ps_harvest_states(S, ng);            // gated EOS state harvest; retire-candidate (O-7)
         ps_apply_sources(S, dt_r, ng);
         diag_mass(S, "D post sources (flash)");
-        ps_report_T2stage(S, "D  post sources", geom, ng);
 #ifdef CAMR_PS_DIAG
         {   // CAMR.ps_floor_diag (0): per-step census of the EOS repairs.
             // Not nested in ps_diag_mass.
@@ -559,7 +495,6 @@ CAMR::CAMR_advance (Real time,
 #endif
         PS_CELL_PROBE(S, "D  post sources        ");
         diag_a1(S, "reaction post-sources");// jump here => flash/source is the driver
-        ps_report_temps(S, "post-sources", geom, ng);
     };
     // Strang pre-hydro half step, applied to the old-time data in place so
     // that the expand_state FillPatch carries it into the Sborder ghost

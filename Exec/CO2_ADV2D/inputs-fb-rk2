@@ -36,7 +36,7 @@ CAMR.ps_wp_order = 2
 CAMR.ps_do_relax = 0
 CAMR.ps_mt_tau       = 0    # no mass transfer (pre-2026-08-24 default, pinned)
 CAMR.ps_flash_tau    = 0    # no flash source  (pre-2026-08-24 default, pinned)
-CAMR.ps_bl_reflux = 1
+# CAMR.ps_bl_reflux is left at its default (alpha co-move on); the conserved-slot budget this deck checks does not depend on it.
 
 CAMR.v = 0
 amr.v  = 0

@@ -345,19 +345,6 @@ CAMR::init_stuff(amrex::Amr& papa,
         bl, papa.boxArray(level - 1), dm, papa.DistributionMap(level - 1),
         level_geom, papa.Geom(level - 1), papa.refRatio(level - 1), level, 1);
     }
-
-    // Fluctuation register for the PS phase-energy defect, NUM_PS_FLUCT = 2
-    // components applied in reflux() to UE1/UE2 through a destcomp offset.
-    // Not allocated when CAMR.ps_bl_reflux = 0.  The α coarse-fine
-    // correction is the co-move in reflux() and needs no register.
-#if defined(USE_PS_HYDRO) && !defined(AMREX_USE_EB)
-    if (ps_bl_reflux != 0) {
-      fluct_reg.define(
-        bl, papa.boxArray(level - 1), dm, papa.DistributionMap(level - 1),
-        level_geom, papa.Geom(level - 1), papa.refRatio(level - 1), level,
-        NUM_PS_FLUCT);
-    }
-#endif
   }
 }
 
@@ -965,7 +952,7 @@ CAMR::reflux()
   // flux_reg does not touch UALPHA1 (its α flux is 0), so the current
   // UALPHA1 is the pre-reflux value ρ₁ is keyed on.
   amrex::MultiFab a1r1_pre;
-  if (ps_bl_reflux > 1) {
+  if (ps_bl_reflux != 0) {
     a1r1_pre.define(S_crse.boxArray(), S_crse.DistributionMap(), 1, 0);
     amrex::MultiFab::Copy(a1r1_pre, S_crse, UM1RHO1, 0, 1, 0);
   }
@@ -994,78 +981,54 @@ CAMR::reflux()
 #endif
 
 #if defined(USE_PS_HYDRO) && !defined(AMREX_USE_EB)
-  // PS coarse-fine correction of the non-conservative slots
-  // (docs/MODEL_AND_ALGORITHM.md §1.5, §4.9); CAMR.ps_bl_reflux is
-  // documented in Params/_cpp_parameters.
-  // Phase-energy defect: the one-sided deposit (CAMRPSFluctReg::
-  // CrseAddOneSided/FineAddOneSided) holds wp_corr_crse - Σfine for the
-  // low-branch coarse cells and the inherited Reflux applies it to the
-  // contiguous UE1/UE2 slots.  Under wp the deposit is zero.
-  // Retire-candidate: see docs/DESIGN_DECISIONS.md §7 O-5.
+  // PS coarse-fine correction of the non-conservative slot α₁
+  // (docs/MODEL_AND_ALGORITHM.md §1.5, §4.9); CAMR.ps_bl_reflux (0 = off,
+  // nonzero = on) is documented in Params/_cpp_parameters.
+  // Capacity-form α co-move.  α₁ has no flux; an uncoordinated α reflux
+  // shifts ρ₁ = α₁ρ₁/α₁ and spikes P₁, so α₁ is moved with its own
+  // already-refluxed mass:
+  //     Δ(α₁ρ₁) = (α₁ρ₁)_after_fluxreg − (α₁ρ₁)_before
+  //     ρ₁      = (α₁ρ₁)_before / α₁_before
+  //     α₁     += Δ(α₁ρ₁) / ρ₁
+  // which leaves ρ₁ exactly invariant.  Skipped when α₁_pre <= amin
+  // (1e-8) or ρ₁_pre <= 1e-10; |Δα₁| is capped at 0.05 per reflux and
+  // the result clamped to [amin, 1 − amin]; both limiters are counted
+  // ([PS-GUARD] reflux_cap / reflux_clamp).  A firing limiter leaves an
+  // α-vs-mass residual for the next-step resync.  The clamp holds a
+  // corridor-small α₁ at 1e-8 rather than letting it reach 0: an open
+  // decision, docs/DESIGN_DECISIONS.md §7 O-17.
   if (ps_bl_reflux != 0) {
-    // Report the coarse and fine fluctuation contributions separately
-    // before Reflux merges them.
-    if (verbose) {
-      amrex::MultiFab& cd = fine_level.fluct_reg.getCrseData();
-      amrex::MultiFab& fd = fine_level.fluct_reg.getFineData();
-      amrex::Real cmax = 0.0, fmax = 0.0;
-      for (int n = 0; n < NUM_PS_FLUCT; ++n) {
-        cmax = amrex::max(cmax, cd.norm0(n));
-        fmax = amrex::max(fmax, fd.norm0(n));
+      const amrex::Real amin = ps_const::ALPHA_REFLUX_MIN;
+      const amrex::Real rho_floor = amrex::Real(1.0e-10);
+      for (amrex::MFIter mfi(S_crse); mfi.isValid(); ++mfi) {
+          const amrex::Box& bx = mfi.validbox();
+          auto s   = S_crse.array(mfi);
+          auto pre = a1r1_pre.const_array(mfi);
+          amrex::ParallelFor(bx,
+          [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
+              const amrex::Real a1_old = s(i,j,k,UALPHA1);
+              const amrex::Real m_old  = pre(i,j,k,0);            // (α₁ρ₁)_before
+              const amrex::Real d_m    = s(i,j,k,UM1RHO1) - m_old; // Δ(α₁ρ₁)
+              if (d_m != amrex::Real(0.0) && a1_old > amin) {
+                  const amrex::Real rho1 = m_old / a1_old;         // pre-reflux ρ₁
+                  if (rho1 > rho_floor) {
+                      // Rate cap: a large coarse-fine flux mismatch at a
+                      // sharp contact would otherwise slam α₁ to the clamp.
+                      constexpr amrex::Real da_cap = amrex::Real(0.05);
+                      amrex::Real da = d_m / rho1;
+                      const amrex::Real da_raw = da;
+                      da = amrex::min(amrex::max(da, -da_cap), da_cap);
+                      if (da != da_raw) { ps_guard::count_reflux_cap(); }
+                      amrex::Real a1_new = a1_old + da;
+                      const amrex::Real a1_unclamped = a1_new;
+                      a1_new = amrex::min(amrex::max(a1_new, amin),
+                                          amrex::Real(1.0) - amin);
+                      if (a1_new != a1_unclamped) { ps_guard::count_reflux_clamp(); }
+                      s(i,j,k,UALPHA1) = a1_new;
+                  }
+              }
+          });
       }
-      amrex::Print() << "[ps_fluct] lev " << level
-                     << " t=" << get_state_data(State_Type).curTime()
-                     << "  defect |crse|=" << cmax << " |fine|=" << fmax << "\n";
-    }
-
-    fine_level.fluct_reg.Reflux(S_crse, 0, UE1, NUM_PS_FLUCT);
-
-    // Capacity-form α co-move (ps_bl_reflux = 2).  α₁ has no flux; an
-    // uncoordinated α reflux shifts ρ₁ = α₁ρ₁/α₁ and spikes P₁, so α₁ is
-    // moved with its own already-refluxed mass:
-    //     Δ(α₁ρ₁) = (α₁ρ₁)_after_fluxreg − (α₁ρ₁)_before
-    //     ρ₁      = (α₁ρ₁)_before / α₁_before
-    //     α₁     += Δ(α₁ρ₁) / ρ₁
-    // which leaves ρ₁ exactly invariant.  Skipped when α₁_pre <= amin
-    // (1e-8) or ρ₁_pre <= 1e-10; |Δα₁| is capped at 0.05 per reflux and
-    // the result clamped to [amin, 1 − amin]; both limiters are counted
-    // ([PS-GUARD] reflux_cap / reflux_clamp).  A firing limiter leaves an
-    // α-vs-mass residual for the next-step resync.  The clamp holds a
-    // corridor-small α₁ at 1e-8 rather than letting it reach 0: an open
-    // decision, docs/DESIGN_DECISIONS.md §7 O-17.
-    if (ps_bl_reflux > 1) {
-        const amrex::Real amin = ps_const::ALPHA_REFLUX_MIN;
-        const amrex::Real rho_floor = amrex::Real(1.0e-10);
-        for (amrex::MFIter mfi(S_crse); mfi.isValid(); ++mfi) {
-            const amrex::Box& bx = mfi.validbox();
-            auto s   = S_crse.array(mfi);
-            auto pre = a1r1_pre.const_array(mfi);
-            amrex::ParallelFor(bx,
-            [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
-                const amrex::Real a1_old = s(i,j,k,UALPHA1);
-                const amrex::Real m_old  = pre(i,j,k,0);            // (α₁ρ₁)_before
-                const amrex::Real d_m    = s(i,j,k,UM1RHO1) - m_old; // Δ(α₁ρ₁)
-                if (d_m != amrex::Real(0.0) && a1_old > amin) {
-                    const amrex::Real rho1 = m_old / a1_old;         // pre-reflux ρ₁
-                    if (rho1 > rho_floor) {
-                        // Rate cap: a large coarse-fine flux mismatch at a
-                        // sharp contact would otherwise slam α₁ to the clamp.
-                        constexpr amrex::Real da_cap = amrex::Real(0.05);
-                        amrex::Real da = d_m / rho1;
-                        const amrex::Real da_raw = da;
-                        da = amrex::min(amrex::max(da, -da_cap), da_cap);
-                        if (da != da_raw) { ps_guard::count_reflux_cap(); }
-                        amrex::Real a1_new = a1_old + da;
-                        const amrex::Real a1_unclamped = a1_new;
-                        a1_new = amrex::min(amrex::max(a1_new, amin),
-                                            amrex::Real(1.0) - amin);
-                        if (a1_new != a1_unclamped) { ps_guard::count_reflux_clamp(); }
-                        s(i,j,k,UALPHA1) = a1_new;
-                    }
-                }
-            });
-        }
-    }
   }
 #endif
 

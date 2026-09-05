@@ -16,13 +16,6 @@
 #include <AMReX_YAFluxRegister.H>
 #endif
 
-#ifdef USE_PS_HYDRO
-// One-sided coarse-fine register for the PS phase-energy defect.
-// Derives from amrex::YAFluxRegister; non-EB only.
-// Retire-candidate: see docs/DESIGN_DECISIONS.md §7 O-5.
-#include "PS_FluctuationRegister.H"
-#endif
-
 #ifdef AMREX_LAZY
 #include <AMReX_Lazy.H>
 #endif
@@ -313,12 +306,6 @@ public:
   amrex::EBFluxRegister& getPresReg();
   amrex::EBFluxRegister& getPresReg(int lev);
 
-  // Fluctuation register for the PS phase-energy defect; allocated and
-  // used only when CAMR.ps_bl_reflux != 0.
-  amrex::EBFluxRegister fluct_reg;
-  amrex::EBFluxRegister& getFluctReg();
-  amrex::EBFluxRegister& getFluctReg(int lev);
-
 #else
   amrex::YAFluxRegister flux_reg;
 
@@ -329,19 +316,6 @@ public:
 
   amrex::YAFluxRegister& getPresReg();
   amrex::YAFluxRegister& getPresReg(int lev);
-
-  // Fluctuation register for the PS phase-energy defect; allocated and
-  // used only when CAMR.ps_bl_reflux != 0.  The one-sided CAMRPSFluctReg
-  // when PS is built, otherwise an unused YAFluxRegister placeholder.
-#ifdef USE_PS_HYDRO
-  CAMRPSFluctReg fluct_reg;
-  CAMRPSFluctReg& getFluctReg();
-  CAMRPSFluctReg& getFluctReg(int lev);
-#else
-  amrex::YAFluxRegister fluct_reg;
-  amrex::YAFluxRegister& getFluctReg();
-  amrex::YAFluxRegister& getFluctReg(int lev);
-#endif
 
 #endif
   void avgDown();
@@ -606,20 +580,6 @@ CAMR::getPresReg(int lev)
   return getLevel(lev).getPresReg();
 }
 
-AMREX_FORCE_INLINE
-amrex::EBFluxRegister&
-CAMR::getFluctReg()
-{
-  return fluct_reg;
-}
-
-AMREX_FORCE_INLINE
-amrex::EBFluxRegister&
-CAMR::getFluctReg(int lev)
-{
-  return getLevel(lev).getFluctReg();
-}
-
 //#################################
 #else
 //#################################
@@ -651,36 +611,6 @@ CAMR::getPresReg(int lev)
 {
   return getLevel(lev).getPresReg();
 }
-
-#ifdef USE_PS_HYDRO
-AMREX_FORCE_INLINE
-CAMRPSFluctReg&
-CAMR::getFluctReg()
-{
-  return fluct_reg;
-}
-
-AMREX_FORCE_INLINE
-CAMRPSFluctReg&
-CAMR::getFluctReg(int lev)
-{
-  return getLevel(lev).getFluctReg();
-}
-#else
-AMREX_FORCE_INLINE
-amrex::YAFluxRegister&
-CAMR::getFluctReg()
-{
-  return fluct_reg;
-}
-
-AMREX_FORCE_INLINE
-amrex::YAFluxRegister&
-CAMR::getFluctReg(int lev)
-{
-  return getLevel(lev).getFluctReg();
-}
-#endif
 
 //#################################
 #endif // EB

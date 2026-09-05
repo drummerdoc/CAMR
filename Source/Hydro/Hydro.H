@@ -33,12 +33,7 @@ void hydro_umdrv (bool do_mol,
                   const amrex::GpuArray<const amrex::Array4<amrex::Real>, AMREX_SPACEDIM> flx,
                   const amrex::GpuArray<const amrex::Array4<const amrex::Real>, AMREX_SPACEDIM> a,
                   amrex::Array4<amrex::Real> const& vol,
-                  const PassMap* lpmap,
-                  // Task #22 P2: Berger-LeVeque fluctuation register — when
-                  // do_bl_fluct, PS_umeth fills fcorr[dir] (NUM_PS_FLUCT=2:
-                  // UE1/UE2 phase-energy defect) for CrseAdd/FineAdd.
-                  const bool do_bl_fluct = false,
-                  const amrex::GpuArray<const amrex::Array4<amrex::Real>, AMREX_SPACEDIM> fcorr = {});
+                  const PassMap* lpmap);
 
 void adjust_fluxes (
   amrex::Box const& bx,
