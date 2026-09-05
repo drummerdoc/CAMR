@@ -19,7 +19,10 @@
 //  queried only if it exists and is Independent after checked promotion
 //  (PS_promote.H), and its pressure is substituted by the host's when it
 //  fails the floor; otherwise it takes the host's pressure by definition.
-//  P_mix = alpha_1 P_1 + alpha_2 P_2 unconditionally.
+//  P_mix = alpha_1 P_1 + alpha_2 P_2 unconditionally.  The outcome flags
+//  (queried_k, host_floored, p_k_substituted) let a consumer add the
+//  sound speed of exactly the phases that were queried, and count the
+//  G3 outcomes, without re-running any test.
 //
 //  Device-safe: no statics, no ParmParse; the EOS calls carry the
 //  portability of the backend.  Dials: none (PsPres arrives by value).
@@ -53,7 +56,10 @@ struct PsCellState {
     amrex::Real rho1, rho2;       // per-phase densities (mixture placeholder if !exists)
     amrex::Real e1, e2;           // per-phase specific internal energies (e_mix if !exists)
     bool        host_is_1;        // alpha1 >= alpha2
+    bool        queried1, queried2;   // this phase's branch EOS was queried
     amrex::Real P1, P2;           // branch-locked per-phase pressures after G3
+    bool        host_floored;     // the host's P was below P_FLOOR_PA and floored
+    bool        p1_substituted, p2_substituted;   // minority P replaced by the host's
     amrex::Real P_mix;            // alpha1 P1 + alpha2 P2
 };
 
@@ -125,19 +131,31 @@ ps_cell_state(const amrex::Real U[NVAR], const PsPres& pr) noexcept
     // state, not Independent, or a non-physical branch result) takes the
     // host's, which is the same substitution sanitize_phase_pressure makes.
     s.host_is_1 = (s.alpha1 >= s.alpha2);
+    s.p1_substituted = false;
+    s.p2_substituted = false;
     if (s.host_is_1) {
+        s.queried1 = true;
         EOS::REY2P_liquid(s.rho1, s.e1, Y, s.P1);
+        // phase_pressure_ok ignores its second argument; 0 asks only
+        // "is this above P_FLOOR_PA?" without restating the constant.
+        s.host_floored = !ps_guard::phase_pressure_ok(s.P1, Real(0.0));
         s.P1 = ps_guard::sanitize_stock_pressure(s.P1);      // host: floor only
-        if (q2.exists && ps_regime_reach(s.rg2, s.rho2, s.e2, /*liquid=*/false, pr) == PsRegime::Independent) {
+        s.queried2 = q2.exists
+                  && ps_regime_reach(s.rg2, s.rho2, s.e2, /*liquid=*/false, pr) == PsRegime::Independent;
+        if (s.queried2) {
             EOS::REY2P_vapor(s.rho2, s.e2, Y, s.P2);
-            ps_guard::sanitize_phase_pressure(s.P2, s.P1);
+            s.p2_substituted = ps_guard::sanitize_phase_pressure(s.P2, s.P1);
         } else { s.P2 = s.P1; }
     } else {
+        s.queried2 = true;
         EOS::REY2P_vapor(s.rho2, s.e2, Y, s.P2);
+        s.host_floored = !ps_guard::phase_pressure_ok(s.P2, Real(0.0));
         s.P2 = ps_guard::sanitize_stock_pressure(s.P2);
-        if (q1.exists && ps_regime_reach(s.rg1, s.rho1, s.e1, /*liquid=*/true, pr) == PsRegime::Independent) {
+        s.queried1 = q1.exists
+                  && ps_regime_reach(s.rg1, s.rho1, s.e1, /*liquid=*/true, pr) == PsRegime::Independent;
+        if (s.queried1) {
             EOS::REY2P_liquid(s.rho1, s.e1, Y, s.P1);
-            ps_guard::sanitize_phase_pressure(s.P1, s.P2);
+            s.p1_substituted = ps_guard::sanitize_phase_pressure(s.P1, s.P2);
         } else { s.P1 = s.P2; }
     }
     s.P_mix = s.alpha1 * s.P1 + s.alpha2 * s.P2;

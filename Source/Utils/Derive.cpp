@@ -752,14 +752,14 @@ CAMR_derpres(
     EOS::REY2P(rho, e, massfrac, p);
 #ifdef USE_PS_HYDRO
     // Report the volume-fraction mixture pressure P_mix = α₁P₁ + α₂P₂
-    // (branch-locked per-phase EOS) rather than the single-fluid
-    // EOS(ρ_mix, e_mix), which dips spuriously at smeared two-phase
-    // contacts.  Falls back to the single-fluid p when a per-phase
-    // inversion is non-physical.  `dat` carries the full NVAR state.
+    // of the checked cell state (branch-locked per-phase EOS, host
+    // substitution for a non-physical minority P) rather than the
+    // single-fluid EOS(ρ_mix, e_mix), which dips spuriously at smeared
+    // two-phase contacts.  `dat` carries the full NVAR state.
     {
       amrex::Real Uloc[NVAR];
       for (int n = 0; n < NVAR; ++n) Uloc[n] = dat(i, j, k, n);
-      p = ps_mixture_pressure_from_cons(Uloc, p, l_pres);
+      p = ps_mixture_pressure_from_cons(Uloc, l_pres);
     }
 #endif
     pfab(i, j, k) = p;

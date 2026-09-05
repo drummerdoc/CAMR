@@ -33,6 +33,7 @@
 #include "PS_constants.H"
 #include "PS_util.H"
 #include "PS_counters.H"
+#include "PS_state.H"
 #include <AMReX_GpuQualifiers.H>
 #include <cmath>
 
@@ -43,9 +44,9 @@ namespace PS_HLLC {
 // -------------------------------------------------------------------
 struct Face {
     amrex::Real alpha_1, alpha_2;
-    amrex::Real rho_1, rho_2;    // per-phase densities (branch-locked)
+    amrex::Real rho_1, rho_2;    // per-phase densities (checked quotients)
     amrex::Real m_1, m_2;        // α_k ρ_k (partial masses; = NVAR[UM*])
-    amrex::Real rho_mix;         // m_1 + m_2
+    amrex::Real rho_mix;         // floored URHO (PsCellState::rho)
     amrex::Real u_n;             // normal velocity
     amrex::Real ux, uy, uz;      // full velocity components
     amrex::Real e_1, e_2;        // per-phase specific internal energy
@@ -60,14 +61,16 @@ struct Face {
 
 // -------------------------------------------------------------------
 //  face_from_state: the Face on one side from that cell's conserved
-//  array — the live per-face state of the wp interior.  rho_mix is
-//  floored at 1e-6 kg/m³; alpha is clamped to [0,1] with no interior
-//  floor (exact 0 and 1 mean Absent).  Per-phase (P_k, c_k) come from
-//  the branch-locked EOS under the presence dispatch: the host phase
-//  (larger alpha) defines the cell, a non-Independent phase takes the
-//  host's P and c, an Absent phase also takes the host's rho, e, E as
-//  placeholders multiplied by m_k = 0 downstream.  valid = rho_mix and
-//  c_frozen finite and positive.  docs §2.1.
+//  array — the live per-face state of the wp interior.  The phase state
+//  (alpha_k, m_k, rho_mix, u, rho_k, e_k, P_k, host, P_mix) is the
+//  checked cell state ps_cell_state (PS_state.H), so the face and the
+//  physical flux read one definition.  This function adds only what the
+//  star closure needs beyond it: E_k = e_k + ke, the per-phase sound
+//  speed c_k on the same branch and at the same (rho_k, e_k) the core
+//  queried for P_k (REY2Cs_*, a cache hit on the host), the host's c for
+//  a phase the core did not query, and the host's rho, e, E for an
+//  Absent phase (placeholders multiplied by m_k = 0 downstream).
+//  valid = rho_mix and c_frozen finite and positive.  docs §2.1.
 // -------------------------------------------------------------------
 AMREX_GPU_HOST_DEVICE
 AMREX_FORCE_INLINE
@@ -78,99 +81,56 @@ Face face_from_state(int idir, const amrex::Real U[NVAR],
     Face f;
     f.valid = false;
 
-    f.m_1 = amrex::max(ps_finite_or(U[UM1RHO1], Real(0.0)), Real(0.0));
-    f.m_2 = amrex::max(ps_finite_or(U[UM2RHO2], Real(0.0)), Real(0.0));
-    f.rho_mix = amrex::max(f.m_1 + f.m_2, Real(ps_const::RHO_MIX_MIN));
-
-    Real a1 = ps_finite_or(U[UALPHA1], Real(1.0));
-    // Bounds only; out-of-range values are ps_validate_state's to report.
-    if (a1 < Real(0.0)) a1 = Real(0.0);
-    if (a1 > Real(1.0)) a1 = Real(1.0);
-    f.alpha_1 = a1;
-    f.alpha_2 = Real(1.0) - a1;
-
-    const PsRegime rg1 = ps_regime(f.alpha_1, f.m_1, pr);
-    const PsRegime rg2 = ps_regime(f.alpha_2, f.m_2, pr);
-    // Independent: m/alpha is well-conditioned (alpha >= alpha_cond) and
-    // is clamped into the EOS domain (G1, PS_guards.H).  Corridor: the
-    // ratio is noise but enters the star-state q_k denominator, where
-    // its contribution is bounded by the tiny m_k; formed clamped.
-    // Absent: never divided; the host's density is substituted below.
-    f.rho_1 = (rg1 == PsRegime::Absent) ? Real(0.0)
-            : ps_guard::clamp_phase_density(f.m_1 / amrex::max(f.alpha_1, Real(ps_const::DENOM_TINY)),
-                                            EOS::rho_min(), EOS::rho_max());
-    f.rho_2 = (rg2 == PsRegime::Absent) ? Real(0.0)
-            : ps_guard::clamp_phase_density(f.m_2 / amrex::max(f.alpha_2, Real(ps_const::DENOM_TINY)),
-                                            EOS::rho_min(), EOS::rho_max());
-
-    // Velocity components.
-    const Real inv_r = Real(1.0) / f.rho_mix;
-    f.ux = ps_finite_or(U[UMX], Real(0.0)) * inv_r;
-#if (AMREX_SPACEDIM >= 2)
-    f.uy = ps_finite_or(U[UMY], Real(0.0)) * inv_r;
-#else
-    f.uy = Real(0.0);
-#endif
-#if (AMREX_SPACEDIM == 3)
-    f.uz = ps_finite_or(U[UMZ], Real(0.0)) * inv_r;
-#else
-    f.uz = Real(0.0);
-#endif
+    const PsCellState s = ps_cell_state(U, pr);
+    f.alpha_1 = s.alpha1;
+    f.alpha_2 = s.alpha2;
+    f.m_1     = s.m1;
+    f.m_2     = s.m2;
+    f.rho_mix = s.rho;
+    f.ux = s.ux;
+    f.uy = s.uy;
+    f.uz = s.uz;
     if      (idir == 0) f.u_n = f.ux;
     else if (idir == 1) f.u_n = f.uy;
     else                f.u_n = f.uz;
 
-    // Per-phase specific total and internal energies.
-    const Real ke_spec = ps_kinetic_energy(f.ux, f.uy, f.uz);
-    const Real E1_tot = ps_finite_or(U[UE1], Real(0.0));
-    const Real E2_tot = ps_finite_or(U[UE2], Real(0.0));
-    const Real e_mix  = ps_finite_or(U[UEINT], Real(0.0)) * inv_r;
-    f.E_1 = (f.m_1 > ps_const::M_TINY) ? E1_tot / f.m_1 : (e_mix + ke_spec);
-    f.E_2 = (f.m_2 > ps_const::M_TINY) ? E2_tot / f.m_2 : (e_mix + ke_spec);
-    f.e_1 = f.E_1 - ke_spec;
-    f.e_2 = f.E_2 - ke_spec;
+    // Per-phase state from the core; E_k is the specific total energy.
+    f.rho_1 = s.rho1;
+    f.rho_2 = s.rho2;
+    f.e_1   = s.e1;
+    f.e_2   = s.e2;
+    f.E_1   = s.e1 + s.ke;
+    f.E_2   = s.e2 + s.ke;
+    f.P_1   = s.P1;
+    f.P_2   = s.P2;
+    f.P_mix = s.P_mix;
 
     // Species carrier (pure CO₂).
     Real Y[NUM_SPECIES];
     ps_pure_species(Y);
 
-    // Branch-locked per-phase P and c, one solve per phase, host dispatch
-    // as in ps_augment_primitives: the host's query defines the cell; a
-    // Corridor/Absent phase takes the host's intensives (the corridor
-    // closure is the definition of that phase's thermodynamics, not a
-    // repair), so its EOS is never queried at an undefined (rho_k, e_k).
+    // Per-phase c on the branch the core queried, at the same state; a
+    // phase the core did not query (Corridor, Absent, promotion-refused)
+    // takes the host's c as it takes the host's P, and an Absent phase
+    // also takes the host's rho, e, E.
     Real c1, c2;
-    const bool host_is_1 = (f.alpha_1 >= f.alpha_2);
-    if (host_is_1) {
-        EOS::REY2PCs_liquid(f.rho_1, f.e_1, Y, f.P_1, c1);
-        if (ps_regime_reach(rg2, f.rho_2, f.e_2, /*liquid=*/false, pr)
-                == PsRegime::Independent) {
-            EOS::REY2PCs_vapor(f.rho_2, f.e_2, Y, f.P_2, c2);
+    if (s.host_is_1) {
+        EOS::REY2Cs_liquid(s.rho1, s.e1, Y, c1);
+        if (s.queried2) {
+            EOS::REY2Cs_vapor(s.rho2, s.e2, Y, c2);
         } else {
-            f.P_2 = f.P_1; c2 = c1;
-            if (rg2 == PsRegime::Absent) { f.rho_2 = f.rho_1; f.e_2 = f.e_1; f.E_2 = f.E_1; }
+            c2 = c1;
+            if (s.rg2 == PsRegime::Absent) { f.rho_2 = f.rho_1; f.e_2 = f.e_1; f.E_2 = f.E_1; }
         }
     } else {
-        EOS::REY2PCs_vapor(f.rho_2, f.e_2, Y, f.P_2, c2);
-        if (ps_regime_reach(rg1, f.rho_1, f.e_1, /*liquid=*/true, pr)
-                == PsRegime::Independent) {
-            EOS::REY2PCs_liquid(f.rho_1, f.e_1, Y, f.P_1, c1);
+        EOS::REY2Cs_vapor(s.rho2, s.e2, Y, c2);
+        if (s.queried1) {
+            EOS::REY2Cs_liquid(s.rho1, s.e1, Y, c1);
         } else {
-            f.P_1 = f.P_2; c1 = c2;
-            if (rg1 == PsRegime::Absent) { f.rho_1 = f.rho_2; f.e_1 = f.e_2; f.E_1 = f.E_2; }
+            c1 = c2;
+            if (s.rg1 == PsRegime::Absent) { f.rho_1 = f.rho_2; f.e_1 = f.e_2; f.E_1 = f.E_2; }
         }
     }
-    // G3 (PS_guards.H): per-phase pressure floor against the host's
-    // pressure as the reference, consistent with the ctoprim sites.  A
-    // slaved phase's pressure is the host's already, so only an
-    // Independent minority phase carries a P worth testing.
-    {
-        const Real P_ref = (f.alpha_1 >= f.alpha_2) ? f.P_1 : f.P_2;
-        const Real P_stock = ps_guard::sanitize_stock_pressure(P_ref);
-        if (rg1 == PsRegime::Independent) ps_guard::sanitize_phase_pressure(f.P_1, P_stock);
-        if (rg2 == PsRegime::Independent) ps_guard::sanitize_phase_pressure(f.P_2, P_stock);
-    }
-    f.P_mix = f.alpha_1 * f.P_1 + f.alpha_2 * f.P_2;
     // Both c_k are floored to 1 m/s on a non-finite or non-positive EOS
     // return (docs §8.3, guard inventory).
     if (!std::isfinite(c1) || c1 <= Real(0.0)) c1 = ps_const::C_MIN;
