@@ -8,6 +8,7 @@ Compiled only when the Exec `GNUmakefile` sets `USE_PS_HYDRO = TRUE` (adds `-DUS
 | `PS_hllc.H` | Face state, wave speeds, the relaxed-α star state and the fluctuation decomposition; refusal causes and the face audit. |
 | `PS_wavespeed.H` | The one mixture wave speed (Wallis frozen form) used by faces and by the CFL step. |
 | `PS_ctoprim.H` | Extended conservative-to-primitive conversion, mixture pressure $P=\alpha_1P_1+\alpha_2P_2$. |
+| `PS_state.H` | `ps_cell_state`: the checked per-cell phase state (α_k, m_k, ρ_k, e_k, P_k, regimes, host, P_mix) from one conserved array; the flux path's constructor. |
 | `PS_presence.H` / `PS_promote.H` | Presence parameters ($\alpha_{\mathrm{van}}, \alpha_{\mathrm{cond}}, \alpha_{\mathrm{birth}}, \rho_{\mathrm{deg}}$), the regime classifier, checked promotion to INDEPENDENT. |
 | `PS_relaxation.H` | Umbrella over the four reaction-operator headers below (include this one). |
 | `PS_relax.H` | Relaxation dispatch (`CAMR.ps_relax_mode`, default 5 = coupled X3), the EOS callback `ps_make_camr_eos_api`, relax-gate hysteresis, sweep reports. |

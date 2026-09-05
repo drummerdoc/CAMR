@@ -42,6 +42,7 @@
 #include "PS_promote.H"
 #include "PS_guards.H"
 #include "PS_ctoprim.H"
+#include "PS_state.H"
 #include "PS_wavespeed.H"
 #include "PS_constants.H"
 #include "PS_util.H"
@@ -57,10 +58,10 @@ using namespace amrex;
 //  (2014) eqs. (1)-(4) on the six-equation slots, with the phase-energy
 //  work term at the mixture pressure P_mix = α₁P₁ + α₂P₂ (a per-phase
 //  pressure there is bit-identical at mechanical equilibrium;
-//  docs/DESIGN_DECISIONS.md H-3).  Per-phase (ρ_k, e_k, P_k)
-//  are built by the same presence dispatch as ps_augment_primitives
-//  (PS_ctoprim.H); the PR (ρ, e) → state cache absorbs the repeated
-//  per-face EOS solves.  Non-finite flux entries are zeroed and counted.
+//  docs/DESIGN_DECISIONS.md H-3).  Per-phase (ρ_k, e_k, P_k) and P_mix
+//  are the checked cell state ps_cell_state (PS_state.H); the PR
+//  (ρ, e) → state cache absorbs the repeated per-face EOS solves.
+//  Non-finite flux entries are zeroed and counted.
 // ---------------------------------------------------------------------
 AMREX_GPU_HOST_DEVICE
 AMREX_FORCE_INLINE
@@ -68,89 +69,27 @@ void
 ps_physical_flux_from_state(int idir, const Real U[NVAR], Real F[NVAR],
                             const PsPres& pr) noexcept
 {
-    // Derive mixture primitives.
-    const Real rho    = amrex::max(ps_finite_or(U[URHO], Real(ps_const::RHO_MIX_MIN)), Real(ps_const::RHO_MIX_MIN));
-    const Real inv_r  = Real(1.0) / rho;
-    const Real ux     = ps_finite_or(U[UMX], Real(0.0)) * inv_r;
-#if (AMREX_SPACEDIM >= 2)
-    const Real uy     = ps_finite_or(U[UMY], Real(0.0)) * inv_r;
-#else
-    const Real uy     = Real(0.0);
-#endif
-#if (AMREX_SPACEDIM == 3)
-    const Real uz     = ps_finite_or(U[UMZ], Real(0.0)) * inv_r;
-#else
-    const Real uz     = Real(0.0);
-#endif
-    Real un = ux;
-    if      (idir == 1) un = uy;
-    else if (idir == 2) un = uz;
+    const PsCellState s = ps_cell_state(U, pr);
+    const Real rho     = s.rho;
+    Real un = s.ux;
+    if      (idir == 1) un = s.uy;
+    else if (idir == 2) un = s.uz;
 
-    const Real UEden  = ps_finite_or(U[UEDEN], Real(0.0));
-    const Real UEint  = ps_finite_or(U[UEINT], Real(0.0));
-    const Real e_mix  = UEint * inv_r;
-
-    // Derive per-phase primitives.
-    Real alpha_1 = ps_finite_or(U[UALPHA1], Real(1.0));
-    if (alpha_1 < Real(0.0)) alpha_1 = Real(0.0);
-    if (alpha_1 > Real(1.0)) alpha_1 = Real(1.0);
-    const Real alpha_2 = Real(1.0) - alpha_1;
-
-    const Real m1 = amrex::max(ps_finite_or(U[UM1RHO1], Real(0.0)), Real(0.0));
-    const Real m2 = amrex::max(ps_finite_or(U[UM2RHO2], Real(0.0)), Real(0.0));
-    // Phase state is a checked construction (ps_regime + ps_phase_quot),
-    // never a repaired quotient.
-    const PsRegime rg1 = ps_regime(alpha_1, m1, pr);
-    const PsRegime rg2 = ps_regime(alpha_2, m2, pr);
-    const Real ke_spec = ps_kinetic_energy(ux, uy, uz);
-    const PsPhaseQuot q1 = ps_phase_quot(alpha_1, m1,
-                                         ps_finite_or(U[UE1], Real(0.0)), ke_spec, pr);
-    const PsPhaseQuot q2 = ps_phase_quot(alpha_2, m2,
-                                         ps_finite_or(U[UE2], Real(0.0)), ke_spec, pr);
-    // A phase with no state takes the mixture values by definition; its
-    // alpha weight in the mixture pressure below is zero.
-    const Real rho_1 = q1.exists ? q1.rho : rho;
-    const Real rho_2 = q2.exists ? q2.rho : rho;
-    const Real e1    = q1.exists ? q1.e   : e_mix;
-    const Real e2    = q2.exists ? q2.e   : e_mix;
-
-    Real Y[NUM_SPECIES];
-    ps_pure_species(Y);
-
-    // Branch-locked per-phase pressures (phase 1 liquid, phase 2 vapour/SC);
-    // no single-fluid mixture query, which can have no root in a two-phase
-    // cell.  Host dispatch: the host phase (larger alpha) always has a state
-    // and defines the cell; a phase whose own pressure is unavailable (no
-    // state, not Independent, or a non-physical branch result) takes the
-    // host's, which is the same substitution sanitize_phase_pressure makes.
-    Real P1, P2;
-    const bool host_is_1 = (alpha_1 >= alpha_2);
-    if (host_is_1) {
-        EOS::REY2P_liquid(rho_1, e1, Y, P1);
-        P1 = ps_guard::sanitize_stock_pressure(P1);      // host: floor only
-        if (q2.exists && ps_regime_reach(rg2, rho_2, e2, /*liquid=*/false, pr) == PsRegime::Independent) {
-            EOS::REY2P_vapor(rho_2, e2, Y, P2);
-            ps_guard::sanitize_phase_pressure(P2, P1);
-        } else { P2 = P1; }
-    } else {
-        EOS::REY2P_vapor(rho_2, e2, Y, P2);
-        P2 = ps_guard::sanitize_stock_pressure(P2);
-        if (q1.exists && ps_regime_reach(rg1, rho_1, e1, /*liquid=*/true, pr) == PsRegime::Independent) {
-            EOS::REY2P_liquid(rho_1, e1, Y, P1);
-            ps_guard::sanitize_phase_pressure(P1, P2);
-        } else { P1 = P2; }
-    }
-    const Real P_mix = alpha_1 * P1 + alpha_2 * P2;
+    const Real UEden   = ps_finite_or(U[UEDEN], Real(0.0));
+    const Real UEint   = s.rhoe;
+    const Real alpha_1 = s.alpha1;
+    const Real alpha_2 = s.alpha2;
+    const Real P_mix   = s.P_mix;
 
     for (int n = 0; n < NVAR; ++n) F[n] = Real(0.0);
 
     F[URHO ] = rho * un;
-    F[UMX  ] = rho * un * ux + (idir == 0 ? P_mix : Real(0.0));
+    F[UMX  ] = rho * un * s.ux + (idir == 0 ? P_mix : Real(0.0));
 #if (AMREX_SPACEDIM >= 2)
-    F[UMY  ] = rho * un * uy + (idir == 1 ? P_mix : Real(0.0));
+    F[UMY  ] = rho * un * s.uy + (idir == 1 ? P_mix : Real(0.0));
 #endif
 #if (AMREX_SPACEDIM == 3)
-    F[UMZ  ] = rho * un * uz + (idir == 2 ? P_mix : Real(0.0));
+    F[UMZ  ] = rho * un * s.uz + (idir == 2 ? P_mix : Real(0.0));
 #endif
     F[UEDEN] = (UEden + P_mix) * un;
     F[UEINT] = UEint * un;
