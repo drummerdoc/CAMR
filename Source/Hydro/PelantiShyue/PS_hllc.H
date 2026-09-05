@@ -397,8 +397,8 @@ bool ps_star_state(int idir, const Face& fK, const amrex::Real UK[NVAR],
 
 // -------------------------------------------------------------------
 //  Face audit (host-only, compiled out on GPU, no effect on the
-//  numerics; printed as [PS-FACE] / [PS-FLCAUSE] / [PS-RELAXFB] /
-//  [PS-W21] under CAMR.ps_face_diag, see CAMR_advance.cpp).  Face
+//  numerics; printed as [PS-FACE] / [PS-FLCAUSE] / [PS-RELAXFB]
+//  under CAMR.ps_face_diag, see CAMR_advance.cpp).  Face
 //  classes: 0 = every (side, phase) Independent; 1 = at least one
 //  Corridor, no Absent; 2 = at least one Absent (a presence front).
 //  Storage is the face section of PsCounters (PS_counters.H):
@@ -409,10 +409,7 @@ bool ps_star_state(int idir, const Face& fK, const amrex::Real UK[NVAR],
 //      high-side cell (i,j,k) and idir as ps_wp_face sees it; -9999 =
 //      nothing recorded;
 //    fl_cause: refusals per cause (PsFlCause), not keyed by class;
-//    fl_side: per side whose star state refused (0 = L, 1 = R);
-//    max_w21_mass / max_w21_energy: worst relative residual of the
-//      correction-flux sum identities before the derived assignments in
-//      PS_umeth.cpp; must read round-off.
+//    fl_side: per side whose star state refused (0 = L, 1 = R).
 //  Reset by PsCounters::reset_face().
 // -------------------------------------------------------------------
 

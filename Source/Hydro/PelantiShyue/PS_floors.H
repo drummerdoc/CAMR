@@ -27,12 +27,11 @@
 #include <AMReX_Print.H>
 #include <AMReX_BLProfiler.H>
 #include <cmath>
+#include <algorithm>   // std::max / std::min
 #include <cstdint>
 #include <string>
 #include <fstream>
 #include <unordered_map>
-#include <vector>      // ps_report_psat
-#include <algorithm>   // ps_report_psat
 
 // CAMR.ps_pres_floor (0 Pa = off): ps_apply_floor raises each Independent
 // phase's internal energy so its EOS pressure is at least this — the
@@ -73,9 +72,6 @@ ps_resync_mixture_mass(amrex::MultiFab& S_new, int nghost = 0)
 {
     BL_PROFILE("PS::ps_resync_mixture_mass()");
     using amrex::Real;
-    // CAMR.ps_resync_mass (1): 0 disables the resync, for A/B.
-    static const int enabled = ps_dial_int("ps_resync_mass", 1);
-    if (enabled == 0) return;
     for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
         const amrex::Box bx = mfi.growntilebox(nghost);
         amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
@@ -219,29 +215,6 @@ ps_apply_floor(amrex::MultiFab& S_new, int nghost = 0)
                     ps_regime(alk, mk, l_floor_pr) != PsRegime::Independent) {
 #if !defined(AMREX_USE_GPU)
                     ++ps_counters().floor_skip;
-                    if (l_floor_pr.floor_budget != 0) {
-                        //  Budget probe (CAMR.ps_floor_budget): is the skipped
-                        //  phase reachable on its own branch, and how much
-                        //  energy would the pressure floor have added?
-                        const Real rhod = mk / alk;
-                        const Real ekd  = U(i,j,k, ue) / mk - kesp;
-                        const hem::Phase3 brd = (ph == 1) ? hem::Phase3::Liquid
-                                                          : hem::Phase3::Vapor;
-                        Real Pb, Tb, Sb;
-                        if (EOS::REY2PTS_phase_try(rhod, ekd, Y, brd, Pb, Tb, Sb))
-                            ++ps_counters().floor_reach;
-                        else
-                            ++ps_counters().floor_unreach;
-                        //  Energy the pressure floor would have manufactured.
-                        if (pfloor > Real(0.0)) {
-                            Real e_pf; EOS::RYP2E(rhod, Y, pfloor, e_pf);
-                            if (std::isfinite(e_pf) && ekd < e_pf)
-                                ps_counters().floor_e_avoided +=
-                                    mk * (e_pf - ekd);
-                        }
-                        if (ekd < ps_counters().floor_min_e)
-                            ps_counters().floor_min_e = ekd;
-                    }
 #endif
                     continue;
                 }

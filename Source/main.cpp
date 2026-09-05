@@ -122,9 +122,6 @@ main(int argc, char* argv[])
 #ifdef USE_PS_HYDRO
   // 0-D PS self-tests (docs/MODEL_AND_ALGORITHM.md §8.6): run after init
   // with the EOS live, print their tables, and exit without time-stepping.
-  // Kept: ps_ptg_selftest, ps_relax_sweep, ps_x3_test.  ps_dilute_probe,
-  // ps_m2_test, ps_asy1_probe are investigation probes.
-  // Retire-candidate: see docs/DESIGN_DECISIONS.md §7 O-8.
   // The exit code is carried out to main()'s own scope: the process
   // leaves through amrex::Finalize() only after the "main()" profiler
   // region is stopped, so a TPROF build sees an empty timer stack.
@@ -135,25 +132,15 @@ main(int argc, char* argv[])
     pp_ps.query("ps_ptg_selftest", ps_ptg_selftest);
     int ps_relax_sweep = 0;
     pp_ps.query("ps_relax_sweep", ps_relax_sweep);
-
-    int ps_dilute_probe = 0;
-    pp_ps.query("ps_dilute_probe", ps_dilute_probe);
-    int ps_m2_test = 0;
-    pp_ps.query("ps_m2_test", ps_m2_test);
-    int ps_asy1_probe_f = 0;
-    pp_ps.query("ps_asy1_probe", ps_asy1_probe_f);
     int ps_x3_test = 0;                    // X3 fixed-point acceptance harness
     pp_ps.query("ps_x3_test", ps_x3_test);
-    if (ps_ptg_selftest || ps_relax_sweep || ps_dilute_probe || ps_m2_test || ps_asy1_probe_f || ps_x3_test) {
+    if (ps_ptg_selftest || ps_relax_sweep || ps_x3_test) {
       // CI gate: nonzero exit on any failure so ctest/CI can fail the
       // build.  Only IOProcessor runs the serial, deterministic checks.
       int fail = 0;
       if (amrex::ParallelDescriptor::IOProcessor()) {
         if (ps_ptg_selftest) fail += ps_ptg_zerod_selftest();
         if (ps_relax_sweep)  fail += ps_relax_corner_sweep();
-        if (ps_dilute_probe) fail += ps_dilute_relax_probe();
-        if (ps_m2_test)      fail += ps_m2_ordering_test();
-        if (ps_asy1_probe_f) fail += ps_asy1_probe();
         if (ps_x3_test)      fail += ps_x3_fixedpoint_test();
       }
       amrex::ParallelDescriptor::Bcast(&fail, 1,

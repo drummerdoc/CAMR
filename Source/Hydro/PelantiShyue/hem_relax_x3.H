@@ -17,9 +17,9 @@
 
 namespace hem {
 
-// ---- iso-pressure-relaxation instrumentation (CAMR.ps_relax_diag) -------
+// ---- iso-pressure-relaxation instrumentation -----------------------------
 //  PsPrStats (PS_counters.H): does the Newton converge, or fall through to
-//  the validity-guarded bracketing scan?
+//  the validity-guarded bracketing scan?  Counted, not reported.
 inline PsPrStats& ps_pr_stats() { return ps_counters().pr_stats; }
 
 // =====================================================================
@@ -241,7 +241,7 @@ inline bool ps_iso_pressure_relax_cell(V6& U, const PsPhaseAPI& eos,
                                             ps_single_phase_threshold_default())
 {
     if (!eos.valid()) return false;
-    ++ps_pr_stats().seen;                              // CAMR.ps_relax_diag
+    ++ps_pr_stats().seen;
     double alpha1 = U[0];
     if (!std::isfinite(alpha1)) { ++ps_pr_stats().trivial; return false; }
     // Skip trivially-single-phase cells (no minority phase to relax).
@@ -332,7 +332,7 @@ inline bool ps_iso_pressure_relax_cell(V6& U, const PsPhaseAPI& eos,
     // Newton with FD derivative and step cap; on breakdown (non-finite,
     // singular slope) break to the bracketing fallback rather than fail.
     for (int iter = 0; iter < max_iter; ++iter) {
-        ++ps_pr_stats().nt_iters;                      // CAMR.ps_prdiag
+        ++ps_pr_stats().nt_iters;
         double r, P1, P2, P_ref;
         const bool fv = eval_rv(e1, r, P1, P2, P_ref);   // fused: 2 inversions
         if (!std::isfinite(r)) break;
@@ -370,7 +370,7 @@ inline bool ps_iso_pressure_relax_cell(V6& U, const PsPhaseAPI& eos,
     {
         const double Escale = std::max({std::abs(e1_init), std::abs(e2_init), 1.0e5});
         const int NS = 64;
-        ++ps_pr_stats().fb;                            // CAMR.ps_relax_diag
+        ++ps_pr_stats().fb;
         bool have_prev = false; double e_prev = 0.0, r_prev = 0.0;
         for (int s = 0; s <= NS; ++s) {
             ++ps_pr_stats().fb_samples;
@@ -648,9 +648,7 @@ inline bool ps_pelanti_relax_cell(V6& U, const PsPhaseAPI& eos,
 //  solution cannot cross it at any dt.  0-D acceptance harness:
 //  CAMR.ps_x3_test (PS_zerod_test.H).
 // =====================================================================
-//  [PS-DM] census (PsDmCensus) and [PS-X3] outcome counters (PsX3Stats),
-//  both in PS_counters.H.
-inline PsDmCensus& ps_dm_census() { return ps_counters().dm_census; }
+//  [PS-X3] outcome counters (PsX3Stats, PS_counters.H).
 inline PsX3Stats&  ps_x3_stats()  { return ps_counters().x3_stats; }
 
 struct PsX3Params {
@@ -661,12 +659,10 @@ struct PsX3Params {
     bool   dome_gate  = true;     // the one eligibility question
     int    max_newton = 40;
     //  Band-exit policy (CAMR.ps_coexist_action, read in PS_relax.H;
-    //  default 0): 0 stand, counted; 1 abort with the cell context;
-    //  2 continue unless a hi-side exit; 3 continue always; 4 a lo-side
-    //  exit overrides the supercritical veto.  The runaway clause below
-    //  is always active.
+    //  default 0): 0 stand, counted; 1 abort with the cell context.  The
+    //  runaway clause below is always active.
     int    coexist_action = 0;
-    //  Out-param for [PS-COEXIT-TH]: bit 1 lo-side exit, bit 2 hi-side
+    //  Optional band-exit out-param: bit 1 lo-side exit, bit 2 hi-side
     //  exit, bit 4 continued, bit 8 runaway clause; 0 = in-band.
     int*   exit_code = nullptr;
     //  [PS-DT] out-params: |T1-T2| at the post-projection entry state and
@@ -756,9 +752,6 @@ inline bool ps_x3_relax_cell(V6& U, const PsPhaseAPI& eos, double dt,
         const bool hi = (s0.p1.T >= Tcr) || (s0.p2.T >= Tcr);
         if (lo || hi) {
             bool cont = false;
-            if      (xp.coexist_action == 3)        cont = true;
-            else if (xp.coexist_action == 2 && !hi) cont = true;
-            else if (xp.coexist_action == 4 && lo)  cont = true;
             // Runaway clause (always active): a hi-side-only exit whose
             // supercritical phase sits above RUNAWAY_TCR_FACTOR * T_crit is
             // not a material cross-critical contact but a dilute sliver the

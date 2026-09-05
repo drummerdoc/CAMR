@@ -24,7 +24,7 @@
 //  totals only, never species.  Dials (all CAMR.*): ps_alpha_cond (2e-2),
 //  ps_alpha_birth (4e-2), ps_presence_vanish (1e-8), ps_presence_rho_deg
 //  (0.5), ps_presence_e_deg_lo/_hi (-2e6 / 2e7), ps_promote_checked (1),
-//  ps_floor_indep (1), ps_floor_budget (0).
+//  ps_floor_indep (1).
 // =====================================================================
 #ifdef USE_PS_HYDRO
 
@@ -61,11 +61,6 @@ struct PsPres {
     // (PS_promote.H); 0 = A/B opt-out.  On because it is provably inert on
     // the healthy path and closes the inherited-corrupt promotion abort.
     int         promote_checked = 1;
-    // CAMR.ps_floor_budget (0): diagnostic; for each corridor phase the
-    // floor leg skips, test own-branch reachability and tally the energy
-    // the pressure floor would have added ([PS-FLOORBUDGET]).  Off because
-    // the per-skip EOS test is expensive; no value or control-flow change.
-    int         floor_budget    = 0;
     // CAMR.ps_floor_indep (1): ps_apply_floor's per-phase leg acts on
     // Independent phases only; 0 = A/B opt-out.  A corridor phase is
     // host-slaved and never branch-queried, so flooring it only manufactures
@@ -155,7 +150,6 @@ inline const PsPres& ps_presence_params()
         v.rho_deg         = ps_dial_real("ps_presence_rho_deg",  v.rho_deg);
         v.promote_checked = ps_dial_int ("ps_promote_checked",   v.promote_checked);
         v.floor_indep     = ps_dial_int ("ps_floor_indep",       v.floor_indep);
-        v.floor_budget    = ps_dial_int ("ps_floor_budget",      v.floor_budget);
         v.e_deg_lo        = ps_dial_real("ps_presence_e_deg_lo", v.e_deg_lo);
         v.e_deg_hi        = ps_dial_real("ps_presence_e_deg_hi", v.e_deg_hi);
         // ps_presence_vanish is also the fold threshold and must stay > 0.

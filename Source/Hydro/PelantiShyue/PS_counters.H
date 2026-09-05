@@ -14,7 +14,7 @@
 //    reset_guards / reset_face / reset_promote / reset_presence /
 //    fold.reset       : the [PS-MASS] probe (ps_diag_mass) in CAMR_advance
 //    reset_mass       : the [PS-FLOOR] census (CAMR_PS_DIAG builds)
-//    relax = {} / pres.reset / pr_stats, x3_stats, dm_census, mt_stats
+//    n_gate_presence / pres.reset / x3_stats, mt_stats
 //                     : per ps_apply_relaxation sweep
 //    reset_mt_cause, mt_coexist.reset, reset_flash_refuse
 //                     : per PS_sources report
@@ -33,50 +33,13 @@ constexpr int PS_COUNTERS_MT_NCAUSE  = 14;
 constexpr int PS_COUNTERS_FLR_NCAUSE = 21;
 
 // ---------------------------------------------------------------------
-//  Per-sweep relaxation counters.  Every early return of the mode-0
-//  entry path and every kernel failure is tallied by cause, and an alpha
-//  written outside [0,1] is counted, never clamped, so an upstream defect
-//  (a flux writing alpha > 1) stays visible.  Reset at the start of each
-//  ps_apply_relaxation sweep, reported at its end under ps_relax_verbose.
-//  Plain ints: the sweep is single-threaded per rank.
-//  Retire-candidate: see docs/DESIGN_DECISIONS.md §5.
-// ---------------------------------------------------------------------
-struct PsRelaxDiag {
-    int n_calls        = 0;   // cells visited
-    int n_skip_nan     = 0;   // alpha_in not finite
-    int n_skip_lo      = 0;   // alpha_in < alpha_floor (near-pure phase 2)
-    int n_skip_hi_ok   = 0;   // alpha_in in (1 - alpha_floor, 1]
-    int n_skip_hi_bad  = 0;   // alpha_in > 1 (impossible: an upstream defect)
-    int n_skip_mk      = 0;   // m_1 or m_2 non-positive
-    //  One counter for the presence-gate refusal at all five relax entry
-    //  sites: identical predicate on identical inputs, so a per-mode
-    //  split would only re-encode ps_relax_mode.
-    int n_gate_presence = 0;
-    int n_failed       = 0;   // kernel returned false; split by cause:
-    int n_fail_eos     = 0;   //   no root / off-domain EOS state
-    int n_fail_slope   = 0;   //   singular dP/dalpha
-    int n_fail_maxiter = 0;   //   no convergence within max_iter
-    int n_fail_input   = 0;   //   bad input on entry
-    int n_alpha_low    = 0;   // alpha_1 written < alpha_floor
-    int n_alpha_high   = 0;   // alpha_1 written > 1 - alpha_floor
-    int n_alpha_gt_one = 0;   // alpha_1 written > 1
-    int n_alpha_lt_zero= 0;   // alpha_1 written < 0
-    double alpha_min_seen    = 1.0;   // range of relax-written alpha
-    double alpha_max_seen    = 0.0;
-    double alpha_in_max_seen = 0.0;   // range of alpha_in (catches flux overshoot)
-    double alpha_in_min_seen = 1.0;
-};
-
-// ---------------------------------------------------------------------
 //  Per-sweep thermal-leg instruments, reset and reported with the sweep.
 //  [PS-PRES]: the |P1-P2| residual at chain exit, split by whether the
 //  thermal leg moved a T by > 1 K, ran and stood, or was gate-skipped;
 //  the post-thermal states cost two branch-locked solves, so they are
 //  formed only under CAMR.ps_pres_diag.  [PS-DT]: |T1-T2| at entry and
 //  exit of the leg (completeness), fed by mode 4 and by X3.
-//  [PS-COEXIT-TH]: the leg's band exits by side and outcome; counting is
-//  always on, the report is gated by ps_coexit_diag, and the response is
-//  whatever ps_coexist_action selects.  Docs/MODEL_AND_ALGORITHM.md §8.6.
+//  Docs/MODEL_AND_ALGORITHM.md §8.6.
 // ---------------------------------------------------------------------
 struct PsPresDiag {
     // thermal leg ran and moved a T by > 1 K
@@ -93,13 +56,6 @@ struct PsPresDiag {
     long   n_dt = 0;
     double dtpre_max = 0.0,  dtpre_sum = 0.0;
     double dtpost_max = 0.0, dtpost_sum = 0.0;
-    // band exits by side: lo = some T <= T_triple, hi = some T >= T_crit
-    long   n_exit_lo = 0, n_exit_hi = 0, n_exit_both = 0;
-    long   n_exit_continued = 0;   // exit, thermal leg ran anyway
-    long   n_exit_refused   = 0;   // exit, thermal leg stood
-    // hi-side-only exit beyond 2 T_crit: the runaway clause ran the leg
-    // (subset of n_exit_continued)
-    long   n_exit_runaway   = 0;
     void reset() { *this = PsPresDiag{}; }
 };
 
@@ -176,26 +132,15 @@ struct PsMtCoexist {
                    n_pr1 = 0; }
 };
 
-// ---- iso-pressure-relaxation instrumentation (CAMR.ps_relax_diag) -------
-//  Same question as PsMtStats, for ps_iso_pressure_relax_cell: does the
-//  Newton converge, or fall through to the validity-guarded bracketing
-//  scan (65 samples x 2 per-phase EOS inversions, plus up to 60 bisections)?
+// ---- iso-pressure-relaxation instrumentation ----------------------------
+//  Same question as PsMtStats, for ps_iso_pressure_relax_cell (modes 1
+//  and 2): does the Newton converge, or fall through to the
+//  validity-guarded bracketing scan?  Counted, not reported.
 struct PsPrStats {
     long seen = 0, trivial = 0, nt_iters = 0, nt_ok = 0;
     long fb = 0, fb_samples = 0, fb_bisect = 0, fb_ok = 0, refused = 0;
     void reset() { seen = trivial = nt_iters = nt_ok = 0;
                    fb = fb_samples = fb_bisect = fb_ok = refused = 0; }
-};
-
-//  [PS-DM]: census of |dm| transferred by the mass-transfer channel per
-//  sweep, populated by both the split source and the X3 wrapper so the
-//  magnitudes are comparable.  Counting only.
-struct PsDmCensus {
-    long   n   = 0;       // cells with nonzero transfer this sweep
-    double sum = 0.0;     // sum of |dm| [kg/m^3]
-    double mx  = 0.0;     // max |dm|
-    void add(double a) { if (a > 0.0) { ++n; sum += a; if (a > mx) mx = a; } }
-    void reset() { n = 0; sum = 0.0; mx = 0.0; }
 };
 
 //  [PS-X3]: the coupled operator's outcome, cause-split, including the
@@ -251,7 +196,7 @@ struct PsCounters {
     long   mass_nonfinite    = 0;
     double mass_neg_kg       = 0.0; // summed mass created by zeroing
 
-    // ---- face audit (PS_hllc.H), [PS-FACE]/[PS-FLCAUSE]/[PS-RELAXFB]/[PS-W21]
+    // ---- face audit (PS_hllc.H), [PS-FACE]/[PS-FLCAUSE]/[PS-RELAXFB] ---
     long   fl_seen[3]        = {0, 0, 0};   // per face class
     long   fl_fail[3]        = {0, 0, 0};
     double max_incmis[3]     = {0.0, 0.0, 0.0};
@@ -262,23 +207,20 @@ struct PsCounters {
     long   fl_cause[PS_COUNTERS_FL_NCAUSE] = {0};
     long   fl_side[2]        = {0, 0};
     long   relax_fb          = 0;   // equal-strain (B.14) fallbacks
-    double max_w21_mass      = 0.0;
-    double max_w21_energy    = 0.0;
 
     // ---- checked promotion / floor legs (PS_promote.H), [PS-PROMOTE] --
     long   promote_refuse    = 0;
     long   floor_skip        = 0;
-    long   floor_reach       = 0;   // [PS-FLOORBUDGET]
-    long   floor_unreach     = 0;
-    double floor_e_avoided   = 0.0;
-    double floor_min_e       = 0.0;
 
     // ---- presence (PS_presence.H, PS_relaxation.H), [PS-FOLD] --------
     long   pres_f1_demote    = 0;   // Independent refused for density degeneracy
     long   pres_f3_hyst      = 0;   // gate passes through the hysteresis band
 
     // ---- relaxation sweep (PS_relaxation.H) --------------------------
-    PsRelaxDiag relax;
+    //  One counter for the presence-gate refusal at every relax entry
+    //  site ([PS-GATE]): identical predicate on identical inputs, so a
+    //  per-mode split would only re-encode ps_relax_mode.
+    long        n_gate_presence = 0;
     PsPresDiag  pres;
     PsFoldAudit fold;
 
@@ -292,7 +234,6 @@ struct PsCounters {
     hem::PsMtStats   mt_stats;
     hem::PsMtCoexist mt_coexist;
     hem::PsPrStats   pr_stats;
-    hem::PsDmCensus  dm_census;
     hem::PsX3Stats   x3_stats;
 
     // ---- per-section resets (cadence in the header comment) ----------
@@ -312,13 +253,8 @@ struct PsCounters {
         for (int c = 0; c < PS_COUNTERS_FL_NCAUSE; ++c) fl_cause[c] = 0;
         fl_side[0] = 0; fl_side[1] = 0;
         relax_fb = 0;
-        max_w21_mass = 0.0; max_w21_energy = 0.0;
     }
-    void reset_promote() {
-        promote_refuse = 0; floor_skip = 0;
-        floor_reach = 0; floor_unreach = 0;
-        floor_e_avoided = 0.0; floor_min_e = 0.0;
-    }
+    void reset_promote() { promote_refuse = 0; floor_skip = 0; }
     void reset_presence() { pres_f1_demote = 0; pres_f3_hyst = 0; }
     void reset_mt_cause() { for (int c = 0; c < PS_COUNTERS_MT_NCAUSE; ++c) mt_cause[c] = 0; }
     void reset_flash_refuse() { for (int c = 0; c < PS_COUNTERS_FLR_NCAUSE; ++c) flash_refuse[c] = 0; }

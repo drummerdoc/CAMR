@@ -20,10 +20,10 @@
 #include <limits>
 #include <cstdlib>
 #include <cstring>
-#include <string>            // ps_dial_string
+#include <string>
 #include <AMReX.H>           // amrex::Abort (dial-contract violations)
 #include "PS_constants.H"   // ps_const:: shared numeric floors
-#include "PS_dials.H"       // ps_dial_int / ps_dial_real / ps_dial_string
+#include "PS_dials.H"       // ps_dial_int / ps_dial_real
 #include "PS_counters.H"    // PsCounters: the diagnostic-counter store
 
 namespace hem {
@@ -195,12 +195,6 @@ inline bool ps_apply_vanish_fold(V6& U, double alpha_vanish)
 //  One read per dial: these accessors are the single source of truth for
 //  the keys they name (a dial with two readers is a dial with two defaults
 //  waiting to disagree).
-//  CAMR.ps_flash_from_absent (1): the flash may nucleate from an Absent
-//    trace phase; 0 excludes every genuinely single-phase cell, so the
-//    nucleator never fires.
-//  CAMR.ps_flash_project_sat (-1 = auto, resolved to 1 under presence):
-//    inject newborn mass at the newborn phase's saturation density; 0 keeps
-//    the alpha-only seed (comparison only).
 //  CAMR.ps_mt_h_weight (0.5): interface enthalpy h_I = (1-w) h_1 + w h_2
 //    carried by transferred mass; w < 0 = donor's enthalpy (upwind).
 //  CAMR.ps_mt_srt_d (0.1 m): morphology length D in the SRT interfacial
@@ -213,8 +207,6 @@ inline bool ps_apply_vanish_fold(V6& U, double alpha_vanish)
 //    ps_mass_transfer_relax_cell.
 //  CAMR.ps_mt_form (0): the form of the finite-rate step, documented at
 //    its use in ps_mass_transfer_finite_cell.
-inline int    ps_dial_flash_from_absent() { static const int    v = ps_dial_int ("ps_flash_from_absent", 1);  return v; }
-inline int    ps_dial_flash_project_sat() { static const int    v = ps_dial_int ("ps_flash_project_sat", -1); return v; }
 inline double ps_dial_mt_h_weight()       { static const double v = ps_dial_real("ps_mt_h_weight",      0.5); return v; }
 inline double ps_dial_mt_srt_d()          { static const double v = ps_dial_real("ps_mt_srt_d",         0.1); return v; }
 inline double ps_dial_mt_srt_delta()      { static const double v = ps_dial_real("ps_mt_srt_delta",    0.01); return v; }
@@ -222,16 +214,10 @@ inline int    ps_dial_mt_no_dome_gate()   { static const int    v = ps_dial_int 
 inline int    ps_dial_mt_form()           { static const int    v = ps_dial_int ("ps_mt_form",          0);  return v; }
 
 //  Diagnostic dials, one read each (all default off).
-//  CAMR.ps_pres_diag (0): [PS-X3]/[PS-DT]/[PS-GATE] presence-era reports.
-//  CAMR.ps_prdiag (0): iso-pressure Newton statistics (PsPrStats).
+//  CAMR.ps_pres_diag (0): [PS-X3]/[PS-DT]/[PS-GATE]/[PS-FLASH-REF] reports.
 //  CAMR.ps_mt_diag (0): PsMtStats; >= 2 adds the contraction ratio.
-//  CAMR.ps_flash_ev_diag (0): [PS-FLASH-EV] flash-event hook.
-//  CAMR.ps_relax_diag (-1): per-cell relaxation trace; -1 = off.
 inline int ps_diag_pres()       { static const int v = ps_dial_int("ps_pres_diag",     0); return v; }
-inline int ps_diag_prdiag()     { static const int v = ps_dial_int("ps_prdiag",        0); return v; }
 inline int ps_diag_mt()         { static const int v = ps_dial_int("ps_mt_diag",       0); return v; }
-inline int ps_diag_flash_ev()   { static const int v = ps_dial_int("ps_flash_ev_diag", 0); return v; }
-inline int ps_diag_relax_cell() { static const int v = ps_dial_int("ps_relax_diag",   -1); return v; }
 
 
 
@@ -311,8 +297,6 @@ inline bool ps_apply_tfloor_fold(V6& U, const PsPhaseAPI& eos,
 //  state elsewhere.
 //  Guards: alpha_1 clamped to [alpha_floor, 1 - alpha_floor];
 //  rho_k floored at rho_floor; a failed EOS query marks the state invalid.
-//  The mixture P and c selectors below are dormant comparison variants.
-//  Retire-candidate: see docs/DESIGN_DECISIONS.md §5.
 // ---------------------------------------------------------------------
 inline PsState ps_state_from_cons(const V6& U, const PsPhaseAPI& eos,
                                   double alpha_floor = ps_const::ALPHA_ROUNDOFF,
@@ -375,79 +359,19 @@ inline PsState ps_state_from_cons(const V6& U, const PsPhaseAPI& eos,
     }
     if (!st.p1.valid || !st.p2.valid) return st;
 
-    // Mixture pressure.
-    // CAMR.ps_p_mode ("vol"): P_mix = alpha_1 P_1 + alpha_2 P_2;
-    //   "mass": mass-fraction weighted Y_1 P_1 + Y_2 P_2.
-    // CAMR.ps_p_clip (0 = off): below this alpha_k use only the majority
-    //   phase's pressure, so a trace phase's off-domain P_k cannot pollute
-    //   P_mix through the alpha_k P_k term.
-    static const int p_mode =
-        (ps_dial_string("ps_p_mode", "vol") == "mass") ? 1 : 0;  // default = vol
-    static const double p_clip_threshold = ps_dial_real("ps_p_clip", 0.0);
-    if (p_clip_threshold > 0.0 && alpha1 < p_clip_threshold) {
-        st.P_mix = st.p2.P;
-    } else if (p_clip_threshold > 0.0 && alpha2 < p_clip_threshold) {
-        st.P_mix = st.p1.P;
-    } else if (p_mode == 1) {
-        const double Y1 = (st.rho_mix > 0.0) ? (alpha1 * rho1) / st.rho_mix : alpha1;
-        const double Y2 = 1.0 - Y1;
-        st.P_mix = Y1 * st.p1.P + Y2 * st.p2.P;
-    } else {
-        st.P_mix = alpha1 * st.p1.P + alpha2 * st.p2.P;
-    }
+    // Mixture pressure: volume-weighted, P_mix = alpha_1 P_1 + alpha_2 P_2.
+    st.P_mix = alpha1 * st.p1.P + alpha2 * st.p2.P;
     if (!std::isfinite(st.P_mix) || st.P_mix <= 0.0) return st;
 
-    // Mixture sound speed, CAMR.ps_c_mode ("wood"):
-    //   wood   : 1/(rho c^2) = a_1/(r_1 c_1^2) + a_2/(r_2 c_2^2), the
-    //            equilibrium (Wood) speed, harmonic in alpha
-    //   wallis : c^2 = (a_1 r_1 c_1^2 + a_2 r_2 c_2^2) / rho, the frozen
-    //            mass-weighted speed
-    //   vol    : c^2 = a_1 c_1^2 + a_2 c_2^2
-    //   maj    : c of the majority phase;  max / min: the two bounds.
+    // Mixture sound speed: the equilibrium (Wood) speed, harmonic in alpha,
+    //     1/(rho c^2) = a_1/(r_1 c_1^2) + a_2/(r_2 c_2^2).
     if (st.p1.c <= 0.0 || st.p2.c <= 0.0) return st;
-    static const int c_mode = []{
-        const std::string v = ps_dial_string("ps_c_mode", "wood");
-        if (v == "wallis") return 1;
-        if (v == "max")    return 2;
-        if (v == "vol")    return 3;
-        if (v == "maj")    return 4;
-        if (v == "min")    return 5;
-        return 0;                                  // "wood" default/fallback
-    }();
     const double c1 = st.p1.c;
     const double c2 = st.p2.c;
-    // CAMR.ps_y_floor (0 = off): floor on the mass fractions in the wallis
-    // formula so a trace phase keeps contributing to c_frozen.
-    static const double y_floor = ps_dial_real("ps_y_floor", 0.0);
-    if (c_mode == 0) {
-        const double inv_rc2 = alpha1 / (rho1 * c1 * c1)
-                             + alpha2 / (rho2 * c2 * c2);
-        if (inv_rc2 <= 0.0) return st;
-        st.c_frozen = std::sqrt(1.0 / (st.rho_mix * inv_rc2));
-    } else if (c_mode == 1) {
-        // Y clamped to the floor, then renormalised so Y_1 + Y_2 = 1.
-        double Y1 = (alpha1 * rho1) / st.rho_mix;
-        double Y2 = 1.0 - Y1;
-        if (y_floor > 0.0) {
-            if (Y1 < y_floor) Y1 = y_floor;
-            if (Y2 < y_floor) Y2 = y_floor;
-            const double s = Y1 + Y2;
-            Y1 /= s;  Y2 /= s;
-        }
-        const double c2_avg = Y1 * c1 * c1 + Y2 * c2 * c2;
-        if (c2_avg <= 0.0) return st;
-        st.c_frozen = std::sqrt(c2_avg);
-    } else if (c_mode == 2) {
-        st.c_frozen = std::max(c1, c2);
-    } else if (c_mode == 3) {
-        const double c2_avg = alpha1 * c1 * c1 + alpha2 * c2 * c2;
-        if (c2_avg <= 0.0) return st;
-        st.c_frozen = std::sqrt(c2_avg);
-    } else if (c_mode == 4) {
-        st.c_frozen = (alpha1 > 0.5) ? c1 : c2;
-    } else /* c_mode == 5 */ {
-        st.c_frozen = std::min(c1, c2);
-    }
+    const double inv_rc2 = alpha1 / (rho1 * c1 * c1)
+                         + alpha2 / (rho2 * c2 * c2);
+    if (inv_rc2 <= 0.0) return st;
+    st.c_frozen = std::sqrt(1.0 / (st.rho_mix * inv_rc2));
     if (!std::isfinite(st.c_frozen) || st.c_frozen <= 0.0) return st;
 
     st.valid = true;

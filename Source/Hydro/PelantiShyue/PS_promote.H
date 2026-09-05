@@ -38,12 +38,6 @@
 //                     for energy-unreachability ([PS-PROMOTE]).
 //    floor_skip     : per-phase floor legs skipped on a non-Independent
 //                     phase (CAMR.ps_floor_indep).
-//    floor_reach / floor_unreach / floor_e_avoided / floor_min_e: the
-//                     floor-budget accumulators (CAMR.ps_floor_budget): of
-//                     the corridor phases whose floor leg is skipped, how
-//                     many carry a reachable vs unreachable own-branch
-//                     state; the pressure-floor energy not added; and the
-//                     most-negative skipped e_k.
 
 //  Demote an Independent classification to Corridor iff (rho, e) has no
 //  root on the requested branch; pass-through when the phase is not

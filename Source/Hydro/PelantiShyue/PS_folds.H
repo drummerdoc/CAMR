@@ -32,8 +32,6 @@
 #include <string>
 #include <fstream>
 #include <unordered_map>
-#include <vector>      // ps_report_psat
-#include <algorithm>   // ps_report_psat
 
 // -----------------------------------------------------------------
 //  Fold-mass audit (PsFoldAudit, PS_counters.H): every fold event and

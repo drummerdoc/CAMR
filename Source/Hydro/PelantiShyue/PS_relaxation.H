@@ -13,6 +13,6 @@
 #include "PS_relax.H"      // dispatch, mode wrappers, EOS callback, gates, dials
 #include "PS_floors.H"     // ps_apply_floor, ps_resync_mixture_mass, ps_resync_phase_energy
 #include "PS_folds.H"      // ps_apply_vanish_fold, ps_apply_tfloor_fold, PsFoldAudit
-#include "PS_diag.H"       // ps_report_*, the harvester, ps_dilute_energy_closure
+#include "PS_diag.H"       // ps_diag_alpha
 #endif // USE_PS_HYDRO
 #endif // PS_RELAXATION_H

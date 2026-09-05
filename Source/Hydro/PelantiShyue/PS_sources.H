@@ -22,8 +22,7 @@
 //  Dials (all read once, here or at the named accessor):
 //      CAMR.ps_flash_tau (1e-7 s), CAMR.ps_mt_tau (1e-7 s),
 //      CAMR.ps_mt_gref (0), CAMR.ps_triple_point_action (0),
-//      CAMR.ps_src_p_reproject (1), CAMR.ps_mt_update_alpha (-1),
-//      CAMR.ps_mt_tau_model (0), CAMR.ps_mt_target (1).
+//      CAMR.ps_mt_update_alpha (-1), CAMR.ps_mt_tau_model (0).
 // =====================================================================
 
 #include "IndexDefines.H"
@@ -54,14 +53,6 @@ struct PsSourceDials {
     amrex::Real mt_gref            = amrex::Real(0.0);
     // CAMR.ps_triple_point_action (0): 0 off, 1 warn, 2 clip, 3 abort; see (3).
     int         triple_point_action = 0;
-    // CAMR.ps_src_p_reproject (1): re-establish P1 = P2 after a source moves
-    // mass; 0 = leave the post-source pressure disequilibrium (A/B only).
-    // The model closure is instantaneous mechanical relaxation, so an
-    // operator that disturbs P1 = P2 must restore it or the alpha degree of
-    // freedom is blocked and the evaporation wave never forms.  Applied only
-    // where the state bitwise changed, so un-nucleated metastable cells keep
-    // their metastable state.  See docs/DESIGN_DECISIONS.md R-12.
-    int         src_p_reproject     = 1;
 
     bool any_enabled() const {
         return (flash_tau > amrex::Real(0.0)) ||
@@ -78,7 +69,6 @@ inline const PsSourceDials& ps_source_dials()
         v.mt_tau              = ps_dial_real("ps_mt_tau",              v.mt_tau);
         v.mt_gref             = ps_dial_real("ps_mt_gref",             v.mt_gref);
         v.triple_point_action = ps_dial_int ("ps_triple_point_action", v.triple_point_action);
-        v.src_p_reproject     = ps_dial_int ("ps_src_p_reproject",     v.src_p_reproject);
         return v;
     }();
     return d;
@@ -117,11 +107,6 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
         const PsPres l_pr = ps_presence_params();
         // The seed level is the presence design's alpha_birth (single-sourced).
         const amrex::Real l_seed = ps_presence_params().alpha_birth;
-        // Saturation-projection birth: the newborn phase grows at its
-        // saturation density.  CAMR.ps_flash_project_sat: -1 auto (resolves
-        // to 1), 0 force off, 1 force on; documented at its accessor.
-        const int fl_proj_key = hem::ps_dial_flash_project_sat();
-        const int l_fl_proj = (fl_proj_key >= 0) ? fl_proj_key : 1;
         for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
             const amrex::Box bx = mfi.growntilebox(nghost);
             amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
@@ -131,12 +116,11 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                 const amrex::Real m1 = U(i,j,k, UM1RHO1);
                 const amrex::Real m2 = U(i,j,k, UM2RHO2);
                 if (!std::isfinite(a1)) { return; }
-                // CAMR.ps_flash_from_absent (1, accessor in hem_pelanti_shyue.H):
-                // a cell with exactly one present phase is routed into the
+                // A cell with exactly one present phase is routed into the
                 // kernel, which constructs the newborn by saturation projection;
                 // both-absent stays excluded.  Genuinely single-phase cells are
-                // the population the nucleator exists for; 0 excludes them (A/B).
-                const bool one_absent = (hem::ps_dial_flash_from_absent() != 0) &&
+                // the population the nucleator exists for.
+                const bool one_absent =
                     ((m1 > amrex::Real(0.0)) != (m2 > amrex::Real(0.0)));
                 if (!one_absent && (m1 <= amrex::Real(0.0)
                                     || m2 <= amrex::Real(0.0))) { return; }
@@ -148,40 +132,21 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                     return;
                 }
                 const hem::V6 Uv_pre = Uv;
-                // [PS-FLASH-ABS] (ps_flash_ev_diag >= 2): every routed one-absent
-                // cell prints before the kernel call, so "no events" splits into
-                // "driver never routed" vs "kernel refused".  Capped.
-                const int fl_evd = hem::ps_diag_flash_ev();
-                if (fl_evd >= 2 && one_absent) {
-                    static int n_abs_rep = 0;
-                    if (n_abs_rep < 40) {
-                        ++n_abs_rep;
-                        amrex::AllPrint() << "[PS-FLASH-ABS] routed i=" << i
-                                          << " a1=" << a1 << " m1=" << m1
-                                          << " m2=" << m2 << "\n";
-                    }
-                }
                 if (hem::ps_flash_source_cell(Uv, eos, double(dt), double(tau),
-                                              double(l_seed), ps_const::ALPHA_ROUNDOFF,
-                                              l_fl_proj)) {
+                                              double(l_seed), ps_const::ALPHA_ROUNDOFF)) {
                     // Reproject: the flash moved mass; restore P1 = P2
                     // (alpha-adjusting; preserves m_k and mixture rho, E).
-                    // The bitwise change test is exact, not a tolerance.
-                    if (dials.src_p_reproject != 0 &&
-                        (Uv[0] != Uv_pre[0] || Uv[1] != Uv_pre[1] ||
-                         Uv[4] != Uv_pre[4])) {
+                    // The model closure is instantaneous mechanical
+                    // relaxation, so an operator that disturbs P1 = P2 must
+                    // restore it or the alpha degree of freedom is blocked
+                    // and the evaporation wave never forms.  Applied only
+                    // where the state bitwise changed (an exact test, not a
+                    // tolerance), so un-nucleated metastable cells keep
+                    // their metastable state.  docs/DESIGN_DECISIONS.md R-12.
+                    if (Uv[0] != Uv_pre[0] || Uv[1] != Uv_pre[1] ||
+                        Uv[4] != Uv_pre[4]) {
                         if (ps_mech_kernel() == 1) { hem::ps_pelanti_relax_cell(Uv, eos); }
                         else                        { hem::ps_pressure_relax_cell(Uv, eos); }
-                    }
-                    // [PS-FLASH-EV] (ps_flash_ev_diag = 1): one line per
-                    // nucleation event (bitwise state change) with the alpha seeded.
-                    const int fl_ev = hem::ps_diag_flash_ev();
-                    if (fl_ev != 0 &&
-                        (Uv[0] != Uv_pre[0] || Uv[1] != Uv_pre[1] ||
-                         Uv[4] != Uv_pre[4])) {
-                        amrex::AllPrint() << "[PS-FLASH-EV] i=" << i
-                                          << " a1_pre=" << Uv_pre[0]
-                                          << " a1_post=" << Uv[0] << "\n";
                     }
                     ps_unpack_v6(U, i, j, k, Uv);
                 }
@@ -194,11 +159,10 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
             amrex::Print() << "[ps_flash] cumulative cells flashed = " << nf << "\n";
             s_prev_flash = nf;
         }
-        // [PS-FLASH-REF] (ps_flash_ev_diag >= 2): the kernel's refusal-cause
-        // table per sweep, so "zero events" decomposes by cause.
+        // [PS-FLASH-REF] (ps_pres_diag): the kernel's refusal-cause table
+        // per sweep, so "zero events" decomposes by cause.
         {
-            const int fl_evd2 = hem::ps_diag_flash_ev();
-            if (fl_evd2 >= 2) {
+            if (hem::ps_diag_pres() != 0) {
                 static const char* fn[hem::PS_FLR_NCAUSE] = {
                     "FIRED", "tau", "eos", "a_nan", "not_dom", "m_guard",
                     "rhomix", "pdom", "w_T", "w_meta", "w_alpha", "da2",
@@ -260,13 +224,6 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
             }
             return v; }();
         const int l_mt_tau_model = mt_tau_model;
-        // CAMR.ps_mt_target (1): 1 = target consistent with the step's carrier
-        // and (E.1) path, which keeps the Lund & Aursand eq. 23 monotonicity
-        // premise and the non-overshoot property; 0 = fixed-alpha target with
-        // mean carrier (A/B only); 2 = as 1 plus nested pressure relaxation
-        // (makes the outer Gibbs Newton non-smooth).  See docs/DESIGN_DECISIONS.md R-6.
-        static const int mt_target = ps_dial_int("ps_mt_target", 1);
-        const int l_mt_target = mt_target;
         for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
             const amrex::Box bx = mfi.growntilebox(nghost);
             amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
@@ -290,34 +247,17 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                 if (hem::ps_mass_transfer_finite_cell(Uv, eos, double(dt), double(tau),
                                                       ps_const::ALPHA_ROUNDOFF, double(gref), l_mt_upd,
                                                       l_mt_cr, l_mt_h_w,
-                                                      l_mt_tau_model,
-                                                      l_mt_target)) {
-                    // [PS-DM] transfer census.  Uv[1] is post-MT, pre-reproject;
-                    // the reproject is mechanical and conserves m_k, so this is dm.
-                    hem::ps_dm_census().add(std::abs(double(Uv[1] - Uv_pre[1])));
+                                                      l_mt_tau_model)) {
                     // Reproject only when mass actually moved: the kernel also
                     // returns true from its internal gates with Uv untouched,
                     // and gated metastable cells must not be relaxed here.
-                    if (dials.src_p_reproject != 0 &&
-                        (Uv[1] != Uv_pre[1] || Uv[4] != Uv_pre[4])) {
+                    if (Uv[1] != Uv_pre[1] || Uv[4] != Uv_pre[4]) {
                         if (ps_mech_kernel() == 1) { hem::ps_pelanti_relax_cell(Uv, eos); }
                         else                        { hem::ps_pressure_relax_cell(Uv, eos); }
                     }
                     ps_unpack_v6(U, i, j, k, Uv);
                 }
             });
-        }
-        // [PS-DM mt] per-sweep print under ps_pres_diag; the reset is
-        // unconditional so the census never straddles sweeps.
-        {
-            const int dm_diag = hem::ps_diag_pres();
-            hem::PsDmCensus& dc = hem::ps_dm_census();
-            if (dm_diag != 0 && dc.n > 0) {
-                amrex::AllPrint() << "[PS-DM mt] cells=" << dc.n
-                                  << " sum|dm|=" << dc.sum
-                                  << " max=" << dc.mx << "\n";
-            }
-            dc.reset();
         }
         // ps_coexist_action = 1 (see ps_coexist_action()): a band exit is a
         // state this liquid-vapour model cannot describe, so stop.  Must run
@@ -340,8 +280,7 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                   << "  P_1/Psat(T_1) = [" << cxa.pr1_min << ", " << cxa.pr1_max
                   << "] on " << cxa.n_pr1 << " cells\n"
                   << "  alpha_1 at coldest T_1 = " << cxa.a1_at_min << "\n"
-                  << "  ps_coexist_action=0 restores the silent no-op; =2/=3 let the"
-                  << " thermal leg run through it.\n";
+                  << "  ps_coexist_action=0 restores the silent no-op.\n";
                 amrex::Abort("ps_coexist_action=1: phase outside the coexistence band");
             }
         }
