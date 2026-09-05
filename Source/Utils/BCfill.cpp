@@ -23,7 +23,6 @@ struct PCHypFillExtDir
   amrex::GpuArray<int, 2*AMREX_SPACEDIM> use_nscbc_face;
   amrex::Real nscbc_sigma;
   int         nscbc_order;    // 1 or 2: R+ extrapolation order.
-  int         nscbc_flash;    // 1 = flash-aware choked fan, 0 = frozen.
   // Per-face ambient pressure targets, indexed [2*idir + (0=lo,1=hi)];
   // a value <= 0 inherits prob.p_amb at fill time.
   amrex::GpuArray<amrex::Real, 2*AMREX_SPACEDIM> p_amb_face;
@@ -36,7 +35,6 @@ struct PCHypFillExtDir
                            const amrex::GpuArray<int, 2*AMREX_SPACEDIM>& use_nscbc_face_,
                            amrex::Real nscbc_sigma_,
                            int         nscbc_order_,
-                           int         nscbc_flash_,
                            const amrex::GpuArray<amrex::Real, 2*AMREX_SPACEDIM>& p_amb_face_
 #ifdef USE_PS_HYDRO
                            , const PsPres& pres_
@@ -46,7 +44,6 @@ struct PCHypFillExtDir
     , use_nscbc_face(use_nscbc_face_)
     , nscbc_sigma(nscbc_sigma_)
     , nscbc_order(nscbc_order_)
-    , nscbc_flash(nscbc_flash_)
     , p_amb_face(p_amb_face_)
 #ifdef USE_PS_HYDRO
     , pres(pres_)
@@ -149,7 +146,6 @@ struct PCHypFillExtDir
         }
         params.sigma        = nscbc_sigma;
         params.nscbc_order  = nscbc_order;
-        params.flash        = nscbc_flash;
         amrex::Real s_ghost[NVAR];
         PS_NSCBC::outflow_face(s_N, s_Nm1, s_Nm2, dx[idir],
                                 idir, sgn, layer, params, s_ghost);
@@ -216,7 +212,6 @@ CAMR_bcfill_hyp(
   //   CAMR.ps_bc_nscbc_sigma (0.25): Poinsot-Lele restoring pull on R-
   //     toward the ambient pressure.
   //   CAMR.ps_bc_nscbc_order (2): R+ extrapolation order, 1 or 2.
-  //   CAMR.ps_bc_nscbc_flash (1): flash-aware choked fan; 0 = frozen.
   //   CAMR.ps_bc_p_amb_{x,y,z}{lo,hi} (-1 = inherit prob.p_amb): per-face
   //     ambient pressure, for problems whose two ends see different far
   //     fields.
@@ -225,7 +220,7 @@ CAMR_bcfill_hyp(
   // The resolved values (after the no-USE_PS_HYDRO force-off and the
   // order forcing) are added back to the table so job_info records the BC
   // path that actually ran even when the deck was silent.
-  struct NscbcCfg { int use; amrex::Real sigma; int order; int flash;
+  struct NscbcCfg { int use; amrex::Real sigma; int order;
                     amrex::GpuArray<amrex::Real, 2*AMREX_SPACEDIM> pamb;
                     amrex::GpuArray<int, 2*AMREX_SPACEDIM> uface; };
   static const NscbcCfg nscbc_cfg = []() -> NscbcCfg {
@@ -236,14 +231,6 @@ CAMR_bcfill_hyp(
     pp.query("ps_bc_use_nscbc",   u);
     pp.query("ps_bc_nscbc_sigma", sg);
     pp.query("ps_bc_nscbc_order", od);
-    int fl = 1;
-    pp.query("ps_bc_nscbc_flash", fl);
-    if (fl != 0 && fl != 1) {
-      amrex::Abort("CAMR.ps_bc_nscbc_flash accepts 0 (frozen A/B) or 1 "
-                   "(choked fan + HEM, default).  The probe-only value 2 "
-                   "(end-state energy-lever variant) was refuted and "
-                   "deleted 2026-08-27.");
-    }
     // Per-face ambient targets; -1 = inherit prob.p_amb at fill time.
     amrex::GpuArray<amrex::Real, 2*AMREX_SPACEDIM> pa;
     for (int f = 0; f < 2*AMREX_SPACEDIM; ++f) pa[f] = amrex::Real(-1.0);
@@ -294,7 +281,6 @@ CAMR_bcfill_hyp(
     pp.add("ps_bc_use_nscbc",   u);
     pp.add("ps_bc_nscbc_sigma", sg);
     pp.add("ps_bc_nscbc_order", od);
-    pp.add("ps_bc_nscbc_flash", fl);
     // Resolved per-face NSCBC enables -> job_info (0/1, after inheritance).
     pp.add("ps_bc_nscbc_xlo", uf[0]);
     pp.add("ps_bc_nscbc_xhi", uf[1]);
@@ -317,11 +303,10 @@ CAMR_bcfill_hyp(
     pp.add("ps_bc_p_amb_zlo", pa[4]);
     pp.add("ps_bc_p_amb_zhi", pa[5]);
 #endif
-    return NscbcCfg{u, sg, od, fl, pa, uf};
+    return NscbcCfg{u, sg, od, pa, uf};
   }();
   const amrex::Real nscbc_sigma = nscbc_cfg.sigma;
   const int         nscbc_order = nscbc_cfg.order;
-  const int         nscbc_flash = nscbc_cfg.flash;
 
   // One-time banner so run logs record which outflow BC path is in play.
   {
@@ -344,7 +329,7 @@ CAMR_bcfill_hyp(
 
   amrex::GpuBndryFuncFab<PCHypFillExtDir> hyp_bndry_func(
     PCHypFillExtDir{lprobparm, nscbc_cfg.uface, nscbc_sigma, nscbc_order,
-                    nscbc_flash, nscbc_cfg.pamb
+                    nscbc_cfg.pamb
 #ifdef USE_PS_HYDRO
                     , ps_presence_params()   // host-side read
 #endif

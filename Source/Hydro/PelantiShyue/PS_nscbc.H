@@ -22,7 +22,7 @@
 //  Supersonic outflow copies; supersonic inflow, a non-finite impedance,
 //  inconsistent six-equation slots and an unresolvable fan refuse to a
 //  counted zero-gradient copy ([PS-GUARD] nscbc_zg *).  No state is
-//  manufactured.  Dials (ps_bc_nscbc_sigma, _order, _flash, p_amb) are
+//  manufactured.  Dials (ps_bc_nscbc_sigma, _order, p_amb) are
 //  read in Utils/BCfill.cpp and arrive through Params.
 // =====================================================================
 
@@ -44,9 +44,6 @@ namespace PS_NSCBC {
 struct Params {
     amrex::Real P_amb   = amrex::Real(1.01325e5);   // Pa, far-field pressure of this face
     amrex::Real sigma   = amrex::Real(0.25);        // Poinsot-Lele restoring pull on R-
-    // 1 = choked fan with HEM re-closure; 0 = frozen fan (A/B).  BCfill
-    // aborts on any other value.
-    int         flash   = 1;
     PsPres      pres{};                              // presence params (by value)
     // R+ extrapolation: 1 = copy R+_N (reproduces the standalone driver's
     // NONREFLECTING fill bit-for-bit); 2 = minmod slope over three cells.
@@ -325,8 +322,8 @@ outflow_face(const amrex::Real s_N  [NVAR],
     //          (P_k, c_k) re-evaluated from the branch-locked EOS under
     //          the host/slave rules of ps_phase_speeds_from_state;
     //    (ii)  re-closing the mixture as HEM saturated when its enthalpy
-    //          at the current P lies inside the dome (_hem_reclose;
-    //          p.flash = 1), which is where flash physics enters and
+    //          at the current P lies inside the dome (_hem_reclose),
+    //          which is where flash physics enters and
     //          softens ρc along the fan;
     //    (iii) accumulating du_out = −dP/(ρ̄ c_path), c_path² = dP/dρ_mix
     //          along the marched path (frozen Wallis form as fallback on
@@ -385,14 +382,10 @@ outflow_face(const amrex::Real s_N  [NVAR],
         Real fm1 = ph.m1, fm2 = ph.m2, fal1 = ph.alpha1;
         Real u_out = un_out_N;
         Real P_cur = P_N;
-        //  flash != 0: full choked fan toward the face ambient.
-        //  flash == 0 (A/B): march the phases to the linear target P_g,
-        //  no HEM, no choke; the ghost velocity stays the invariant value.
-        const bool full_fan = (p.flash != 0);
-        const Real P_t = full_fan
-            ? amrex::max(p.P_amb, amrex::max(Real(1.0e-3) * p.P_amb, Real(ps_guard::P_FLOOR_PA)))
-            : P_g;
-        const bool expanding = full_fan && (P_t < P_N);
+        //  Full choked fan toward the face ambient.
+        const Real P_t =
+            amrex::max(p.P_amb, amrex::max(Real(1.0e-3) * p.P_amb, Real(ps_guard::P_FLOOR_PA)));
+        const bool expanding = (P_t < P_N);
         bool fan_ok = true;
         int  steps  = 0;
         // Previous-substep snapshot for the G-max revert.
@@ -452,10 +445,8 @@ outflow_face(const amrex::Real s_N  [NVAR],
 
             // HEM re-closure at the current P (part of the equilibrium
             // path: its density jump belongs in this substep's slope).
-            if (full_fan) {
-                _hem_reclose(P_cur, fm1, fm2, r1, ee1, r2, ee2,
-                             Pk1, ck1, Pk2, ck2, fal1);
-            }
+            _hem_reclose(P_cur, fm1, fm2, r1, ee1, r2, ee2,
+                         Pk1, ck1, Pk2, ck2, fal1);
 
             // Path-equilibrium slope for the velocity accumulation.
             const Real rho_after = fm1 + fm2;
@@ -468,7 +459,7 @@ outflow_face(const amrex::Real s_N  [NVAR],
                 if (!(c2p > Real(0.0)) || !std::isfinite(c2p)) { fan_ok = false; break; }
             }
             const Real rho_mid = Real(0.5) * (msum + rho_after);
-            if (full_fan) u_out += -dPs / (rho_mid * std::sqrt(c2p));
+            u_out += -dPs / (rho_mid * std::sqrt(c2p));
 
             // Critical-flow termination (expansion/outflow only): the
             // fan ends at MAXIMAL G = rho*u — the throat.  Past the
@@ -495,10 +486,9 @@ outflow_face(const amrex::Real s_N  [NVAR],
             _zero_gradient_ghost(s_N, s_ghost);
             return;
         }
-        // Fan-end state overrides the linear-solve ghost (u, P); with
-        // flash == 0, P_cur == P_g and u_out is untouched.
+        // Fan-end state overrides the linear-solve ghost (u, P).
         P_g      = P_cur;
-        un_out_g = full_fan ? u_out : un_out_g;
+        un_out_g = u_out;
         e1_g = ee1;  e2_g = ee2;
         m1_g = (fm1 > m_tiny) ? fm1 : Real(0.0);
         m2_g = (fm2 > m_tiny) ? fm2 : Real(0.0);

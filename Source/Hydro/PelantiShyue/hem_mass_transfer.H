@@ -77,10 +77,9 @@ struct PsMassTransferParams {
     // supercritical contact is not a phase-change driving force.
     bool   dome_gate = true;
     // Co-move alpha by (E.1) inside the target solve so the target is the
-    // equilibrium of the path the step travels (CAMR.ps_mt_target, read in
-    // PS_sources.H).  A fixed-alpha target has a 1/alpha_1 Gibbs
-    // sensitivity the step lacks, so dm_eq comes out too small and the
-    // non-overshoot guarantee of the exponential form is void.
+    // equilibrium of the path the step travels.  A fixed-alpha target has
+    // a 1/alpha_1 Gibbs sensitivity the step lacks, so dm_eq comes out too
+    // small and the non-overshoot guarantee of the exponential form is void.
     int    update_alpha = 0;
 };
 
@@ -275,8 +274,7 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
                                           int update_alpha = -1,
                                           int diag_contract = 0,
                                           double h_w = 0.5,
-                                          int tau_model = 0,
-                                          int target_mode = 0)
+                                          int tau_model = 0)
 {
     if (tau_g <= 0.0 || dt <= 0.0) return false;
     if (!eos.valid()) return false;
@@ -389,25 +387,17 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
     // dm_eq solve and the contraction re-solve, so the ratio always
     // measures against the same target.  (nest_pr is a static const and
     // not capturable; the lambda reads it directly.)
-    auto eq_solver_params = [target_mode, h_w, upd_hoisted]
+    auto eq_solver_params = [h_w, upd_hoisted]
                            (PsMassTransferParams& mt_o,
                             PsPressureRelaxParams& pr_o) {
         mt_o.dome_gate = false;                    // gate enforced upstream
         if (nest_pr == 0)      mt_o.nest_pressure_relax = false;
         else if (nest_pr > 1)  pr_o.max_iter = nest_pr;
-        // target_mode (CAMR.ps_mt_target, read in PS_sources.H; default 1):
-        //   0 target on a fixed-alpha path with a mean carrier (comparison only);
-        //   1 consistent: the step's carrier and (E.1) path, which restores
-        //     the premise of the Lund & Aursand non-overshoot argument;
-        //   2 as 1 plus nested pressure relaxation in the target, offered
-        //     separately because it makes the outer Newton non-smooth.
-        if (target_mode >= 1) {
-            mt_o.h_interface_weight = h_w;
-            mt_o.update_alpha       = upd_hoisted ? 1 : 0;
-        }
-        if (target_mode >= 2) {
-            mt_o.nest_pressure_relax = true;
-        }
+        // The target is consistent with the step: the step's carrier and
+        // its (E.1) path, which restores the premise of the Lund & Aursand
+        // non-overshoot argument.
+        mt_o.h_interface_weight = h_w;
+        mt_o.update_alpha       = upd_hoisted ? 1 : 0;
     };
 
     // ---- finite-rate mass-transfer amount dm ----------------------------
@@ -424,8 +414,8 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
     //     the step's own path (same carrier, same (E.1) rule).  Needs no
     //     equilibrium point, so it cannot silently transfer nothing where
     //     the target Newton fails on order-one driving forces; Gamma -> 0
-    //     at g1 = g2 makes non-overshoot structural.  tau_g and
-    //     target_mode are unused on this branch.
+    //     at g1 = g2 makes non-overshoot structural.  tau_g is unused on
+    //     this branch.
     const int mt_form = ps_dial_mt_form();
     if (mt_form == 1) {
         // Gibbs screen: Gamma is proportional to |g1 - g2|, so below the

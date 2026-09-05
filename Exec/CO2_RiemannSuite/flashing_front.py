@@ -15,8 +15,8 @@ Legs
         ps_bc_nscbc_v2 key aborts); its 2.1022 (-7.6%) pin stays in the
         table for provenance and is not run.
   v2s   tube with the shipped NSCBC outflow (choked-fan ghost, HEM along
-        the fan): vents 2.2474.  CAMR.ps_bc_nscbc_flash=0 reproduces the
-        frozen construction (1.4936) for A/B.
+        the fan): vents 2.2474.  The frozen-fan construction (1.4936) is
+        retired; a set ps_bc_nscbc_flash key aborts.
   v2e   HISTORICAL: NSCBC with a deleted linearisation bound raised to
         0.5 via a probe-only exe (FLASH_V2E_EXE); pin 1.4838, normally
         skipped.

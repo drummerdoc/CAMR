@@ -17,9 +17,8 @@ Checks:
   2. B4 canonical flatness — mode 4, u-err ~0.129 at tau=1e-4 AND 1e-7
      (the stiff-limit corruption is gone); measured at the code default
      CAMR.ps_flash_metastable_margin = 0.10
-  3. reproject liveness — production config (mode 2, tau=1e-4) run with
-     ps_src_p_reproject=0 vs 1 must DIFFER (0.845 vs 0.752 u-err on B9);
-     identical results mean the PS_sources.H change is not in the binary
+  3. B9 production config (mode 2, tau=1e-4) — u-err matches the recorded
+     value 0.752 (sources re-establish P1 = P2 where the state changed)
   4. zero-trace two-phase — frozen B4 with prob.alpha_trace=0 (fold and
      birth live), u-err ~0.131
   5. operator gating — frozen B5 at zero trace, u-err ~0.388; B2 front
@@ -170,23 +169,17 @@ check('B4 flat across tau', abs(u_errs[1e-4] - u_errs[1e-7]) < 0.01,
       f'delta={abs(u_errs[1e-4]-u_errs[1e-7]):.4f}')
 
 # ---------------------------------------------------------------- check 3
-print('== 3. reproject liveness (PS_sources.H change present) ==')
-res = {}
-for rp in (0, 1):
-    m = run_case('B9-Deep-Expansion',
-                 {'CAMR.ps_relax_mode': 2, 'CAMR.ps_theta_tau': 1e-4,
-                  'CAMR.ps_mt_tau': 1e-4, 'CAMR.ps_src_p_reproject': rp},
-                 f'vcrp{rp}_B9_')
-    res[rp] = l2(m, load_hem_analytic('B9'))['u'] if m else float('nan')
-# What the check is FOR is the third assertion: rp=0 and rp=1 must differ.
-# The two reference values are recorded outputs and move together with
-# deliberate changes to the relaxation or contact-correction operators;
-# the separation must survive any such change.
-check('rp=0 reproduces the recorded value (~0.845)', abs(res[0] - 0.845) < 0.02,
-      f'got {res[0]:.3f}')
-check('rp=1 reproduces the recorded value (~0.752)', abs(res[1] - 0.752) < 0.02, f'got {res[1]:.3f}')
-check('rp=0 vs rp=1 differ (change is live)', abs(res[0] - res[1]) > 0.05,
-      f'delta={abs(res[0]-res[1]):.3f}')
+print('== 3. B9 production config (mode 2, tau=1e-4) ==')
+m = run_case('B9-Deep-Expansion',
+             {'CAMR.ps_relax_mode': 2, 'CAMR.ps_theta_tau': 1e-4,
+              'CAMR.ps_mt_tau': 1e-4},
+             'vcrp1_B9_')
+res_b9 = l2(m, load_hem_analytic('B9'))['u'] if m else float('nan')
+# The reference value is a recorded output of this implementation with the
+# post-source pressure reprojection on (its only form); it moves with
+# deliberate changes to the relaxation or contact-correction operators.
+check('B9 u-err reproduces the recorded value (~0.752)', abs(res_b9 - 0.752) < 0.02,
+      f'got {res_b9:.3f}')
 
 # ---------------------------------------------------------------- check 4
 print('== 4. zero-trace two-phase: frozen B4 with exactly absent phases (fold + birth live) ==')

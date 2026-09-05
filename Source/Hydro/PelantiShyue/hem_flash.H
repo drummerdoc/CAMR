@@ -141,14 +141,12 @@ inline void  ps_flash_refuse_reset()      { ps_counters().reset_flash_refuse(); 
 // differing only by round-off.  The committed step is the largest
 // fraction of the proposal that keeps both phases representable.
 // Returns true when mass moved; every refusal is counted by cause.
-// project_sat_in: -1 = the CAMR.ps_flash_project_sat dial, 0 off, 1 on.
 // alpha_seed_target has no default: every caller passes the presence
 // design's alpha_birth explicitly (single-sourced, PS_presence.H).
 inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
                                   double dt, double tau_flash,
                                   double alpha_seed_target,
-                                  double alpha_floor = ps_const::ALPHA_ROUNDOFF,
-                                  int project_sat_in = -1)
+                                  double alpha_floor = ps_const::ALPHA_ROUNDOFF)
 {
     if (tau_flash <= 0.0 || dt <= 0.0) PS_FLASH_REFUSE(PS_FLR_TAU);
     if (!eos.valid() || !eos.Psat_of_T) PS_FLASH_REFUSE(PS_FLR_EOS);
@@ -167,11 +165,9 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
 
     const double m_1 = U[1];
     const double m_2 = U[2];
-    // Flash from an Absent trace phase (ps_dial_flash_from_absent): the
-    // newborn is constructed by the saturation projection (enforced
-    // below); both-absent stays excluded.
-    const bool from_absent = ps_dial_flash_from_absent() != 0;
-    const bool abs_trace = from_absent &&
+    // Flash from an Absent trace phase: the newborn is constructed by the
+    // saturation projection (enforced below); both-absent stays excluded.
+    const bool abs_trace =
         ((liq_dominant && m_2 <= 0.0 && m_1 > 0.0) ||
          (vap_dominant && m_1 <= 0.0 && m_2 > 0.0));
     if (!abs_trace && (m_1 <= 0.0 || m_2 <= 0.0)) PS_FLASH_REFUSE(PS_FLR_M_GUARD);
@@ -245,22 +241,15 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
     if (blend > 0.2) blend = 0.2;
     blend *= w_T * w_meta * w_alpha;
 
-    // Coupled alpha + m step.  With the saturation projection (the CAMR
-    // default) dm = rho_sat(T_dom) dalpha so the newborn phase lies on the
-    // saturation locus by construction; without it dm = rho_trace dalpha
-    // keeps whatever density the trace phase inherited, which can sit far
-    // off equilibrium and even off the EOS domain.
-    const bool project_sat_key = ps_dial_flash_project_sat() > 0;
-    const bool project_sat = (project_sat_in < 0) ? project_sat_key
-                                                  : (project_sat_in != 0);
-
+    // Coupled alpha + m step with the saturation projection: dm =
+    // rho_sat(T_dom) dalpha so the newborn phase lies on the saturation
+    // locus by construction.  When the saturation query fails the step
+    // falls back to dm = rho_trace dalpha (rho_L_sat = 0 signals it).
     double alpha_1_new, dm;
     double rho_L_sat = 0.0, rho_V_sat = 0.0;   // saturation targets at T_dom
-    if (project_sat) {
-        co2_sat_state(p_dom.T, rho_L_sat, rho_V_sat);
-        if (!(rho_L_sat > 0.0 && rho_V_sat > 0.0 && rho_L_sat > rho_V_sat)) {
-            rho_L_sat = 0.0;   // signal fallback
-        }
+    co2_sat_state(p_dom.T, rho_L_sat, rho_V_sat);
+    if (!(rho_L_sat > 0.0 && rho_V_sat > 0.0 && rho_L_sat > rho_V_sat)) {
+        rho_L_sat = 0.0;   // signal fallback
     }
 
     if (flash_liq) {
@@ -269,8 +258,7 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
         const double alpha_2_new = alpha_2 + blend * (alpha_2_target - alpha_2);
         if (alpha_2_new <= alpha_2) PS_FLASH_REFUSE(PS_FLR_DA2);
         const double d_alpha_2 = alpha_2_new - alpha_2;
-        const double rho_2_target = (project_sat && rho_L_sat > 0.0)
-                                    ? rho_V_sat : rho_2;
+        const double rho_2_target = (rho_L_sat > 0.0) ? rho_V_sat : rho_2;
         dm = rho_2_target * d_alpha_2;
         if (dm >= 0.5 * m_1) dm = 0.5 * m_1;
         alpha_1_new = 1.0 - alpha_2_new;
@@ -281,15 +269,14 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
         alpha_1_new = alpha_1_curr + blend * (alpha_1_target - alpha_1_curr);
         if (alpha_1_new <= alpha_1_curr) PS_FLASH_REFUSE(PS_FLR_DA1);
         const double d_alpha_1 = alpha_1_new - alpha_1_curr;
-        const double rho_1_target = (project_sat && rho_L_sat > 0.0)
-                                    ? rho_L_sat : rho_1;
+        const double rho_1_target = (rho_L_sat > 0.0) ? rho_L_sat : rho_1;
         dm = rho_1_target * d_alpha_1;
         if (dm >= 0.5 * m_2) dm = 0.5 * m_2;
     }
     if (alpha_1_new < alpha_floor || alpha_1_new > 1.0 - alpha_floor)
         PS_FLASH_REFUSE(PS_FLR_A_FLOOR);
 
-    const bool   using_projection = (project_sat && rho_L_sat > 0.0);
+    const bool   using_projection = (rho_L_sat > 0.0);
     // From Absent there is nothing to extend: the newborn must be
     // constructed, so that path requires the projection and refuses
     // rather than inventing a state when the saturation query failed.
