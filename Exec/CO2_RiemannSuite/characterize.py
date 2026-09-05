@@ -10,12 +10,11 @@ by how much.  Correctness lives in exact_suite.py / verify_canonical.py.
 
 WHY THIS EXISTS
 ---------------
-Three separate guard fixes (G1, G3, the #199 c_frozen correction) were each
-applied to some-but-not-all of their duplicate sites, and the live one
-(PS_hllc.H) was missed every time.  Each was "verified" by reasoning rather
-than measurement, and each cost a build-and-run cycle to disprove.  A refactor
-of this module without a bit-exact reference is a judgement call, and judgement
-calls are what produced the current state.
+Guard fixes have been applied to some-but-not-all of their duplicate sites,
+with the live site missed, and "verified" by reasoning rather than
+measurement; each cost a build-and-run cycle to disprove.  A refactor without
+a bit-exact reference is a judgement call, and judgement calls are what
+produced that state.
 
 USAGE
     ./characterize.py record BASELINE       # run all 19 cases, store fingerprints

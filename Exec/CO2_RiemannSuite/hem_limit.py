@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""HEM-limit test + tau-sweep approach rate (VALIDATION_finite_rate.md tests 1-3).
+"""HEM-limit test + tau-sweep approach rate (docs/VERIFICATION.md 6.1).
 
 Runs CAMR on B4/B9 (the two cases with stored HEM analytic refs,
 exact_<case>_pr.csv) with the suite's own TWO_PHASE config (relax mode 2)
@@ -20,10 +20,11 @@ EXACT = {'B4-Cross-critical': 'exact_B4_pr.csv',
 REFS = F.REFS                 # vendored exact references (refs/exact)
 TAUS = [1e-4, 3e-5, 1e-5, 3e-6, 1e-6, 3e-7, 1e-7]
 N = int(os.environ.get('PS_N', 64))
-# HEM_MODE:  relax mode for the sweep (2 = legacy suite config; 4 = canonical
-#            chain, FINDINGS_hem_limit.md addendum 2).  HEM_FLASH=1 also runs
-#            the flash source at tau (set PS_FLASH_METASTABLE_MARGIN=0 in the
-#            env for a true HEM-limit run).
+# HEM_MODE:  relax mode for the sweep (2 = pressure plus finite-rate thermal;
+#            4 = canonical chain).  HEM_FLASH=1 also runs the flash source at
+#            tau, at the code default of the flash undershoot margin
+#            (CAMR.ps_flash_metastable_margin = 0.10); there is no
+#            environment knob for that margin.
 MODE  = int(os.environ.get('HEM_MODE', 2))
 FLASH = os.environ.get('HEM_FLASH', '0') == '1'
 
@@ -38,7 +39,7 @@ def run_camr(name, tau, pref):
           'prob.x_diaph':0.5,'prob.alpha_trace':1.0e-6,'prob.p_amb':5.0e6,
           'CAMR.ps_flux':'wp','CAMR.ps_wp_order':2,'CAMR.cfl':0.25,'CAMR.do_mol':0,'CAMR.ps_do_relax':1,
           # HEM-limit configuration: both relaxation times -> tau; mode from
-          # HEM_MODE (2 = legacy iso-P Picard, 4 = canonical chain).
+          # HEM_MODE (2 = pressure plus finite-rate thermal, 4 = canonical chain).
           'CAMR.ps_relax_mode':MODE,'CAMR.ps_theta_tau':tau,'CAMR.ps_mt_tau':tau,
           'stop_time':tf}
     if FLASH: ov['CAMR.ps_flash_tau'] = tau

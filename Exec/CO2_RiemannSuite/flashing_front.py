@@ -1,56 +1,41 @@
 #!/usr/bin/env python3
 """
-flashing_front.py — PROBE #31: the flashing-front RED baseline.
+flashing_front.py — the flashing-front vent pin.
 
-Reproducible harness for the plenum-control flashing-vent measurement
-(WORKLOG 2026-08-25 TBLOW-NSCBC-D + 2026-08-26 probe #31): a 1-D
-supercritical-liquid tube (TP 320 K / 100 bar) venting into 1-bar
-ambient, scored by VENTED TUBE MASS at t = 80 us against a
-boundary-free reference in which the vent plane is an interior
-Riemann interface.
+Reproducible harness for the plenum-control flashing-vent measurement:
+a 1-D supercritical-liquid tube (320 K / 100 bar) venting into 1-bar
+ambient, scored by VENTED TUBE MASS at t = 80 us against a boundary-free
+reference in which the vent plane is an interior Riemann interface.
 
 Legs
   ref   boundary-free reference: domain 0..2, N=512, diaphragm at
-        x=1, ambient CO2 vapour (300 K / 1 bar) beyond.  COMPLETES
-        at bare defaults since the 2026-08-27 WP-CONTACT-CEIL fix
-        (the X3 coexistence gate's runaway clause: a hi-side-only
-        band exit beyond 2*T_crit runs the thermal leg, so the
-        contact sliver drains instead of ratcheting to the EOS
-        band edge).  An ABORT on this leg is now an ALARM, not an
-        expectation.  Historical: pre-fix the leg aborted at
-        t ~ 8.04e-5 and pinned 2.2753 (measured en route to the
-        EOS violation); the healthy-run pin is 2.3428.
-  leg   HISTORICAL (2026-08-27): the legacy construction was retired
-        (a set ps_bc_nscbc_v2 key aborts); its 2.1022 (-7.6%) pin is
-        kept in the table for provenance, no longer run.
-  v2s   tube, NSCBC v2 as SHIPPED (choked-fan ghost, HEM along the
-        fan).  GREEN since 2026-08-27: vents 2.2474 (-1.2% vs the
-        reference).  CAMR.ps_bc_nscbc_flash=0 reproduces the
-        commit-A frozen construction (1.4936) for A/B.
-  v2e   HISTORICAL (pre-fix): NSCBC v2 with the deleted LIN_ETA
-        bound raised to 0.5 via a probe-only exe.  Kept for
-        provenance of the 2026-08-25 adjudication; normally skip.
+        x=1, ambient CO2 vapour (300 K / 1 bar) beyond.  Completes at
+        bare defaults; pin 2.3428.  An abort on this leg is an alarm.
+  leg   HISTORICAL: the legacy boundary construction is retired (a set
+        ps_bc_nscbc_v2 key aborts); its 2.1022 (-7.6%) pin stays in the
+        table for provenance and is not run.
+  v2s   tube with the shipped NSCBC outflow (choked-fan ghost, HEM along
+        the fan): vents 2.2474.  CAMR.ps_bc_nscbc_flash=0 reproduces the
+        frozen construction (1.4936) for A/B.
+  v2e   HISTORICAL: NSCBC with a deleted linearisation bound raised to
+        0.5 via a probe-only exe (FLASH_V2E_EXE); pin 1.4838, normally
+        skipped.
 
-RED baseline history:
-  2026-08-25 (LIN_ETA=0.2 wall era):
-    ref 2.2753 | leg 2.1022 (-7.6%) | v2e 1.4838 (-34.8%) | v2s ~0
-  2026-08-27 (NSCBC-3 fixed — sub-stepped pack, LIN_ETA deleted):
-    v2s 1.4936 (-34.4%), zero refusals (= today's flash=0 A/B).
-  2026-08-27 (choked-fan ghost + HEM along the fan — commit B):
-    v2s 2.2474 (-1.2% vs the pre-abort ref) — GREEN.
-  2026-08-27 (WP-CONTACT-CEIL gate fix — the reference completes):
-    ref 2.3428 (healthy-run pin) | v2s 2.2474 unchanged (-4.1%).
-The green gate (deficit <= 7.6%, zero refusals, no RYP2E dome
-inversion) is MET by the shipped construction; this harness now
-guards it as a regression pin.
+The gate (deficit <= 7.6% against the reference, zero refusals, no
+RYP2E dome inversion) is met by the shipped construction; this harness
+guards it as a regression pin.  The pins are recorded outputs of this
+implementation (docs/VERIFICATION.md).
 
 Usage:  [EXE=...] [FLASH_V2E_EXE=...] [FLASH_OUT=...] python3 flashing_front.py
+        EXE defaults to the 1-D executable discovered by full_suite.py
+        (newest ./CAMR1d.*.ex, or CAMR_EXE).
 """
 import os, sys, glob, subprocess
 import numpy as np
 import ps_plotfile as R
+import full_suite as F           # main-guarded; provides the exe discovery
 
-EXE  = os.environ.get('EXE', './CAMR1d.gnu.TPROF.PS.PR.ex')
+EXE  = os.environ.get('EXE') or F.CAMR
 V2E  = os.environ.get('FLASH_V2E_EXE', '')
 OUT  = os.environ.get('FLASH_OUT', './flash_red_runs')
 os.makedirs(OUT, exist_ok=True)
@@ -107,18 +92,18 @@ def run_leg(tag, exe):
             'M0': m0}, r.returncode
 
 def main():
-    print('PROBE #31 — flashing-front red baseline   (vented tube mass at t~80us)')
+    print('flashing-front vent pin   (vented tube mass at t~80us)')
     print('%-5s %10s %12s %10s %9s   %s' % ('leg', 't', 'vented', 'red-pin', 'vs ref', 'note'))
     ref_v = None
     for tag in ('ref', 'leg', 'v2s', 'v2e'):
         exe = EXE
         if tag == 'leg':
-            print('%-5s %10s %12s %10.4f %9s   HISTORICAL (legacy retired 2026-08-27; key aborts)'
+            print('%-5s %10s %12s %10.4f %9s   HISTORICAL (legacy construction retired; key aborts)'
                   % (tag, '-', '-', RED[tag], '-'))
             continue
         if tag == 'v2e':
             if not V2E:
-                print('%-5s %10s %12s %10.4f %9s   HISTORICAL (LIN_ETA deleted 2026-08-27)'
+                print('%-5s %10s %12s %10.4f %9s   HISTORICAL (probe-only exe not given)'
                       % (tag, '-', '-', RED[tag], '-'))
                 continue
             exe = V2E
@@ -129,10 +114,10 @@ def main():
         if tag == 'ref':
             ref_v = q['vented']
             note = ('' if rc == 0 else
-                    'ABORTED — ALARM: the reference completes since the 2026-08-27 gate fix')
+                    'ABORTED — ALARM: the reference completes at bare defaults')
         vs = ('%+8.1f%%' % (100.0 * (q['vented'] - ref_v) / ref_v)) if (ref_v and tag != 'ref') else '-'
         print('%-5s %10.3e %12.4f %10.4f %9s   %s' % (tag, q['t'], q['vented'], RED[tag], vs, note))
-    print('\nGREEN gate: deficit <= 7.6%% with zero nscbc_zg lin refusals (grep the leg logs).')
+    print('\nGate: deficit <= 7.6%% with zero nscbc_zg lin refusals (grep the leg logs).')
 
 if __name__ == '__main__':
     main()

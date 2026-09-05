@@ -95,9 +95,8 @@ def run(case, flux, pref):
     #  single-phase states (D22 A/C invariance, WORKLOG 2026-08-24 B3a).
     #  (PS_NODIALS is retired: "no dials" is now simply the default path.)
     ov.update(F.camr_side(c[1],'L')); ov.update(F.camr_side(c[2],'R'))
-    #  PROBE_OV is applied LAST so its overrides always win — matching
-    #  _stage2.py's `extra` precedence.  (It used to run before camr_side,
-    #  which silently clobbered any prob.* key it set.)
+    #  PROBE_OV is applied LAST so its overrides always win (applied before
+    #  camr_side it would be silently clobbered on any prob.* key it sets).
     for _kv in os.environ.get('PROBE_OV', '').split(','):
         if _kv.strip():
             _k, _v = _kv.split('='); ov[_k.strip()] = _v.strip()

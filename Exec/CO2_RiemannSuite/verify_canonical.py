@@ -1,38 +1,36 @@
 #!/usr/bin/env python3
-"""verify_canonical.py — self-checking verification of the 2026-08-08
-canonical-chain change (FINDINGS_hem_limit.md addendum 2).
+"""verify_canonical.py — the 1-D gate: self-checking verification of the
+PS solver on the CO2 Riemann suite.
 
 Runs everything it needs itself (~30 s total) and prints PASS/FAIL per
-check plus a final verdict. No arguments:
+check plus a final verdict; exits 1 on any FAIL.  No arguments:
 
     python3 verify_canonical.py
 
 Checks:
-  0. build freshness  — executable newer than the changed PS headers
-  1. frozen A/C battery — per-case rel-L2 vs exact analytic matches the
-     handoff Part-2 values (the hyperbolic core is untouched)
+  0. build freshness  — the executable is newer than every *.H/*.cpp
+     under Source/
+  1. frozen A/C battery — per-case rel-L2 vs the exact analytic matches
+     the recorded values (mean 0.0350, C1 exact), at the corridor seed
+     prob.alpha_trace=1e-6 and again at prob.alpha_trace=0 (exact-zero
+     absent phases; the presence paths must give the same battery)
   2. B4 canonical flatness — mode 4, u-err ~0.129 at tau=1e-4 AND 1e-7
-     (the stiff-limit corruption is gone)
-  3. B9 canonical value — mode 4 + flash at tau=1e-7, u-err ~0.64 (cap-free baseline).
-     Doubles as a STALE-BINARY detector: an old binary silently maps
-     mode 4 -> mode 0 and lands at ~0.84 instead.
-  4. reproject liveness — production config (mode 2, tau=1e-4) run with
-     ps_src_p_reproject=0 vs 1 must DIFFER (0.845 vs 0.774 u-err on B9;
-     re-baselined 2026-08-31, see the note at the check);
-     identical results mean the PS_sources.H change is not in the binary.
-  5. presence gates (S1/S2) — NOTE CAMR.ps_presence is a retired key
-     (presence is always on; setting it aborts), so these configs no
-     longer set it and the check measures the default path.
-     Kept because the A/C invariance it asserts is still worth asserting.
-     Formerly: CAMR.ps_presence=1 must hold the frozen
-     A/C battery at mean ~0.0350 with C1 exact, BOTH with the legacy
-     alpha_trace=1e-6 corridor seeds AND with prob.alpha_trace=0
-     (exact-zero absent phases).  A failure here means the presence
-     paths are miswired; a run failure at alpha_trace=0 means the
-     binary predates S1/S2.
+     (the stiff-limit corruption is gone); measured at the code default
+     CAMR.ps_flash_metastable_margin = 0.10
+  3. reproject liveness — production config (mode 2, tau=1e-4) run with
+     ps_src_p_reproject=0 vs 1 must DIFFER (0.845 vs 0.752 u-err on B9);
+     identical results mean the PS_sources.H change is not in the binary
+  4. zero-trace two-phase — frozen B4 with prob.alpha_trace=0 (fold and
+     birth live), u-err ~0.131
+  5. operator gating — frozen B5 at zero trace, u-err ~0.388; B2 front
+     stable with the pelanti mechanical kernel at mode 4 (umax < 120)
+  6. B12 two-phase wall reflection — far field undisturbed, mirror
+     symmetry at round-off, per-phase compression bound R <= 0.25
 
 Tolerances are 2e-3 on the frozen battery (compiler-to-compiler wiggle)
-and 0.02 on the HEM checks.
+and 0.02 on the HEM checks.  The reference numbers are outputs of this
+implementation: they detect change, they do not certify correctness
+(docs/VERIFICATION.md).
 """
 import os, sys, glob, csv, subprocess
 import numpy as np
@@ -47,31 +45,6 @@ FAILS = []
 def check(name, ok, detail=''):
     print(f"  [{'PASS' if ok else 'FAIL'}] {name}" + (f"  ({detail})" if detail else ''))
     if not ok: FAILS.append(name)
-
-#  STALE (T1-b, 2026-08-17): a check whose REFERENCE predates a measured
-#  change of the world, so its failure says nothing about the binary.  It
-#  prints its number and its reason and counts as NEITHER pass nor fail --
-#  a false FAIL in a gate is worse than a missing check, because it trains
-#  the reader to ignore the verdict line.  Every entry here is a
-#  re-baseline item in STATUS 7.8.
-#  KNOWN-FAIL (2026-08-31): a check that fails because of a DIAGNOSED, UNFIXED
-#  defect in the code -- not because its reference is stale.  Distinct from
-#  stale_check, whose failure "says nothing about the binary"; a known-fail says
-#  a great deal about it.  It does not count toward the verdict (a permanent
-#  FAIL trains the reader to ignore the verdict line) but it is NOT inert: the
-#  caller also asserts that the defect is present with its documented magnitude,
-#  so a fix flips it loudly instead of passing unnoticed.
-def known_fail(name, ok, detail, why, on_pass):
-    if ok:
-        print(f"  [KNOWN-FAIL -> NOW PASSES] {name}  ({detail})")
-        print(f"          {on_pass}")
-    else:
-        print(f"  [KNOWN-FAIL] {name}  ({detail})")
-        print(f"          reason: {why}")
-
-def stale_check(name, detail, why):
-    print(f"  [STALE] {name}  ({detail})")
-    print(f"          reason: {why}")
 
 # ---------------------------------------------------------------- helpers
 def load_frozen_analytic(name):
@@ -120,27 +93,27 @@ def run_case(name, extra, pref, N=64, env=None):
 # ---------------------------------------------------------------- check 0
 print('== 0. build freshness ==')
 exe = F.CAMR
-hdrs = ['../../Source/Hydro/PelantiShyue/PS_relaxation.H',
-        '../../Source/Hydro/PelantiShyue/PS_sources.H']
+SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'Source')
 exe_m = os.path.getmtime(exe)
-stale = [h for h in hdrs if os.path.exists(h) and os.path.getmtime(h) > exe_m]
-check('executable newer than changed PS headers', not stale,
-      f'exe={os.path.basename(exe)}' + (f'; STALE vs {stale}' if stale else ''))
+stale = []
+for root, _dirs, files in os.walk(SRC):
+    for fn in files:
+        if fn.endswith(('.H', '.cpp')):
+            p = os.path.join(root, fn)
+            if os.path.getmtime(p) > exe_m:
+                stale.append(os.path.relpath(p, SRC))
+check('executable newer than every *.H/*.cpp under Source/', not stale,
+      f'exe={os.path.basename(exe)}' + (f'; STALE vs {stale[:5]}'
+                                        + (f' (+{len(stale)-5} more)' if len(stale) > 5 else '')
+                                        if stale else ''))
 
 # ---------------------------------------------------------------- check 1
-print('== 1. frozen A/C battery (expect handoff Part-2 values) ==')
-# RE-BASELINED 2026-08-12 after W2-2 / W2-2b (scalar-per-wave limiting in a
-# nondimensional inner product, PS_umeth.cpp).  That is a genuine change to the
-# 2nd-order operator, so these values legitimately moved; three of them tripped
-# the +/-2e-3 band and are updated here IN ONE PASS rather than case by case as
-# they trip -- re-baselining one case at a time is how a band stops meaning
-# anything.  Direction of each change, for the record:
-#     A4-Double-rare    .024/.055/.029 -> .022/.052/.027   IMPROVED
-#     A6-Near-vacuum    .012/.010/.015 -> .012/.008/.015   IMPROVED (u, 20 %)
-#     C3-Strong-shock-V .027/.103/.025 -> .029/.108/.027   WORSE (~7 %), the one
-#                        real regression from W2-2b; kept as the new baseline so
-#                        it is watched, NOT because it is accepted as correct.
-# The A/C battery mean is 0.0350, unchanged, and still the headline gate.
+print('== 1. frozen A/C battery ==')
+# Recorded per-case values of the second-order wp operator.  When a
+# deliberate operator change moves them, re-baseline every tuple in one
+# pass, not case by case as they trip: re-baselining one case at a time
+# is how a band stops meaning anything.  The battery mean 0.0350 is the
+# headline gate.
 EXPECT = {  # (rho, u, P) rel-L2, frozen config (relax_mode 0, mt/flash tau 0)
  'A1-Sod-strong':     (0.012, 0.012, 0.015),
  'A2-Sod-weak':       (0.013, 0.089, 0.015),
@@ -154,25 +127,34 @@ EXPECT = {  # (rho, u, P) rel-L2, frozen config (relax_mode 0, mt/flash tau 0)
 }
 frozen_cfg = {'CAMR.ps_do_relax': 1, 'CAMR.ps_relax_mode': 0,
               'CAMR.ps_mt_tau': 0, 'CAMR.ps_flash_tau': 0.0}
-allv = []
-for nm, exp in EXPECT.items():
-    m = run_case(nm, frozen_cfg, f'vc_{nm}_')
-    if m is None:
-        check(nm, False, 'run failed'); continue
-    e = l2(m, load_frozen_analytic(nm))
-    got = (e['rho'], e['u'], e['P']); allv += list(got)
-    # C1 'exact' means exact at printed precision (handoff Part 2 prints
-    # 0.000); the normalized metric carries ~1e-6-scale roundoff from ~800
-    # steps of uniform advection, so assert < 5e-4, not < 1e-6.
-    tol = 5e-4 if nm == 'C1-Identity' else 2e-3
-    ok = all(abs(g - x) <= tol for g, x in zip(got, exp))
-    check(nm, ok, f"got {got[0]:.3f},{got[1]:.3f},{got[2]:.3f} expect {exp}")
-mean = np.mean(allv)
-check('A/C battery mean ~ 0.0350', abs(mean - 0.0350) < 2e-3, f'mean={mean:.4f}')
+#  Two configurations of the same battery: the corridor seed
+#  prob.alpha_trace=1e-6 (the run_case default) and exact-zero absent
+#  phases (prob.alpha_trace=0).  Both must reproduce the recorded tuples:
+#  the presence paths that handle an exactly absent phase may not move the
+#  single-phase battery.
+for label, extra, pref in (('alpha_trace=1e-6', {}, 'vc_'),
+                           ('alpha_trace=0', {'prob.alpha_trace': 0.0}, 'vp_')):
+    print(f'  -- {label} --')
+    allv = []
+    for nm, exp in EXPECT.items():
+        cfg = dict(frozen_cfg); cfg.update(extra)
+        m = run_case(nm, cfg, f'{pref}{nm}_')
+        if m is None:
+            check(f'{nm} ({label})', False, 'run failed'); continue
+        e = l2(m, load_frozen_analytic(nm))
+        got = (e['rho'], e['u'], e['P']); allv += list(got)
+        # C1 'exact' means exact at printed precision (the recorded value is
+        # 0.000); the normalized metric carries ~1e-6-scale roundoff from ~800
+        # steps of uniform advection, so assert < 5e-4, not < 1e-6.
+        tol = 5e-4 if nm == 'C1-Identity' else 2e-3
+        ok = all(abs(g - x) <= tol for g, x in zip(got, exp))
+        check(f'{nm} ({label})', ok, f"got {got[0]:.3f},{got[1]:.3f},{got[2]:.3f} expect {exp}")
+    mean = np.mean(allv)
+    check(f'A/C battery mean ~ 0.0350 ({label})', abs(mean - 0.0350) < 2e-3, f'mean={mean:.4f}')
 
 # ---------------------------------------------------------------- check 2
 print('== 2. B4 canonical flatness (mode 4) ==')
-os.environ['PS_FLASH_METASTABLE_MARGIN'] = '0'
+#  Measured at the code default CAMR.ps_flash_metastable_margin = 0.10.
 u_errs = {}
 for tau in (1e-4, 1e-7):
     m = run_case('B4-Cross-critical',
@@ -188,31 +170,7 @@ check('B4 flat across tau', abs(u_errs[1e-4] - u_errs[1e-7]) < 0.01,
       f'delta={abs(u_errs[1e-4]-u_errs[1e-7]):.4f}')
 
 # ---------------------------------------------------------------- check 3
-print('== 3. B9 canonical value / stale-binary detector ==')
-#  ps_flash_from_absent pinned 0: stale-binary detector, minted pre-nucleator
-#  (WORKLOG G-DEF) -- pin the birth channel wherever the mode is pinned.
-#  MEASURED: the 1.000 reading pre-dates the default flip (same value on the
-#  pre-flip binary); mode-4 B9 aborts.  STATUS 7.8 re-baseline item, open.
-m = run_case('B9-Deep-Expansion',
-             {'CAMR.ps_relax_mode': 4, 'CAMR.ps_theta_tau': 1e-7,
-              'CAMR.ps_mt_tau': 1e-7, 'CAMR.ps_flash_tau': 1e-7,
-              'CAMR.ps_flash_from_absent': 0},
-             'vc4_B9_')
-u9 = l2(m, load_hem_analytic('B9'))['u'] if m else float('nan')
-if 0.80 < u9 < 0.90:
-    check('B9 mode-4 u-err ~0.64 (re-baselined 2026-08-10, cap-free + W2-1; was 0.68 on caps-active binaries)', False,
-          f'got {u9:.3f} == the MODE-0 value: binary predates ps_relax_mode=4 '
-          '(old binaries map unknown modes to 0). Rebuild clean.')
-else:
-    stale_check('B9 mode-4 u-err ~0.64 (ref 2026-08-10, cap-free + W2-1)',
-          f'got {u9:.3f}',
-          'mode-4 B9 ABORTS -- the abort mode 5 retired.  MEASURED identical '
-          'on the pre-flip binary, so this is not a regression; the reference '
-          'itself is pre-X3.  Re-baseline against mode 5 or delete with mode 4 '
-          '(STATUS 7.8).')
-
-# ---------------------------------------------------------------- check 4
-print('== 4. reproject liveness (PS_sources.H change present) ==')
+print('== 3. reproject liveness (PS_sources.H change present) ==')
 res = {}
 for rp in (0, 1):
     m = run_case('B9-Deep-Expansion',
@@ -220,117 +178,44 @@ for rp in (0, 1):
                   'CAMR.ps_mt_tau': 1e-4, 'CAMR.ps_src_p_reproject': rp},
                  f'vcrp{rp}_B9_')
     res[rp] = l2(m, load_hem_analytic('B9'))['u'] if m else float('nan')
-# RE-BASELINED 2026-08-12: 0.880/0.771 -> 0.865/0.797.  This pair drifted at the
-# dt-consistency fix (dt is now taken from the same wave speed as the flux, so
-# two-phase cases take more steps) and was already reading 0.865/0.794 BEFORE any
-# of the W2-2 limiter work -- verified by running both configs with
-# ctop_sub == ctop_host_floor == 0, i.e. provably untouched by that change.
-# What the check is FOR is unchanged: rp=0 and rp=1 must differ (the third
-# assertion), which is the actual liveness test.
-# RE-BASELINED 2026-08-31: 0.865/0.797 -> 0.845/0.774.  Both legs moved down by
-# ~0.021 TOGETHER at the presence-promotion commit (ee1ea87: the rho_deg gate on
-# INDEPENDENT promotion and the fold's cdeg/edeg corridor reap).  That is a real
-# behaviour change and there is no bit-identical fallback to hold -- the legacy
-# ps_presence==0 path is deleted -- so a moved reference is the expected outcome,
-# not a failure.  Evidence it is the promotion work and not a regression: the
-# shift is common-mode (rp=0 -0.020, rp=1 -0.023), the direction is toward LOWER
-# error on both, the separation is preserved (delta 0.071 vs 0.068 before), and
-# the frozen A/C battery reproduces its recorded per-case tuples EXACTLY at mean
-# 0.0350 with C1 exact -- so the hyperbolic core is provably untouched.
-# What the check is FOR is unchanged: rp=0 and rp=1 must differ (third assertion).
-# RE-BASELINED 2026-09-04: rp=1 0.774 -> 0.752 at the ps_lw_skip_contact=2
-# default flip (contact-wave Lax-Wendroff correction softened-tapered off, C2).
-# Unlike the two shifts above this is NOT common-mode: rp=0 held at 0.849 (band
-# 0.845, unchanged), only the reproject leg moved, and it moved TOWARD LOWER
-# error (0.774->0.752).  The separation the check actually tests GREW, delta
-# 0.098 vs 0.068 before, so liveness is strengthened not weakened.  A/C battery
-# reproduces its recorded tuples EXACTLY at mean 0.0350 with C1 exact and B12
-# R=0.0097 is unchanged -- the hyperbolic core and two-phase physics are
-# provably untouched; the move is confined to the LW correction on the contact.
-check('rp=0 reproduces legacy (~0.845)', abs(res[0] - 0.845) < 0.02,
+# What the check is FOR is the third assertion: rp=0 and rp=1 must differ.
+# The two reference values are recorded outputs and move together with
+# deliberate changes to the relaxation or contact-correction operators;
+# the separation must survive any such change.
+check('rp=0 reproduces the recorded value (~0.845)', abs(res[0] - 0.845) < 0.02,
       f'got {res[0]:.3f}')
-check('rp=1 improves (~0.752)', abs(res[1] - 0.752) < 0.02, f'got {res[1]:.3f}')
+check('rp=1 reproduces the recorded value (~0.752)', abs(res[1] - 0.752) < 0.02, f'got {res[1]:.3f}')
 check('rp=0 vs rp=1 differ (change is live)', abs(res[0] - res[1]) > 0.05,
       f'delta={abs(res[0]-res[1]):.3f}')
 
-# ---------------------------------------------------------------- check 5
-print('== 5. presence gates (S1/S2) ==')
-frozen_cfg5 = {'CAMR.ps_do_relax': 1, 'CAMR.ps_relax_mode': 0,
-               'CAMR.ps_mt_tau': 0, 'CAMR.ps_flash_tau': 0.0}
-for label, extra in (('corridor seeds (alpha_trace=1e-6)', {}),
-                     ('exact-zero trace (alpha_trace=0)', {'prob.alpha_trace': 0.0})):
-    vals = []; c1ok = None; fail = False
-    for nm in EXPECT:
-        cfg = dict(frozen_cfg5); cfg.update(extra)
-        m = run_case(nm, cfg, f'vp_{nm}_')
-        if m is None:
-            check(f'presence {label}: {nm}', False, 'run failed'); fail = True; break
-        e = l2(m, load_frozen_analytic(nm))
-        vals += [e['rho'], e['u'], e['P']]
-        if nm == 'C1-Identity': c1ok = max(e.values()) < 5e-4
-    if fail: continue
-    mean5 = np.mean(vals)
-    check(f'presence {label}: A/C mean ~0.0350', abs(mean5 - 0.0350) < 2e-3,
-          f'mean={mean5:.4f}')
-    check(f'presence {label}: C1 exact', bool(c1ok))
-
-# ---------------------------------------------------------------- check 6
-print('== 6. S3 transitions: zero-trace two-phase (fold + birth live) ==')
+# ---------------------------------------------------------------- check 4
+print('== 4. zero-trace two-phase: frozen B4 with exactly absent phases (fold + birth live) ==')
 m = run_case('B4-Cross-critical',
              {'CAMR.ps_do_relax': 1, 'CAMR.ps_relax_mode': 0,
               'CAMR.ps_mt_tau': 0, 'CAMR.ps_flash_tau': 0.0,
               'prob.alpha_trace': 0.0},
              'vz_B4f_')
 if m is None:
-    check('S3 frozen B4 zero-trace', False, 'run failed (binary predates S3?)')
+    check('frozen B4 zero-trace', False, 'run failed')
 else:
     e = l2(m, load_frozen_analytic('B4-Cross-critical'))
-    check('S3 frozen B4 zero-trace u-err ~0.131',
+    check('frozen B4 zero-trace u-err ~0.131',
           abs(e['u'] - 0.131) < 0.02, f"got {e['u']:.3f}")
-#  ps_flash_from_absent pinned 0 (WORKLOG G-DEF, 2026-08-17): a check that
-#  pins its mode must pin its birth channel too, or the nucleator default
-#  silently enters a reference minted in the pre-nucleator world.  This pin
-#  is hygiene, NOT a fix -- MEASURED: this check reads 1.000 on the pre-flip
-#  binary as well, i.e. it fails because mode-4 B9 aborts (the abort mode 5
-#  retired), not because of the nucleator.  STATUS 7.8's stale-check item.
-m = run_case('B9-Deep-Expansion',
-             {'CAMR.ps_relax_mode': 4, 'CAMR.ps_theta_tau': 1e-7,
-              'CAMR.ps_mt_tau': 1e-7, 'CAMR.ps_flash_tau': 1e-7,
-              'CAMR.ps_flash_from_absent': 0,
-              'prob.alpha_trace': 0.0},
-             'vz_B9c_')
-if m is None:
-    check('S3 canonical B9 zero-trace (flash birth)', False, 'run failed')
-else:
-    u9z = l2(m, load_hem_analytic('B9'))['u']
-    # RESOLVED 2026-08-10: E-series (extinction) + W2-1 (identity-consistent
-    # BL-2 limiter) flipped this green at 0.429 with ZERO caps -- the honest
-    # number now equals the old cap-assisted 0.43.  See DESIGN_ps_wp_front.md.
-    # S3-era value was 0.68 (#88 still active); S4's presence gating improves
-    # this to ~0.43.  The check asserts the INVARIANT — flash birth from
-    # genuinely-pure liquid develops the evaporation (u-err well below the
-    # 0.85 no-birth plateau) — not a frozen number.
-    stale_check('S3/S4 canonical B9 zero-trace: flash birth develops (u-err < 0.60)',
-          f'got {u9z:.3f} (no-birth plateau ~0.85; S4 ref 0.43)',
-          'same mode-4 B9 abort as check 3, and the 0.60 threshold is an '
-          'S3/S4-era number taken before the nucleator existed.  The live '
-          'question it was asking -- does birth from pure liquid develop the '
-          'evaporation -- is now answered by [PS-FLASH-EV] and the B2/B9 '
-          'bracket rows at the default config.')
 
-# ---------------------------------------------------------------- check 7
-print('== 7. S4 operator gating (#88 retired under presence) ==')
+# ---------------------------------------------------------------- check 5
+print('== 5. operator gating under presence ==')
 m = run_case('B5-Both-2P',
              {'CAMR.ps_do_relax': 1, 'CAMR.ps_relax_mode': 0,
               'CAMR.ps_mt_tau': 0, 'CAMR.ps_flash_tau': 0.0,
               'prob.alpha_trace': 0.0},
              'v4_B5_')
 if m is None:
-    check('S4 frozen B5 presence-gated', False, 'run failed (binary predates S4?)')
+    check('frozen B5 presence-gated', False, 'run failed')
 else:
     e = l2(m, load_frozen_analytic('B5-Both-2P'))
-    # #88 retirement signature: u-err ~0.388 (was 0.664 with the guard).
-    check('S4 frozen B5 u-err ~0.39 (guard retired)',
+    # Signature of the presence-gated operator: u-err ~0.388 (0.664 with
+    # the retired vanishing-phase guard).
+    check('frozen B5 u-err ~0.39 (guard retired)',
           abs(e['u'] - 0.388) < 0.03, f"got {e['u']:.3f}")
 m = run_case('B2-Evap-wave',
              {'CAMR.ps_relax_mode': 4, 'CAMR.ps_theta_tau': 1e-7,
@@ -339,15 +224,13 @@ m = run_case('B2-Evap-wave',
               'prob.alpha_trace': 0.0},
              'v4_B2_')
 if m is None:
-    check('S4+B1 pelanti front stability', False, 'run failed')
+    check('pelanti kernel front stability', False, 'run failed')
 else:
     umax = float(np.max(np.abs(m['u'])))
-    check('S4+B1 pelanti kernel: B2 front stable (umax < 120)',
+    check('pelanti kernel: B2 front stable (umax < 120)',
           umax < 120.0, f'umax={umax:.1f} (standard kernel: ~700)')
 
-# ---------------------------------------------------------------- verdict
-print()
-# ---------------------------------------------------------------- check 8
+# ---------------------------------------------------------------- check 6
 #  B12 two-phase wall reflection — the per-phase compression bound.
 #
 #  WHY THIS CHECK EXISTS.  ps_star_state carries alpha unchanged through the
@@ -366,7 +249,7 @@ print()
 #  an already-conservative bound and 4x below the measured value.  Margin is
 #  deliberate: a gate that fires on a legitimate case is worse than one that
 #  fires late.  This is a TEST acceptance, not a solver threshold.
-print('== 8. B12 two-phase wall reflection: per-phase compression bound ==')
+print('== 6. B12 two-phase wall reflection: per-phase compression bound ==')
 B12 = 'B12-TwoPhase-Wall-Reflection'
 _pref = 'vcb12_'
 run_case(B12, {'CAMR.ps_relax_mode': 0, 'CAMR.ps_mt_tau': 0,
@@ -398,18 +281,17 @@ else:
         #  Reference-free invariants that must hold whatever the scheme does.
         check('B12 far field undisturbed at t_end',
               abs(_P[0] - _P[-1]) < 1e-6 * _P[0], f'|dP|={abs(_P[0]-_P[-1]):.2e}')
-        check('B12 reflection symmetry (task #47)', _sym < 1e-6 * _P[_k],
+        check('B12 reflection symmetry', _sym < 1e-6 * _P[_k],
               f'max asym={_sym:.2e}')
-        #  The acceptance.  PROMOTED from KNOWN-FAIL 2026-08-31: the
-        #  relaxed-alpha star state (DESIGN_ps_star_relaxed.md) landed and is
-        #  the single path; measured R = 0.0097 at promotion (was 1.0000; the
-        #  characterization tripwire that held the verdict line meaningful
-        #  during the KNOWN-FAIL era is retired with it).  A failure here is
-        #  a REGRESSION of the star-state partition.
+        #  The acceptance: the relaxed-alpha star state is the single path
+        #  and measures R = 0.0097.  A failure here is a regression of the
+        #  star-state partition.
         check('B12 liquid compresses less than vapour (R <= 0.25)',
               _R <= 0.25, f'R={_R:.4f}')
 
+# ---------------------------------------------------------------- verdict
 if FAILS:
     print(f'VERDICT: FAIL ({len(FAILS)} check(s)): ' + '; '.join(FAILS))
     sys.exit(1)
+print()
 print('VERDICT: ALL CHECKS PASS — canonical chain verified on this machine.')
