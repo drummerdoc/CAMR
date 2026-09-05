@@ -385,7 +385,17 @@ these go into Phase 3/4, which are physics questions):
   `ps_face_diag=0` the promote counters were never reset; they now reset on
   every `ps_diag_mass` print.
 
-### 3.9 `[DECIDE-16]` threshold survey (Phase 4A)
+### 3.9 Phase-6 finding: `ps_wp_order` and the TBlowdown / B4 decks
+
+`CAMR.ps_wp_order` defaults to 1. The RiemannSuite harnesses, the pipe-break
+decks, ADV2D and XC2D all set 2 explicitly; `CO2_TBlowdown` (all decks) and
+`CO2_B4/inputs`, `inputs-cf-contact` do not, so the blowdown orientation suite
+and the B4 C-F regression run first-order wp and their recorded numbers are
+first-order numbers. This is `[DECIDE-4]` with a concrete consequence: flipping
+the default to 2 (recommended) changes exactly those decks; their references
+(TBlowdown vented mass, B4 .044/.132/.054) move and must be re-recorded.
+
+### 3.10 `[DECIDE-16]` threshold survey (Phase 4A)
 
 | Name | Value | Where | Gates | Assessment |
 |---|---|---|---|---|
@@ -403,7 +413,7 @@ these go into Phase 3/4, which are physics questions):
 | `ALPHA_ROUNDOFF` | 1e-6 | `PS_constants.H` | round-off pure-cell gate | single-named now |
 | per-phase `rho_floor` | 1e-6 | `ps_state_from_cons` | ρ_k floor | different quantity from ρ_mix; left |
 
-### 3.10 Two configurations, stated once
+### 3.11 Two configurations, stated once
 
 The 1-D acceptance battery runs bare defaults (`ps_relax_mode=5`,
 `ps_flash_from_absent=1`, τ = 1e-7); the 2-D pipe-break decks pin
@@ -809,8 +819,8 @@ Tag `pre-cleanup-2026-09-04` first.
 | 2 | Stale-comment fix list §4.2 + comment policy pass, file by file (hem, PS_relaxation, PS_umeth, PS_hllc, PS_nscbc, PS_sources, PS_guards, PS_ctoprim, PS_presence/promote, EOS, core) | bit-identical fingerprint after each file (comment-only edits must produce an identical binary; `cmp` the exe as the fastest check) | **DONE 09-04** (`ad7532f…6d0b258`): 48 files, 26,714→23,095 lines (comment lines roughly halved); proof = comment-strip diff empty per file, stripped-exe disassembly identical except three `__LINE__` immediates, fingerprints IDENTICAL in both configurations. Deck banners deferred to Phase 6. Abort-message strings still carry dates/task numbers (they are code → Phase 3 `ps_retired_keys()` table) |
 | 3 | Dead code (a): the provably unreachable list; retired-key table; Make.package/README inventories | IDENTICAL fingerprints, identical restart windows | **DONE 09-04** (`8724fa6`, `8b84541`, `133a000`, `33d6b5c`) + `[DECIDE-26]` groups 1–2 (`693d051`, `dacb85b`). Proof: contraction-free build (`TINY_PROFILE=FALSE XTRA_CXXFLAGS=-ffp-contract=off`) IDENTICAL on 21/21 cases in both configurations against `PRE_nc_*`; the production -O3 build drifts at 1e-16 on four two-phase cases purely from FMA-contraction choices (verified by rebuilding both sides contraction-free). 2-D restart windows still pending the Mac run. |
 | 4 | Duplication/refactor §4.4 items 2–9, 11 (helpers, counters, constants at unchanged values, EOS contract header, file splits) | IDENTICAL | **DONE 09-04** (`82d6b58`, `3d90eb5`, `c65bf2b`, `7d9bda9`): each batch IDENTICAL on 21/21 contraction-free in both configurations; all four EOS backends compile. Left separate on purpose (different operation order): the two Catmull-Rom kernels, mode-0's own entry gate, the non-strict coexistence predicates in the MT/X3 kernels, `hem::co2_sat_state` (a NIST table, on the default flash path) |
-| 5 | Refactor item 1 (one cell state) | IDENTICAL expected; if not, present the diff as `[DECIDE-13]` | `[DECIDE-13]`, `[DECIDE-18]` |
-| 6 | Exec: decks, scripts, data, gate fixes (§5, §6) | gate green from a clean clone with no `CO2_STANDALONE` | `[DECIDE-19..22]`, `[DECIDE-24]` |
+| 5 | Refactor item 1 (one cell state) | IDENTICAL expected; if not, present the diff as `[DECIDE-13]` | **DONE 09-05** (`a16cd96` step 1 identical; `bc4b78c` step 2 accepted — the five constructions were five different state definitions; gate numbers unchanged, acceptance table moves in the 4th decimal on B2/B7/B11; `BASE_nc_*` and `exact_suite_BASE.txt` are the new references, `b6e611e`) |
+| 6 | Exec: decks, scripts, data, gate fixes (§5, §6) | gate green from a clean clone with no `CO2_STANDALONE` | **DONE 09-05** for the tracked tree (35 files removed, decks re-bannered, demo3 pins `ps_lw_skip_contact=2`, TBlowdown `inputs-x` = base + 7 keys, gate restructured to 7 checks, `sym_compare.py`/`accept_2d.py` added, GERG probes moved to `Source/EOS/GERG/tools/`). Run data untouched: `Exec/triage_run_data.sh` echoes the §5.3 triage and applies it only with `--apply` (`[DECIDE-22]` is yours to run). `CO2_Sod` kept, upstream cases untouched (`[DECIDE-20/21]` defaults). |
 | 7 | Selector retirements §4.3(b), one commit each, in the order 5, 7, 8, 9, 10, 4, 6, then 1/2/3 after the production run | IDENTICAL at defaults; abort on retired values verified | `[DECIDE-1..10]`, `[DECIDE-12]` |
 | 8 | Production run (demo2 mode 5 or 2 per `[DECIDE-12]`; demo3 with `ps_lw_skip_contact=2` pinned); NSCBC restart from `chk_sj2_02900`; confirm the demo3 C-F artefact is gone; then the deferred retirements 1/2/3 | 2-D acceptance script | — |
 
@@ -836,13 +846,13 @@ paced by the run in phase 8.
 | 10 | Reduce `ps_state_from_cons` to one branch | yes |
 | 11 | Ship an `archive/` with WORKLOG/FINDINGS/HANDOFFs | **DECIDED 09-04: no** — tag `pre-cleanup-2026-09-04` is the archive |
 | 12 | 2-D production relaxation mode: keep mode 2 or move demo2/3 to mode 5 | move to 5 in the phase-8 run; it is the only way to make the 1-D and 2-D configurations one story and unblock 3 |
-| 13 | Accept any fingerprint change from unifying the five cell-state constructors | decide with the diff in hand |
+| 13 | Accept any fingerprint change from unifying the five cell-state constructors | **DECIDED 09-05: accepted** (diff: B2 P 0.1521→0.1516, B7 u 0.7460→0.7465, B11 P 0.1658→0.1657; B12 asymmetry 9.3e-9→4.7e-9) |
 | 14 | Third-party PDFs in the shared tree | **DECIDED 09-04: out** — done (`b5b5a8b`), cited instead |
 | 15 | Drop the ignored `Y[]` species argument from the PS EOS contract | **DECIDED 09-04: yes** — done as `ps_pure_species()` replacing 17 carriers (the Y-taking surface is 15 functions, 3 shared with single-fluid, so the overload route was larger) |
 | 16 | Which of the ten "small phase" thresholds are distinct physics | **DECIDED 09-04: consolidate names, values unchanged.** Done for the true copies (`PS_constants.H`). The survey table is in §3.9; the candidate merges it exposes (`single_phase_threshold` = `alpha_mt_thr` = 5e-3, both inert under presence; `a_eps`, `alpha_blk`, `ps_dilute_alpha0` as accidental copies) are value decisions → Phase 7 with the mode retirements |
 | 17 | Reflux α co-move clamp `[1e-8, 1−1e-8]`, `\|Δα\| ≤ 0.05` vs ABSENT reachability | report only; rule 1/2 territory |
-| 18 | Silent `e_mix` fallback in face/wavespeed vs contract 3 | resolved by 13 if accepted |
-| 19 | Delete the four superseded `CO2_B4` decks and `inputs.decomp` | yes |
+| 18 | Silent `e_mix` fallback in face/wavespeed vs contract 3 | **resolved by 13** |
+| 19 | Delete the four superseded `CO2_B4` decks and `inputs.decomp` | **done 09-05** |
 | 20 | Keep `CO2_Sod` (single-fluid PR) | keep only if single-fluid PR is supported |
 | 21 | Delete upstream `DoubleRamp`/`ReReTest`/`MovingEBCases` on this branch | leave untouched if merging back to `development` is intended |
 | 22 | Run-data triage rows (§5.3) | as tabled |

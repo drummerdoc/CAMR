@@ -219,7 +219,7 @@ The 1-D-in-x B4 problem on 512 × 64 (`inputs`) and the static-box reflux probe 
 ./CAMR2d.gnu.TPROF.PS.PR.ex inputs-cf-contact
 ```
 
-The other B4 decks (`inputs-fixedbox`, `-stalled`, `-nearstalled`, `-flashtest`) are superseded experiments ([DECIDE-19]).
+The superseded B4 experiment decks were removed with the cleanup ([DECIDE-19]).
 
 ### `Exec/CO2_Sod`
 
@@ -294,7 +294,9 @@ Every plotfile and checkpoint carries a `job_info` file with the full ParmParse 
 - `Exec/CO2_PipeBreak/symchk.py <plt>`: level-0 pressure mirror asymmetry $\max\lvert P(y) - P(1-y)\rvert$ and finiteness.
 - `Exec/CO2_PipeBreak/chkplt.py <plt>`: level-0 min/max per variable and the count of non-finite cells (`BLEW UP` / `all finite`).
 - `Exec/CO2_PipeBreak/imgamr.py <plt>`: field image with the AMR box overlay; `img2d.py` the same without boxes.
+- `Exec/CO2_PipeBreak/accept_2d.py <plt> [--tol 5e-10 | --no-asym]`: min P, min/max ρ, min T, non-finite count and the centreline mirror asymmetry with PASS/FAIL (the asymmetry rung applies to the early transient; pass `--no-asym` late in a run).
+- `Exec/CO2_TBlowdown/sym_compare.py <x-lo> <x-hi> <y-lo> <y-hi> [--tol 1e-12]`: folds the four orientation decks' final plotfiles onto one axial profile and reports the max relative difference per field.
+- `Exec/triage_run_data.sh [--apply] [ARCHIVE]`: the run-data triage of the plan (§5.3) as an echoed script; nothing runs without `--apply`.
 - `Exec/CO2_PipeBreak/compare_pair.py NEW LEGACY OUT.png [TAG]`: needs `yt`; covering-grid comparison at the finest level of density, pressure, α₁, x-velocity with roughness, liquid inventory, flash-rate and relative $L_2$ of density.
-- `Exec/CO2_PipeBreak/plt.py`: the 2-D plotfile reader that `gerg_edge_scan.py` imports; it is hidden by the `plt*` ignore pattern and is not in the tracked tree (to be tracked as `pltread.py` if kept).
 - `Exec/CO2_RiemannSuite/conv_montage.py`, `full_suite.py montage`: PDF overlays of the convergence data and of CAMR against the standalone.
 - AMReX's own `fextract` (built from the AMReX tree) extracts rays from 2-D plotfiles for the XC2D protocol.

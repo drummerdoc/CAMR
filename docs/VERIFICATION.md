@@ -93,17 +93,14 @@ Why B12 exists. Every strong-compression case is single-phase (A, C3), saturated
 
 | check | configuration | assertion | frozen number | status |
 |:--|:--|:--|:--|:--|
-| 0 build freshness | — | executable mtime newer than `PS_relaxation.H` and `PS_sources.H` | — | weak: compares only two headers; `regen_refs.sh` checks against all of `Source/` |
-| 1 frozen A/C battery | `ps_relax_mode=0`, `ps_mt_tau=0`, `ps_flash_tau=0` on A1–A6, C1–C3 | per-case (ρ, u, P) rel-L2 within ±2e-3 of the `EXPECT` tuples; C1 all fields < 5e-4; battery mean within 2e-3 of 0.0350 | mean 0.0350; C1 0.000 (the normalised metric carries ~1e-6 round-off from ~800 steps of uniform advection, hence 5e-4 not 1e-6) | live; the headline gate |
-| 2 B4 flatness | `ps_relax_mode=4`, θ = τ_MT = τ_flash = τ at τ = 1e-4 and 1e-7 | u-err within 0.02 of 0.129 at both τ; Δ between them < 0.01 | 0.129 | live but sets the dead environment variable `PS_FLASH_METASTABLE_MARGIN=0` (the knob is `CAMR.ps_flash_metastable_margin`, default 0.10, so the flatness is measured at margin 0.10); depends on mode 4 |
-| 3 B9 mode-4 value | `ps_relax_mode=4`, τ = 1e-7, `ps_flash_from_absent=0` | u-err ≈ 0.64 | 0.64 | STALE by construction: mode-4 B9 aborts; slated for removal |
-| 4 reproject liveness | `ps_relax_mode=2`, θ = τ_MT = 1e-4 on B9, `ps_src_p_reproject` 0 and 1 | rp=0 within 0.02 of 0.845; rp=1 within 0.02 of 0.752; \|Δ\| > 0.05 | 0.845 / 0.752 | live; the third assertion is the actual test (the source-side pressure reproject is in the binary); depends on mode 2 |
-| 5 presence invariance | as check 1, with `ps_alpha_trace` 1e-6 and 0 | A/C mean 0.0350, C1 exact, both configurations | 0.0350 | duplicates check 1 (`CAMR.ps_presence` is not read); slated to collapse into check 1 with `alpha_trace=0` |
-| 6a zero-trace B4 | frozen config, `prob.alpha_trace=0` on B4 | u-err within 0.02 of 0.131 | 0.131 | live |
-| 6b zero-trace B9 birth | mode 4, τ = 1e-7, `alpha_trace=0` | u-err < 0.60 | 0.43 | STALE by construction (same mode-4 abort); slated for removal; the question it asked is answered by the B2/B9 bracket rows |
-| 7a B5 frozen | frozen config, `alpha_trace=0` on B5 | u-err within 0.03 of 0.388 | 0.388 | live (a presence-gated operator, not a guard, produces this number) |
-| 7b B2 front stability | mode 4, τ = 1e-7, `ps_mech_kernel=1` | max\|u\| < 120 m/s | ~700 with the standard kernel | live; depends on mode 4 |
-| 8 B12 two-phase wall reflection | frozen config on B12 | far field undisturbed, mirror symmetry, R ≤ 0.25 | R = 0.0097 | live |
+| 0 build freshness | — | executable mtime newer than every `*.H`/`*.cpp` under `Source/` | — | live |
+| 1 frozen A/C battery | `ps_relax_mode=0`, `ps_mt_tau=0`, `ps_flash_tau=0` on A1–A6, C1–C3, run with `prob.alpha_trace` 1e-6 and 0 | per-case (ρ, u, P) rel-L2 within ±2e-3 of the `EXPECT` tuples; C1 all fields < 5e-4; battery mean within 2e-3 of 0.0350 | mean 0.0350; C1 0.000 (the normalised metric carries ~1e-6 round-off from ~800 steps of uniform advection, hence 5e-4 not 1e-6) | live; the headline gate |
+| 2 B4 flatness | `ps_relax_mode=4`, θ = τ_MT = τ_flash = τ at τ = 1e-4 and 1e-7 | u-err within 0.02 of 0.129 at both τ; Δ between them < 0.01 | 0.129 | live (measured at the code default `ps_flash_metastable_margin` 0.10) but sets the dead environment variable `PS_FLASH_METASTABLE_MARGIN=0` (the knob is `CAMR.ps_flash_metastable_margin`, default 0.10, so the flatness is measured at margin 0.10); depends on mode 4 |
+| 3 reproject liveness | `ps_relax_mode=2`, θ = τ_MT = 1e-4 on B9, `ps_src_p_reproject` 0 and 1 | rp=0 within 0.02 of 0.845; rp=1 within 0.02 of 0.752; \|Δ\| > 0.05 | 0.845 / 0.752 | live; the third assertion is the actual test (the source-side pressure reproject is in the binary); depends on mode 2 |
+| 4 zero-trace B4 | frozen config, `prob.alpha_trace=0` on B4 | u-err within 0.02 of 0.131 | 0.131 | live |
+| 5a B5 frozen | frozen config, `alpha_trace=0` on B5 | u-err within 0.03 of 0.388 | 0.388 | live (a presence-gated operator, not a guard, produces this number) |
+| 5b B2 front stability | mode 4, τ = 1e-7, `ps_mech_kernel=1` | max\|u\| < 120 m/s | ~700 with the standard kernel | live; depends on mode 4 |
+| 6 B12 two-phase wall reflection | frozen config on B12 | far field undisturbed, mirror symmetry, R ≤ 0.25 | R = 0.0097 | live |
 
 Check 8 in detail. B12 is a plotfile check that needs no sound speed. With $\rho_k = m_k/\alpha_k$ per phase, the far-field cell $e$ (undisturbed at $t_{\mathrm{end}}$) and the shocked-plateau cell $k = \arg\max P$, the per-phase relative compressions are $c_1 = \rho_1[k]/\rho_1[e] - 1$ and $c_2 = \rho_2[k]/\rho_2[e] - 1$ and the metric is
 
@@ -196,7 +193,7 @@ Two restart windows are the 2-D regression references, recorded by `Exec/regen_r
 
 `inputs.satjet_demo3` (tighter α tag 0.01, `n_error_buf 4`, per-face NSCBC on xhi, ylo, yhi) has one recorded metric: at step 50 on the centreline $y = 0.5$, $\max|d^2\alpha_1|$ over $x \in [0.013, 0.030]$ m is 1.06e-3 with the softened contact-wave taper (`ps_lw_skip_contact = 2`) against 1.18e-3 without it, and the front window $x \in [0.034, 0.046]$ m gives 1.06e-3 against 2.74e-3, with the sign-flip extrema count halved from 4 to 2 (`DESIGN` evidence for the default; the demo3 deck does not set the key, so it takes the compiled default).
 
-Tools (`RUNNING.md` §7): `symchk.py` for the level-0 mirror asymmetry and finiteness, `chkplt.py` for min/max and the non-finite count, `imgamr.py` for a field with the AMR box overlay, `compare_pair.py` (needs `yt`) for the covering-grid comparison of two plotfiles with the roughness $\overline{|d^2\rho|}$, liquid inventory $\sum \alpha_1\rho_1\,dV$, flash-rate and relative $L_2$ of density.
+Tools (`RUNNING.md` §7): `accept_2d.py` for the scripted ladder (non-finite count, min P, mirror asymmetry with PASS/FAIL), `sym_compare.py` for the TBlowdown orientation suite, `symchk.py` for the level-0 mirror asymmetry and finiteness, `chkplt.py` for min/max and the non-finite count, `imgamr.py` for a field with the AMR box overlay, `compare_pair.py` (needs `yt`) for the covering-grid comparison of two plotfiles with the roughness $\overline{|d^2\rho|}$, liquid inventory $\sum \alpha_1\rho_1\,dV$, flash-rate and relative $L_2$ of density.
 
 ## 8. Regenerating references
 
@@ -208,7 +205,7 @@ Regenerated by `Exec/regen_refs.sh {1d|2d|windows} TAG`, deterministic for a giv
 
 ## 9. Known gaps
 
-- `verify_canonical.py`: checks 3 and 6b are STALE by construction (mode-4 B9 aborts) and are to be deleted; check 2 sets the dead environment variable `PS_FLASH_METASTABLE_MARGIN=0` while the live knob `CAMR.ps_flash_metastable_margin` defaults to 0.10, so the recorded B4 flatness is the margin-0.10 measurement and the dead line goes; check 5 measures the default path twice and collapses into check 1 with `alpha_trace = 0`; check 0 compares against two headers, not `Source/`; checks 2, 4 and 7b depend on modes 4 and 2 and are re-baselined onto mode 5 if those modes are retired ([DECIDE-3]), check 4 by a fingerprint check ([DECIDE-9]).
+- `verify_canonical.py`: checks 2, 3 and 5b depend on modes 4 and 2 and are re-baselined onto mode 5 if those modes are retired ([DECIDE-3]), check 3 by a fingerprint check ([DECIDE-9]).
 - The 2-D tests have no scripted acceptance; the intended script asserts mirror asymmetry $\le 5\times10^{-10}$, min P > 0, no NaN, `[ps_mt]` active and completion to `stop_time`. XC2D is red. The `gerg_refs` regression needs a harness that no longer exists.
 - B12 at bare defaults takes about 2.5 min on a slow host versus ~8 s in the matched configuration (mode-5 X3 on a two-phase wall reflection), an operator cost worth profiling.
 - `flashing_front.py` hard-codes its executable name; `hem_limit.py` mentions the dead environment variable. Fingerprints are host-specific, so each host records its own `PRE` baseline.
