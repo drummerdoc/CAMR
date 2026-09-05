@@ -1,13 +1,14 @@
 # =====================================================================
-#  CO2_RiemannSuite — generalized CO2 Riemann problem (base inputs)
+#  CO2_RiemannSuite — generalized CO2 Riemann problem (base deck)
 #
-#  Defaults reproduce B4-Cross-critical.  The runner
-#  suite/run_camr_riemann_suite.py overrides prob.* + stop_time +
-#  amr.n_cell + CAMR.ps_flux/ps_wp_order on the command line per case.
+#  Defaults reproduce B4-Cross-critical at N = 256, CFL 0.25, wp at
+#  second order (ps_wp_order = 2, the acceptance configuration).  Every harness in this directory (verify_canonical.py,
+#  exact_suite.py, full_suite.py, ...) overrides prob.*, stop_time and
+#  amr.n_cell on the command line per case.
 #
-#  1-D-in-x, square cells (dx==dy), thin y strip.  Cheap: set
-#  amr.n_cell = "N 2" and geometry.prob_hi y = 2/N so dy==dx, and
-#  amr.blocking_factor = 2.
+#  1-D in x.  In a 2-D build the thin y strip keeps square cells:
+#  amr.n_cell = "N 2" with geometry.prob_hi y = 2/N, blocking_factor 2.
+#  The 1-D build reads only the first entry of each line.
 # =====================================================================
 
 amrex.fpe_trap_invalid = 0
@@ -33,14 +34,10 @@ CAMR.do_mol = 0
 CAMR.ppm_type = 1
 
 CAMR.ps_hydro = 1
-# wp = wave-propagation kernel.  Was hllc: its alpha update advances alpha at
-# ~1/4 the rate of its own mass update, so alpha lags the phase mass and
-# m_k/alpha_k leaves the physical domain at any front (B9 cell 33: 31247
-# kg/m3 against an upstream 908).  wp keeps the two consistent (922 vs 908)
-# and runs B9 to completion.  See WORKLOG.md.
+# wp = wave-propagation kernel (the compiled default) at second order
+# (ps_wp_order defaults to 1; 2 is the acceptance configuration).
 CAMR.ps_flux  = wp
 CAMR.ps_wp_order = 2
-# (removed duplicate) CAMR.ps_wp_order = 1
 
 CAMR.ps_bc_use_nscbc = 0
 CAMR.ps_bc_nscbc_sigma = 0.25

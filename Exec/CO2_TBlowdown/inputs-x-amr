@@ -1,24 +1,24 @@
 # =====================================================================
-#  T-Blowdown with 2-level AMR — Phase 4e test case.
+#  T-Blowdown along x with one level of AMR
 #
-#  Same physics/BC/EOS setup as inputs-x, but max_level = 1 with a
-#  pressure-gradient-based refinement tag.  The base grid is the same
-#  N=128 (Godunov+NSCBC baseline) and the fine level refines by 2x in
-#  the shock/rarefaction region, giving effective N=256 there.
+#  The inputs-x physics (closed 1 m pipe of supercritical CO2 at 100 bar,
+#  320 K, NSCBC vent at x = 1 to 1 bar) on a 128 x 16 base grid with
+#  max_level = 1 and a pressure-jump refinement tag, so the wave region
+#  runs at effective N = 256.  Standalone deck (does not include
+#  inputs.base); max_step = 300 governs the run length.
 #
-#  Purpose: exercise the CAMR AMR pipeline (regrid, reflux, interp)
-#  with the PS 6-eq state to see whether the standard cell_cons_interp
-#  correctly interpolates the extended slots (UALPHA1, UM1RHO1,
-#  UM2RHO2, UE1, UE2) or if we need a custom interpolator.  Reflux is
-#  a no-op for UALPHA1 because F[UALPHA1] = 0 in the wave-propagation
-#  form, so this test primarily exercises interpolation-on-regrid.
+#  Purpose: exercise the AMR pipeline (regrid interpolation, reflux)
+#  with the six-equation state.  Reflux is a no-op for UALPHA1 because
+#  its flux is zero in the wave-propagation form, so the test mostly
+#  exercises interpolation of the extended slots (UALPHA1, UM1RHO1,
+#  UM2RHO2, UE1, UE2) on regrid.
 #
-#  Diagnostics to check after the run:
-#    * α_1 range stays in [α_floor, 1 − α_floor] on all levels
-#    * mixture identity  α_1 ρ_1 + α_2 ρ_2 = ρ  holds after regrid
-#    * mixture identity  α_1 ρ_1 E_1 + α_2 ρ_2 E_2 = ρ E  holds
-#    * grid-conv comparison: N=128 no-AMR vs N=128 base + 2×AMR vs
-#      N=256 no-AMR — expect the AMR run to sit between the two.
+#  What to check after the run:
+#    * alpha_1 stays in [alpha_floor, 1 - alpha_floor] on all levels
+#    * alpha_1 rho_1 + alpha_2 rho_2 = rho holds after regrid
+#    * E_1 + E_2 = rho E holds after regrid
+#    * N = 128 uniform vs this deck vs N = 256 uniform: the AMR run
+#      sits between the two.
 # =====================================================================
 
 amrex.fpe_trap_invalid = 0
@@ -31,9 +31,8 @@ geometry.coord_sys   = 0
 geometry.prob_lo     =   0.0    0.0    0.0
 geometry.prob_hi     =   1.0    0.125  0.125
 
-# Base level N=128 to match the Godunov N=128 grid-conv reference run
-# recorded in docs/design/camr_ps_validation.md.  AMR then refines to
-# effective N=256 in the wave region.
+# Base level N = 128; the fine level gives effective N = 256 in the
+# wave region.
 amr.n_cell           =   128   16   16
 
 CAMR.lo_bc       =  SlipWall   SlipWall   SlipWall
@@ -47,11 +46,8 @@ CAMR.do_mol = 0
 CAMR.ppm_type = 1
 
 CAMR.ps_hydro = 1
-#  PROBE #27 (2026-08-25): pinned EXPLICITLY to the acceptance flux.
-#  These decks historically ran the compiled default (llf); the measured
-#  llf-vs-wp A/B on this case (WORKLOG 2026-08-25) put wp within 0.17%%
-#  of llf on the vent-rate QoI with zero aborts, and the compiled default
-#  is now wp — the pin records the choice rather than inheriting it.
+#  The flux is the compiled default (wp), written out so the deck
+#  records the scheme it runs; ps_wp_order stays at its default (1).
 CAMR.ps_flux  = wp
 CAMR.ps_bc_use_nscbc = 1
 CAMR.ps_bc_nscbc_sigma = 0.25
@@ -65,7 +61,7 @@ CAMR.redistribution_type = StateRedist
 amr.loadbalance_with_workestimates = 0
 
 # --- AMR structure -------------------------------------------------
-# 2 levels: base (N=128) + one 2× refinement.  ref_ratio 2 in x/y/z.
+# Two levels: base (N = 128) plus one 2x refinement.
 amr.max_level       = 1
 amr.ref_ratio       = 2 2 2 2
 amr.regrid_int      = 4 4 4 4     # regrid every 4 base-level steps

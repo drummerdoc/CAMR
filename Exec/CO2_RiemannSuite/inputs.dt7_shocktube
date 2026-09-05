@@ -1,8 +1,7 @@
 # =====================================================================
-#  DT7-4.1 two-phase CO2 shock tube  (SINTEF report DT7_2019_6,
-#  "The homogeneous relaxation model", section 4.1; Munkejord &
-#  Deng-like).  Set up 2026-08-27 (Marc's request) as a 1-D CAMR /
-#  PR-EOS comparison case against the report's Figure 4.
+#  DT7-4.1 two-phase CO2 shock tube (SINTEF report DT7_2019_6, "The
+#  homogeneous relaxation model", section 4.1): a 1-D CAMR / PR-EOS
+#  comparison case against the report's Figure 4.
 #
 #  12 m tube, membrane at x = 6 m, both sides SATURATED CO2 at rest:
 #    left   T = 298.15 K, gas VOLUME fraction 0.2
@@ -12,8 +11,8 @@
 #
 #  CAMR mapping:
 #    * prob.phase = 3 (saturated at T, quality = vapour MASS fraction).
-#      Volume->mass conversion at OUR PR saturation densities
-#      (measured from the code's own co2_sat_LV, 2026-08-27):
+#      Volume->mass conversion at the code's own PR saturation
+#      densities (co2_sat_LV):
 #        298.15 K: rho_l = 625.279, rho_v = 247.095, Psat = 64.49 bar
 #                  alpha_g = 0.2  ->  x_qual = 0.089911
 #        273.15 K: rho_l = 911.409, rho_v =  97.784, Psat = 34.77 bar

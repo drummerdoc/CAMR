@@ -1,20 +1,21 @@
 # =====================================================================
-#  inputs.base — shared T-Blowdown parameters common to all
-#  orientation variants of the symmetry test suite.
-#
-#  Do NOT run this file directly.  It's included via
+#  inputs.base — T-Blowdown settings shared by every deck in this
+#  directory.  Not run directly: each deck includes it with
 #      FILE = inputs.base
-#  at the top of each inputs-sym-{x,y,z}-{lo,hi} orientation file,
-#  which then overrides only the orientation-specific bits:
-#      amr.n_cell        (long axis of the tube)
-#      geometry.prob_hi  (aspect ratio matches n_cell)
-#      CAMR.lo_bc, hi_bc (Inflow on the vent face, SlipWall elsewhere)
-#      amr.plot_file     (namespace isolation across variants)
+#  and sets only what is orientation- or deck-specific:
+#      amr.n_cell, geometry.prob_hi   (long axis of the tube)
+#      CAMR.lo_bc, CAMR.hi_bc         (Inflow on the vent face, SlipWall elsewhere)
+#      amr.plot_file                  (one prefix per deck)
+#  inputs-x also overrides stop_time and amr.plot_int (a later
+#  definition wins in ParmParse); inputs-x-amr is a standalone deck.
+#  Everything non-directional (physics, CFL, NSCBC, plot machinery,
+#  prob.*) lives here; an edit that is not about direction belongs
+#  here, not in a deck.
 #
-#  Everything else — physics, EOS, CFL, NSCBC, AMR, plot machinery,
-#  prob_parm — must live here.  If you find yourself editing an
-#  orientation file to change something non-directional, move that
-#  edit here instead.
+#  A closed 1 m pipe of supercritical CO2 (100 bar, 320 K) vents through
+#  one characteristic (NSCBC) outflow face to 1 bar.  max_step = 300 is
+#  the step cap the orientation decks run under; stop_time is the time
+#  cap.
 # =====================================================================
 
 amrex.fpe_trap_invalid = 0
@@ -29,10 +30,9 @@ geometry.coord_sys   = 0  # 0 => Cartesian
 # The base always places prob_lo at the origin.
 geometry.prob_lo     =   0.0    0.0    0.0
 
-# CAMR.lo_bc / hi_bc are set per-orientation.  In each case exactly
-# ONE face is Inflow (dispatches to bcnormal / NSCBC for the
-# non-reflecting outflow) and the other five are SlipWall (reflecting
-# tube walls).
+# CAMR.lo_bc / hi_bc are set per deck.  Exactly one face is Inflow
+# (dispatched to the NSCBC outflow) and every other face is SlipWall
+# (reflecting tube wall).
 
 # --- Physics + numerics ---------------------------------------------
 CAMR.cfl = 0.25
@@ -42,15 +42,12 @@ CAMR.do_mol = 0
 CAMR.ppm_type = 1
 
 CAMR.ps_hydro = 1
-#  PROBE #27 (2026-08-25): pinned EXPLICITLY to the acceptance flux.
-#  These decks historically ran the compiled default (llf); the measured
-#  llf-vs-wp A/B on this case (WORKLOG 2026-08-25) put wp within 0.17%%
-#  of llf on the vent-rate QoI with zero aborts, and the compiled default
-#  is now wp — the pin records the choice rather than inheriting it.
+#  The flux is the compiled default (wp), written out so the deck
+#  records the scheme it runs; ps_wp_order stays at its default (1).
 CAMR.ps_flux  = wp
-# NSCBC now dispatches on all six faces (task #169) via
-# PS_NSCBC::outflow_face in PS_nscbc.H.  Both the symmetry test and
-# ordinary T-Blowdown runs can use NSCBC uniformly.
+#  Characteristic (NSCBC) outflow on the Inflow face; the dispatch in
+#  PS_nscbc.H (PS_NSCBC::outflow_face) serves any face, which is what
+#  the orientation suite tests.
 CAMR.ps_bc_use_nscbc = 1
 CAMR.ps_bc_nscbc_sigma = 0.25
 

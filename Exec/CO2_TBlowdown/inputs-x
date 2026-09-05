@@ -1,151 +1,30 @@
-# Temporarily disabled while debugging Phase 4c-β2b's LLF baseline.
-# When PS_umeth is fully robust (post-Phase 4d relaxation) turn this
-# back on to catch real physics-driven NaNs.
-amrex.fpe_trap_invalid = 0
+# =====================================================================
+#  T-Blowdown along x: closed end at x = 0, characteristic vent at x = 1
+#
+#  Closed 1 m pipe of supercritical CO2 at 100 bar, 320 K, vented at the
+#  x-hi face to 1 bar.  The initial rarefaction runs to the closed wall,
+#  reflects, and gives the wall-pressure history of a blowdown.  256 x 32
+#  isotropic cells; a single plotfile at the end of the run.
+#
+#  Everything else comes from inputs.base.  max_step = 300 (from the
+#  base) governs this deck: 300 steps at CFL 0.25 end well before the
+#  stop_time of 5 ms set here, which is the time the full trajectory
+#  needs (about 4000 steps).  Raise max_step on the command line to run
+#  to stop_time.
+# =====================================================================
+FILE = inputs.base
 
-# T-Blowdown: closed-end pipe filled with compressed supercritical
-# CO₂ (100 bar, 300 K), vented on the R side to atmospheric.  The
-# initial rarefaction propagates leftwards to the wall, reflects,
-# and produces the classic "wall pressure history" signature of a
-# blowdown event.  Physical run time is a few ms.
-# Full 5 ms trajectory.  After the ROUNDROBIN distribution +
-# EOS cache work brought per-step cost from ~1.2 s down to ~0.26 s,
-# 4000 steps completes in ~17 min on 4 MPI ranks.
-max_step  = 300
 stop_time = 5.0e-3
 
-geometry.is_periodic = 0 0 0
-geometry.coord_sys   = 0  # 0 => cart
-
-# 1-m pipe, isotropic cells (dx = dy).
-geometry.prob_lo     =   0.0    0.0    0.0
+# 1 m pipe, isotropic cells (dx = dy).
 geometry.prob_hi     =   1.0    0.125  0.125
 amr.n_cell           =   256   32   32
 
-# >>>>>>>>>>>>>  BC FLAGS <<<<<<<<<<<<<<<<
-# 0 = Interior           3 = Symmetry
-# 1 = Inflow             4 = SlipWall
-# 2 = Outflow            5 = NoSlipWall
-# >>>>>>>>>>>>>  BC FLAGS <<<<<<<<<<<<<<<<
-#   lo_x = SlipWall (closed pipe end, normal momentum reflected)
-#   hi_x = Inflow   (dispatches to bcnormal — NRBC outflow at P_amb)
-#   y/z  = SlipWall (side walls, no lateral flow in 1-D pipe)
+# Closed pipe end at x-lo (SlipWall); x-hi is Inflow, which dispatches to
+# the NSCBC outflow at p_amb.  Side walls SlipWall.
 CAMR.lo_bc       =  SlipWall   SlipWall   SlipWall
 CAMR.hi_bc       =  Inflow     SlipWall   SlipWall
 
-# PS + NSCBC empirical CFL-threshold characterisation on this problem:
-#   CFL ≤ 0.30  → outflow BC stays clean
-#   CFL ≥ 0.35  → last ~20 cells develop O(20-50 m/s) oscillations
-#                  in u (see runlog.cflsweep.* diagnostic runs).
-# fixed_dt = 5.5e-6 (initial effective CFL ≈ 0.37) is also clean,
-# so the threshold is not a pure CFL number — the CFL-driven code
-# path itself has a dt-dependent interaction with the boundary
-# that we've not yet fully diagnosed.  Setting the default to 0.25
-# stays clear of the threshold under all observed conditions.
-CAMR.cfl = 0.25
-
-# fixed_dt = 0 lets the CFL setting above drive the timestep.
-# Set to a positive value (e.g. 5.5e-6) to bypass estTimeStep and
-# gain ~10-15 % wall-clock at the cost of losing CFL adaptivity.
-CAMR.fixed_dt = 0
-
-# Real-fluid EOS reference frame: PR CO₂ internal energy can be
-# negative for compressed states because ρe is measured relative to
-# the ideal-gas enthalpy at Tref = 298.15 K.  CAMR's γ-law-oriented
-# positivity assertion AMREX_ALWAYS_ASSERT(u(i,j,k,UEDEN) > 0.) then
-# fires spuriously.  Setting allow_negative_energy = 1 skips the
-# assertion; downstream code paths continue to enforce physical
-# positivity of density, pressure, and sound speed.  Safe for the
-# PR backend.
-CAMR.allow_negative_energy = 1
-
-CAMR.do_mol = 0
-CAMR.ppm_type = 1
-
-# Enable the Pelanti–Shyue 6-equation solver (PS_umeth + alpha
-# transport correction + mechanical relaxation).  Requires the
-# code to have been built with USE_PS_HYDRO = TRUE.
-CAMR.ps_hydro = 1
-
-# PS reconstruction order:
-#   0 (default) = first-order Godunov LLF
-#   1           = MUSCL slope-limited PLM (minmod) — Phase 4c-β3.
-#                 Override at the command line for A/B comparison
-#                 without editing the file:
-#  PROBE #27 (2026-08-25): pinned EXPLICITLY to the acceptance flux.
-#  These decks historically ran the compiled default (llf); the measured
-#  llf-vs-wp A/B on this case (WORKLOG 2026-08-25) put wp within 0.17%%
-#  of llf on the vent-rate QoI with zero aborts, and the compiled default
-#  is now wp — the pin records the choice rather than inheriting it.
-CAMR.ps_flux  = wp
-
-# PS-mode non-reflecting outflow: NSCBC (Poinsot-Lele) applied via
-# BCfill.cpp on faces flagged CAMR.hi_bc = Inflow.  Uses minmod-
-# limited characteristic-invariant extrapolation across three
-# interior cells and a Poinsot-Lele soft-relaxation term on the
-# incoming R_- toward the ambient P = p_amb.  Validated on the
-# T-Blowdown outflow against the older single-cell bcnormal path:
-# with σ = 0.25 the residual x > 0.8 boundary-reflection oscillations
-# are almost entirely damped while the interior physics (x < 0.78) is
-# identical to bcnormal within round-off.  See PS_nscbc.H for the
-# algorithm.
-#
-# Set CAMR.ps_bc_use_nscbc = 0 to revert to the older bcnormal path.
-# CAMR.ps_bc_nscbc_sigma = 0 gives perfectly non-reflecting (same
-# oscillation amplitude as bcnormal but 2nd-order in smooth regions);
-# 0.25 is the recommended default (classical Poinsot-Lele soft anchor).
-CAMR.ps_bc_use_nscbc = 1
-CAMR.ps_bc_nscbc_sigma = 0.25
-
-CAMR.v = 1
-amr.v = 1
-
-CAMR.sum_interval = -1   # sum diagnostics off while debugging PS baseline
-
-CAMR.redistribution_type = StateRedist
-
-# NOTE: amr.loadbalance_with_workestimates = 1 segfaults in this
-# CAMR build — the Amr::LoadBalanceLevel0 path calls a StateData
-# for per-cell cost that CAMR hasn't registered.  Leaving disabled;
-# smaller max_grid_size below already helps with granularity.
-amr.loadbalance_with_workestimates = 0
-
-amr.max_level       = 0
-amr.ref_ratio       = 2 2 2 2
-amr.regrid_int      = 2 2 2 2
-# Smaller boxes → finer granularity for the load balancer.
-# 256×32 grid, blocking_factor 16, max_grid_size 16 gives 32 boxes
-# of 16×16 cells, distributed across 4 MPI ranks (default) = 8
-# boxes per rank.  The load balancer can then move the 1–2 "hot"
-# boxes (in the rarefaction fan) between ranks each rebalance.
-amr.blocking_factor = 16
-amr.max_grid_size   = 16
-amr.n_error_buf     = 0 0 0 0
-amr.grid_eff        = 0.99
-
-# AMReX default DistributionMapping::Strategy is SFC (space-filling
-# curve), which keeps neighboring boxes on the same rank to minimise
-# FillBoundary traffic.  For a rarefaction-fan case that's exactly
-# what pins all the slow-Newton boxes onto ONE rank — the profile
-# shows ctoprim MAX/AVG ≈ 6× because of it.  Force ROUNDROBIN to
-# spread neighbors across ranks by construction, accepting the
-# extra FillBoundary bandwidth cost in exchange for load balance.
-DistributionMapping.strategy = ROUNDROBIN
-
-amr.checkpoint_files_output = 0
-amr.check_file              = chk
-amr.check_int               = 500
-
-amr.plot_files_output = 1
+# Final plotfile only.
 amr.plot_file         = plt
 amr.plot_int          = 100000
-amr.derive_plot_vars  = x_velocity y_velocity z_velocity vfrac pressure
-
-# T-Blowdown inputs — SI units.
-prob.p0    = 1.0e7    # Pa   (100 bar)
-prob.T0    = 320.0    # K    (16 K above Tc = 304.13 K, defensibly
-                      #        supercritical; the depressurized
-                      #        rarefaction cools to ~290 K which
-                      #        still stays single-phase)
-prob.u0    = 0.0      # m/s
-prob.p_amb = 1.0e5    # Pa   (atmospheric)
