@@ -1,44 +1,21 @@
 # =====================================================================
-#  CO2_PipeBreak — demo3: demo2 + two deliberate changes (2026-09-04).
-#   (1) TIGHTER alpha-gradient refinement: atag adjacent_difference
-#       0.1 -> 0.005 (capture the corridor/plume alpha fronts the coarser
-#       tag was smoothing over).  COST WARNING: 0.005 is 20x tighter and
-#       the corridor field is ~74% of the domain, so this can refine a
-#       large fraction to the finest level and slow the run substantially.
-#       If regrid cost/cell count explodes, back off toward 0.01-0.02.
-#   (2) PER-FACE NSCBC outflow on xhi, ylo, yhi (ps_bc_nscbc_{xhi,ylo,yhi}=1)
-#       so the outer boundaries are non-reflecting from t=0, instead of the
-#       reflecting linearised-invariant bcnormal path.  x-lo is LEFT on
-#       bcnormal (global ps_bc_use_nscbc=0, key unset) so the reservoir
-#       rupture-plane inlet (gap + slip wall + choked characteristic inlet)
-#       is untouched.
-#   Item-3 fixes (checked promotion 3b, floor regime-gating 3c) are ON by
-#   DEFAULT now (CAMR.ps_promote_checked / ps_floor_indep default 1) — no
-#   flags needed here.  Everything else is byte-for-byte demo2.
-#   Output prefixes are sj3_ (do NOT overwrite the demo2 archive).
-# =====================================================================
-# =====================================================================
-#  CO2_PipeBreak — SHOWCASE pass 2: saturated two-phase CO2 blowdown,
-#  full plane (2 x 1 m), 3-level AMR.  Incorporates the session's fixes:
-#   - EOS branch-selection guard in co2_state_from_rho_e (return physical
-#     +P root; killed the near-inlet "salt-and-pepper" P dropouts).
-#   - Spinodal monotonization + positive per-phase P floor (mixture rule
-#     stays active in the dilute slug instead of the single-fluid fallback).
-#   - Max-packing guard in departureFunctions (v_m>b; no hyper-compression
-#     crash).
-#   - CAMR.ps_relax_mode=1 (P+T / HEM equilibrium): thermally couples the
-#     phases and PREVENTS the per-phase energy runaway (e1=UE1/m1 -> 1e10)
-#     that destroyed the mode-0 profiles by ~step 200.  This was the key
-#     fix for a clean long run (validated MT-off zoom clean to t=2e-4).
-#   - Physical viscosity CAMR.ps_mu (replaces the ps_shear_diss band-aid):
-#     resolves the shear layer instead of masking the checkerboard.
+#  CO2_PipeBreak — saturated two-phase CO2 pipe-break jet (demo3)
 #
-#  WATCH (task #74): mass transfer is ON here (ps_mt_tau=1e-6).  The
-#  instantaneous-MT phase DIRECTION on a dome-crossing expansion is NOT yet
-#  validated (A1-Sod-strong condensed the wrong way vs the old reference).
-#  If the plume behaves unphysically (condensing where it should vaporize),
-#  set ps_mt_tau=1.0e3 (MT effectively off) — that is the fully-validated
-#  configuration — and re-enable MT once #74 is settled.
+#  The demo2 deck (see inputs.satjet_demo2 for the case: planar rupture on
+#  the x-lo face, choked characteristic two-phase inlet from a saturated
+#  280 K reservoir through a 0.1 m gap into a 2 x 1 m plane at 20 bar,
+#  256 x 128 base with two AMR levels, wp second order, ps_bl_reflux = 2,
+#  ps_relax_mode = 2 with theta = tau_MT = 1e-3 s, flash off, ps_mu = 2)
+#  with three differences:
+#   (1) per-face characteristic (NSCBC) outflow on x-hi, y-lo and y-hi
+#       (ps_bc_nscbc_{xhi,ylo,yhi} = 1); the x-lo inlet face stays on
+#       bcnormal (global ps_bc_use_nscbc = 0);
+#   (2) alpha-gradient refinement tag 0.01 instead of 0.1;
+#   (3) amr.n_error_buf 4 instead of 2, keeping coarse-fine faces off the
+#       tagged features.
+#  ps_lw_skip_contact is written out at its default (2) so the deck records
+#  the scheme it runs.  Output prefixes plt_sj3_ / chk_sj3_.
+#  stop_time 2.5 ms; max_step is a cap that never governs.
 # =====================================================================
 amrex.fpe_trap_invalid = 0
 max_step  = 20000
@@ -62,52 +39,40 @@ CAMR.ppm_type = 1
 CAMR.ps_hydro    = 1
 CAMR.ps_flux     = wp
 CAMR.ps_wp_order = 2
-CAMR.ps_bc_use_nscbc = 0    # global default OFF; x-lo (reservoir inlet) stays bcnormal
-CAMR.ps_bc_nscbc_xhi = 1    # per-face NSCBC outflow (demo3): downstream far field
-CAMR.ps_bc_nscbc_ylo = 1    # per-face NSCBC outflow (demo3): full-plane lower edge
-CAMR.ps_bc_nscbc_yhi = 1    # per-face NSCBC outflow (demo3): full-plane upper edge
-CAMR.ps_wp_transverse = 0   # OFF (#60): the BL-3b acoustic transverse coupling (=2) is
-                            # UNSTABLE at fine resolution (drives alpha1->1 pure-liquid
-                            # overshoot -> dt collapse; seen in fine uniform AND on AMR
-                            # refined levels).  =0 is the validated config (zoom); ps_mu
-                            # physical viscosity handles the near-jet shear instead.
-                            # (=1 = contact-only BL-3a is the stable middle option if the
-                            # transverse checkerboard reappears.)
-CAMR.ps_bl_reflux     = 2   # consistent two-phase C-F reflux (alpha co-move) (#51); required for 2-phase AMR
-CAMR.ps_shear_diss    = 0.0 # OFF: physical viscosity (ps_mu) used instead of this dissipation band-aid
-CAMR.ps_mu            = 2.0 # physical (effective) Newtonian viscosity: resolves the orifice shear layer
+CAMR.ps_bc_use_nscbc = 0    # global switch off: the x-lo reservoir inlet stays on bcnormal
+CAMR.ps_bc_nscbc_xhi = 1    # per-face NSCBC outflow: downstream far field
+CAMR.ps_bc_nscbc_ylo = 1    # per-face NSCBC outflow: lower edge of the full plane
+CAMR.ps_bc_nscbc_yhi = 1    # per-face NSCBC outflow: upper edge of the full plane
+CAMR.ps_lw_skip_contact = 2 # the default, pinned: the deck cannot silently run mode 0 on a stale executable
+CAMR.ps_wp_transverse = 0   # no transverse acoustic coupling: the full coupling (2) is
+                            # unstable at fine resolution (alpha1 -> 1 overshoot, dt
+                            # collapse); the shear layer is resolved by ps_mu instead.
+                            # 1 (contact-only) is the middle option.
+CAMR.ps_bl_reflux     = 2   # consistent two-phase C-F reflux (alpha co-moves); required for two-phase AMR
+CAMR.ps_shear_diss    = 0.0 # off: physical viscosity (ps_mu) instead of artificial shear dissipation
+CAMR.ps_mu            = 2.0 # effective Newtonian viscosity [Pa s]: resolves the orifice shear layer
 
 CAMR.ps_do_relax  = 1
-CAMR.ps_relax_mode = 2        # P + FINITE-RATE thermal relaxation (#77): retains thermal
-                              # non-equilibrium (T_liq != T_vap) instead of pinning cells on
-                              # the saturation dome, so the finite-rate MT keeps a Gibbs
-                              # driving force and actually flashes; theta bounds the #72 runaway.
-                              # theta->0 recovers mode 1 (instantaneous P+T eq); theta->inf = mode 0.
+CAMR.ps_relax_mode = 2        # pressure relaxation plus finite-rate thermal relaxation:
+                              # the phases keep T_liq != T_vap instead of being pinned on
+                              # the saturation dome, so the finite-rate mass transfer keeps
+                              # a Gibbs driving force.  theta -> 0 is mode 1 (instantaneous
+                              # P + T equilibrium); theta -> inf is mode 0.
 CAMR.ps_theta_tau = 1.0e-3    # thermal relaxation time [s] (mode 2 only)
-CAMR.ps_mt_tau    = 1.0e-3    # FINITE mass-transfer time: spreads flashing over ~tau/dt steps
-                              # (CONTINUOUS, visible in flash_rate).  tau<<dt (e.g. 1e-6) makes MT
-                              # near-instantaneous -> impulsive/bursty (flash_rate ~0 in snapshots).
+CAMR.ps_mt_tau    = 1.0e-3    # finite mass-transfer time [s]: flashing is spread over
+                              # ~tau/dt steps and is continuous in flash_rate; tau << dt
+                              # makes it near-instantaneous and bursty.
 CAMR.ps_mt_gref   = 5.0e4
 CAMR.ps_flash_tau = 0.0       # flash OFF (saturated reservoir; no nucleation)
 CAMR.ps_pres_floor = 1.0e5
 CAMR.ps_temp_floor = 216.6
 
-# --- GERG/GERGTab extension sound speed (env var, NOT a ParmParse dial) -----
-# GERG_EXT_C defaults to ON and you should leave it alone.  Past the guard's
-# branch edge the EOS used to hard-set c = sqrt(CSQ_FLOOR) = 50 m/s while just
-# inside the edge it reports the true isentropic c (174 vapour / 211-359
-# liquid) -- a 3.5x-7x DISCONTINUITY that flips the HLLC upwind dissipation on
-# and off cell-to-cell and drives a growing 2-dx pressure oscillation in the
-# near-inlet lip shear layer (level-2 max|d2 P| 4.3 -> 26.3 bar over 25 steps).
-# ON derives c from the constructed extension surface's own identity, capped at
-# the edge value; the oscillation is arrested (holds at ~4.7 bar, and the
-# correlation with extension cells vanishes: 0.10 vs 0.11 bar, 0% of noisy
-# cells).  Costs nothing -- dt is unchanged, both branches are the same work.
-#   GERG_EXT_C=0  ONLY to (a) reproduce pre-2026-08 results, (b) bisect a new
-#                 instability, or (c) A-B the two surfaces deliberately.
-# See Source/EOS/GERG/gerg_co2_guard.H and
-# FINDINGS_gergtab_inflow_oscillation.md.  NOTE: being an env var it does NOT
-# appear in job_info, so plotfiles do not record which surface made them.
+# --- GERG / GERGTab builds: CAMR.gerg_ext_c (default 1) keeps the sound
+# speed continuous past the guard's branch edge (0 = the legacy 50 m/s
+# floor, a 3.5-7x discontinuity that drives a 2-dx pressure oscillation in
+# the lip shear layer).  Leave it at the default; see
+# Source/EOS/GERG/gerg_co2_guard.H and docs/RUNNING.md.  Not read by a PR
+# build.
 
 CAMR.v = 1
 amr.v = 1
@@ -122,7 +87,6 @@ amr.blocking_factor = 16
 amr.max_grid_size   = 64
 amr.grid_eff        = 0.9
 
-#amr.refinement_indicators = ldtag atag nftag pgtag
 amr.refinement_indicators = ldtag atag pgtag
 
 amr.ldtag.field_name = logden 
@@ -130,13 +94,8 @@ amr.ldtag.adjacent_difference_greater = 0.15
 amr.ldtag.max_level = 2
 
 amr.atag.field_name = ps_alpha1
-#amr.atag.value_greater = 1.0e-3
-amr.atag.adjacent_difference_greater = 0.01    # demo3: 10x tighter alpha-gradient capture (was 0.1)
+amr.atag.adjacent_difference_greater = 0.01    # 10x tighter than demo2 (0.1)
 amr.atag.max_level = 2
-
-#amr.nftag.in_box_lo = 0.0   0.42
-#amr.nftag.in_box_hi = 0.12  0.58
-#amr.nftag.max_level = 2
 
 amr.pgtag.field_name = pressure
 amr.pgtag.adjacent_difference_greater = 3.0e5
@@ -144,16 +103,6 @@ amr.pgtag.max_level = 2
 
 amr.n_error_buf = 4 4 4 4 
 
-#amr.refinement_indicators = ldtag atag
-#amr.ldtag.field_name = logden
-#amr.ldtag.adjacent_difference_greater = 0.15
-#amr.ldtag.max_level = 2
-#amr.atag.field_name = ps_alpha1
-#amr.atag.value_greater = 1.0e-3
-#amr.atag.adjacent_difference_greater = 0.1
-#amr.atag.max_level = 2
-
-#DistributionMapping.strategy = ROUNDROBIN
 DistributionMapping.strategy = KNAPSACK
 amr.checkpoint_files_output = 1
 amr.check_file              = chk_sj3_
@@ -163,43 +112,37 @@ amr.plot_file         = plt_sj3_
 amr.plot_int          = 10
 amr.derive_plot_vars  = x_velocity y_velocity pressure flash_rate
 
-# --- Problem state: saturated two-phase reservoir -> vapor ambient ----
-# Back-pressure raised to 2.0e6 (#77): at p_amb=1e6 the jet under-expanded so
-# local troughs fell below ~5 bar (Psat at the CO2 triple point), cooling the
-# whole two-phase plume onto the 216.6 K floor where the coexistence-T gate
-# disables mass transfer (flash_rate -> 0).  A higher back-pressure keeps the
-# expansion endpoint warm (Tsat(local) well above the triple point) so flashing
-# stays active and visible in the developed plume, and avoids the solid/dry-ice
-# regime the liquid-vapor PR EOS cannot model.  Reservoir stays dome-consistent
-# (p_res ~ Psat(T_res=280) ~ 41.6 bar).
+# --- Problem state: saturated two-phase reservoir -> vapour ambient ----
+# Ambient 20 bar: at 10 bar the under-expanded jet's troughs fall below
+# ~5 bar (Psat at the CO2 triple point) and the plume cools onto the 216.6 K
+# floor, where the coexistence-T gate disables mass transfer.  20 bar keeps
+# the expansion endpoint above the triple point so flashing stays visible
+# and the solid regime the liquid-vapour PR EOS cannot model is avoided.
+# With a saturated reservoir (res_alpha1 > 0) the inlet pressure is
+# Psat(T_res) ~ 41.6 bar; p_res is read only by the single-phase reservoir path.
 prob.p0       = 2.0e6
 prob.T0       = 280.0
 prob.u0       = 0.0
 prob.p_amb    = 2.0e6
 prob.p_res    = 4.0e6
 prob.T_res    = 280.0
-prob.res_alpha1 = 0.05        # vapor-rich saturated two-phase reservoir (on-dome)
-prob.res_dome_taper = 1       # dome-consistent lip (#59)
+prob.res_alpha1 = 0.05        # vapour-rich saturated two-phase reservoir (on the dome)
+prob.res_dome_taper = 1       # dome-consistent lip taper
 prob.res_u      = 0.0
 prob.res_char_inflow = 1      # subsonic characteristic (non-reflecting) inlet:
                               # P=Psat + composition fixed, u from the outgoing
                               # (u-c) invariant.  res_u is ignored.
-prob.res_mach_max = 1.0       # CHOKED-INLET CAP on that invariant velocity, in
+prob.res_mach_max = 1.0       # choked-inlet cap on that invariant velocity, in
                               # units of the reservoir mixture (Wood) sound
-                              # speed printed by probinit (~185 m/s here).
-                              # WHY: the invariant relation is only valid at
-                              # M<1, and with the boundary STATIC pressure pinned
-                              # at Psat the correction (Psat - P_int) is
-                              # one-signed, so u_b ratcheted from M=1.01 to 1.27
-                              # over 170 steps in the previous run.  This
-                              # reservoir vents through a gap, so the inlet plane
-                              # is at most sonic.
-                              #   0   = cap OFF (legacy behaviour, for A/B)
-                              #   ~0.83 = cap at the EQUILIBRIUM sonic speed
-                              #           (c_eq 154 vs c_frozen 185 m/s) if the
-                              #           frozen cap still lets the inlet drift.
+                              # speed printed by probinit (~185 m/s here).  The
+                              # invariant relation holds only at M < 1, and with
+                              # the boundary pressure pinned at Psat the
+                              # correction (Psat - P_int) is one-signed, so an
+                              # uncapped inlet ratchets supersonic.  0 = no cap;
+                              # ~0.83 caps at the equilibrium sound speed
+                              # (154 vs 185 m/s frozen).
 prob.amb_vapor  = 1
-prob.sym_ylo    = 0           # FULL PLANE
+prob.sym_ylo    = 0           # full plane (no centreline symmetry wall)
 prob.gap_yc   = 0.5
 prob.gap_half = 0.05
 prob.gap_taper = 0.02

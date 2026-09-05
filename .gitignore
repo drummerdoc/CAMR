@@ -1,6 +1,7 @@
 # ---- build products ----
 *.[oa]
 *.ex
+*.ex-running
 *~
 tmp_build_dir
 Claude outputs/
@@ -53,6 +54,6 @@ Source/EOS/PRTab/tools/_grid_*.tmp
 Source/EOS/GERGTab/gergtab_table_*
 Source/EOS/GERGTab/tools/gen_gergtab
 
-# ---- host-compiled EOS probes (sources are tracked) ----
-Exec/CO2_PipeBreak/gergstats
-Exec/CO2_PipeBreak/gergtab_pathcost
+# ---- host-compiled EOS tools (sources are tracked in Source/EOS/GERG/tools) ----
+Source/EOS/GERG/tools/gergstats
+Source/EOS/GERG/tools/gerg_edge_cliff

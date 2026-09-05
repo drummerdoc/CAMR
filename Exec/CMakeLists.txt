@@ -1,4 +1,4 @@
 
 if(COMPFLO_ENABLE_AMREX_EB)
-add_subdirectory(SodPlusSPhere)
+add_subdirectory(SodPlusSphere)
 endif()

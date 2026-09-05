@@ -1,26 +1,29 @@
 # =====================================================================
-#  CO2_B4 — cross-critical CO2 Riemann problem
+#  CO2_B4 — cross-critical CO2 Riemann problem (B4), uniform grid
 #
-#  Port of the standalone driver's B4-Cross-critical case.
+#  The standalone suite's B4-Cross-critical case in the 2-D build:
 #     L (x < 0.5):  T = 270 K, P = 100 bar, u = 0   (liquid CO2)
 #     R (x > 0.5):  T = 350 K, P =  50 bar, u = 0   (supercritical)
-#     t_final = 7.339590e-04 s (734 μs)
+#     t_final = 7.339590e-04 s (734 us)
 #
-#  Domain: 1 m in x, thin slice in y, z.  Both x-faces are Inflow so
-#  bcnormal dispatches to the per-face nonreflecting outflow.  y and z
-#  are SlipWall (irrelevant for the 1-D-like Riemann setup).
+#  Domain: 1 m in x, thin slice in y; 512 x 64 cells, no AMR, CFL 0.25,
+#  wp at the compiled defaults (ps_wp_order 1), relaxation on.  Both x faces are Inflow
+#  so bcnormal (prob.H) applies the per-side non-reflecting outflow with
+#  p_amb_lo = p_L on the low face and p_amb_hi = p_R on the high face;
+#  y is SlipWall.  The third entry of the geometry and n_cell lines is
+#  read only by a 3-D build.
 #
-#  Recommended sequence for the grid-convergence sweep (task #180):
-#     amr.n_cell = 256 32 32   → coarse
+#  Grid-convergence sweep (override on the command line):
+#     amr.n_cell = 256 32 32
 #     amr.n_cell = 512 64 32
 #     amr.n_cell = 1024 128 32
-#     amr.n_cell = 2048 128 32 → fine
+#     amr.n_cell = 2048 128 32
 # =====================================================================
 
 amrex.fpe_trap_invalid = 0
 
-# Riemann fan should stop well short of the boundaries at t_final,
-# but keep the run cap generous.
+# The fan stays well inside the domain at stop_time; max_step is a
+# generous cap that never governs.
 max_step  = 5000
 stop_time = 7.339590e-04
 
@@ -31,8 +34,8 @@ geometry.prob_lo     =   0.0    0.0    0.0
 geometry.prob_hi     =   1.0    0.125  0.125
 amr.n_cell           =   512    64     32
 
-# Two-face nonreflecting outflow.  bcnormal (prob.H) branches on sgn
-# to pick p_amb_lo vs p_amb_hi.  y and z stay SlipWall.
+# Two-face non-reflecting outflow: bcnormal (prob.H) branches on the
+# face sign to pick p_amb_lo or p_amb_hi.  y (and z) are SlipWall.
 CAMR.lo_bc = Inflow SlipWall SlipWall
 CAMR.hi_bc = Inflow SlipWall SlipWall
 
@@ -43,17 +46,15 @@ CAMR.allow_negative_energy = 1
 CAMR.do_mol = 0
 CAMR.ppm_type = 1
 
-# PS hydro on with MUSCL reconstruction (default for production).
-# For step-locked cross-code diagnostic runs matching the standalone
-# driver's first-order default, override on the command line with
-# CAMR.ps_recon=0.
+# PS hydro at the compiled defaults (wp, ps_wp_order 1); the interior
+# scheme is not selectable, the order is (CAMR.ps_wp_order = 2 is the
+# acceptance configuration used by the 1-D suite).
 CAMR.ps_hydro = 1
 
-# PS-NSCBC currently supports only ONE ambient P per case (see prob.H
-# NOTE).  For B4 with different L and R initial-state pressures, the
-# sgn-aware bcnormal path is strictly more accurate.  Set this to 1
-# only when the PS-NSCBC dispatch has been enhanced to carry
-# per-face p_amb targets.
+# The characteristic (NSCBC) outflow is off: the bcnormal path above
+# already carries the two different ambient pressures this case needs.
+# With ps_bc_use_nscbc = 1 the per-face targets come from
+# CAMR.ps_bc_p_amb_{x}{lo,hi} (inheriting prob.p_amb when unset).
 CAMR.ps_bc_use_nscbc = 0
 CAMR.ps_bc_nscbc_sigma = 0.25
 
@@ -93,6 +94,6 @@ prob.u_R      = 0.0      # m/s
 
 prob.x_diaph  = 0.5      # fraction of x-extent (→ midpoint of 1-m tube)
 
-# NSCBC-path fallback (single ambient).  Ignored by the sgn-aware
-# bcnormal path.  Only used when CAMR.ps_bc_use_nscbc = 1.
+# Single ambient pressure for the NSCBC path (CAMR.ps_bc_use_nscbc = 1
+# with no per-face CAMR.ps_bc_p_amb_* set); the bcnormal path ignores it.
 prob.p_amb    = 5.0e6

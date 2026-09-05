@@ -3,7 +3,7 @@
 Vendored 2026-09-04 from the co2-eos-cfd standalone (`suite/`), commit `ffc87e5beff22b22d8f7f0172d71712d1a019a4b`.
 Generator: `suite/exact_riemann.py --case <B> --eos pr --model hem|frozen --N 800`
 (`profiles/<case>.csv` are `--model frozen`; `exact_<B>_pr.csv` are HEM; `_frozen` are the bracket rows for B2/B9;
-`_gerg` are the GERG-EOS variants used by convergence.py only).
+`_gerg` are the GERG-EOS variants; no script in the tree reads them).
 
 Ground rule 19: these files have authority because they are computed independently of CAMR.
 They are frozen — never regenerate them as part of a CAMR change. To regenerate after a
