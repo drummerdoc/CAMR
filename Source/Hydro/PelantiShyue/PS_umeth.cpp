@@ -19,7 +19,7 @@
 //  an identity-consistent local Lax-Friedrichs flux; no state is repaired.
 //
 //  Dials (CAMR.*, each read once at its accessor below): ps_flux (wp),
-//  ps_llf_identity (1), ps_wp_order (1; acceptance uses 2), ps_wp_limiter
+//  ps_llf_identity (1), ps_wp_order (2), ps_wp_limiter
 //  (vanleer), ps_wp_proj_scale (1), ps_lw_skip_contact (2),
 //  ps_wp_transverse (0), ps_shear_diss (0), ps_mu (0).
 // =====================================================================
@@ -652,15 +652,14 @@ PS_umeth(const Box& bx,
     // kernel (see ps_presence_params, PS_presence.H).
     const PsPres l_pres = ps_presence_params();
 
-    // CAMR.ps_wp_order (default 1; the acceptance configuration uses 2):
-    // 1 = first-order fluctuations only; 2 = plus the limited correction
-    // fluxes on all three waves (second order in smooth flow, first order
-    // at discontinuities).  Any other value aborts.  The default is an open
-    // item (docs/DESIGN_DECISIONS.md O-4).
+    // CAMR.ps_wp_order (2): 2 = first-order fluctuations plus the limited
+    // correction fluxes on all three waves (second order in smooth flow,
+    // first order at discontinuities) — the acceptance order; 1 = the
+    // first-order fluctuations alone, for comparisons.  Any other value aborts.
     auto ps_wp_order_cached = []() -> int
     {
         static const int cached = []() -> int {
-            const int v = ps_dial_int("ps_wp_order", 1);
+            const int v = ps_dial_int("ps_wp_order", 2);
             if (v != 1 && v != 2) {
                 amrex::Abort("CAMR.ps_wp_order must be 1 or 2");
             }
@@ -777,7 +776,7 @@ PS_umeth(const Box& bx,
                 << "  PS_umeth: Berger-LeVeque WP (fluctuation) flux — "
                 << (wp_order == 2
                         ? "BL-2 limited correction fluxes (2nd order, the acceptance order)"
-                        : "1st-order fluctuations (BL-1; set CAMR.ps_wp_order=2 for the acceptance order)")
+                        : "1st-order fluctuations (BL-1, CAMR.ps_wp_order=1)")
                 << "\n";
             banner_shown = true;
         }

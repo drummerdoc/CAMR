@@ -1,0 +1,19 @@
+x-lo  runs/wpo2/plt_xlo_00300
+       transverse spread: rho=3.41e-13  P=7.45e-09  alpha_1=7.77e-16  u_axial=7.11e-14
+x-hi  runs/wpo2/plt_xhi_00300
+       transverse spread: rho=3.41e-13  P=7.45e-09  alpha_1=8.88e-16  u_axial=7.11e-14
+y-lo  runs/wpo2/plt_ylo_00300
+       transverse spread: rho=0.00e+00  P=0.00e+00  alpha_1=0.00e+00  u_axial=0.00e+00
+y-hi  runs/wpo2/plt_yhi_00300
+       transverse spread: rho=0.00e+00  P=0.00e+00  alpha_1=0.00e+00  u_axial=0.00e+00
+
+max|a-b| / max|a| per field   (tol 1.0e-12)
+pair                rho          P    alpha_1    u_axial
+x-lo vs x-hi   1.66e-14   7.78e-14   2.84e-14   3.92e-14
+x-lo vs y-lo   2.66e-14   7.92e-14   3.35e-14   5.39e-14
+x-lo vs y-hi   2.01e-14   5.22e-14   2.88e-14   3.30e-14
+x-hi vs y-lo   1.74e-14   7.14e-14   3.95e-14   5.27e-14
+x-hi vs y-hi   2.05e-14   8.74e-14   2.71e-14   3.13e-14
+y-lo vs y-hi   2.75e-14   7.09e-14   4.40e-14   7.95e-14
+
+PASS: worst relative difference 8.74e-14 <= tol 1.0e-12

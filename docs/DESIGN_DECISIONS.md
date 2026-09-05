@@ -58,7 +58,7 @@ S-3  Star energies pair mixture $P$ with per-phase $\rho$. LANDED. Decision: the
 
 L-1  One scalar per wave from a nondimensional projection. LANDED. Decision: the van Leer limiter is applied as LeVeque's scalar per wave family, $\theta^p = \langle W^p_{\mathrm{up}}, W^p\rangle / \langle W^p, W^p\rangle$, with each component scaled by the magnitude the two adjacent cells carry before projecting (components identically zero on both sides are skipped). Argument: limiting each component separately bends the wave's direction in state space, which is why the phase-energy split drifted (the liquid specific energy fell ~1.2e4 J/kg per step on B7, 79 % of it inside the hydro, until it left the EOS domain). Scaling the whole wave by one number preserves its direction and the linear identities. Raw conservative components span six orders (energy ~1e13 vs mass ~1e2 in $\langle W, W\rangle$ on B8), so an unscaled projection sets $\phi$ from the energy wave alone; scaling by the local magnitudes makes every component contribute its relative change. The projection only decides which scalar comes out; $\phi$ is still applied to the raw wave. Evidence: B7 final minimum liquid energy −1.3653e6 → −4.9422e5 (raw projection) → −2.3131e4 J/kg (scaled), 98.3 % of the drift removed against a first-order floor of −1.79e4; B7 runs to completion for the first time. B8 (pure liquid, the cleanest limiter probe) 0.0116/0.1654/0.0531 → 0.0131/0.1859/ 0.0606 raw → 0.0115/0.1647/0.0527 scaled. A/C mean 0.0350; one watched regression, C3 ~7 % worse, re-baselined as watched, not accepted. Lives in: `PS_umeth.cpp` (`ps_wp_proj_scale`, default 1; opt-out see O-9).
 
-L-2  Second order is the acceptance order. LANDED in the harness, OPEN in the code default (O-4). Decision: `ps_wp_order=2` (limited correction waves) is used by the acceptance battery and 14 of 15 PS decks; the code default is still 1. Argument: wp at first order is 7.9× worse on smooth 2-D α advection; every recorded acceptance number is at order 2. A default that differs from the acceptance configuration is the class of defect the dial-hygiene rule (D-1) exists to prevent. Lives in: `PS_umeth.cpp` (`ps_wp_order`).
+L-2  Second order is the acceptance order and the default. LANDED. Decision: `ps_wp_order=2` (limited correction waves) is the code default; 1 (fluctuations only) remains selectable for comparisons. The TBlowdown orientation suite and the B4 C-F regression, which do not set the key, were re-recorded at the default (their earlier numbers were first-order).
 
 ### 2.4 Presence and promotion
 
@@ -276,7 +276,7 @@ O-2  Retire the `ps_promote_checked=0` / `ps_floor_indep=0` opt-outs. OPEN; same
 
 O-3  Retire relaxation modes 1/2/4 and the mode-≠5 sub-dials (~1000 lines). OPEN; contingent on O-12. The canonical-gate checks that use modes 2/4 are re-baselined onto mode 5 in the same commit.
 
-O-4  `ps_wp_order` default 1 → 2. OPEN; recommended (L-2).
+O-4  `ps_wp_order` default 1 → 2. LANDED (see L-2).
 
 O-5  Delete the FluctuationRegister plumbing (`ps_bl_reflux` modes 0/1, ~600 lines); `ps_bl_reflux` becomes on/off, default on. OPEN; recommended (mode 1 is a documented no-op; wp leaves the correction register at zero). The DIM=1 one-sided deposit defect lives only in that plumbing.
 

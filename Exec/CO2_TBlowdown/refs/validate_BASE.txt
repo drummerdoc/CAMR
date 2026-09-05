@@ -1,0 +1,4 @@
+runs/wpo2/ylo_300.log:[PS-VALIDATE] A2 post mass resync: nonfinite=0 alpha_oob=0 m_neg=0 massid=0 (worst 0) energyid=0 (worst 3.657975283e-16) rho_domain bulk=0 trace=0 reachable bulk=0 trace=0 splita
+runs/wpo2/ylo_300.log:[PS-VALIDATE] B post floor/fold/clean: nonfinite=0 alpha_oob=0 m_neg=0 massid=0 (worst 0) energyid=0 (worst 2.198842719e-16) rho_domain bulk=0 trace=0 reachable bulk=0 trace=0 sp
+runs/wpo2/ylo_300.log:[PS-VALIDATE] C post relaxation (P/T/MT): nonfinite=0 alpha_oob=0 m_neg=0 massid=0 (worst 1.978452381e-16) energyid=0 (worst 3.734084479e-16) rho_domain bulk=0 trace=0 reachable 
+runs/wpo2/ylo_300.log:[PS-VALIDATE] D post sources (flash): nonfinite=0 alpha_oob=0 m_neg=0 massid=0 (worst 1.978452381e-16) energyid=0 (worst 3.734084479e-16) rho_domain bulk=0 trace=0 reachable bulk

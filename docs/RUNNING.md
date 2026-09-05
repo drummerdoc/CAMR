@@ -53,7 +53,7 @@ The table below is built from the read sites in `Source/` (`pp.query`, `pp.conta
 |:--|:--|:--|:--|
 | `ps_hydro` | 0 | 1 enables the Pelanti–Shyue hydro path (`_cpp_parameters`). | production |
 | `ps_flux` | `wp` | Interior flux. Only `wp` (Berger–LeVeque fluctuation form) is accepted; any other value aborts. Force-added to `job_info`. | production |
-| `ps_wp_order` | 1 | 2 adds the limited Lax–Wendroff correction fluxes (second order). Every PS deck sets 2; 1 silently runs first-order fluctuations (measured 7.9× worse on smooth α). | production (2); default 1 → 2 is [DECIDE-4] |
+| `ps_wp_order` | 2 | 2 = the limited Lax–Wendroff correction fluxes on top of the first-order fluctuations (second order, the acceptance order); 1 = fluctuations only, for comparisons. Any other value aborts. | production |
 | `ps_wp_limiter` | `vanleer` | `none`/`unlimited` removes the limiter on the correction (pure Lax–Wendroff) for smooth order-of-accuracy runs. | alternative |
 | `ps_wp_proj_scale` | 1 | Nondimensionalise wave components before the scalar-per-wave projection; 0 = raw components. | retire-candidate [DECIDE-9] |
 | `ps_lw_skip_contact` | 2 | Contact-wave Lax–Wendroff treatment: 2 = regime taper $w = 1 - \mathrm{smoothstep}(\lvert\Delta\alpha\rvert/\alpha_{\mathrm{cond}})$; 1 = blanket skip; 0 = off. Other values abort. | production (2); 0/1 retire-candidate [DECIDE-1] |
