@@ -13,3 +13,8 @@ two-phase cases at 1e-16 without any semantic change; with contraction off the c
 Verified: Phase-3 dead-code removal is IDENTICAL on all 21 cases in both configurations under
 contract-off, while the contraction build showed 1e-16 drift on B3/B5/B6/B12 (matched) and
 B1/B3/B5/B6/B7 (defaults).
+
+BASE (post Phase-5, commit bc4b78c): the accepted [DECIDE-13] state. BASE_nc_* fingerprints
+(contraction-free build) and exact_suite_BASE.txt / verify_canonical_BASE.txt are the references
+for every later refactor; PRE_* remain as the pre-cleanup record. Differences PRE->BASE:
+acceptance table fourth decimal on B2/B7/B11; gate numbers unchanged.
