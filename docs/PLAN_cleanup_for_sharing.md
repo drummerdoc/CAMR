@@ -483,6 +483,53 @@ characteristic analysis, not a tunable: a supersonic-outflow branch
 already has as `_zero_gradient_ghost`). That is a `[DECIDE-27]` with a
 derivation to bring first.
 
+Measured (2026-09-06, `nscbc_xhi_test.sh`, level 0 only, `inputs.satjet_demo3`
+to step 6000, t ≈ 24 ms; `xhi_probe.py` and a face time series every 1000
+steps). The hypothesis above is refuted in its first half and confirmed in its
+second: the face is never supersonic in the frozen (Wallis) sense the code
+uses (`u_n/c_N` at i = nx−1 is < 0.9 in every variant), so the supersonic
+branch never engages; what the measurements show instead is the σ term.
+
+| variant | face ⟨P⟩ before arrival (steps 3000–4000; P_amb = 20 bar) | at step 6000: face inflow fraction, centreline shock, peak P |
+|---|---|---|
+| A control, σ = 0.25, order 2 | 26–30 bar | 63 %; jet supersonic (M 1.55, 12.7 bar) to the last cell, one-cell jump to 21.7 bar |
+| B `ps_bc_nscbc_xhi=0` (bcnormal) | — | aborts at step 4224, `PS-EOS: (rho,e) has no root` at jet arrival |
+| C σ = 1.0 | 34–38 bar | 41 %; shock 20 cells inside, stagnation 68 bar, T₁−T₂ = −70 K |
+| D σ = 4.0 | (fan branch) | 6 %; shock 16 cells inside, face 19–29 bar, T₁−T₂ = −50 K |
+| E order 1 | as A | as A |
+
+The trend in σ is non-monotonic because the σ term has the opposite sign to
+the Poinsot–Lele restoring term it is named after. In `PS_nscbc.H` the ghost is
+$P_g = \tfrac12 \rho c (R^+ - R^-)$ with $R^-_{\mathrm{target}} = -P_\infty/\rho c
+- \sigma (P_N - P_\infty)/\rho c$, so $P_g = \tfrac12[\rho c\,u_N + (1+\sigma)P_N
++ (1-\sigma)P_\infty]$: σ = 0 is the full Hedstrom far-field invariant (the
+strongest pull toward P_∞ the formula can give), σ = 1 removes the pressure
+restoring entirely (P_g = P_N + ½ρc u_N, i.e. zero-gradient in P — variant C
+floats highest), and σ > 1 pushes P_g away from P_∞ (variant D only behaves
+because the large |P_g − P_N| routes every fill through the choked-fan
+branch, which integrates toward P_∞ regardless). In LODI terms a restoring
+$\mathcal{L}_1 = K(P - P_\infty) > 0$ requires the ghost's $R^-$ to be *larger*
+than the interior's, i.e. $+\sigma(P_N - P_\infty)/\rho c$. The production
+σ = 0.25 therefore runs at 75 % of the available restoring, which is why the
+face already floats 6–10 bar above P_∞ before the jet arrives.
+
+`[DECIDE-27]` now has three concrete parts, in order. (i) A no-code check:
+variant F, `CAMR.ps_bc_nscbc_sigma=0` (the code skips the term at σ ≤ 0),
+which is the maximum restoring available today — if the pre-arrival float
+disappears, the sign is the whole story for the drift. (ii) The dial's
+semantics: replace σ by a blend β ∈ [0, 1] on the *whole* incoming invariant,
+$R^-_g = R^-_N + \beta (R^-_\infty - R^-_N)$, β = 1 Hedstrom, β = 0
+zero-gradient — a derivation, not a tunable, with the docs (§6.3) and
+`BCfill.cpp` header corrected to match; the P–L relaxation rate K is a
+1/time on ∂P/∂t and has no algebraic ghost analogue, so the name "σ" goes.
+(iii) The jet itself: at 12.7 bar in a 20 bar far field the core is
+overexpanded and must recompress; where it does so is set by the domain edge,
+not by physics. Variant D shows what imposing P_∞ hard does (a boundary-located
+Mach disk, T₁−T₂ = −50 K in the shocked mixture). The honest options are a
+longer domain so the shock-cell structure sits inside, or accepting that the
+outlet plane is where the jet is forced to recompress. bcnormal (B) is not an
+option: it dies at arrival.
+
 ### 3.13 Two configurations, stated once
 
 The 1-D acceptance battery runs bare defaults (`ps_relax_mode=5`,
