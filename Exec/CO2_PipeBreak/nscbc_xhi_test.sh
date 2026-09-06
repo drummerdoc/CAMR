@@ -13,6 +13,7 @@
 #     C   NSCBC, sigma 1.0                                               -> is the mean-pressure relaxation too weak?
 #     D   NSCBC, sigma 4.0
 #     E   NSCBC, R+ order 1 (CAMR.ps_bc_nscbc_order=1)                  -> is the extrapolation order involved?
+#     F   NSCBC, sigma 0 (the sigma term off: full far-field invariant)  -> the strongest pull to p_amb the formula gives
 #
 #   afterwards:  python3 xhi_probe.py runs/nscbc_xhi/A/plt_*_05000 runs/nscbc_xhi/B/plt_*_05000 ...
 #
@@ -34,6 +35,7 @@ opt_for() {   # macOS ships bash 3.2 (no associative arrays)
     C) echo "CAMR.ps_bc_nscbc_sigma=1.0" ;;
     D) echo "CAMR.ps_bc_nscbc_sigma=4.0" ;;
     E) echo "CAMR.ps_bc_nscbc_order=1" ;;
+    F) echo "CAMR.ps_bc_nscbc_sigma=0" ;;
     *) echo "unknown variant $1" >&2; exit 3 ;;
   esac
 }
