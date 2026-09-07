@@ -3,12 +3,14 @@
 # can be retired: docs/PLAN_cleanup_for_sharing.md §3.11 items 1-3.
 #
 #   ./mode5_evidence.sh demo2   [NRANKS]   demo2 to 2.5 ms: mode-2 control and mode 5   (~2 x 50 min)
+#   ./mode5_evidence.sh demo2-mode5 [NRANKS] the mode-5 half alone; writes a checkpoint every
+#                                          100 steps and resumes from the latest one if present
 #   ./mode5_evidence.sh windows [NRANKS]   restarts 3550->3605, 3650->3700 in mode 5  (~65 min)
 #   ./mode5_evidence.sh demo3   [NRANKS]   demo3 to step 50: mode-2 control and mode 5  (~2 x 5 min)
 #   ./mode5_evidence.sh report             score everything that has run
 #
-# Output under runs/mode5_evidence/.  Checkpoints are not written except by
-# the windows stage's sources (demo2_final/), which are read only.
+# Output under runs/mode5_evidence/.  Only the demo2-mode5 stage writes
+# checkpoints; the windows stage's sources (demo2_final/) are read only.
 # Mode 5 is selected by passing the code defaults on the command line; ParmParse
 # takes the last definition of a key, so they override the deck's mode-2 keys.
 set -eu
@@ -25,7 +27,16 @@ run() {   # run DIR DECK [extra keys...]
     echo "== $d  ($deck $*)"
     ( cd "$d" && mpiexec -n "$NR" "../../../$EXE" "../../../$deck" "$@" > run.log 2>&1 ) \
         || echo "!! $d exited nonzero (see $d/run.log)"
-    grep -c "PS-VALIDATE\]\|PS-GUARD\]\|PS-RELAXFB\]\|PS-PROMOTE\]" "$d/run.log" | sed "s|^|   health-line hits: |" || true
+    health "$d"
+}
+health() {   # $1 = run dir: guard/feedback/refusal line counts and the max of every PS-VALIDATE counter
+    local d=$1
+    printf '   [PS-GUARD] %s  [PS-RELAXFB] %s  [PS-PROMOTE] %s\n' \
+        "$(grep -ac '\[PS-GUARD\]' "$d/run.log")" "$(grep -ac '\[PS-RELAXFB\]' "$d/run.log")" \
+        "$(grep -ac '\[PS-PROMOTE\]' "$d/run.log")"
+    grep -a '^\[PS-VALIDATE\] [A-Z0-9]* ' "$d/run.log" | sed 's/rho_domain bulk=/rhodom_bulk=/; s/rho_domain bulk=\([0-9]*\) trace=/rhodom_bulk=\1 rhodom_trace=/; s/reachable bulk=\([0-9]*\) trace=/reach_bulk=\1 reach_trace=/' \
+      | awk '{ st=$2; for (i=1;i<=NF;i++) if ($i ~ /^(nonfinite|alpha_oob|m_neg|massid|energyid|rhodom_bulk|rhodom_trace|reach_bulk|reach_trace)=[0-9]+$/) { split($i,a,"="); if (a[2]+0 > mx[st,a[1]]+0) { mx[st,a[1]]=a[2]+0; seen[st]=1 } } }
+             END { for (st in seen) { printf "   validate stage %-3s max nonzero:", st; n=0; for (k in mx) { split(k,b,SUBSEP); if (b[1]==st && mx[k]>0) { printf " %s=%d", b[2], mx[k]; n++ } } if (!n) printf " (all zero)"; printf "\n" } }'
 }
 
 case "$STAGE" in
@@ -33,6 +44,12 @@ demo2)
     K="amr.check_int=-1 amr.plot_int=50 CAMR.ps_validate=1"
     run $OUT/demo2_mode2 inputs.satjet_demo2 $K
     run $OUT/demo2_mode5 inputs.satjet_demo2 $K $MODE5
+    ;;
+demo2-mode5)
+    d=$OUT/demo2_mode5; mkdir -p "$d"
+    last=$(ls -d "$d"/chk_sj2_* 2>/dev/null | sort | tail -1)
+    R=""; [ -n "$last" ] && { R="amr.restart=$(basename "$last")"; echo "resuming from $last"; }
+    run $d inputs.satjet_demo2 amr.check_int=100 amr.plot_int=50 CAMR.ps_validate=1 $MODE5 $R
     ;;
 windows)
     for w in 3550:3605 3650:3700; do
@@ -49,11 +66,9 @@ demo3)
     ;;
 report)
     for d in $OUT/*/; do
-        echo "==== $d"; tail -1 "$d/run.log" 2>/dev/null
-        echo "aborts: $(grep -ci 'abort\|error' "$d/run.log" 2>/dev/null || echo 0)"
-        for tag in PS-VALIDATE PS-GUARD PS-RELAXFB PS-PROMOTE; do
-            printf '  %-12s %s\n' "$tag" "$(grep -c "\[$tag\]" "$d/run.log" 2>/dev/null || echo 0)"
-        done
+        d=${d%/}; echo "==== $d"; grep -a "^STEP = " "$d/run.log" | tail -1
+        echo "   aborts: $(grep -aci 'abort' "$d/run.log")   finalized: $(grep -ac 'finalized' "$d/run.log")"
+        health "$d"
     done
     for m in mode2 mode5; do
         d=$OUT/demo2_$m
