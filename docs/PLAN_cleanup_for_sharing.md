@@ -458,6 +458,15 @@ In order, each with its acceptance criterion (rule 3: quality, not survival):
 
 Items 1–3 need MPI (the Mac); 4–5 run here. Rule 6 applies: 5 before 1.
 
+Cost input (measured 2026-09-07, `mode5_evidence.sh demo2`, 6 ranks): the mode-2
+control takes 10 s per coarse step (95 min to 2.5 ms); the same deck at the
+mode-5 defaults takes 100–165 s per coarse step and refines about three times
+as many level-2 cells (28 672 vs 9 728 at t ≈ 1.9 ms), so the run is 10–20×
+longer. B12 in 1-D shows the same ratio (2.5 min vs 8 s). Retiring mode 2
+therefore also retires the 50-minute production case unless the X3 operator is
+profiled and made cheaper first; that is a `[DECIDE-3]` input, not a quality
+result.
+
 ### 3.12 Phase-7 finding (2026-09-05): the xhi boundary in the demo3 production run
 
 `DEMO3A` at steps 4200–5200 (t ≈ 16–21 ms): the two-phase jet (α₁ ≈ 0.05,
