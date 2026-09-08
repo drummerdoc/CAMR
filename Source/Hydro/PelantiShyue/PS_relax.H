@@ -731,7 +731,12 @@ ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
                 << " eos=" << xs.n_pr_eos
                 << " slope=" << xs.n_pr_slope
                 << " maxiter=" << xs.n_pr_maxiter << ")"
-                << " path_fail=" << xs.n_proj_path;
+                << " path_fail=" << xs.n_proj_path
+                << " | cost: sub=" << xs.n_sub
+                << " newton_it=" << xs.n_nit
+                << " path=" << xs.n_path
+                << " proj_it=" << hem::ps_mt_stats().pr_iters
+                << " (cumulative)";
             if (xs.n_dead > 0 && xs.n_ok == 0) {
                 amrex::AllPrint()
                     << "   *** EVERY cell structurally dead: the operator "

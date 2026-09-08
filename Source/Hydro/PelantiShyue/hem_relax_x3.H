@@ -870,6 +870,7 @@ inline bool ps_x3_relax_cell(V6& U, const PsPhaseAPI& eos, double dt,
             if (dm <  dm_lo) dm =  dm_lo;
         };
         auto path = [&](double q, double dm, V6& W, X3SS& s) -> bool {
+            ++x3s.n_path;
             W = Wb;
             const double m1p = Wb[1] - dm, m2p = Wb[2] + dm;
             if (!(m1p > 0.0) || !(m2p > 0.0)) return false;
@@ -896,6 +897,7 @@ inline bool ps_x3_relax_cell(V6& U, const PsPhaseAPI& eos, double dt,
             if (h > 12) return 1;
         }
         for (int it = 0; it < xp.max_newton; ++it) {
+            ++x3s.n_nit;
             double rTc = 0.0, rMc = 0.0;
             if (!rates(Wl, sl, rTc, rMc)) return 1;
             const double R1 = q  - dtl * rTc;
@@ -969,6 +971,7 @@ inline bool ps_x3_relax_cell(V6& U, const PsPhaseAPI& eos, double dt,
     bool ok   = true;
     while (t_done < dt * (1.0 - 1.0e-12)) {
         if (++nsub > 64) { ok = false; ++x3s.n_subcap; break; }
+        ++x3s.n_sub;
         const int rc = be_once(dt_try);
         if (rc == 1) ++x3s.n_newton;
         else if (rc == 2) ++x3s.n_dead;
