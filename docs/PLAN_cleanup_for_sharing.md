@@ -525,6 +525,48 @@ a derivation of what the discretisation needs. Rule 4 applies: item 1 and
 the memo form of item 2 must reproduce the contraction-free fingerprints
 bit for bit; the others are re-baselined through the 1-D gate first.
 
+Measured (2026-09-09, `x3_cost.sh`, demo3 to step 50, 6 ranks, TinyProfiler,
+`ps_pres_diag=1`; the windows run shared the cores, so absolute times are
+inflated but fractions and counters are not):
+
+| | mode 2 | mode 5 |
+|---|---|---|
+| run time | 90.6 s | 886.7 s (9.8×) |
+| `ps_apply_relaxation` exclusive, min / avg / max over ranks | 9.8 / 17.8 / 26.4 s | 110 / 341 / 489 s (18× on the slowest rank) |
+| `ParallelCopy_finish` (waiting) max | 48 s (53 %) | 590 s (67 %) |
+| `ps_source_flash` | — | 3.5 s (0.5 %) |
+| `ps_source_masstransfer` | 4.6 s | — (inside X3) |
+| X3 per call: sub-steps / Newton iterations / path evaluations / projection iterations | — | 1.28 / 13.8 / 39.8 / 23 |
+| X3 sub-steps not converged (last step, rank 0) | — | 145 of 1 014 calls (14 %) |
+
+What the measurement changes in the list above: the flash pre-screen (item
+6) is not worth doing — flash is 0.5 % even with 768 cells per step
+rejected after the solve. Two things the code study could not see dominate:
+
+8. The X3 Newton takes 13.8 iterations per call for a 2×2 system and fails
+   to converge in 14 % of sub-steps; with a finite-difference Jacobian and
+   tolerances at round-off (`tol_q = 1e-12 E`, `tol_m = 1e-13 ρ`) it grinds
+   at the floor the FD Jacobian cannot reach. Each iteration costs three
+   path evaluations (≈ 40 per call). A tolerance derived from the
+   discretisation (the operator is first order in dt; a residual of
+   1e-8–1e-9 relative is below anything the step can resolve) should
+   bring this to 3–4 iterations, i.e. 3–4× on the relaxation kernel. [T, G]
+9. Load imbalance: the slowest rank spends 489 s in relaxation, the
+   fastest 110 s, and two thirds of the wall time is ranks waiting. Mixed
+   cells sit in the jet, on a few ranks. A cost-weighted distribution map
+   (AMReX `DistributionMapping` with a relaxation-cost `MultiFab` from the
+   `[PS-X3]` counters or a timer) is host-side and GPU-compatible; it is
+   worth up to the 4.4× max/min ratio on the mode-5 wall time and some of
+   the 2.7× already visible in mode 2. [B (per-cell arithmetic unchanged;
+   reduction order may change), G]
+
+The projection itself is cheap in iterations (23 per call over ~40 paths,
+i.e. the guess is usually already at P₁ = P₂) but not in EOS calls: each
+path still pays the two phase evaluations and the slope probes, so items
+1–3 (double inversion, spinodal search, warm start) multiply through
+everything. Order of work: 8 and 1 first (a derivation and a bit-identical
+change), then 9, then 2–3.
+
 ### 3.12 Phase-7 finding (2026-09-05): the xhi boundary in the demo3 production run
 
 `DEMO3A` at steps 4200–5200 (t ≈ 16–21 ms): the two-phase jet (α₁ ≈ 0.05,
