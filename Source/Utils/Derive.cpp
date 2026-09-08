@@ -732,6 +732,14 @@ CAMR_derpres(
   auto pfab = derfab.array();
 
 #ifdef USE_PS_HYDRO
+  //  On a PS run the pressure is the volume-fraction mixture pressure
+  //  P_mix = α₁P₁ + α₂P₂ of the checked cell state (branch-locked
+  //  per-phase EOS, host substitution for a non-physical minority P);
+  //  the single-fluid inversion EOS(ρ_mix, e_mix) dips spuriously at
+  //  smeared two-phase contacts and aborts on healthy two-phase states
+  //  inside the dome, so it is not evaluated.  With ps_hydro=0 the slots
+  //  are passive and the single-fluid EOS is the scheme's pressure.
+  const int    l_ps   = ps_derive_ps_hydro();
   const PsPres l_pres = ps_presence_params();   // one host read
 #endif
   amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
@@ -742,26 +750,23 @@ CAMR_derpres(
     } else
 #endif
     {
+    amrex::Real p;
+#ifdef USE_PS_HYDRO
+    if (l_ps != 0) {
+      amrex::Real Uloc[NVAR];
+      for (int n = 0; n < NVAR; ++n) Uloc[n] = dat(i, j, k, n);
+      p = ps_mixture_pressure_from_cons(Uloc, l_pres);
+    } else
+#endif
+    {
     const amrex::Real rhoInv = 1.0 / rho;
     amrex::Real e = dat(i, j, k, UEINT) * rhoInv;
-    amrex::Real p;
     amrex::Real massfrac[NUM_SPECIES];
     for (int n = 0; n < NUM_SPECIES; ++n) {
       massfrac[n] = dat(i, j, k, UFS + n) * rhoInv;
     }
     EOS::REY2P(rho, e, massfrac, p);
-#ifdef USE_PS_HYDRO
-    // Report the volume-fraction mixture pressure P_mix = α₁P₁ + α₂P₂
-    // of the checked cell state (branch-locked per-phase EOS, host
-    // substitution for a non-physical minority P) rather than the
-    // single-fluid EOS(ρ_mix, e_mix), which dips spuriously at smeared
-    // two-phase contacts.  `dat` carries the full NVAR state.
-    {
-      amrex::Real Uloc[NVAR];
-      for (int n = 0; n < NVAR; ++n) Uloc[n] = dat(i, j, k, n);
-      p = ps_mixture_pressure_from_cons(Uloc, l_pres);
     }
-#endif
     pfab(i, j, k) = p;
     }
   });
