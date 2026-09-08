@@ -478,6 +478,53 @@ restart windows in mode 5 run at 470–700 s per coarse step (82 432 level-2
 cells, a 40–70 K thermal disequilibrium inherited from the mode-2
 checkpoint), about 9 h per window.
 
+`[DECIDE-28]` Mode-5 cost (code study 2026-09-09, no measurement of iteration
+counts yet — `CAMR.ps_pres_diag=1` and `CAMR.ps_mt_diag=1` print them). Unit
+of cost: one "EOS call" (`PsPhaseAPI::state_from_rho_e_phase`,
+`PS_relax.H`). Findings, in order of payoff; B = bit-identical, T = changes
+the iteration trajectory (root unchanged to tolerance), G = GPU-compatible.
+
+1. Every EOS call solves the branch-locked inversion twice: `REY2PTS_phase_try`
+   bypasses the ring cache, then `REY2Cs_phase` misses it and re-inverts the
+   same (ρ, e, phase) for c (`pr_contract.H:475,501`). One combined
+   `P,T,s,c` accessor halves the whole relaxation stage, both modes. [B, G]
+2. `state_from_T_v` (`hem_pr_state.H:327–381`) runs the spinodal edge search
+   (≤200-step march + 34/68-step bisection) on every subcritical evaluation
+   although the edge depends only on (T, phase) and is used only past it.
+   A (T, phase) memo or a device table removes ~90 % of `state_from_T_v`.
+   [memo B; table T; G if a device array]
+3. The branch-locked inversion never warm-starts: `T_init` is accepted and
+   unused, the bracket is always [1, 5000] K from 2500 K (Illinois, cap 100,
+   tol 1e-12). A per-cell `T_k` warm start (extra state components) with the
+   bracket as fallback cuts ~25 evaluations to ~4. [T, G]
+4. `rates()` in X3 obtains c_v by central difference, 4 EOS calls per call
+   (`hem_relax_x3.H:cv_of`), although `state_from_T_v` already forms
+   `cv_mol`; `PsPhase` lacks a `cv` field. [T, G]
+5. Structure: mode 2 imposes P₁=P₂ three times per cell (fixed-α energy
+   Newton); mode 5 imposes it with the α-adjusting Newton (20–40 EOS calls)
+   inside every `path` evaluation — ≥3 per X3 Newton iteration, × Newton
+   iterations, × sub-steps: ~1000–2000 EOS calls per mixed cell against
+   ~145. Jacobian recomputed every iteration (chord/Broyden reuse), sub-step
+   ladder restarted from `dt_try = dt` every call, tolerances at round-off
+   (`tol_q = 1e-12 E`, `tol_m = 1e-13 ρ`). [T, G]
+6. Flash pays one EOS call per single-phase cell per step even far from
+   saturation (`hem_flash.H:189`): the dome and metastability windows need
+   T and P, so they reject after the solve. Pre-screen with `UTEMP` against
+   the analytic `EOS::Psat` before the branch solve. [T at round-off only
+   if the screen is exact; G]
+7. GPU: the relaxation and source kernels are `LoopOnCpu` over
+   `std::function` callbacks (`hem_eos_api.H:94,99`), with function-local
+   static counters, dials and ring caches (`pr_contract.H` `#error`s under
+   `_OPENMP`). The EOS layer itself is `AMREX_GPU_HOST_DEVICE`. The only
+   structural blocker is `std::function`; none of 1–6 adds a host-only
+   construct if caches are MultiFab components and tables are device arrays.
+   (That is `[DECIDE-25]`'s neighbour.)
+
+Rule 1 applies to every item: no new threshold; tolerances are changed with
+a derivation of what the discretisation needs. Rule 4 applies: item 1 and
+the memo form of item 2 must reproduce the contraction-free fingerprints
+bit for bit; the others are re-baselined through the 1-D gate first.
+
 ### 3.12 Phase-7 finding (2026-09-05): the xhi boundary in the demo3 production run
 
 `DEMO3A` at steps 4200–5200 (t ≈ 16–21 ms): the two-phase jet (α₁ ≈ 0.05,
