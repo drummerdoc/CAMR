@@ -467,6 +467,17 @@ therefore also retires the 50-minute production case unless the X3 operator is
 profiled and made cheaper first; that is a `[DECIDE-3]` input, not a quality
 result.
 
+Is the cleaned code slower? Direct A/B on `inputs.satjet_demo3`, 6 ranks,
+same grids (8 192 level-2 cells at step 50): the pre-cleanup executable
+(`ffb6eca`, `DEMO3A/runlog.demo3A`) runs steps 1–50 at 1.88 s per step
+(98 s); the cleaned executable with `ps_validate=1` at 2.49 s (125 s); the
+cleaned executable in mode 5 with `ps_validate=1` at 17.0 s (851 s), 13× at
+step 50. The 27 % gap between the first two is bounded by the validator's
+six full-field checks per step; the mode-5 factor is the operator. The
+restart windows in mode 5 run at 470–700 s per coarse step (82 432 level-2
+cells, a 40–70 K thermal disequilibrium inherited from the mode-2
+checkpoint), about 9 h per window.
+
 ### 3.12 Phase-7 finding (2026-09-05): the xhi boundary in the demo3 production run
 
 `DEMO3A` at steps 4200–5200 (t ≈ 16–21 ms): the two-phase jet (α₁ ≈ 0.05,
