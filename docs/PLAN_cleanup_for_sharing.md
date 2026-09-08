@@ -539,6 +539,44 @@ longer domain so the shock-cell structure sits inside, or accepting that the
 outlet plane is where the jet is forced to recompress. bcnormal (B) is not an
 option: it dies at arrival.
 
+Variant F (σ = 0) measured 2026-09-08, and the invariant check that settles
+the pre-arrival question. On the face column, y-averaged, with P∞ = 20 bar:
+
+| step | t [ms] | A: P, u, (P−P∞)/ρc, u ÷ that | F: P, u, (P−P∞)/ρc, u ÷ that |
+|---|---|---|---|
+| 2000 | 8.3 | 23.5 bar, 21.8 m/s, 28.8 m/s, 0.76 | 22.5 bar, 21.0 m/s, 20.8 m/s, 1.01 |
+| 3000 | 12.3 | 26.4, 35.7, 47.1, 0.76 | 25.3, 40.5, 40.1, 1.01 |
+| 3500 | 14.3 | 28.2, 43.0, 56.7, 0.76 | 27.1, 51.2, 50.6, 1.01 |
+| 4000 | 16.2 | 29.9, 48.1, 63.3, 0.76 | (jet arriving) |
+
+With σ = 0 the face sits exactly on the outgoing simple wave of a far field
+at rest at P∞: $u = (P - P_\infty)/\rho c$ to 1 %. That is the non-reflecting
+condition working, and it says the pressure above 20 bar before the jet
+arrives is not boundary drift: it is the physical pressure of the gas the jet
+pushes ahead of itself (a piston precursor), which a far field at 20 bar
+cannot lower until the compression has passed. With σ = 0.25 the ratio is
+0.76 = 1 − σ at every step, which is what the algebra of §3.12 predicts for
+the steady ghost ($u = (1-\sigma)(P - P_\infty)/\rho c$): the σ term is a
+partial reflection that holds back a fraction σ of the outflow, i.e. a partial
+wall; it never restores P toward P∞. `[DECIDE-27]` part (ii) therefore
+simplifies from a re-derived blend to a deletion: the far-field invariant
+already carries P∞, a relaxation rate has no algebraic ghost analogue, and
+the measured optimum is the term's absence. Production decks should run
+σ = 0 now (a deck change); retiring `ps_bc_nscbc_sigma` and its code is the
+code change to agree.
+
+What remains after the σ question (identical in A and F from step 4500 on):
+the jet core reaches the face overexpanded (12.7 bar, M 1.55, in gas at
+20–28 bar), recompresses at the outlet plane, and 60–70 % of the face carries
+reversed flow at 21–28 bar. That is the jet's Mach-disk structure being placed
+at the domain edge because the domain ends before the jet can form it; the
+subsonic-inflow ghost (interior entropy, far-field invariant) is not
+manufacturing anything, it is admitting the recompressed fluid the far field
+would send back. Parts (i) and (iii) of `[DECIDE-27]` collapse to one
+question: extend the domain in x so the shock-cell structure sits inside
+(the physical answer), or accept the outlet plane as the recompression
+location. There is no boundary setting that changes this.
+
 ### 3.13 Two configurations, stated once
 
 The 1-D acceptance battery runs bare defaults (`ps_relax_mode=5`,
