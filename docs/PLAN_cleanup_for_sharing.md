@@ -603,6 +603,29 @@ path still pays the two phase evaluations and the slope probes, so items
 everything. Order of work: 8 and 1 first (a derivation and a bit-identical
 change), then 9, then 2–3.
 
+Item 8, measured and resolved (2026-09-09). The tolerance hypothesis was
+wrong: a per-iteration trace on B9 shows the residual evaluation is clean to
+1e-14 relative and the Newton converges quadratically in 5 iterations when
+it converges. What it does instead, most of the time, is a two-cycle: the
+undamped step from a residual of −6.3 E lands at +6.3 E (the local slope in
+q is ≈ 54 at both points, the secant across the root ≈ 110), and the pair
+alternates for the full 40-iteration cap with no backtracking, because the
+only backtrack condition was admissibility. The predictor made it worse:
+q⁽⁰⁾ = Δt r_T⁰ overshoots the linearised implicit solution by the stiffness
+ratio 1 + Δt/θ ≈ 55–76. Two changes in `hem_relax_x3.H` (`be_once`):
+the predictor is the backward-Euler solution of the linearised thermal
+channel, q⁽⁰⁾ = Δt r_T⁰/(1 + Δt/θ); and the line search accepts a trial
+only if it is admissible and does not increase |R₁|/E + |R₂|/ρ, halving
+toward the current iterate otherwise. Tolerances are unchanged. Measured on
+B9 (20 steps): Newton iterations per call 48.7 → 3.1, path evaluations per
+call 144 → 9.0, sub-steps 3.0 → 1.0, non-converged sub-steps 3 of 3 → 0.
+`verify_canonical.py`: all seven checks pass at the recorded numbers.
+Acceptance table: B2 P 0.1516 → 0.1541, B7 u 0.7465 → 0.7478, B11 ±1e-4,
+all other rows identical to four decimals. Derivation in
+`MODEL_AND_ALGORITHM.md` §5.1. Still to run on the Mac: `sym` (does the
+mirror break go), the demo2 resume from step 600 (does the abort go), and
+`x3_cost.sh run` for the 2-D cost.
+
 ### 3.12 Phase-7 finding (2026-09-05): the xhi boundary in the demo3 production run
 
 `DEMO3A` at steps 4200–5200 (t ≈ 16–21 ms): the two-phase jet (α₁ ≈ 0.05,

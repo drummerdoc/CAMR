@@ -887,7 +887,12 @@ inline bool ps_x3_relax_cell(V6& U, const PsPhaseAPI& eos, double dt,
         };
         // Damped 2x2 Newton with numerical Jacobian; inadmissible trials
         // backtrack toward the last admissible iterate.
-        double q  = dtl * rT0;
+        // Predictor: the backward-Euler solution of the linearised thermal
+        // channel.  d(T1 - T2)/dq = -inv, so rT(q) = rT0 - q/theta and
+        // q = dtl rT0 / (1 + dtl/theta); the explicit value dtl rT0
+        // overshoots by the stiffness ratio dtl/theta.  The mass channel is
+        // not stiff (J22 ~ 1), so its explicit predictor stands.
+        double q  = joint_pt ? 0.0 : dtl * rT0 / (1.0 + dtl / xp.theta);
         double dm = dtl * rM0;
         clampx(q, dm);
         V6 Wl; X3SS sl;
@@ -896,10 +901,10 @@ inline bool ps_x3_relax_cell(V6& U, const PsPhaseAPI& eos, double dt,
             while (!path(q, dm, Wl, sl) && h++ < 12) { q *= 0.5; dm *= 0.5; }
             if (h > 12) return 1;
         }
+        double rTc = 0.0, rMc = 0.0;
+        if (!rates(Wl, sl, rTc, rMc)) return 1;
         for (int it = 0; it < xp.max_newton; ++it) {
             ++x3s.n_nit;
-            double rTc = 0.0, rMc = 0.0;
-            if (!rates(Wl, sl, rTc, rMc)) return 1;
             const double R1 = q  - dtl * rTc;
             const double R2 = dm - dtl * rMc;
             if (std::abs(R1) <= tol_q && std::abs(R2) <= tol_m) {
@@ -930,16 +935,30 @@ inline bool ps_x3_relax_cell(V6& U, const PsPhaseAPI& eos, double dt,
             }
             double qn = q + dq, dmn = dm + ddm;
             clampx(qn, dmn);
+            // Line search: a trial must be admissible and must not increase
+            // the scaled residual norm; otherwise it is halved toward the
+            // current iterate.  Without the second condition the undamped
+            // step on this residual settles into a two-cycle straddling the
+            // root (the local slope in q is about half the secant slope
+            // across it) and runs to the iteration cap.
             V6 Wn; X3SS sn;
+            double rTn = 0.0, rMn = 0.0;
+            const double Nc = std::abs(R1) / E_scale + std::abs(R2) / rho_mix;
             int h = 0;
-            while (!path(qn, dmn, Wn, sn) && h++ < 10) {
+            for (;;) {
+                if (path(qn, dmn, Wn, sn) && rates(Wn, sn, rTn, rMn)) {
+                    const double Nn = std::abs(qn  - dtl * rTn) / E_scale
+                                    + std::abs(dmn - dtl * rMn) / rho_mix;
+                    if (Nn < Nc) break;
+                }
+                if (h++ >= 10) break;
                 qn  = 0.5 * (qn  + q);
                 dmn = 0.5 * (dmn + dm);
             }
             if (h > 10) return 1;
             const bool tiny = (std::abs(qn - q) <= tol_q &&
                                std::abs(dmn - dm) <= tol_m);
-            q = qn; dm = dmn; Wl = Wn; sl = sn;
+            q = qn; dm = dmn; Wl = Wn; sl = sn; rTc = rTn; rMc = rMn;
             if (tiny) {
                 // A tiny increment (iterate pinned at the box or collapsed
                 // by the backtrack) is committed even when the residual is
