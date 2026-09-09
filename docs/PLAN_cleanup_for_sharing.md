@@ -743,6 +743,17 @@ placeholder population should not be created in the first place —
 branch — and the invariance test is then re-recorded against the physical
 seed. Both the seeding change and the flux-path item are `[DECIDE-29b]`.
 
+Resume with the first implementation (2026-09-09, Mac): aborted on the
+first step after restart, in `computeTemp` on a mixture state
+(ρ = 16.4, e = −9.3e4). Cause: the mass-adjust form, m_k := α_k ρ_sat, at
+α_k ≈ 0.01 and ρ_sat/ρ_k ≈ 20 converts most of the vapour host's mass into
+liquid in one step. Reverted to the α-adjust form; the projection now
+fires only on a Corridor state with no root on its branch, keeps the
+energy when (ρ_sat, e_k) is a state, and leaves supercritical hosts
+alone; a post-regrid sweep covers interpolated cells before the hydro.
+Battery: A1 0.0134, A6 0.0084 (baseline 0.0125, 0.0076); B rows unchanged;
+B9 mode-2 pin 0.7525. `[DECIDE-29b]` seeding is done (`33cebe7`).
+
 Item 8, measured and resolved (2026-09-09). The tolerance hypothesis was
 wrong: a per-iteration trace on B9 shows the residual evaluation is clean to
 1e-14 relative and the Newton converges quadratically in 5 iterations when

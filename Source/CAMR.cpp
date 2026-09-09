@@ -872,6 +872,10 @@ CAMR::post_regrid(int /*lbase*/, int /*new_finest*/)
   // No-op on untouched interior cells.  See docs/MODEL_AND_ALGORITHM.md §4.9.
   if (ps_hydro != 0) {
     amrex::MultiFab& S_new = get_new_data(State_Type);
+    // A Corridor phase the interpolation left without a root on its branch
+    // is carried at its saturation state before any flux sees it
+    // (PS_corridor.H, docs §4.8).
+    ps_apply_corridor_projection(S_new, 0);
     ps_resync_phase_energy(S_new, 0);
     // Regrid interpolation manufactures sub-alpha_vanish slivers at new
     // fine cells; fold them to exact zero before any flux sees them.  The
