@@ -786,6 +786,14 @@ bounded by the defect. 1-D: B2 P 0.1541 → 0.1524, every other row and the
 gate pins unchanged (the suite has no coarse–fine faces, so the defect is
 the hydro's own round-off there).
 
+Fourth resume (2026-09-09, with `99a067e`): completes 600 → 650 (t = 2.5 ms)
+with zero aborts, 44 s per coarse step (100–190 s before the Newton fix).
+Stage-H split amplification 1100 → 40–170; energy-identity defects up to
+5 % at the coarse–fine fill remain (the fill itself, `[DECIDE-29]`'s
+downstream item); 20 unreachable and 9 off-domain trace states remain,
+unasked. Item 1's abort criterion is met on the resume; the from-scratch
+pair with the physical seed is the remaining item-1 evidence.
+
 Item 8, measured and resolved (2026-09-09). The tolerance hypothesis was
 wrong: a per-iteration trace on B9 shows the residual evaluation is clean to
 1e-14 relative and the Newton converges quadratically in 5 iterations when
