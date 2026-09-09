@@ -670,6 +670,42 @@ needs the 8-step resume from `chk_sj2_00600` with a per-stage cell trace on
 level-2 cell (72, 140) on the Mac — the tracer is env-gated and costs
 nothing when unset.
 
+**Decided (2026-09-09): yes — the Corridor saturation projection.** Offline
+score first (`harvest/score_projection.py`): every Corridor liquid parent
+projected to sat_L(T_host) — m₁ kept, α₁ = m₁/ρ_sat, E₁ = m₁(e_sat + ke),
+the energy difference to the host — and, for a supercritical host
+(T_host ≥ T_c, 103 of 27 646 cells at DEMO3A step 5430), to the host's
+(T, P) on the liquid branch; then the fill re-run on the projected parents.
+
+| plotfile, level | Corridor liquid cells | children unreachable before → after | parents unreachable after |
+|---|---|---|---|
+| DEMO3A 2590, L0 / L1 | 29 821 / 8 391 | 344 → 0 / 154 → 0 | 0 / 0 |
+| DEMO3A 5430, L0 / L1 | 27 646 / 14 073 | 742 → 0 / 141 → 0 | 0 / 0 |
+| demo2 mode 5 step 550, L0 / L1 | 32 082 / 22 757 | 30 → 0 / 113 → 0 | 0 / 0 |
+
+The advection analogue (mass-weighted mix of every horizontally adjacent
+pair of Corridor liquids) gives zero unreachable mixes after projection as
+well. What remains flagged "unphysical" after projection is exactly the set
+of Corridor liquids whose host vapour is below the triple point (1 278 of
+27 646 at step 5430: the expansion reaches 130–210 K) — a saturated liquid
+below T_triple is the PR liquid branch continued into the solid region,
+which the model has no phase for; it is reachable and stable, and stays a
+documented limit rather than a failure.
+
+Implementation (next): a device-safe per-cell kernel `ps_corridor_project`
+applied where the relaxation sweep now refuses a Corridor phase
+(`ps_relax_entry_gate` → project instead of return), so every Corridor
+phase leaves each step on its saturation curve; the target from
+`EOS::Psat` (closed-form) and `state_from_T_P` on the phase's own branch
+(a cubic root, no iteration); T_host from the host inversion the sweep
+performs. Seeding (`prob.alpha_trace`) is left as it is: the first step's
+projection replaces the placeholder. The promotion test (reachability →
+physical) and the bound-limited fill are separate items and are not
+needed for the abort. Verification: 1-D gate and acceptance table (every
+trace phase in the battery changes state, so the fingerprints move and the
+table is re-read); then `sym`, the demo2 resume from step 600, and the
+demo3 step-50 metric on the Mac.
+
 Item 8, measured and resolved (2026-09-09). The tolerance hypothesis was
 wrong: a per-iteration trace on B9 shows the residual evaluation is clean to
 1e-14 relative and the Newton converges quadratically in 5 iterations when
