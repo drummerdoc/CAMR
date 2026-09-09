@@ -94,13 +94,21 @@ ps_resync_mixture_mass(amrex::MultiFab& S_new, int nghost = 0)
 //  conserved, refluxed quantity; the split UE1/UE2 is auxiliary, and
 //  independent coarse-fine interpolation / regrid (each slot with its own
 //  limiter) breaks the identity by a few % at a flash front, which the
-//  downstream state construction turns into NaN.  UE1, UE2 are rescaled
-//  at fixed ratio to sum to UEDEN: the interpolated split is kept, total
-//  energy is exact, interior cells are a no-op.  A split with |UE_k|/m_k
-//  above ps_phase_e_cap is noise (a trace phase's UE_k and m_k advance
-//  independently) that a fixed-ratio rescale would only renormalise, so
-//  it takes the mass-fraction split of UEDEN, as a degenerate sum does.
-//  Runs before the floor and the relaxation.  Docs §8.3.
+//  downstream state construction turns into NaN.  The defect
+//  d = UEDEN - (UE1 + UE2) is added to the phase energies in proportion
+//  to their masses: total energy is exact, interior cells are a no-op,
+//  and each e_k moves by d / (m1 + m2), bounded by the defect.  Rejected:
+//  rescaling UE1 and UE2 by the common factor UEDEN / (UE1 + UE2) so the
+//  split ratio is kept.  Why: when the two phase energies nearly cancel —
+//  a Corridor liquid whose energy slot has drifted negative against a
+//  vapour host, |UE1| + |UE2| measured up to 1200 |UE1 + UE2| in
+//  production — the factor is unbounded and a few-percent defect flips
+//  both phases by orders of magnitude; the vapour host of such a cell
+//  then has no root (docs §4.8).  A split with |UE_k|/m_k above
+//  ps_phase_e_cap is noise (a trace phase's UE_k and m_k advance
+//  independently) and takes the mass-fraction split of UEDEN, as a
+//  degenerate sum does.  Runs before the floor and the relaxation.
+//  Docs §8.3.
 // -----------------------------------------------------------------
 inline void
 ps_resync_phase_energy(amrex::MultiFab& S_new, int nghost = 0)
@@ -130,10 +138,10 @@ ps_resync_phase_energy(amrex::MultiFab& S_new, int nghost = 0)
                 if (m2 > Real(0.0) && std::abs(ue2) > e_cap * m2) split_ok = false;
             }
             const Real s = ue1 + ue2;
-            if (split_ok && std::isfinite(s) && std::abs(s) > Real(0.0)) {
-                const Real f = ued / s;                 // preserve split ratio
-                U(i,j,k, UE1) = ue1 * f;
-                U(i,j,k, UE2) = ue2 * f;
+            if (split_ok && std::isfinite(s) && std::isfinite(mm) && mm > Real(0.0)) {
+                const Real d = ued - s;                 // identity defect, mass-weighted
+                U(i,j,k, UE1) = ue1 + d * (m1 / mm);
+                U(i,j,k, UE2) = ue2 + d * (m2 / mm);
             } else {
                 // Degenerate or incredible split: mass-fraction split of the
                 // trusted total — an equal-specific-energy assumption, the

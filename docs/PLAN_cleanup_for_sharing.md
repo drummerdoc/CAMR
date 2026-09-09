@@ -768,6 +768,24 @@ phase-energy split of Corridor cells is corrupted by the hydro itself
 no help from any projection; preventing it at creation means the Corridor
 phase's energy is carried, not transported by its own equation.
 
+Third resume (2026-09-09): the same vapour-host state to eight digits
+(ρ = 26.17662479, e = −65093.12277), with the projection α-only — so the
+projection had nothing to do with it; the hydro path makes that state on
+its own. `[DECIDE-30]` located: `ps_resync_phase_energy` enforced
+UE1 + UE2 = UEDEN by rescaling both phase energies with the common factor
+UEDEN/(UE1 + UE2). In a Corridor cell whose liquid slot has drifted to a
+large negative energy against a hot vapour host the two nearly cancel
+(step-550 plotfile, level 2: (52,160) α₁ = 0.0075, ρ₁ = 1405, e₁ = −3.8e5,
+ρ₂ = 27.5, e₂ = +1.5e5, |UE1| + |UE2| = 1236 |UE1 + UE2|), the factor is
+unbounded, and a few-percent identity defect flips the vapour's energy by
+orders of magnitude — the abort state. The credibility cap
+`ps_phase_e_cap` = 1e9 J/kg is three orders too loose to catch it. Changed
+to the additive, mass-weighted distribution of the defect,
+UE_k += d m_k/(m₁ + m₂): exact total, each e_k moves by d/(m₁ + m₂),
+bounded by the defect. 1-D: B2 P 0.1541 → 0.1524, every other row and the
+gate pins unchanged (the suite has no coarse–fine faces, so the defect is
+the hydro's own round-off there).
+
 Item 8, measured and resolved (2026-09-09). The tolerance hypothesis was
 wrong: a per-iteration trace on B9 shows the residual evaluation is clean to
 1e-14 relative and the Newton converges quadratically in 5 iterations when
