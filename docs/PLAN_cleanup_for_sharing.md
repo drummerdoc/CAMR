@@ -603,6 +603,73 @@ path still pays the two phase evaluations and the slope probes, so items
 everything. Order of work: 8 and 1 first (a derivation and a bit-identical
 change), then 9, then 2–3.
 
+`[DECIDE-29]` Trace-phase states the EOS cannot evaluate (the demo2 mode-5
+abort at step 608, and the 164–2 500 "unreachable" trace states every
+validator line reports in every mode). Measured offline (2026-09-09,
+`Exec/CO2_PipeBreak/harvest/`): the AMReX `cell_cons_interp` fill applied
+to 1.85 million interior coarse stencils of 41 plotfiles (DEMO3A every
+160 steps; demo2 mode 2 and mode 5 every 50), each parent and child phase
+state classified by regime, by the solver's reachability test, and by a
+physical test (T ≥ T_triple and P above the EOS pressure floor); and the
+step-to-step drift of Corridor cells between consecutive DEMO3A plotfiles.
+
+| | DEMO3A (20 files) | demo2 mode 2 (11) | demo2 mode 5 (10) |
+|---|---|---|---|
+| stencils | 873 664 | 503 520 | 469 124 |
+| parent liquid state already unreachable | 2 577 (grows ~+10 per 160 steps) | 590 | 220 |
+| reachable parents → unreachable child | 126 | 50 | 96 |
+| of those with an Independent centre | 0 | 0 | 0 |
+| vapour phase, any failure | 0 | 0 | 0 |
+| parents reachable but unphysical (T < T_triple or P at floor) | 46 % of all cells | | |
+
+Every one of the 272 "reachable parents → unreachable child" stencils has an
+unphysical parent, 257 of them at the centre; 60 % have α₁ < 1e-5 at the
+centre, 79 % below 1e-3; none is Independent. The hydro-created class
+(`drift.py`, level 0, ~10 per 10 steps) is the same population: α₁ ≈ 1e-6,
+ρ₁ drifting between the vapour density and the liquid density, e₁ falling
+below the cold bound. The vapour phase is never broken by either operator,
+and neither operator ever breaks an Independent liquid.
+
+So there is one failure mode, not several. The trace liquid seeded at
+`prob.alpha_trace` in the vapour region carries the *vapour's* (ρ, e) as its
+quotient state (ρ₁ ≈ 40–250 kg/m³, e₁ ≈ +1e5 J/kg: a "liquid" reachable on
+its branch only at T ≈ 40 K and the pressure floor). Wherever that region
+meets real liquid (ρ₁ ≈ 900, e₁ ≈ −1.3e5), any linear combination of the
+two — the fill's slopes, or the hydro's mass-weighted advection of m₁ and
+E₁ — lands on the chord between them in (ρ, e), and that chord crosses the
+dome, where the liquid branch has no root. Mode 5 did not create more of
+these than mode 2 (220 vs 590); it merely asked one of them.
+
+Consequences for the design. (a) An interpolation bound stated on
+*reachability* would pass every one of these parents; stated on the
+physical set (T ≥ T_triple, P above the floor) it would have zero
+"physically valid parents → invalid child" cases in 1.85 million stencils,
+so a bound-limited fill (a `CellConservativeProtected` analogue with the
+physical test and piecewise-constant fallback) is a complete backstop for
+the fill — but it is downstream of the creation. (b) The creation point is
+the placeholder itself: a Corridor phase carrying a state from the other
+branch. The rule-2 fix is to give a Corridor phase the saturated state on
+its own branch at the host temperature, (ρ_k, e_k) = sat_k(T_host), at
+seeding and at every step: mass m_k is conserved, α_k = m_k/ρ_sat adjusts
+(α is the free variable, exactly as in the pressure projection), and the
+energy difference is exchanged with the host so the mixture energy is
+conserved — the Corridor analogue of the relaxation, with no parameter.
+Chords between saturated-liquid states stay on the liquid side away from
+the critical point, so both the fill and the advection then stay
+evaluable; the physical bound remains as the backstop. (c) `ps_regime_reach`
+promotes on reachability, so it can admit a 43 K liquid as Independent;
+the promotion test should be the physical one. (d) `prob.alpha_trace`
+seeding with the mixture state is the origin of the 46 % and should seed
+sat_k(T) instead.
+
+The dataset (`harvest/out/*.npz`, stencils and children) is the offline
+test bed: a candidate treatment of Corridor phases is applied to the
+parents and scored by how many children the fill then breaks, before any
+run. What the offline data cannot show is the hydro side of (b), which
+needs the 8-step resume from `chk_sj2_00600` with a per-stage cell trace on
+level-2 cell (72, 140) on the Mac — the tracer is env-gated and costs
+nothing when unset.
+
 Item 8, measured and resolved (2026-09-09). The tolerance hypothesis was
 wrong: a per-iteration trace on B9 shows the residual evaluation is clean to
 1e-14 relative and the Newton converges quadratically in 5 iterations when

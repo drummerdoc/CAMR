@@ -57,3 +57,6 @@ Source/EOS/GERGTab/tools/gen_gergtab
 # ---- host-compiled EOS tools (sources are tracked in Source/EOS/GERG/tools) ----
 Source/EOS/GERG/tools/gergstats
 Source/EOS/GERG/tools/gerg_edge_cliff
+Exec/CO2_PipeBreak/harvest/out/
+Exec/CO2_PipeBreak/harvest/eos_valid
+Exec/CO2_PipeBreak/harvest/*.npz

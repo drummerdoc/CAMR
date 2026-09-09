@@ -108,7 +108,7 @@ ps_eos_noroot(const char* what, double rho, double e,
         amrex::Abort();
     ))
     AMREX_IF_ON_HOST((
-    amrex::Print() << "\n[PS-EOS] NO ROOT -- this (rho,e) is not a state.\n"
+    amrex::AllPrint() << "\n[PS-EOS] NO ROOT -- this (rho,e) is not a state.\n"
                    << "  " << what << "\n"
                    << "  rho = " << rho << " kg/m^3    e = " << e << " J/kg"
                    << "    branch = " << (phase == 1 ? "LIQUID" : "VAPOR") << "\n"
