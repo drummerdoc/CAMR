@@ -26,25 +26,59 @@
 #include "CAMR_params.H"
 #include "EOS.H"
 
-// Fill the six-equation Pelanti-Shyue slots for a single-phase state at
-// (rho, E_spec): dominant phase 1 with a trace phase 2 sharing (T,P).
+// Fill a CONTIGUOUS NVAR vector with a single-phase state at (P, T) with
+// velocity u: the dominant phase (liquid, phase 1, unless vapor_dominant)
+// carries the physical (rho, e) of the single-fluid EOS at (P, T); the trace
+// phase (alpha_trace) carries its OWN branch's state at the same (P, T) —
+// the metastable continuation where that branch has no stable root — so it
+// is a physical state of its branch from t = 0 and never a placeholder the
+// EOS cannot evaluate (docs/MODEL_AND_ALGORITHM.md §4.8).  The mixture
+// density and energy are assembled from the two phases, so the mass and
+// energy identities hold exactly.  Writes URHO, UMX/UMY/UMZ, UEINT, UEDEN,
+// UTEMP, UFS.., and the six-equation slots.
 //
-// NOTE: this writes into a CONTIGUOUS NVAR vector (the s_ext[NVAR] the
-// bcnormal ghost fill uses).  Do NOT call it with &state(i,j,k,0) from an
-// Array4 — Array4 is component-major (component stride = box size), so
-// [UALPHA1] indexing off a cell pointer hits the wrong memory.  initdata
-// writes the slots directly via state(i,j,k,comp) instead.
+// NOTE: contiguous NVAR vector (the s_ext[NVAR] of the bcnormal ghost
+// fill).  Do NOT call it with &state(i,j,k,0) from an Array4 — Array4 is
+// component-major; initdata copies the slots out of a local vector.
 #ifdef USE_PS_HYDRO
-AMREX_GPU_DEVICE AMREX_FORCE_INLINE
-void CAMR_ps_fill_single_phase(amrex::Real* s, amrex::Real rho, amrex::Real E_spec,
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+void CAMR_ps_fill_single_phase(amrex::Real* s, amrex::Real P, amrex::Real T,
+                               amrex::Real ux, amrex::Real uy, amrex::Real uz,
+                               bool vapor_dominant,
                                amrex::Real alpha_trace = amrex::Real(1.0e-6))
 {
-    const amrex::Real alpha_1     = amrex::Real(1.0) - alpha_trace;
-    s[UALPHA1] = alpha_1;
-    s[UM1RHO1] = alpha_1     * rho;
-    s[UM2RHO2] = alpha_trace * rho;
-    s[UE1    ] = alpha_1     * rho * E_spec;
-    s[UE2    ] = alpha_trace * rho * E_spec;
+    amrex::Real Y[NUM_SPECIES];
+    Y[0] = amrex::Real(1.0);
+    for (int n = 1; n < NUM_SPECIES; ++n) Y[n] = amrex::Real(0.0);
+    amrex::Real rho_d, e_d, rho_t, e_t;
+    EOS::PYT2RE(P, Y, T, rho_d, e_d);                              // dominant: the physical root
+    if (vapor_dominant) EOS::PYT2RE_liquid(P, Y, T, rho_t, e_t);   // trace liquid on its branch
+    else                EOS::PYT2RE_vapor (P, Y, T, rho_t, e_t);   // trace vapour on its branch
+    const amrex::Real a_d = amrex::Real(1.0) - alpha_trace;
+    const amrex::Real m_d = a_d * rho_d, m_t = alpha_trace * rho_t;
+    const amrex::Real rho = m_d + m_t;
+    const amrex::Real e_mix = (m_d * e_d + m_t * e_t) / rho;
+    const amrex::Real half_u2 = amrex::Real(0.5) * (ux*ux + uy*uy + uz*uz);
+    s[URHO]  = rho;
+    s[UMX]   = rho * ux;
+#if (AMREX_SPACEDIM >= 2)
+    s[UMY]   = rho * uy;
+#endif
+#if (AMREX_SPACEDIM == 3)
+    s[UMZ]   = rho * uz;
+#endif
+    s[UEINT] = rho * e_mix;
+    s[UEDEN] = rho * (e_mix + half_u2);
+    s[UTEMP] = T;
+    for (int n = 0; n < NUM_SPECIES; ++n) s[UFS + n] = Y[n] * rho;
+    const amrex::Real a1 = vapor_dominant ? alpha_trace : a_d;
+    const amrex::Real m1 = vapor_dominant ? m_t : m_d, m2 = vapor_dominant ? m_d : m_t;
+    const amrex::Real e1 = vapor_dominant ? e_t : e_d, e2 = vapor_dominant ? e_d : e_t;
+    s[UALPHA1] = a1;
+    s[UM1RHO1] = m1;
+    s[UM2RHO2] = m2;
+    s[UE1    ] = m1 * (e1 + half_u2);
+    s[UE2    ] = m2 * (e2 + half_u2);
 }
 #endif
 
@@ -61,6 +95,19 @@ CAMR_initdata( int i, int j, int k,
     Y[0] = amrex::Real(1.0);
     for (int n = 1; n < NUM_SPECIES; ++n) Y[n] = amrex::Real(0.0);
 
+#ifdef USE_PS_HYDRO
+    // Phase identity matters for the flash source (phase 1 = liquid branch,
+    // phase 2 = vapor branch): a single-phase GAS ambient lives on the VAPOR
+    // branch (phase-2 dominant, prob.amb_vapor=1) so the flash does not
+    // mistake it for superheated liquid and boil it; supercritical / liquid
+    // ambients keep phase 1 dominant.  The trace phase carries its own
+    // branch's state at (p0, T0).
+    amrex::Real s[NVAR];
+    CAMR_ps_fill_single_phase(s, prob_parm.p0, prob_parm.T0,
+                              prob_parm.u0, amrex::Real(0.0), amrex::Real(0.0),
+                              prob_parm.amb_vapor != 0, prob_parm.alpha_trace);
+    for (int n = 0; n < NVAR; ++n) state(i,j,k,n) = s[n];
+#else
     amrex::Real rho0, e0;
     EOS::PYT2RE(prob_parm.p0, Y, prob_parm.T0, rho0, e0);
 
@@ -78,25 +125,6 @@ CAMR_initdata( int i, int j, int k,
     state(i,j,k, UFS  ) = Y[0] * rho0;
     state(i,j,k, UFS+1) = Y[1] * rho0;
     state(i,j,k, UFS+2) = Y[2] * rho0;
-
-#ifdef USE_PS_HYDRO
-    // Write the six-equation slots directly (Array4 is component-major).
-    // Phase identity matters for the flash source (phase 1 = liquid branch,
-    // phase 2 = vapor branch): a single-phase GAS ambient must live on the
-    // VAPOR branch (phase-2 dominant, prob.amb_vapor=1) so the flash does not
-    // mistake it for superheated liquid and boil it.  For supercritical /
-    // liquid ambients keep phase-1 dominant (default).
-    const amrex::Real alpha_trace = prob_parm.alpha_trace;   // S3/4.4
-    const amrex::Real alpha_1 = (prob_parm.amb_vapor != 0)
-                              ? alpha_trace                    // vapor (phase 2)
-                              : (amrex::Real(1.0) - alpha_trace); // liquid (phase 1)
-    const amrex::Real alpha_2 = amrex::Real(1.0) - alpha_1;
-    const amrex::Real E_spec = e0 + amrex::Real(0.5)*prob_parm.u0*prob_parm.u0;
-    state(i,j,k, UALPHA1) = alpha_1;
-    state(i,j,k, UM1RHO1) = alpha_1 * rho0;
-    state(i,j,k, UM2RHO2) = alpha_2 * rho0;
-    state(i,j,k, UE1    ) = alpha_1 * rho0 * E_spec;
-    state(i,j,k, UE2    ) = alpha_2 * rho0 * E_spec;
 #endif
 }
 
@@ -349,6 +377,11 @@ bcnormal(
                     if (f > amrex::Real(1.0)) f = amrex::Real(1.0);
                     P_res_t = prob_parm.p0 + (prob_parm.p_res - prob_parm.p0) * f;
                 }
+#ifdef USE_PS_HYDRO
+                CAMR_ps_fill_single_phase(R, P_res_t, prob_parm.T_res,
+                                          amrex::Real(0.0), amrex::Real(0.0), amrex::Real(0.0),
+                                          /*vapor_dominant=*/false, prob_parm.alpha_trace);
+#else
                 amrex::Real rho_r, e_r;
                 EOS::PYT2RE(P_res_t, Y, prob_parm.T_res, rho_r, e_r);
                 R[URHO]  = rho_r;
@@ -357,9 +390,6 @@ bcnormal(
                 R[UFS  ] = Y[0] * rho_r;
                 R[UFS+1] = Y[1] * rho_r;
                 R[UFS+2] = Y[2] * rho_r;
-#ifdef USE_PS_HYDRO
-                CAMR_ps_fill_single_phase(R, rho_r, e_r,
-                                          prob_parm.alpha_trace);   // S3/4.4
 #endif
             }
             const amrex::Real w = swin;
