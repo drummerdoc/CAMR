@@ -754,6 +754,20 @@ alone; a post-regrid sweep covers interpolated cells before the hydro.
 Battery: A1 0.0134, A6 0.0084 (baseline 0.0125, 0.0076); B rows unchanged;
 B9 mode-2 pin 0.7525. `[DECIDE-29b]` seeding is done (`33cebe7`).
 
+Second resume (2026-09-09): aborted at step 608 again, this time on the
+*vapour host* of a Corridor cell (ρ = 26.2, e = −65 kJ/kg, branch-locked
+entry from the level-1 hydro): the projection's energy exchange had put the
+liquid at e_sat and handed the cell's corrupted phase-energy split
+(|parts|/|whole| = 731 at (69,141)) to the vapour. And the sick cell (72,140)
+itself was never projected: its host is supercritical (T ≥ T_c) and that
+case returned. Now: α-only (mass and energy of both phases untouched),
+no-root criterion, supercritical host → host density on the trace's branch.
+Battery A1 0.0134 / A6 0.0084; B rows unchanged. `[DECIDE-30]`: the
+phase-energy split of Corridor cells is corrupted by the hydro itself
+(splitamp up to 1100 in DEMO3A) and can make the *host* unevaluable with
+no help from any projection; preventing it at creation means the Corridor
+phase's energy is carried, not transported by its own equation.
+
 Item 8, measured and resolved (2026-09-09). The tolerance hypothesis was
 wrong: a per-iteration trace on B9 shows the residual evaluation is clean to
 1e-14 relative and the Newton converges quadratically in 5 iterations when

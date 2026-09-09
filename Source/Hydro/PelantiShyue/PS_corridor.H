@@ -6,21 +6,18 @@
 //  the host's temperature.
 //
 //  Algorithm (docs/MODEL_AND_ALGORITHM.md §4.8): for a cell whose phase
-//  pair is (Corridor, Independent) the Corridor phase k receives the
-//  state on its own branch at (P_sat(T_host), T_host) — the saturated
-//  liquid in a vapour host, the saturated vapour in a liquid host; a
-//  supercritical host has no saturation state and is left alone.  Its
-//  mass m_k is kept; alpha_k = m_k / rho_sat adjusts (alpha is the free
-//  variable, as in the pressure projection).  Its energy is kept when
-//  (rho_sat, e_k) is a state of the branch (the usual case: nothing is
-//  exchanged with the host); otherwise E_k = m_k (e_sat + ke) with the
-//  difference to the host so UE1 + UE2 is unchanged.  Nothing else
-//  is written.  A Corridor phase whose own state has a root on its branch
-//  is left alone; the projection replaces only a state the branch cannot
-//  evaluate.  Without this the trace phase carries whatever quotient
-//  advection and the coarse-fine fill leave it — a "liquid" with the
-//  vapour's (rho, e) — and every linear combination of that with a real
-//  liquid state crosses the dome, where the branch has no root.
+//  pair is (Corridor, Independent) and whose Corridor phase k has a
+//  quotient state (rho_k, e_k) with no root on its own branch, the
+//  phase's volume fraction is reset so that its density is a state of
+//  its branch: alpha_k = m_k / rho_target, with rho_target the saturated
+//  density of branch k at the host temperature (or the host's density
+//  above the critical temperature, where the branches are one fluid).
+//  Mass and energy of both phases are untouched, so the mixture and the
+//  host state are exactly what they were.  Rejected: exchanging energy
+//  with the host to put e_k at saturation as well — it hands the
+//  corrupted phase-energy split of the cell to the host, which then has
+//  no root itself (measured: the resumed demo2 run aborted on the vapour
+//  host at rho = 26, e = -65 kJ/kg).
 //
 //  Contract: called for every cell of the relaxation sweep before the
 //  mode dispatch; returns without writing when the pair is not
@@ -66,11 +63,11 @@ void ps_corridor_project(int i, int j, int k,
     Real Yq[NUM_SPECIES]; ps_pure_species(Yq);
 
     //  A Corridor phase whose own (rho_k, e_k) has a root on its branch
-    //  keeps its state: it is a smeared real phase, or a trace the hydro
-    //  can still evaluate.  The projection replaces only a state the branch
-    //  has no root for — the state a consumer would abort on.  (Replacing
-    //  reachable-but-cold states as well was measured to perturb the
-    //  single-phase battery through the host exchange at shocks.)
+    //  keeps its state (a smeared real phase, or a trace the hydro can
+    //  evaluate); the projection replaces only a state the branch has no
+    //  root for.  Projecting every Corridor phase was measured to move B4
+    //  and B10 and abort B7: at a cross-critical contact the Corridor
+    //  liquid is resolved liquid, and giving it the host's density is wrong.
     {
         const Real ak = (kc == 1) ? a1 : a2, mk0 = (kc == 1) ? m1 : m2;
         const Real rk = mk0 / ak, ek = U(i,j,k, (kc == 1) ? UE1 : UE2) / mk0 - ke;
@@ -93,62 +90,31 @@ void ps_corridor_project(int i, int j, int k,
 #endif
         return;
     }
-    //  Above the critical temperature there is no saturation state and the
-    //  two branches are one fluid; the dome a drifting quotient could cross
-    //  does not exist there, so nothing is projected.  (Projecting to the
-    //  host state moves alpha_k across the round-off edge and was measured
-    //  to perturb the single-phase battery: A1 u-err 0.0125 -> 0.0162.)
-    if (!(Th < EOS::T_crit())) return;
-    //  Target on the Corridor phase's own branch: the saturated state at T_host.
-    const bool want_liquid = (kc == 1);
-    const Real Pt = EOS::Psat(Th);
-    Real rt, et, ct; bool has_root;
-    EOS::PYT2REc_phase_checked(Pt, Th, want_liquid, rt, et, ct, has_root);
-    if (!has_root || !(rt > Real(0.0)) || !std::isfinite(et)) {
+    //  Target density on the Corridor phase's own branch: the saturated
+    //  state at T_host below the critical temperature; above it the two
+    //  branches are one fluid and the target is the host's density.
+    Real rt;
+    if (Th < EOS::T_crit()) {
+        const bool want_liquid = (kc == 1);
+        Real et, ct; bool has_root;
+        EOS::PYT2REc_phase_checked(EOS::Psat(Th), Th, want_liquid, rt, et, ct, has_root);
+        if (!has_root || !(rt > Real(0.0))) {
 #if !defined(AMREX_USE_GPU)
-        ++ps_counters().corridor_noroot;
-#endif
-        return;
-    }
-    const Real mk = (kc == 1) ? m1 : m2;
-    if (!std::isfinite(rt) || !(rt > Real(0.0))) return;
-    const int  iE  = (kc == 1) ? UE1 : UE2;
-    const int  iEh = (kc == 1) ? UE2 : UE1;
-    //  The phase mass is what it is; its volume follows:
-    //  alpha_k = m_k / rho_target (alpha is the free variable, as in the
-    //  pressure projection), E_k = m_k (e_target + ke), and the energy
-    //  difference goes to the host so UE1 + UE2 is unchanged.  Rejected:
-    //  keeping alpha_k and setting m_k = alpha_k rho_target.  Why: with
-    //  alpha_k up to alpha_cond and rho_target/rho_k ~ 20 it converts most of
-    //  a vapour host's mass into liquid in one step (measured: the resumed
-    //  demo2 run aborted in computeTemp on the next step).
-    const Real ak_new = mk / rt;
-    if (!(ak_new > Real(0.0)) || !(ak_new < Real(1.0))) return;
-    U(i,j,k, UALPHA1) = (kc == 1) ? ak_new : Real(1.0) - ak_new;
-    //  Volume first, energy only if it must: at the saturation density the
-    //  phase's own energy is usually a state of its branch again (the
-    //  no-root states are "cold for their density", and the density was
-    //  the placeholder's).  Then nothing is exchanged with the host and the
-    //  mixture is untouched.  Only if (rho_sat, e_k) still has no root is
-    //  e_k set to the saturation value, with the difference to the host.
-    {
-        const Real ek = U(i,j,k, iE) / mk - ke;
-        Real Pk, Tk, Sk;
-        const hem::Phase3 own_br = want_liquid ? hem::Phase3::Liquid : hem::Phase3::Vapor;
-        if (std::isfinite(ek) && EOS::REY2PTS_phase_try(rt, ek, Yq, own_br, Pk, Tk, Sk)) {
-#if !defined(AMREX_USE_GPU)
-            ++ps_counters().corridor_projected;
+            ++ps_counters().corridor_noroot;
 #endif
             return;
         }
+    } else {
+        rt = rho_h;
     }
-    const Real Ek_new = mk * (et + ke);
-    const Real dE     = Ek_new - U(i,j,k, iE);
-    U(i,j,k, iE)  = Ek_new;
-    U(i,j,k, iEh) = U(i,j,k, iEh) - dE;
-#if !defined(AMREX_USE_GPU)
-    ++ps_counters().corridor_energy;
-#endif
+    //  Volume only: the phase mass and energy are kept, alpha_k = m_k / rho_t.
+    //  Nothing is exchanged with the host, so the mixture and the host state
+    //  are untouched.  (Exchanging energy with the host was measured to hand
+    //  a corrupted phase-energy split to the host, which then aborted.)
+    const Real mk = (kc == 1) ? m1 : m2;
+    const Real ak_new = mk / rt;
+    if (!(ak_new > Real(0.0)) || !(ak_new < Real(1.0))) return;
+    U(i,j,k, UALPHA1) = (kc == 1) ? ak_new : Real(1.0) - ak_new;
 #if !defined(AMREX_USE_GPU)
     ++ps_counters().corridor_projected;
 #endif

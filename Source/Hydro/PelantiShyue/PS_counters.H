@@ -226,7 +226,7 @@ struct PsCounters {
     //  per-mode split would only re-encode ps_relax_mode.
     long        n_gate_presence = 0;
     //  Corridor saturation projection (PS_corridor.H), per sweep.
-    long        corridor_projected = 0, corridor_energy = 0, corridor_host_fail = 0, corridor_noroot = 0;
+    long        corridor_projected = 0, corridor_host_fail = 0, corridor_noroot = 0;
     PsPresDiag  pres;
     PsFoldAudit fold;
 
