@@ -458,6 +458,42 @@ In order, each with its acceptance criterion (rule 3: quality, not survival):
 
 Items 1–3 need MPI (the Mac); 4–5 run here. Rule 6 applies: 5 before 1.
 
+**Verdict on items 1–3 (measured 2026-09-09, `mode5_evidence.sh`, report in
+`Exec/CO2_PipeBreak/mode5-report.dat`; the demo2/demo3/sym runs used the
+llvm exe, the windows and the demo2 resume the gnu exe after the Derive
+rebuild).** Mode 5 at the acceptance defaults does not pass the 2-D
+evidence, so the retirement of modes 1/2/4 and of `ps_relax_mode` does not
+proceed; the deletion list in item 6 stays as it is.
+
+| item | criterion | mode 2 (control) | mode 5 | result |
+|---|---|---|---|---|
+| 1 demo2 to 2.5 ms | completes, zero aborts | 567 steps, clean | aborts at step 608, t = 2.35 ms: `PS-EOS no root` in the level-1 hydro on a trace-liquid cell (α₁ = 0.0057, ρ₁ = 1 550 kg/m³, e₁ = −6.8e5 J/kg) whose phase-energy split had grown to \|parts\|/\|whole\| = 731 | fail |
+| 1 | step-50 mirror asymmetry ≤ 5e-10 | 1.7e-2 with AMR; **1.2e-11 at `max_level=0`** | 0.78 with AMR; **0.72 at `max_level=0`** — the operator itself breaks the mirror symmetry to O(1) in 50 steps, without AMR | fail |
+| 1 | liquid inventory within 1e-3, roughness ratio ~1 | — | matched-time inventory +6.4 to +8.4 % (more liquid, i.e. net condensation, not the predicted extra flashing); roughness ratio 0.45 at step 50, 1.03 at step 500 | fail on inventory |
+| 2 windows | no abort through the shock passage | (mode-2 references) | both complete; but `[PS-PROMOTE]` refusals do not heal (20–68 per level-0 print through 3697, where the mode-2 window decays to 0 by 3684); 19 `[PS-RELAXFB]` B.14 fallbacks; fingerprints recorded under `runs/mode5_evidence/w*/fingerprint.txt` | pass on abort, worse on healing |
+| 3 demo3 step 50 | contact-window max\|∂²α₁\| ≤ mode 2, extrema ≤ 2 | 1.20e-3, 2 | 1.06e-3, 3; front window 8.0e-2 vs 9.0e-4 — α₁ rises 0.045 → 0.15 at the front (condensation at 43–44 bar, above P_sat = 41.9 bar) | pass on the contact window; the front is a model difference to judge |
+| cost | — | 10 s/step | 100–700 s/step (`[DECIDE-28]`) | — |
+
+The two findings that matter most are cheap to pursue and point at the
+same place. The mirror-symmetry break at `max_level=0` (a 2-minute run) is a
+determinism failure of the X3 operator on mirror-identical inputs; the
+14 % of sub-steps that do not converge and are committed as "tiny
+non-convergence" (`[DECIDE-28]` item 8) are the natural suspect, since a
+committed non-converged state differs from a converged one by O(1 %) and
+the presence thresholds then amplify it. The demo2 abort is a trace-phase
+state that the closure created and the hydro could not evaluate (rule 2:
+prevent it at creation, not by a guard); the step-600 checkpoint and
+`ps_cell_probe` on level-1 cell (72, 140) reproduce it in 8 steps.
+
+`[DECIDE-3]` therefore becomes: (a) keep `ps_relax_mode` with modes 0, 2
+and 5 live (0 is the frozen-limit gate, 2 is production, 5 the acceptance
+default), retire 1 and 4 only after checks 2 and 5b of `verify_canonical.py`
+are re-baselined onto 2 or 5; or (b) fix the X3 Newton first
+(`[DECIDE-28]` item 8, a derivation), re-run the `sym` stage (2 min) and the
+demo2 resume from step 600 (8 steps, ~25 min), and revisit. (b) is the
+path that can still make mode 5 the only mode; (a) is what ships if it does
+not.
+
 Cost input (measured 2026-09-07, `mode5_evidence.sh demo2`, 6 ranks): the mode-2
 control takes 10 s per coarse step (95 min to 2.5 ms); the same deck at the
 mode-5 defaults takes 100–165 s per coarse step and refines about three times
