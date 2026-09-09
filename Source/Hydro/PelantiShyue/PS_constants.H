@@ -45,6 +45,11 @@ constexpr amrex::Real ALPHA_REFLUX_MIN = amrex::Real(1.0e-8);
 //  (PsPressureRelaxParams::alpha_min) so rho_k = m_k / alpha_k stays finite.
 constexpr amrex::Real ALPHA_NEWTON_MIN = amrex::Real(1.0e-9);
 
+//  The EOS's positive-pressure floor [Pa] (hem_pr_state.H
+//  state_from_T_v, P_pos_floor): a branch state whose pressure sits at it
+//  is the floor's product, not a physical state of the branch.
+constexpr amrex::Real EOS_P_POS_FLOOR  = amrex::Real(1.0e3);
+
 } // namespace ps_const
 
 #endif  // PS_CONSTANTS_H

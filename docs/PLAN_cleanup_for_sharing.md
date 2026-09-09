@@ -706,6 +706,43 @@ trace phase in the battery changes state, so the fingerprints move and the
 table is re-read); then `sym`, the demo2 resume from step 600, and the
 demo3 step-50 metric on the Mac.
 
+Implemented and measured in 1-D (2026-09-09, `PS_corridor.H`, wired into
+the relaxation sweep before the mode dispatch; `[PS-CORRIDOR]` line under
+`ps_pres_diag`). Three findings changed the design on the way:
+
+1. The unconditional projection (every Corridor phase, every step) broke
+   the gate: B4 u 0.126 → 0.219, B10 0.120 → 0.286, B9 mode-2 pin 0.752 →
+   0.847. At a cross-critical contact the Corridor liquid is a *smeared real
+   liquid*, not an equilibrium trace, and replacing its state moves real
+   energy. So the projection applies only to a Corridor phase whose own
+   (ρ_k, e_k) is not a physical state of its branch (no root, T below the
+   triple point, or P at the EOS floor: the harvest's "unphysical" class,
+   which is exactly the placeholder population). With that exemption the
+   B rows are identical to the post-Newton-fix table and B4/B9/B10 return
+   to their recorded values.
+2. The α-adjust form (m_k kept, α_k = m_k/ρ_target) is not inert on the
+   single-phase battery with the α_trace = 1e-6 seed: A1 u-err 0.0125 →
+   0.0162, A6 0.0076 → 0.0112. For a supercritical host the target is the
+   host state, α_k drops below ALPHA_ROUNDOFF, and the fold that edge
+   triggers acts on the changed E_k. The mass-adjust form (α_k kept,
+   m_k = α_k ρ_target, mass and energy differences to the host) crosses no
+   regime edge: A1 0.0136, A6 0.0092 — inside the gate's 2e-3 window but not
+   the "identical at every printed decimal" invariance recorded for the
+   seed. The residual is a 1e-7 host perturbation amplified by the wave
+   limiter at the shock (a 1.5e-3 density difference appears in the one
+   step after the first projection); it is not a coupling to the trace.
+3. The face state (`ps_face_from_state`) uses a Corridor phase's own ρ_k,
+   e_k, E_k (only an Absent phase takes the host's). Forcing the host state
+   for Corridor phases moves A1 by 7e-4 on its own, so the flux path is
+   not indifferent to the trace quotient either; that is a separate
+   consistency item, not changed here.
+
+Consequence: the runtime projection is the backstop for drift; the
+placeholder population should not be created in the first place —
+`prob.alpha_trace` seeding with the saturated state on the trace's own
+branch — and the invariance test is then re-recorded against the physical
+seed. Both the seeding change and the flux-path item are `[DECIDE-29b]`.
+
 Item 8, measured and resolved (2026-09-09). The tolerance hypothesis was
 wrong: a per-iteration trace on B9 shows the residual evaluation is clean to
 1e-14 relative and the Newton converges quadratically in 5 iterations when

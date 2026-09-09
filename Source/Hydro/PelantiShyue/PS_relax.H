@@ -185,6 +185,8 @@ ps_relax_entry_gate(int i, int j, int k,
     return true;
 }
 
+#include "PS_corridor.H"   // ps_corridor_project: needs ps_presence_relax_gate above
+
 // -----------------------------------------------------------------
 //  ps_mechanical_relax_cell (ps_relax_mode=0): instantaneous P1 = P2 by
 //  Newton on alpha_1 (hem::ps_pressure_relax_cell) with the interfacial
@@ -636,6 +638,8 @@ ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
 
     // Reset the per-sweep counters.
     ps_counters().n_gate_presence = 0;
+    ps_counters().corridor_projected = ps_counters().corridor_host_fail = ps_counters().corridor_noroot = 0;
+    const PsPres l_pres = ps_presence_params();
     ps_pres_diag_data().reset();
 
     // Dispatch on ps_relax_mode (documented at its accessor).
@@ -657,6 +661,7 @@ ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
         // each cell call.
         amrex::LoopOnCpu(bx, [=] (int i, int j, int k) noexcept
         {
+            ps_corridor_project(i, j, k, U, l_pres);
             if (relax_mode == 5) {
                 ps_x3_grid_relax_cell(i, j, k, U, eos, dt, theta);
             } else if (relax_mode == 4) {
@@ -690,6 +695,13 @@ ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
         //  [PS-GATE]: presence-gate refusals this sweep, all modes (cells
         //  [PS-X3] never sees).  Not an anomaly — the gate doing its job —
         //  but a stall routed through it must be visible.
+        if (ps_counters().corridor_projected + ps_counters().corridor_host_fail
+            + ps_counters().corridor_noroot > 0) {
+            amrex::AllPrint()
+                << "[PS-CORRIDOR] projected=" << ps_counters().corridor_projected
+                << " host_fail=" << ps_counters().corridor_host_fail
+                << " noroot=" << ps_counters().corridor_noroot << "\n";
+        }
         if (ps_counters().n_gate_presence > 0) {
             amrex::AllPrint()
                 << "[PS-GATE] S4 presence relax gate refused n="
