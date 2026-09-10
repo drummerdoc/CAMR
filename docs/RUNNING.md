@@ -130,7 +130,7 @@ Problem-specific keys live under `prob.` and are read by each case's `prob.cpp`;
 ```
 python3 verify_canonical.py                 # the gate, ~30 s
 python3 exact_suite.py wp [B9 ...]          # acceptance table
-python3 characterize.py record PRE --defaults
+python3 characterize.py record TAG --defaults  # fingerprints; compare against BASE_nc_* (contraction-free build) or BASE_*
 ./CAMR1d.gnu.TPROF.PS.PR.ex inputs CAMR.ps_ptg_selftest=1 CAMR.ps_relax_sweep=1 CAMR.ps_x3_test=1 max_step=0
 ```
 

@@ -794,6 +794,12 @@ downstream item); 20 unreachable and 9 off-domain trace states remain,
 unasked. Item 1's abort criterion is met on the resume; the from-scratch
 pair with the physical seed is the remaining item-1 evidence.
 
+**Decision taken (2026-09-10): mode 5 is the only default; modes 1 and 4 and
+`ps_mech_kernel`/`ps_mech_close` are deleted (`6a28954`); mode 2 stays as the
+finite-rate control closure until `[DECIDE-32]` is settled. The evidence is
+summarised in `VERIFICATION.md` §7.6 and the decisions in
+`DESIGN_DECISIONS.md` R-13/R-14/R-15/G-5/B-4 and O-21…O-26.**
+
 **Second evidence pass (2026-09-10, code at `99a067e`: Newton fix, physical
 seed, α-only Corridor projection, additive resync).** All eight runs
 complete with zero aborts — the first time mode 5 has finished the
@@ -1362,7 +1368,7 @@ Tag `pre-cleanup-2026-09-04` first.
 | 5 | Refactor item 1 (one cell state) | IDENTICAL expected; if not, present the diff as `[DECIDE-13]` | **DONE 09-05** (`a16cd96` step 1 identical; `bc4b78c` step 2 accepted — the five constructions were five different state definitions; gate numbers unchanged, acceptance table moves in the 4th decimal on B2/B7/B11; `BASE_nc_*` and `exact_suite_BASE.txt` are the new references, `b6e611e`) |
 | 6 | Exec: decks, scripts, data, gate fixes (§5, §6) | gate green from a clean clone with no `CO2_STANDALONE` | **DONE 09-05** for the tracked tree (35 files removed, decks re-bannered, demo3 pins `ps_lw_skip_contact=2`, TBlowdown `inputs-x` = base + 7 keys, gate restructured to 7 checks, `sym_compare.py`/`accept_2d.py` added, GERG probes moved to `Source/EOS/GERG/tools/`). Run data untouched: `Exec/triage_run_data.sh` echoes the §5.3 triage and applies it only with `--apply` (`[DECIDE-22]` is yours to run). `CO2_Sod` kept, upstream cases untouched (`[DECIDE-20/21]` defaults). |
 | 7 | Selector retirements §4.3(b), one commit each, in the order 5, 7, 8, 9, 10, 4, 6, then 1/2/3 after the production run | IDENTICAL at defaults; abort on retired values verified | **4–10 DONE 09-05** (IDENTICAL 21/21 contraction-free vs BASE, all backends compile, gate green, retired values abort). **1/2/3 wait for the mode-5 production evidence (§3.12).** PS+EOS+core source now ~17.6 k lines vs 31.7 k at the start |
-| 8 | Production run (demo2 mode 5 or 2 per `[DECIDE-12]`; demo3 with `ps_lw_skip_contact=2` pinned); NSCBC restart from `chk_sj2_02900`; confirm the demo3 C-F artefact is gone; then the deferred retirements 1/2/3 | 2-D acceptance script | — |
+| 8 | Production run (demo2 mode 5 or 2 per `[DECIDE-12]`; demo3 with `ps_lw_skip_contact=2` pinned); NSCBC restart from `chk_sj2_02900`; confirm the demo3 C-F artefact is gone; then the deferred retirements 1/2/3 | 2-D acceptance script | **evidence runs DONE 09-10** (`mode5_evidence.sh`, both modes, all stages, zero aborts; `VERIFICATION.md` §7.6); retirement of 1/4 done (`6a28954`); 2-D references `regen_refs.sh 2d BASE` + `windows BASE` are the last batch; retirements 1/2 of this table and mode 2 wait on `[DECIDE-32]` |
 
 Phases 2–5 are the bulk of the work and are mechanical; a realistic estimate
 is 2–3 focused sessions each for phases 1 and 2, one each for 3–6, and phase 7
@@ -1376,7 +1382,7 @@ paced by the run in phase 8.
 |---|---|---|
 | 1 | Retire `ps_lw_skip_contact` 0/1 | yes, after the phase-8 run |
 | 2 | Retire `ps_promote_checked=0` / `ps_floor_indep=0` (corridor DECIDE-10) | yes, after the phase-8 run |
-| 3 | Retire `ps_relax_mode` 1/2/4 and the mode-≠5 sub-dials (~1,000 lines) | yes, contingent on 12 |
+| 3 | Retire `ps_relax_mode` 1/2/4 and the mode-≠5 sub-dials | **DECIDED 09-10: 1 and 4 retired** (`6a28954`; `ps_mech_kernel`, `ps_mech_close` deleted, checks 2/5b re-baselined onto mode 5, 1-D references re-recorded as BASE). Mode 2 retained as the control closure until 32 is settled |
 | 4 | `ps_wp_order` default 1 → 2 | **DECIDED 09-05: yes** — done (`3647db6`); TBlowdown and B4 references re-recorded at the default |
 | 5 | Delete the FluctuationRegister plumbing; `ps_bl_reflux` → bool | **DECIDED 09-05 ("retire what you can"): done** (`a9af7f4`…`ec85ccf`) |
 | 6 | Delete BL-3b acoustic mode and `ps_shear_diss` | **DECIDED 09-05 ("retire what you can"): done** (`a9af7f4`…`ec85ccf`) |
@@ -1385,7 +1391,7 @@ paced by the run in phase 8.
 | 9 | Delete refuted A/B loser branches | **DECIDED 09-05 ("retire what you can"): done** (`a9af7f4`…`ec85ccf`) |
 | 10 | Reduce `ps_state_from_cons` to one branch | **DECIDED 09-05 ("retire what you can"): done** (`a9af7f4`…`ec85ccf`) |
 | 11 | Ship an `archive/` with WORKLOG/FINDINGS/HANDOFFs | **DECIDED 09-04: no** — tag `pre-cleanup-2026-09-04` is the archive |
-| 12 | 2-D production relaxation mode: keep mode 2 or move demo2/3 to mode 5 | move to 5 in the phase-8 run; it is the only way to make the 1-D and 2-D configurations one story and unblock 3 |
+| 12 | 2-D production relaxation mode | mode 5 completes the deck at mode-2 cost (second evidence pass); decks still pin mode 2 pending 32 |
 | 13 | Accept any fingerprint change from unifying the five cell-state constructors | **DECIDED 09-05: accepted** (diff: B2 P 0.1521→0.1516, B7 u 0.7460→0.7465, B11 P 0.1658→0.1657; B12 asymmetry 9.3e-9→4.7e-9) |
 | 14 | Third-party PDFs in the shared tree | **DECIDED 09-04: out** — done (`b5b5a8b`), cited instead |
 | 15 | Drop the ignored `Y[]` species argument from the PS EOS contract | **DECIDED 09-04: yes** — done as `ps_pure_species()` replacing 17 carriers (the Y-taking surface is 15 functions, 3 shared with single-fluid, so the overload route was larger) |
@@ -1400,7 +1406,12 @@ paced by the run in phase 8.
 | 24 | B4-flatness reference configuration (margin 0.10 vs 0) | **DECIDED 09-04: 0.10** (code default); drop the dead env in check 2 in Phase 6 |
 | 25 | GPU builds silently take the strict relax gate and the `bcnormal` outflow path (`#if !GPU` branches) — abort instead? | yes (rule 9) |
 | 26 | Which of the §3.6 candidate defects to fix in Phase 3/4 — **DECIDED 09-04: groups 1 and 2 fixed** (`693d051`, `dacb85b`); group 3 (physics/convention) left as documented |
-| 27 | NSCBC supersonic-outflow branch for impinging two-phase jets (§3.12) | measure first (two tests listed), then derive; not a σ/p_amb tuning question | fix the rule-17/20 ones (silent aliases/maps → abort; uncounted P=1 Pa in NSCBC), the health-line gating, the GPU stubs, the GERG alias precedence, Make.package; leave the physics questions (eta1 branch, dt≤0 conventions, derpres) as documented |
+| 27 | NSCBC xhi: supersonic branch / σ / domain length (§3.12) | **measured 09-06/08**: no supersonic branch needed; σ is a partial reflection, decks run σ = 0; what remains is the domain length (the jet recompresses at the outlet plane). Open: retire `ps_bc_nscbc_sigma`; extend the domain or accept the plane |
+| 28 | Mode-5 cost (§3.11) | **item 8 done 09-09** (Newton predictor + line search: demo2 100–700 → 18 s/step, parity with mode 2). Remaining: double EOS inversion (bit-identical), load-balanced dmap, spinodal memo, warm start, analytic c_v — `DESIGN_DECISIONS.md` O-23 |
+| 29 | Corridor saturation projection (§3.11) | **DECIDED 09-09: yes** — landed α-only with the no-root criterion (`PS_corridor.H`, R-14); 29b physical trace seed landed (R-15); the physical promotion test and the bound-limited fill are open (O-24, O-25) |
+| 30 | Energy-identity resync form | **landed 09-09**: additive mass-weighted distribution (`99a067e`, G-5) — the multiplicative rescale was the demo2 abort |
+| 31 | Mode-5 symmetry amplification (×1.4/step from step 12) | open; the mirror rung is no longer a mode-5 acceptance (O-22) |
+| 32 | Closure past the spinodal (window 2: 26 Independent no-root liquids) and the jet-head condensation shell | open; the reason mode 2 is retained (O-21, `FUTURE_WORK.md` §6); a derivation on the SRT rate or the flash trigger |
 
 ---
 
@@ -1421,3 +1432,65 @@ paced by the run in phase 8.
   α_birth — measure before redesigning.
 - XC2D ray-diff protocol never re-measured under wp (the step-22 abort only occurs with `ps_bl_reflux=0`).
 - Σ transport (FUTURE_WORK), 3-D jet reconnaissance, solid phase — parked.
+
+## 10. Restart brief (for the next session)
+
+What a fresh session needs to know that is not in the code or the other
+docs. Status first: phases 0–7 are done; the branch is in shareable shape at
+`6a28954` plus the docs commit that follows it. The last batch on the Mac is
+`cd Exec/CO2_PipeBreak && ../regen_refs.sh 2d BASE && ../regen_refs.sh windows
+BASE` (records the 2-D references at the retirement commit, mode 2 as the
+decks ship; the PRE windows never existed), then `Exec/triage_run_data.sh
+--apply` once `[DECIDE-22]` is confirmed, then commit `refs/` and
+`Exec/CO2_PipeBreak/runs/BASE/`. Open decisions are §8 rows 27–32; the
+physics items are `FUTURE_WORK.md` §6–8 and `DESIGN_DECISIONS.md` O-21…O-26.
+
+Working rules learned this session, all mechanical:
+
+- Ground rules (`GROUND_RULES.md`) are binding; the two that bit most were
+  rule 2 (prevent the state at creation — every abort this session was a
+  state the code made, not one it failed to guard) and rule 7 (measure
+  before hypothesising — the supersonic-branch and the Newton-tolerance
+  hypotheses were both wrong and both cheap to refute).
+- Liveness proof is the contraction-free 1-D build in the workspace:
+  `make DIM=1 USE_MPI=FALSE COMP=gnu Eos_Model=PR TINY_PROFILE=FALSE
+  XTRA_CXXFLAGS="-ffp-contract=off" KEEP_BUILDINFO_CPP=TRUE`, then
+  `characterize.py record X --defaults` / `record X` and `compare X BASE_nc`.
+  `KEEP_BUILDINFO_CPP` leaves the git hash in the log stale — read the
+  commit from `git`, not from the run header. Check the executable
+  timestamp after every build; never `touch` an executable.
+- The 1-D gate (`verify_canonical.py`, 7 checks) and `exact_suite.py wp`
+  run in minutes in the workspace and are the pre-commit gate. Records:
+  `refs/*_BASE.txt`, `characterization/BASE_nc_{defaults,matched}.json`,
+  `refs/PROVENANCE_BASE.txt`.
+- The Mac is reached through the device bridge. Per-call cap is 175 s;
+  background jobs die when the call returns unless the launching call sleeps
+  their whole duration, so long runs are launched by Marc from a terminal
+  (`mode5_evidence.sh`, `regen_refs.sh`, `nscbc_xhi_test.sh` are written
+  for that) and read back from their logs. No MPI in the bridge VM;
+  serial 2-D builds work there (`CAMR2d.gnu.PS.PR.ex`). The bridge cannot
+  unlink: stale `.git/index.lock` and other locks are moved to
+  `_to_delete/` (Marc empties it). `rebase1d.sh`-style scripts that
+  truncate a reference file before writing it must run in the foreground
+  and in chunks.
+- Helper scripts left in the bridge `$HOME` (not in the tree, disposable):
+  `x3trace.py` (per-iteration X3 trace from `ps_pres_diag` output),
+  `a1run.py`/`a1cmp.py` (A1/A6 invariance A/B), `xhi_series.py`/`xhi_inv.py`
+  (NSCBC face series and the invariant ratio), `fpx.sh` (fingerprint round
+  trip), `rebase1d.sh`.
+- 2-D timings for planning: demo2 to 2.5 ms ≈ 3.3 h in either mode on 6
+  ranks; each restart window ≈ 30–40 min in mode 2; demo3 to step 50 ≈ 2 min
+  in mode 2. Earlier estimates in this plan that are lower were made from
+  mode-2 numbers before the mode-5 cost was measured.
+- The offline harvest (`Exec/CO2_PipeBreak/harvest/`, README there) is the
+  test bed for anything touching Corridor states or the coarse–fine fill:
+  `eos_valid.cpp` builds standalone (`HEM_NO_AMREX`), `harvest.py` needs
+  only numpy and the plotfiles, and `score_projection.py` is the template
+  for scoring a candidate before a run.
+- Commit as you go with explicit paths; never `git add -A`; never commit to
+  `development`. The untracked files in `Exec/` at the end of this session
+  (`gergstats`, `gergtab_pathcost`, `plt.py`, the `harvest/list.txt` and
+  `run_all.sh`, `mode5-report.dat`, the RiemannSuite `cloud_*.csv`,
+  `harvest_*.csv`, `_c*.png`, `overlay_*.png`, `DT7_comparison.docx`,
+  `gerg_refs/`) are Marc's working files and were deliberately left
+  untracked.

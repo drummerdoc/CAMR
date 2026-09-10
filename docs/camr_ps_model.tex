@@ -3,14 +3,18 @@
 %
 %  Revised for the shared release against the current source on branch
 %  co2-eos.  Every equation and every source term below is anchored to a
-%  source file so it can be checked against the code rather than taken on
-%  trust.  Where the code offers a runtime choice, the DEFAULT is stated
+%  source file (file names only; line numbers go stale) so it can be
+%  checked against the code rather than taken on trust.  The maintained
+%  prose description is docs/MODEL_AND_ALGORITHM.md; where the two differ,
+%  that file and the code win.  Where the code offers a runtime choice, the DEFAULT is stated
 %  and the alternative is named.  The default relaxation is the coupled X3
 %  operator (ps_relax_mode=5); mass transfer at the default is BE-SRT
-%  (statistical rate theory), not a tuned tau; the interior scheme is
-%  single-path wave propagation (ps_flux=wp; hllc, llf, ctu, recon,
-%  alpha_limiter, pk_energy_flux, cmix_model and theta_model are retired
-%  -- a set key aborts); the star state is the relaxed-alpha construction
+%  (statistical rate theory), not a tuned tau; relaxation modes 1, 3 and 4
+%  are retired (mode 2 remains as the finite-rate control closure, mode 0
+%  as the frozen limit); the interior scheme is single-path wave
+%  propagation (ps_flux=wp; hllc, llf, ctu, recon, alpha_limiter,
+%  pk_energy_flux, cmix_model and theta_model are retired -- a set key
+%  aborts); the star state is the relaxed-alpha construction
 %  (S6.2); characteristic (NSCBC) outflow with a choked-fan flashing ghost
 %  is documented in S8.
 %
@@ -55,7 +59,7 @@ are flagged explicitly in \S\ref{sec:caveats}.
 % =====================================================================
 
 The conserved state carries the two-phase slots
-\src{Utils/IndexDefines.H:145--149} alongside CAMR's ordinary single-fluid
+\src{Utils/IndexDefines.H} alongside CAMR's ordinary single-fluid
 slots \src{:17--18,~74--76}:
 
 \begin{equation}
@@ -84,7 +88,7 @@ as the phase sums.  The two identities
 are therefore invariants to be \emph{maintained}, not consequences of the
 discretisation.  They are re-established every step by
 \code{ps\_resync\_mixture\_mass} and \code{ps\_resync\_phase\_energy}
-\src{CAMR\_advance.cpp:410--413} and monitored as checks V4 and V5 of
+\src{CAMR\_advance.cpp} and monitored as checks V4 and V5 of
 \code{ps\_validate\_state}.  Historically the mass identity drifted at
 $\sim\!0.4\,\%$ per production run before anyone was watching it.
 
@@ -126,13 +130,13 @@ which is the quantity that is fluxed and refluxed, with
 pressure is the volume-fraction average
 \begin{equation}
   P \;=\; \alpha_1P_1 + \alpha_2P_2,
-  \qquad\qquad \src{PS\_hllc.H:289}
+  \qquad\qquad \src{PS\_hllc.H}
   \label{eq:pmix}
 \end{equation}
 and the interfacial pressure is the arithmetic mean
 \begin{equation}
   P_{\!I} \;=\; \tfrac12\,(P_1+P_2).
-  \qquad\qquad \src{hem\_pelanti\_shyue.H:2157}
+  \qquad\qquad \src{hem\_pelanti\_shyue.H}
   \label{eq:pint}
 \end{equation}
 
@@ -171,17 +175,17 @@ nearest reachable state.
 % =====================================================================
 
 The default relaxation is the \textbf{coupled X3 operator}
-(\code{ps\_relax\_mode}$=5$, the default and the acceptance configuration
-since 2026-08-17; an unrecognised mode \emph{aborts} rather than falling
-through \src{PS\_relaxation.H:1030--1050}).  Per reaction substep
-\src{CAMR\_advance.cpp:640--665}:
+(\code{ps\_relax\_mode}$=5$, the default and the acceptance configuration;
+an unrecognised or retired mode \emph{aborts} rather than falling
+through \src{PS\_relax.H}).  Per reaction substep
+\src{CAMR\_advance.cpp}:
 \begin{equation}
   \text{hydro}\ \longrightarrow\
   \underbrace{\text{vanish fold}}_{\text{phase death}}\ \longrightarrow\
   \underbrace{\text{X3}}_{\substack{P_1=P_2\ \text{DAE}\ +\ \text{thermal}\ +\\
                                     \text{BE-SRT mass transfer}}}\ \longrightarrow\
   \underbrace{\text{flash}}_{\text{nucleation}}\ \longrightarrow\
-  \underbrace{\text{mech.\ reproject}}_{\code{ps\_src\_p\_reproject}=1}
+  \underbrace{\text{mech.\ reproject}}_{\text{unconditional}}
   \label{eq:chain}
 \end{equation}
 X3 solves the cell as a constrained system: mechanical equilibrium
@@ -189,13 +193,18 @@ $P_1\!=\!P_2$ is imposed as a DAE constraint while the thermal and
 mass-transfer legs run as backward-Euler rates \emph{on that constrained
 manifold} --- one coupled solve, not a sequence, so the operators cannot
 fight over $\alpha_1$.  Its 0-D fixed point is the full-equilibrium (HEM)
-flash.  A closing mechanical pass (\code{ps\_mech\_close}$=1$ default)
-re-establishes $P_1=P_2$ at chain exit.  The historical sequential chain
-(mechanical $\to$ thermal $\to$ flash $\to$ MT with a re-projection after
-each of the last two) survives as \code{ps\_relax\_mode}$=4$; mode 0 is
-mechanical-only and must now be asked for explicitly.  In mode 5 the split
-mass-transfer source is \emph{owned by X3}: enabling it separately aborts
-\src{CAMR\_advance.cpp:139--147}.
+flash.  The Newton inside X3 starts from the backward-Euler solution of the
+linearised thermal channel, $q^{(0)}=\Delta t\,r_T^0/(1+\Delta t/\theta)$,
+and accepts a trial only if it is admissible and does not increase the
+scaled residual $|R_1|/E+|R_2|/\rho$ (halving toward the current iterate
+otherwise); without the damping the undamped step two-cycles across the
+root for most calls \src{hem\_relax\_x3.H}.  The historical sequential
+chain (mode 4) and the P+T equilibrium (mode 1) are retired and abort;
+mode 0 is mechanical-only (the frozen limit) and must be asked for
+explicitly; mode 2 (isochoric $P$, finite-rate thermal, split Gibbs-driven
+transfer) is retained as the finite-rate control closure.  In mode 5 the
+split mass-transfer source is \emph{owned by X3}: enabling it separately
+aborts \src{CAMR\_advance.cpp}.
 
 % ---------------------------------------------------------------
 \subsection{Mechanical relaxation: $\mathcal{S}_\alpha$}
@@ -204,7 +213,7 @@ mass-transfer source is \emph{owned by X3}: enabling it separately aborts
 Pressure equilibrium is \textbf{instantaneous by model closure}: $\alpha_1$ is
 the free variable and is driven until $P_1=P_2$.  It is a constraint, not a
 rate.  The accompanying interfacial work is applied to the phase energies
-\src{hem\_pelanti\_shyue.H:2223--2225}:
+\src{hem\_pelanti\_shyue.H}:
 \begin{equation}
   e_1 \;\mapsto\; e_1 - \frac{P_{\!I}\,\Delta\alpha_1}{\alpha_1\rho_1},
   \qquad
@@ -234,12 +243,12 @@ $1/\theta$ \src{hem\_pelanti\_shyue.H, ps\_iso\_thermal\_relax\_cell\_finite}:
 where $\mathcal{E}^{\mathrm{eq}}$ is the isochoric $T_1\!=\!T_2$ state.  Note
 the form: this is an \emph{exponential relaxation onto a precomputed
 equilibrium}.  \code{CAMR.ps\_theta\_tau} \textbf{defaults to
-$10^{-7}$~s} (THETA-DEFAULTS 2026-08-24) --- near-instantaneous at
+$10^{-7}$~s} --- near-instantaneous at
 hydrodynamic scales --- and its semantics are: $\theta>0$ a finite
 backward-Euler rate; $\theta\le0$ \emph{instantaneous} thermal
 equilibrium, i.e.\ in mode 5 the constraint $T_1\!=\!T_2$ joins the
 $P_1\!=\!P_2$ DAE (``$\theta\le0$ does not mean off''
-\src{PS\_relaxation.H:1139--1151}).
+\src{PS\_relax.H}).
 
 The leg is gated by a two-phase coexistence test --- both phase temperatures
 strictly inside $(T_{\mathrm{triple}},T_{\mathrm{crit}}) = (216.592,\,304.13)$~K
@@ -268,7 +277,7 @@ are counted (\code{n\_exit\_runaway}, exit-code bit 8) and printed in
 
 (The per-cell HRM-correlation option \code{CAMR.ps\_theta\_model}$=1$ ---
 Downar-Zapolski $\theta=\theta_0\alpha_v^{-0.54}\psi^{-1.76}$ --- was
-\textbf{retired} 2026-08-17 (S3): measured to be the wrong mapping for
+\textbf{retired}: measured to be the wrong mapping for
 \emph{thermal} contact between phases, since the correlation slows toward
 saturation, which is right for phase change and wrong for heat exchange;
 B9 aborts under it.  The correlation itself remains relevant to mass
@@ -307,7 +316,7 @@ to equilibrium over the instantaneous physical rate, per Lund \& Aursand,
            \frac{(\alpha_{\mathrm{recv}}+\delta)\,\alpha_{\mathrm{send}}}{D},
   \label{eq:srt}
 \end{equation}
-\src{hem\_pelanti\_shyue.H:2364--2407}: the kinetic prefactor is
+\src{hem\_pelanti\_shyue.H}: the kinetic prefactor is
 parameter-free statistical rate theory; the \emph{interfacial-area} closure
 $\Sigma$ is not --- it carries the stratified-pipe morphology placeholder
 $D=$ \code{CAMR.ps\_mt\_srt\_d} (default $0.1$~m) and the receiving-phase
@@ -398,7 +407,7 @@ regime & $\alpha_k$ & meaning \\
 
 \noindent
 with
-$\alpha_{\mathrm{cond}}=2\times10^{-2}$ (a \emph{conditioning} bound, re-derived 2026-08-15 as
+$\alpha_{\mathrm{cond}}=2\times10^{-2}$ (a \emph{conditioning} bound, derived as
 $\eta_{\max}/\varepsilon$ from a measured per-step $\eta_{\max}=5.2\times10^{-4}$
 at a $5\,\%$ accuracy target), $\alpha_{\mathrm{van}}=10^{-8}$ (death), and
 $\alpha_{\mathrm{birth}}=2\alpha_{\mathrm{cond}}$ (nucleation seed).  The
@@ -436,23 +445,23 @@ on/off boundary no longer coincides with the exact $\alpha$ the relaxation
 itself moves (the driver of near-threshold regime toggling in 2-D
 production).  The floor and reaps are bit-inert on the 1-D battery; the
 hysteresis moves four near-threshold cases by at most $+6.7\,\%$ in a P-error
-norm (B11) and is kept for the 2-D behaviour; \code{ps\_relax\_hyst}$=0$ is
-the one-key A/B.  The hysteresis band is evaluated on the host only.
+norm (B11) and is kept for the 2-D behaviour (\code{ps\_relax\_hyst} is
+retired; the band is always on in host builds).  The hysteresis band is evaluated on the host only.
 
 % =====================================================================
 \section{Discretisation of the non-conservative slots}
 \label{sec:disc}
 % =====================================================================
 
-Since 2026-08-27 the interior scheme is \textbf{single-path}: wave
+The interior scheme is \textbf{single-path}: wave
 propagation (\code{CAMR.ps\_flux}$=$\code{wp}, the Berger--LeVeque
 fluctuation form) is the only interior flux.  \code{llf}, \code{hllc}, a
 set \code{ps\_ctu}, \code{ps\_recon} or \code{ps\_alpha\_limiter} key all
-\emph{abort} with retirement notes \src{PS\_umeth.cpp:5--12,727--745};
+\emph{abort} with retirement notes \src{PS\_umeth.cpp};
 \code{PS\_reconstruction.H} is deleted --- the wp interior works from raw
 cell averages.  Under AMR the fluctuation form refluxes through the
 standard register with $\alpha$ moved alongside
-(\code{CAMR.ps\_bl\_reflux}$=2$, the default since 2026-08-26).
+(\code{CAMR.ps\_bl\_reflux}, on by default; any nonzero value is the $\alpha$ co-move).
 
 One Riemann solve per face produces a wave decomposition (retained in
 \code{PS\_hllc.H}, which now serves the wp fluctuations), from which the
@@ -480,13 +489,13 @@ cancellation between two independent discretisations.
 
 Three waves per face (HLLC, specialised to the six-equation system following
 Pelanti 2022).  Outer speeds are Davis estimates using each side's own mixture
-sound speed \src{PS\_hllc.H:375--376}:
+sound speed \src{PS\_hllc.H}:
 \begin{equation}
   S_L = \min\!\bigl(u_L-c_L,\ u_R-c_R\bigr),
   \qquad
   S_R = \max\!\bigl(u_L+c_L,\ u_R+c_R\bigr),
 \end{equation}
-with the Wallis frozen mixture speed \src{PS\_hllc.H:303}
+with the Wallis frozen mixture speed \src{PS\_hllc.H}
 \begin{equation}
   c^2 = Y_1c_1^2 + Y_2c_2^2,
   \qquad
@@ -496,14 +505,13 @@ with the Wallis frozen mixture speed \src{PS\_hllc.H:303}
 ``Frozen'' means no mass transfer during the acoustic response; the much
 slower equilibrium speed belongs to the relaxation operator, which is applied
 separately.  (\code{CAMR.ps\_cmix\_model}, which offered $c=\max(c_1,c_2)$
-and the Wood equilibrium form, was measured 2026-08-13 and \textbf{retired}
-2026-08-17: MAX gains 3\,\% on a contact because $S_L,S_R$ only bound the
+and the Wood equilibrium form, was measured and \textbf{retired}: MAX gains 3\,\% on a contact because $S_L,S_R$ only bound the
 fan, and WOOD aborts B9 with a real-fluid EOS
-\src{PS\_presence.H:127--136}.  The frozen mass-weighted form is now the
+\src{PS\_presence.H}.  The frozen mass-weighted form is now the
 only form.)
 
 The contact speed follows from the mixture mass and momentum balance
-\src{PS\_hllc.H:386}:
+\src{PS\_hllc.H}:
 \begin{equation}
   S_M = \frac{P_R-P_L + \rho_Lu_L(S_L-u_L) - \rho_Ru_R(S_R-u_R)}
              {\rho_L(S_L-u_L) - \rho_R(S_R-u_R)} .
@@ -669,7 +677,7 @@ $0$ (full correction) and $1$ (blanket drop) remain as A/B opt-outs.
 % =====================================================================
 
 Recorded here because they are properties of the code, not of the model.
-Both were identified on 13 August 2026; their status as of 28 August:
+Their status at the shared release:
 
 \paragraph{(i) The mass-transfer target and the step's path (resolved by
 default).}
@@ -680,9 +688,8 @@ Along fixed $\alpha_1$, $\partial\rho_1/\partial m = 1/\alpha_1$, whereas
 along \eqref{eq:E1rule} it is exactly zero, so the target's Gibbs
 sensitivity carried a $1/\alpha_1$ amplification the step does not have,
 breaking the non-overshoot property of \eqref{eq:mt}.
-\code{CAMR.ps\_mt\_target} \textbf{now defaults to $1$} (consistent
-target: same carrier and the same (E.1) path as the step
-\src{PS\_sources.H:355--362}); $0$ retains the legacy behaviour for A/B.
+The consistent target (same carrier and the same (E.1) path as the step,
+\src{PS\_sources.H}) is the only target; \code{ps\_mt\_target} is retired.
 
 \paragraph{(ii) The mass-transfer rate carries a morphology assumption ---
 now with a measured handle.}
@@ -714,8 +721,14 @@ not yet taken.
 Subsonic characteristic outflow (\code{CAMR.ps\_bc\_use\_nscbc}$=1$;
 construction in \code{PS\_nscbc.H}) builds the ghost state from the
 outgoing invariant $R^+$ (minmod-extrapolated) and an ambient-encoding
-target $R^-_{\mathrm{targ}}=-P_{\mathrm{amb}}/\rho c$, with a restoring
-pull $\sigma=0.25$; the ambient pressure is \code{prob.p\_amb}, overridable
+target $R^-_{\mathrm{targ}}=-P_{\mathrm{amb}}/\rho c$ and an optional
+term $-\sigma(P_N-P_{\mathrm{amb}})/\rho c$ (\code{CAMR.ps\_bc\_nscbc\_sigma},
+default 0.25).  Measured on the pipe-break outlet, the $\sigma$ term is a
+\emph{partial reflection}, not the Poinsot--Lele restoring rate it is named
+after: the steady face obeys $u=(1-\sigma)(P-P_{\mathrm{amb}})/\rho c$, and
+$\sigma=0$ places the face exactly on the outgoing simple wave of a far
+field at rest.  Production decks run $\sigma=0$; the key is a retirement
+candidate (\code{DESIGN\_DECISIONS.md} B-4).  The ambient pressure is \code{prob.p\_amb}, overridable
 \emph{per face} via \code{CAMR.ps\_bc\_p\_amb\_\{x,y,z\}\{lo,hi\}}
 (sentinel $-1$ inherits).  The per-phase repack integrates the isentrope
 adaptively in pressure sub-steps capped at
@@ -728,9 +741,8 @@ enthalpy-lever quality), $\mathrm{d}u = -\mathrm{d}P/(\rho c_{\mathrm{path}})$
 with $c_{\mathrm{path}}^2 = \mathrm{d}P/\mathrm{d}\rho_{\mathrm{mix}}$
 along the path, terminating at the critical-flow throat ($G=\rho u$
 maximum) or at $P_{\mathrm{amb}}$, whichever comes first.
-\code{CAMR.ps\_bc\_nscbc\_flash}$=1$ (default) enables the in-dome
-re-closure; $0$ reproduces the frozen construction for A/B; other values
-abort.  Measured on the flashing-vent benchmark: vented-mass deficit
+The in-dome re-closure is the only ghost construction
+(\code{ps\_bc\_nscbc\_flash} is retired).  Measured on the flashing-vent benchmark: vented-mass deficit
 $-4.1\,\%$ against a boundary-free reference (the retired legacy
 construction sat at $-7.6\,\%$, the frozen one at $-34\,\%$).  The legacy
 treatment and its \code{ps\_bc\_nscbc\_v2} key are retired (a set key
@@ -746,20 +758,16 @@ aborts).
 parameter & default & selects \\
 \midrule
 \code{ps\_flux}              & \code{wp} & the interior scheme (only value; others abort) \\
-\code{ps\_wp\_order}         & 1 & 2 = limited second-order correction, \S\ref{sec:limiter} (the acceptance order, set by every deck) \\
+\code{ps\_wp\_order}         & 2 & limited second-order correction, \S\ref{sec:limiter}; 1 = first order \\
 \code{ps\_lw\_skip\_contact} & 2 & contact-wave correction: 0 full, 1 blanket drop, 2 the taper \eqref{eq:wckeep} \\
-\code{ps\_bl\_reflux}        & 2 & AMR reflux handling of the wp fluctuations ($\alpha$ co-move at the coarse-fine layer) \\
-\code{ps\_relax\_mode}       & 5 & X3 coupled relaxation \eqref{eq:chain}; 4 = legacy chain \\
+\code{ps\_bl\_reflux}        & on & AMR reflux handling of the wp fluctuations ($\alpha$ co-move at the coarse-fine layer) \\
+\code{ps\_relax\_mode}       & 5 & X3 coupled relaxation \eqref{eq:chain}; 0 = mechanical only; 2 = finite-rate control closure; 1, 3, 4 abort \\
 \code{ps\_theta\_tau}        & $10^{-7}$~s & $\theta$ in \eqref{eq:thermal}; $\le0$ = joint $T$ constraint \\
 \code{ps\_mt\_srt\_d}        & 0.1~m & morphology length $D$ in \eqref{eq:srt} \\
 \code{ps\_mt\_srt\_delta}    & 0.01 & receiving-phase seed $\delta$ in \eqref{eq:srt} \\
 \code{ps\_mt\_h\_weight}     & 0.5 & the carrier $w$ in \eqref{eq:carrier} \\
 \code{ps\_mt\_update\_alpha} & on  & the (E.1) rule \eqref{eq:E1rule} \\
-\code{ps\_mt\_target}        & 1 & consistent target, \S\ref{sec:caveats}(i); 0 = legacy \\
 \code{ps\_coexist\_action}   & 0 & response to a band exit (runaway clause always active) \\
-\code{ps\_mech\_kernel}      & 0 & mode-0 mechanical kernel; 1 = COTT impedance-weighted \\
-\code{ps\_mech\_close}       & 1 & closing mechanical pass at chain exit \\
-\code{ps\_src\_p\_reproject} & 1 & re-project $P_1\!=\!P_2$ after flash/MT \\
 \code{ps\_flash\_tau}        & $10^{-7}$~s & flash nucleator time scale ($\le0$ = off) \\
 \code{ps\_alpha\_cond}       & $2\times10^{-2}$ & the conditioning bound \\
 \code{ps\_alpha\_birth}      & $4\times10^{-2}$ & the flash seed level ($=2\alpha_{\mathrm{cond}}$) \\
@@ -767,11 +775,10 @@ parameter & default & selects \\
 \code{ps\_presence\_rho\_deg} & 0.5~kg/m$^3$ & promotion degeneracy floor, \S\ref{sec:presence} \\
 \code{ps\_promote\_checked}  & 1 & checked promotion to \textsc{independent} (0 = A/B opt-out) \\
 \code{ps\_floor\_indep}      & 1 & per-phase floor leg acts on \textsc{independent} phases only (0 = A/B opt-out) \\
-\code{ps\_relax\_hyst}       & 1 & relax-gate hysteresis band, \S\ref{sec:presence} \\
 \code{ps\_bc\_use\_nscbc}    & 0 & characteristic outflow on every \code{Inflow}-typed face, \S\ref{sec:nscbc} \\
 \code{ps\_bc\_nscbc\_\{x,y,z\}\{lo,hi\}} & $-1$ & per-face NSCBC enable (0/1; $-1$ inherits the global key) \\
 \code{ps\_bc\_p\_amb\_\{x,y,z\}\{lo,hi\}} & $-1$ & per-face ambient pressure [Pa] ($-1$ inherits \code{prob.p\_amb}) \\
-\code{ps\_bc\_nscbc\_flash}  & 1 & HEM re-closure along the boundary fan \\
+\code{ps\_bc\_nscbc\_sigma}  & 0.25 & the $\sigma$ term (a partial reflection; decks run 0) \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -784,7 +791,11 @@ parameter & default & selects \\
 \code{ps\_bc\_nscbc\_v2}, \code{ps\_star\_relaxed} (the relaxed-$\alpha$
 star state of \S\ref{sec:star} is the only construction; $=0$ aborts),
 \code{ps\_rk\_model} (a per-phase mass partition that violated the forced
-per-phase mass jump \eqref{eq:rk}).  Retirement-by-abort rather than silent
+per-phase mass jump \eqref{eq:rk}), \code{ps\_mt\_target},
+\code{ps\_src\_p\_reproject}, \code{ps\_relax\_hyst},
+\code{ps\_bc\_nscbc\_flash}, \code{ps\_mech\_kernel},
+\code{ps\_mech\_close}, and \code{ps\_relax\_mode}$\in\{1,3,4\}$.  The
+full table is \code{Source/Hydro/PelantiShyue/PS\_retired\_keys.H}.  Retirement-by-abort rather than silent
 acceptance is deliberate: a stale deck fails loudly instead of running a
 configuration that no longer exists.
 
