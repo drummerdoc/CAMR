@@ -80,14 +80,14 @@ ps_make_camr_eos_api()
     {
         amrex::Real Y[NUM_SPECIES];
         ps_pure_species(Y);
-        // One state solve yields P, T, s together; the extra outputs are
-        // free by-products of the solve P needs, so callers wanting only P
-        // (the relaxation Newton) pay nothing.
-        amrex::Real P, T, S;
+        // One state solve yields P, T, s and c together; the extra outputs
+        // are free by-products of the solve P needs, so callers wanting
+        // only P (the relaxation Newton) pay nothing.
+        amrex::Real P, T, S, Cs;
         const hem::Phase3 ph3 = (phase == 1) ? hem::Phase3::Liquid
                                              : hem::Phase3::Vapor;
-        if (!EOS::REY2PTS_phase_try(amrex::Real(rho), amrex::Real(e), Y, ph3,
-                                    P, T, S)) {
+        if (!EOS::REY2PTSc_phase_try(amrex::Real(rho), amrex::Real(e), Y, ph3,
+                                     P, T, S, Cs)) {
             //  No root on this branch: report invalid per the PsPhaseAPI
             //  contract; every consumer tests ph.valid.
             ph.alpha = ph.alpha; ph.rho = rho; ph.e = e;
@@ -104,8 +104,6 @@ ps_make_camr_eos_api()
         ph.s     = double(S);
         ph.g     = ph.h - double(T) * double(S);   // Gibbs = h - T s
         // Sound speed is always filled: ps_state_from_cons requires ph.c > 0.
-        amrex::Real Cs = amrex::Real(0);
-        EOS::REY2Cs_phase(amrex::Real(rho), amrex::Real(e), Y, ph3, Cs);
         ph.c     = double(Cs);
         ph.valid = std::isfinite(P) && P > 0.0 && std::isfinite(T) && T > 0.0;
     };

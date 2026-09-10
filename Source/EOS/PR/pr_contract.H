@@ -492,6 +492,34 @@
 #endif
   }
 
+  //  As REY2PTS_phase_try, with the sound speed of the same State.  The
+  //  PsPhaseAPI callback needs all four; reading c from the solve it
+  //  already holds is the one-inversion form of the
+  //  REY2PTS_phase_try-then-REY2Cs_phase pair (identical values, solve
+  //  count 2 -> 1 on the analytic backend, whose _try bypasses the cache).
+  AMREX_GPU_HOST_DEVICE
+  AMREX_FORCE_INLINE
+  bool REY2PTSc_phase_try(amrex::Real R, amrex::Real E, amrex::Real* /*Y*/,
+                          hem::Phase3 phase,
+                          amrex::Real& P, amrex::Real& T, amrex::Real& S,
+                          amrex::Real& Cs)
+  {
+#ifdef USE_PRTAB_EOS
+      hem::State probe{};
+      if (!hem::state_from_rho_e_phase_try(co2_fluid(), R, E, phase, probe))
+          return false;
+      const hem::State s =
+          co2_state_from_rho_e_phase_cached(R, E, phase, prtab_diag::S_PTS_PHASE);
+      P = s.P; T = s.T; S = s.s; Cs = s.c;
+      return true;
+#else
+      hem::State s{};
+      if (!hem::state_from_rho_e_phase_try(co2_fluid(), R, E, phase, s)) return false;
+      P = s.P; T = s.T; S = s.s; Cs = s.c;
+      return true;
+#endif
+  }
+
   // Branch-locked sound speed from (rho, e).  The (rho, P) entry RPY2Cs
   // below is branch-agnostic and can land on the wrong root for a
   // metastable liquid at supercritical (T, P); the PS call sites hold

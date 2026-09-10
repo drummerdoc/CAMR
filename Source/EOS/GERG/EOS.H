@@ -615,6 +615,25 @@ namespace EOS {
       return true;
   }
 
+  //  As REY2PTS_phase_try, with the sound speed of the same State (the
+  //  PsPhaseAPI callback's one-inversion entry; identical values to the
+  //  REY2PTS_phase_try-then-REY2Cs_phase pair).
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  bool REY2PTSc_phase_try(amrex::Real R, amrex::Real E, amrex::Real*,
+                          hem::Phase3 phase,
+                          amrex::Real& P, amrex::Real& T, amrex::Real& S,
+                          amrex::Real& Cs)
+  {
+      const gerg::Phase gp = g_phase(phase);
+      const double e_lo = gerg::state_TR_phase(gerg::T_trip, double(R), gp).e;
+      const double e_hi = gerg::state_TR_phase(gerg::T_max,  double(R), gp).e;
+      if (!(double(E) > e_lo && double(E) < e_hi)) return false;
+      const hem::State s =
+          co2_state_from_rho_e_phase_cached(R, E, phase, gdiag::S_PTS_PHASE);
+      P = s.P; T = s.T; S = s.s; Cs = s.c;
+      return true;
+  }
+
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void REY2Cs_phase(amrex::Real R, amrex::Real E, amrex::Real*,
                     hem::Phase3 phase, amrex::Real& Cs)
