@@ -5,7 +5,11 @@
 #                                   its own build directory, the production exe is untouched
 #   ./x3_cost.sh run     [NRANKS]   inputs.satjet_demo3 to step 50, mode 2 and mode 5, with
 #                                   CAMR.ps_pres_diag=1 (the [PS-X3] cost counters)      (~2 + ~15 min)
-#   ./x3_cost.sh report             time split per region and the X3 counters of the last step
+#   ./x3_cost.sh report [TAG]       time split per region and the X3 counters of the last step
+#
+#   TAG=name EXTRA="amr.max_grid_size=32 ..." ./x3_cost.sh run   writes runs/x3_cost/<name>_demo3_mode{2,5}
+#   with the extra ParmParse keys appended (an A/B on decomposition or load balance; TAG defaults
+#   to empty, i.e. the plain demo3_mode{2,5} directories).
 #
 # Output under runs/x3_cost/.  No plotfiles or checkpoints are written.
 set -eu
@@ -13,6 +17,8 @@ cd "$(dirname "$0")"
 STAGE=${1:-}
 MODE5="CAMR.ps_relax_mode=5 CAMR.ps_theta_tau=1e-7 CAMR.ps_mt_tau=1e-7 CAMR.ps_flash_tau=1e-7"
 OUT=runs/x3_cost
+TAG=${TAG:-}; [ -n "$TAG" ] && TAG="${TAG}_"
+EXTRA=${EXTRA:-}
 case "$STAGE" in
 build)
     COMP=${2:-llvm}
@@ -26,19 +32,22 @@ run)
     [ -z "$newest" ] || { echo "STALE EXE: $newest is newer than $EXE (./x3_cost.sh build first)"; exit 2; }
     K="max_step=50 amr.check_int=-1 amr.plot_int=-1 CAMR.ps_validate=0 CAMR.ps_pres_diag=1"
     for m in mode2 mode5; do
-        d=$OUT/demo3_$m; mkdir -p "$d"
+        d=$OUT/${TAG}demo3_$m; mkdir -p "$d"
         X=""; [ $m = mode5 ] && X="$MODE5"
-        echo "== $d"
-        ( cd "$d" && mpiexec -n "$NR" "../../../$EXE" ../../../inputs.satjet_demo3 $K $X > run.log 2>&1 ) || echo "!! $d exited nonzero"
+        echo "== $d   ${EXTRA:+extra: $EXTRA}"
+        ( cd "$d" && mpiexec -n "$NR" "../../../$EXE" ../../../inputs.satjet_demo3 $K $X $EXTRA > run.log 2>&1 ) || echo "!! $d exited nonzero"
         grep -a "Run time w/o init" "$d/run.log"
     done
     ;;
 report)
+    [ -n "${2:-}" ] && TAG="${2}_"
     for m in mode2 mode5; do
-        d=$OUT/demo3_$m; [ -f "$d/run.log" ] || continue
+        d=$OUT/${TAG}demo3_$m; [ -f "$d/run.log" ] || continue
         echo "==== $d   $(grep -a 'Run time w/o init' "$d/run.log")"
         echo "-- TinyProfiler, exclusive time, top 14 (of the 'Excl.' table):"
         awk '/TinyProfiler total time/{p=1} p' "$d/run.log" | awk '/Name.*NCalls.*Excl/{q=1;n=0;next} q && NF>3 {print; if(++n>=14) exit}' | cut -c1-120
+        echo "-- [PS-WORK] EOS solves per rank over the run (kappa = (t_relax/eos_solve) / (t_hydro/cells)):"
+        grep -a '^\[PS-WORK\]' "$d/run.log" | awk '{split($2,a,"="); split($3,b,"="); s+=a[2]; c+=b[2]} END {printf "   eos_solve=%d  cells=%d  solves/cell=%.3f (all ranks summed)\n", s, c, (c>0?s/c:0)}'
         echo "-- [PS-X3] last step, rank 0:"
         grep -a "^\[PS-X3\] calls" "$d/run.log" | tail -1 | cut -c1-400
         echo "-- [PS-X3] totals over the run (rank 0 lines summed):"

@@ -467,9 +467,12 @@ ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
     const amrex::Real theta = ps_theta_tau();
     const amrex::Real kappa = ps_work_kappa();
     long& n_solve = ps_counters().n_eos_phase_solve;
+    const long n_solve_sweep0 = n_solve;
+    long n_cells_sweep = 0;
 
     for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
         const amrex::Box bx = mfi.growntilebox(nghost);
+        n_cells_sweep += bx.numPts();
         amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
         amrex::Array4<amrex::Real> const& W =
             work ? work->array(mfi) : amrex::Array4<amrex::Real>{};
@@ -492,6 +495,13 @@ ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
         });
     }
 
+    // [PS-WORK] (ps_pres_diag): this rank's relaxation cost unit for the
+    //  work estimate, all modes and both Strang sweeps: EOS solves and
+    //  cells swept.
+    if (ps_pres_diag() != 0) {
+        amrex::AllPrint() << "[PS-WORK] eos_solve=" << (n_solve - n_solve_sweep0)
+                          << " cells=" << n_cells_sweep << "\n";
+    }
     // [PS-PRES] (ps_pres_diag): the post-thermal P1 != P2 residual by cause.
     if (ps_pres_diag() != 0) {
         const PsPresDiag& pd = ps_pres_diag_data();
