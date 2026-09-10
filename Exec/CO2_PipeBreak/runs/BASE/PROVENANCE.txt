@@ -1,0 +1,7 @@
+tag:      BASE
+date:     2026-09-10T13:08Z
+camr:     33830dfcadcdb957bd2f2feecc7895a0647ec648 (0 modified tracked files)
+amrex:    65db2e4e678a15acec1b666d4c42e339ad5b9ec0
+host:     Darwin arm64
+compiler: Apple clang version 21.0.0 (clang-2100.1.1.101)
+GERG_EXT_C=<unset>
