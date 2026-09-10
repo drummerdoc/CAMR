@@ -225,6 +225,10 @@ struct PsCounters {
     //  site ([PS-GATE]): identical predicate on identical inputs, so a
     //  per-mode split would only re-encode ps_relax_mode.
     long        n_gate_presence = 0;
+    //  Branch-locked (rho,e) solves through the PsPhaseAPI callback, the
+    //  unit of relaxation cost; read as a per-cell delta for the work
+    //  estimate (Work_Estimate_Type) and summed per sweep.
+    long        n_eos_phase_solve = 0;
     //  Corridor saturation projection (PS_corridor.H), per sweep.
     long        corridor_projected = 0, corridor_host_fail = 0, corridor_noroot = 0;
     PsPresDiag  pres;

@@ -25,8 +25,10 @@
 #include "IndexDefines.H"
 #include "prob_parm.H"
 
+// Work_Estimate_Type: per-cell cost of the last step (1 + kappa * branch-
+// locked EOS solves), the weight amr.loadbalance_with_workestimates knapsacks
+// at each regrid.  Not checkpointed.  docs/DESIGN_DECISIONS.md O-23.
 enum StateType { State_Type = 0,
-                 Source_Type,
                  Work_Estimate_Type,
                  NUM_STATE_TYPE };
 
@@ -119,9 +121,12 @@ public:
   // previously exist
   void init () override;
 
-  // Initialize EB geometry for finest_level and level grids for
-  // other levels for the Amr class to do timed load balances.
+  // The state amr.loadbalance_with_workestimates knapsacks at regrid.
   int WorkEstType () override { return Work_Estimate_Type; }
+
+  // Work_Estimate_Type is not stored in checkpoints (older checkpoints
+  // restart unchanged); restart() re-creates it from State_Type's grids.
+  void set_state_in_checkpoint (amrex::Vector<int>& state_in_checkpoint) override;
 
   // Proceed with next timestep?
   int okToContinue () override;

@@ -24,6 +24,11 @@ CAMR::restart(amrex::Amr& papa, std::istream& is, bool bReadSpecial)
 {
   AmrLevel::restart(papa, is, bReadSpecial);
 
+  // Work_Estimate_Type is never in a checkpoint: define it on State_Type's
+  // grids and times, zero-filled, so the first advance can write it.
+  state[Work_Estimate_Type].restart(desc_lst[Work_Estimate_Type],
+                                    state[State_Type]);
+
   init_stuff(papa,geom,grids,dmap);
 
   // get the elapsed CPU time to now;

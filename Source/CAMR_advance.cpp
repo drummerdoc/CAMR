@@ -95,6 +95,11 @@ CAMR::CAMR_advance (Real time,
         state[i].swapTimeLevels(dt);
     }
 
+    // Work estimate for this step: one unit per cell for the hydro, plus
+    // kappa per branch-locked EOS solve added by each relaxation sweep.
+    amrex::MultiFab& work_est = get_new_data(Work_Estimate_Type);
+    work_est.setVal(amrex::Real(1.0));
+
     // Ensure data is valid before beginning advance. This addresses
     // the fact that we may have new data on this level that was interpolated
     // from a coarser level, and the interpolation in general cannot be
@@ -465,7 +470,8 @@ CAMR::CAMR_advance (Real time,
         PS_CELL_PROBE(S, "B  post clean_state    ");
         diag_a1(S, "reaction pre-relax");   // entering: reflects hydro/advection/C-F
         if (ps_do_relax_cached != 0) {
-            ps_apply_relaxation(S, dt_r, ng, do_print);   // dt_r for the finite-rate legs
+            ps_apply_relaxation(S, dt_r, ng, do_print,    // dt_r for the finite-rate legs
+                                &work_est);
             clean_state(S, false); // intermediate: skip the UTEMP diagnostic sweep
         }
         diag_mass(S, "C post relaxation (P/T/MT)");

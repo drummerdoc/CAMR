@@ -78,6 +78,9 @@ ps_make_camr_eos_api()
     api.state_from_rho_e_phase =
         [](int phase, double rho, double e, hem::PsPhase& ph)
     {
+#if !defined(AMREX_USE_GPU)
+        ++ps_counters().n_eos_phase_solve;   // host-only cost counter
+#endif
         amrex::Real Y[NUM_SPECIES];
         ps_pure_species(Y);
         // One state solve yields P, T, s and c together; the extra outputs
@@ -419,6 +422,19 @@ inline amrex::Real ps_theta_tau()
     return v;
 }
 
+// CAMR.ps_work_kappa (1.0): cost of one branch-locked EOS solve relative to
+//   one cell's hydro update, the weight of n_solve in the work estimate
+//   w = 1 + kappa * n_solve that amr.loadbalance_with_workestimates
+//   knapsacks (docs/DESIGN_DECISIONS.md O-23).  Scheduling only: the
+//   solution never reads it.  The default is a placeholder until the
+//   TinyProfiler measurement (t_relax / n_solve) / (t_hydro / n_cell) is
+//   on record.
+inline amrex::Real ps_work_kappa()
+{
+    static const amrex::Real v = ps_dial_real("ps_work_kappa", amrex::Real(1.0));
+    return v;
+}
+
 // -----------------------------------------------------------------
 //  ps_apply_relaxation — the relaxation sweep.  Builds the EOS callback
 //  once, resets the per-sweep counters, dispatches every cell to the
@@ -426,11 +442,13 @@ inline amrex::Real ps_theta_tau()
 //  [PS-GATE], [PS-DT], [PS-X3]).  Called from apply_ps_reaction under
 //  CAMR.ps_do_relax; do_print is accepted for the Strang pre-half step,
 //  which prints nothing else.  Host-only: the kernels take a
-//  std::function callback.
+//  std::function callback.  work, when given (valid cells of S_new's
+//  grids, one component), accumulates kappa * (EOS solves this cell).
 // -----------------------------------------------------------------
 inline void
 ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
-                    int nghost = 0, bool do_print = true)
+                    int nghost = 0, bool do_print = true,
+                    amrex::MultiFab* work = nullptr)
 {
     // EOS-heavy (branch-locked solves per phase per cell): the dominant
     // physics cost of CAMR_advance.
@@ -447,14 +465,19 @@ ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
     // Dispatch on ps_relax_mode (documented at its accessor).
     const int relax_mode = ps_relax_mode();
     const amrex::Real theta = ps_theta_tau();
+    const amrex::Real kappa = ps_work_kappa();
+    long& n_solve = ps_counters().n_eos_phase_solve;
 
     for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
         const amrex::Box bx = mfi.growntilebox(nghost);
         amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
+        amrex::Array4<amrex::Real> const& W =
+            work ? work->array(mfi) : amrex::Array4<amrex::Real>{};
         // `eos` is captured by copy so the std::function is available in
         // each cell call.
-        amrex::LoopOnCpu(bx, [=] (int i, int j, int k) noexcept
+        amrex::LoopOnCpu(bx, [=, &n_solve] (int i, int j, int k) noexcept
         {
+            const long n0 = n_solve;
             ps_corridor_project(i, j, k, U, l_pres);
             if (relax_mode == 5) {
                 ps_x3_grid_relax_cell(i, j, k, U, eos, dt, theta);
@@ -462,6 +485,9 @@ ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
                 ps_ptg_relax_cell(i, j, k, U, eos, dt, theta);
             } else {
                 ps_mechanical_relax_cell(i, j, k, U, eos);
+            }
+            if (W && W.contains(i, j, k)) {
+                W(i, j, k) += kappa * amrex::Real(n_solve - n0);
             }
         });
     }

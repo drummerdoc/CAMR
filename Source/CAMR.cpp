@@ -506,6 +506,14 @@ CAMR::init(AmrLevel& old)
 }
 
 void
+CAMR::set_state_in_checkpoint(amrex::Vector<int>& state_in_checkpoint)
+{
+  for (int i = 0; i < num_state_type; ++i) {
+    state_in_checkpoint[i] = (i == Work_Estimate_Type) ? 0 : 1;
+  }
+}
+
+void
 CAMR::init()
 {
   // This version inits the data on a new level that did not
@@ -522,6 +530,10 @@ CAMR::init()
   setTimeLevel(cur_time, dt_old, dt);
   amrex::MultiFab& S_new = get_new_data(State_Type);
   FillCoarsePatch(S_new, 0, cur_time, State_Type, 0, NVAR);
+  // Seed the new level's work estimate from the coarse one (piecewise
+  // constant) so a regrid before its first advance has a weight to use.
+  FillCoarsePatch(get_new_data(Work_Estimate_Type), 0, cur_time,
+                  Work_Estimate_Type, 0, 1);
 #ifdef USE_PS_HYDRO
   // CAMR.ps_diag_alpha: alpha_1 range on a new fine level right after
   // coarse->fine interpolation, to attribute a drive toward a pure phase

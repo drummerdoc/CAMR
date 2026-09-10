@@ -102,6 +102,7 @@ The table below is built from the read sites in `Source/` (`pp.query`, `pp.conta
 | `ps_bc_nscbc_{x,y,z}{lo,hi}` | −1 | Per-face NSCBC enable: 0, 1, or unset (inherits `ps_bc_use_nscbc`). Resolved values force-added. | production |
 | `ps_bc_p_amb_{x,y,z}{lo,hi}` | −1 | Per-face far-field pressure [Pa]; unset inherits `prob.p_amb`. Force-added. | production |
 | `ps_validate` | 0 | Reference-free invariant sweep V1–V7 at every diagnostic point: 1 count and report, 2 abort on the first bulk violation. | diagnostic (kept) |
+| `ps_work_kappa` | 1.0 | Weight of one branch-locked EOS solve relative to one cell's hydro update in the per-cell work estimate `1 + κ·n_solve` (the `work_estimate` state) that `amr.loadbalance_with_workestimates = 1` knapsacks at every regrid. Scheduling only; the solution never reads it. Placeholder until the TinyProfiler measurement is on record. | production |
 | `ps_diag_mass` | 0 | `[PS-MASS]` per-stage mixture-mass drift, max $m_1+m_2$, max $\lvert E_k\rvert/m_k$, plus the guard-counter audit. | diagnostic (kept) |
 | `ps_pres_diag` | 0 | `[PS-X3]`, `[PS-DT]`, `[PS-GATE]` per-sweep outcome tables of the coupled source, and the `[PS-FLASH-REF]` flash-refusal table. | diagnostic (kept) |
 | `ps_diag_alpha` | 0 | `[PS-DIAG]` α₁ range at labelled points (init interpolation, advance stages). | diagnostic |

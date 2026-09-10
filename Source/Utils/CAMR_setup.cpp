@@ -216,6 +216,20 @@ CAMR::variableSetUp()
 
     desc_lst.setComponent(State_Type, URHO, name, bcs, bndryfunc1);
 
+  // Work estimate: one cell-centred component, no ghost cells, piecewise-
+  // constant interpolation, not checkpointed (CAMR::set_state_in_checkpoint
+  // and CAMR::restart handle the absence).  Written by CAMR::advance.
+  {
+    desc_lst.addDescriptor(
+      Work_Estimate_Type, amrex::IndexType::TheCellType(),
+      amrex::StateDescriptor::Point, 0, 1, &amrex::pc_interp,
+      false /*extrap*/, false /*store_in_checkpoint*/);
+    amrex::BCRec bcw;
+    set_scalar_bc(bcw, phys_bc);
+    desc_lst.setComponent(Work_Estimate_Type, 0, "work_estimate", bcw,
+                          amrex::StateDescriptor::BndryFunc(CAMR_nullfill));
+  }
+
   num_state_type = desc_lst.size();
 
   // DEFINE DERIVED QUANTITIES
