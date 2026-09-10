@@ -794,6 +794,32 @@ downstream item); 20 unreachable and 9 off-domain trace states remain,
 unasked. Item 1's abort criterion is met on the resume; the from-scratch
 pair with the physical seed is the remaining item-1 evidence.
 
+**Second evidence pass (2026-09-10, code at `99a067e`: Newton fix, physical
+seed, α-only Corridor projection, additive resync).** All eight runs
+complete with zero aborts — the first time mode 5 has finished the
+production deck.
+
+| item | mode 2 | mode 5 | result |
+|---|---|---|---|
+| demo2 to 2.5 ms | 567 steps, 3.3 h | 648 steps, 3.2 h (18 s/step; 100–700 s/step before) | pass; cost parity |
+| matched-time liquid inventory | — | +6.3 to +8.3 % (net condensation), roughness ratio 1.2–1.35 | a model difference, not a defect; the 1e-3 criterion was mis-stated |
+| mirror asymmetry, `max_level=0`, step 50 | 5e-10 | 0.113 | round-off seed at step 2 in both modes (y-sweep order at the inlet jet edge), amplified ×~1.4/step by mode 5's SRT birth rate ∝ α₁ from step ~12 on; `[DECIDE-31]` |
+| demo3 step 50, contact window | 1.16e-3, 3 extrema | 1.20e-3, 4 | pass; front window 7.2e-2 vs 1.2e-3 is the condensation bump at 43–44 bar |
+| window 3550→3605 | (reference heals refusals by 3684) | `[PS-PROMOTE]` refusals 0 throughout; split amplification 6.7 | better than the reference |
+| window 3650→3700 | (235/step decaying to 0 by 3684) | 0 until 3670, then rising to 118 by 3698; 26 *Independent* liquid states with no root at the end (e.g. (461,155): α₁ = 0.036, ρ₁ = 426, e₁ = −2.1e5, inside the dome) | worse: `[DECIDE-32]` |
+
+`[DECIDE-32]`: through the shock passage of window 2 a bulk liquid is
+expanded past its spinodal without evaporating; its (ρ, e) leaves the
+branch's domain, `ps_regime_reach` demotes it, X3 refuses it, and the
+population spreads (0 → 26 cells over 30 steps). The SRT evaporation rate
+is ∝ (α₂ + δ)α₁ with δ = 0.01, so a nearly pure liquid evaporates at the
+seed rate however far it is stretched; the mode-2 closure (Gibbs-driven,
+τ = 1e-3 s) heals the same window. Rule 2 asks for the rate that keeps a
+liquid inside its domain, or for the spinodal to be the flash trigger it
+physically is — a derivation on the closure, not a threshold.
+`compare_pair` figures (`pair_00050.png`, `pair_00500.png`) still to be
+read.
+
 Item 8, measured and resolved (2026-09-09). The tolerance hypothesis was
 wrong: a per-iteration trace on B9 shows the residual evaluation is clean to
 1e-14 relative and the Newton converges quadratically in 5 iterations when
