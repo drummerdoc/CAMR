@@ -17,7 +17,7 @@ REFS = os.environ.get('CO2_EXACT_REFS',
                       os.path.join(os.path.dirname(os.path.abspath(__file__)), 'refs', 'exact'))
 ANALYTIC = REFS + '/profiles'
 # 1-D executable.  DISCOVERED, not hard-coded: the build name carries
-# DIM/COMP/profiling/MPI and (since 2026-08) the Eos_Model suffix, so any
+# DIM/COMP/profiling/MPI and the Eos_Model suffix, so any
 # hard-coded name goes stale the moment a build option changes.
 # Override with CAMR_EXE=... if several 1-D builds are present.
 def _find_camr_exe():
@@ -55,7 +55,7 @@ CASES = [
  ('B8-Wall-Reflection',('TP',310,100,0,L2,50),('TP',310,100,0,L2,-50),1.082513e-3),
  ('B9-Deep-Expansion',('TP',280,120,0,L2,0),('TP',280,5,0,V,0),     7.818949e-4),
  ('B10-Cross-critical-hot',('TP',270,100,0,L2,0),('TP',400,30,0,V,0),7.339590e-4),
- #  B11 (2026-08-13): the case the suite was MISSING.  Every existing contact
+ #  B11: the frozen-limit contact anchor.  Every other contact
  #  with a temperature jump across it (B4, B10) is ALSO cross-critical, and
  #  every case needing fast thermal relaxation is a dispersed mixture -- so
  #  morphology and criticality are perfectly correlated in the data and the
@@ -78,7 +78,7 @@ CASES = [
  ('C1-Identity',   ('TP',400,30,0,V,50),   ('TP',400,30,0,V,50),    1.145450e-3),
  ('C2-Acoustic-limit',('TP',400,30.05,0,V,0),('TP',400,30.00,0,V,0),1.336864e-3),
  ('C3-Strong-shock-V',('TP',500,30,0,V,500),('TP',500,1,0,V,0),     4.769659e-4),
-#  B12 (2026-08-31): the case the suite was MISSING.  Every strong-compression
+#  B12: the two-phase wall reflection.  Every other strong-compression
 #  case above is single-phase (A*, C3), saturated vapour (B6) or PURE LIQUID
 #  (B8: TP x=0, alpha_1 = 1.0 in all 64 cells); every genuinely two-phase case
 #  (B3, B5, B11) is a contact at u = 0.  So NO case ran a strong compression
@@ -106,7 +106,7 @@ CD = {c[0]: c for c in CASES}
 # on both codes.  VAPOR single-phase (A,C): no phase change -> mechanical relax,
 # MT off, frozen-consistent.  Two-phase (all B): ISOCHORIC pressure + finite
 # THERMAL relaxation (CAMR mode 2) with finite mass transfer -- thermal coupling
-# is REQUIRED so the dilute phase does not overheat (#72/#88); MT tau matched to
+# is required so the dilute phase does not overheat; MT tau matched to
 # the standalone via PS_MT_TAU.  (B4/B10 cross-critical: MT is dome-gated off
 # internally, mode 2 still gives the correct thermal coupling.)
 TWO_PHASE = {'B1-Comp-L-expand','B2-Evap-wave','B3-Sat-LV-contact','B4-Cross-critical',
@@ -217,7 +217,7 @@ if __name__=='__main__':
             fig=plt.figure(figsize=(11,8.5)); fig.text(0.5,0.93,'CO2 Riemann battery - CAMR vs validated standalone',ha='center',fontsize=16,weight='bold')
             fig.text(0.5,0.895,'PER-CASE matched config: wp flux, 2nd-order.  Vapor A/C: mechanical relax, MT off, N=64.',ha='center',fontsize=10)
             fig.text(0.5,0.87,'Two-phase B: isochoric P + finite thermal relax (CAMR mode 2) + finite MT (tau=1e-4), N=32.',ha='center',fontsize=10)
-            fig.text(0.5,0.83,'CAMR build has the #88 metastable-relaxation guard.  Note: relative diffs inflate where |u|~0\n'
+            fig.text(0.5,0.83,'Note: relative diffs inflate where |u|~0\n'
                      '(e.g. B4 |u|~9 m/s); density & pressure are the meaningful metrics.  * = strong flashing case.',
                      ha='center',fontsize=8,style='italic',color='0.3')
             FLASH={'B2-Evap-wave','B7-Rupture-Sonic','B9-Deep-Expansion'}

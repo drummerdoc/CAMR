@@ -3,9 +3,8 @@
 //  six-equation model: the alpha-adjusting mechanical projector
 //  (ps_pressure_relax_cell, PsPressureRelaxParams, PsRelaxFail), the
 //  isochoric pressure and thermal kernels (ps_iso_pressure_relax_cell,
-//  ps_iso_thermal_relax_cell, ps_iso_thermal_relax_cell_finite), the
-//  impedance-weighted kernel (ps_pelanti_relax_cell), and the coupled
-//  X3 operator (PsX3Params, ps_x3_relax_cell: the production default,
+//  ps_iso_thermal_relax_cell, ps_iso_thermal_relax_cell_finite), and the
+//  coupled X3 operator (PsX3Params, ps_x3_relax_cell: the production default,
 //  CAMR.ps_relax_mode=5).  Host-only; every kernel either converges and
 //  writes U or returns false with U untouched.  Part of the
 //  hem_pelanti_shyue.H umbrella.  docs/MODEL_AND_ALGORITHM.md §5.1-§5.3.
@@ -404,8 +403,8 @@ inline bool ps_iso_pressure_relax_cell(V6& U, const PsPhaseAPI& eos,
 // ---------------------------------------------------------------------
 //  Isochoric thermal equilibration: T_1 = T_2 by re-partitioning the
 //  phase internal energies at fixed alpha and rho_k (m_1 e_1 + m_2 e_2
-//  conserved), Newton on e_1.  With the isochoric pressure kernel this
-//  gives a P-T equilibrium closure (relaxation mode 1).  Thermal
+//  conserved), Newton on e_1: the equilibrium target of the finite-rate
+//  thermal kernel below and of the theta <= 0 branch of X3.  Thermal
 //  disequilibrium across a smeared contact can freeze a rarefaction
 //  plateau at the critical pressure; equalising T releases it.
 //  Returns true on convergence; false leaves U unchanged.
@@ -509,118 +508,6 @@ inline bool ps_iso_thermal_relax_cell_finite(V6& U, const PsPhaseAPI& eos,
     return true;
 }
 
-
-// ---------------------------------------------------------------------
-//  Impedance-weighted mechanical relaxation (Pelanti & Shyue §4.2;
-//  CAMR.ps_mech_kernel=1, see PS_relax.H).  Picard iteration of
-//    d(alpha_1) = (P_1 - P_2) / (xi_1/alpha_1 + xi_2/alpha_2),
-//    xi_k = rho_k c_k^2,
-//  with rho_k = m_k/alpha_k and the p dV work d(m_k e_k) = -/+ p_bar
-//  d(alpha_1); phase masses, momentum and mixture internal energy are
-//  conserved.  Moving alpha (rather than re-partitioning energy at
-//  fixed rho_k) keeps the EOS from being asked for unphysical e_2 at a
-//  cross-critical contact.  The alpha walk is confined to the EOS
-//  density domain.  Returns false without converging in max_iter; the
-//  best-effort state is written back in that case.
-//  Retire-candidate: see docs/DESIGN_DECISIONS.md §5.
-// ---------------------------------------------------------------------
-inline bool ps_pelanti_relax_cell(V6& U, const PsPhaseAPI& eos,
-                                   double tol_rel = 1.0e-5,
-                                   int    max_iter = 5,
-                                   double single_phase_thr =
-                                       ps_single_phase_threshold_default())
-{
-    if (!eos.valid()) return false;
-    double alpha_1 = U[0];
-    if (!std::isfinite(alpha_1)) return false;
-    if (alpha_1 < single_phase_thr || alpha_1 > 1.0 - single_phase_thr)
-        return true;  // trivially-single-phase; nothing to relax
-
-    const double m_1 = U[1];
-    const double m_2 = U[2];
-    if (m_1 <= 0.0 || m_2 <= 0.0) return false;
-    const double rho_mix = m_1 + m_2;
-    if (rho_mix <= 0.0) return false;
-    // Domain barrier on the alpha walk (PsPhaseAPI::rho_dom_*).
-    double a_bar_lo = single_phase_thr, a_bar_hi = 1.0 - single_phase_thr;
-    if (eos.has_rho_dom()) {
-        a_bar_lo = std::max(a_bar_lo, m_1 / eos.rho_dom_hi);
-        a_bar_hi = std::min(a_bar_hi, m_1 / eos.rho_dom_lo);
-        a_bar_lo = std::max(a_bar_lo, 1.0 - m_2 / eos.rho_dom_lo);
-        a_bar_hi = std::min(a_bar_hi, 1.0 - m_2 / eos.rho_dom_hi);
-        if (!(a_bar_lo < a_bar_hi) ||
-            alpha_1 < a_bar_lo || alpha_1 > a_bar_hi) {
-            return false;   // no legal alpha (vacuum corner): fold's job
-        }
-    }
-    const double u = U[3] / rho_mix;
-    const double ke = 0.5 * u * u;
-
-    double e_1 = U[4] / m_1 - ke;
-    double e_2 = U[5] / m_2 - ke;
-
-    for (int iter = 0; iter < max_iter; ++iter) {
-        const double alpha_2 = 1.0 - alpha_1;
-        const double rho_1 = m_1 / alpha_1;
-        const double rho_2 = m_2 / alpha_2;
-
-        PsPhase p1{}, p2{};
-        p1.alpha = alpha_1;
-        p2.alpha = alpha_2;
-        eos.state_from_rho_e_phase(1, rho_1, e_1, p1);
-        eos.state_from_rho_e_phase(2, rho_2, e_2, p2);
-        if (!p1.valid || !p2.valid) return false;
-
-        const double P_ref = std::max(1.0e4, 0.5 * (std::abs(p1.P) + std::abs(p2.P)));
-        const double dP = p1.P - p2.P;
-        if (std::abs(dP) < tol_rel * P_ref) {
-            U[0] = alpha_1;
-            U[4] = m_1 * (e_1 + ke);
-            U[5] = m_2 * (e_2 + ke);
-            ++ps_pressure_relax_count();
-            return true;
-        }
-
-        // Acoustic impedances xi_k = rho_k c_k^2.
-        const double xi_1 = std::max(1.0, rho_1 * p1.c * p1.c);
-        const double xi_2 = std::max(1.0, rho_2 * p2.c * p2.c);
-
-        double dalpha = dP / (xi_1 / alpha_1 + xi_2 / alpha_2);   // > 0: phase 1 expands
-
-        // Step cap against overshoot near saturation.
-        const double dalpha_cap = 0.20 * std::min(alpha_1, alpha_2);
-        if (dalpha >  dalpha_cap) dalpha =  dalpha_cap;
-        if (dalpha < -dalpha_cap) dalpha = -dalpha_cap;
-
-        double alpha_1_new = alpha_1 + dalpha;
-        // Freeze at the barrier (the single-phase thresholds when no
-        // domain is set).
-        if (alpha_1_new < a_bar_lo) alpha_1_new = a_bar_lo;
-        if (alpha_1_new > a_bar_hi) alpha_1_new = a_bar_hi;
-
-        const double dalpha_actual = alpha_1_new - alpha_1;
-        if (std::abs(dalpha_actual) < 1.0e-16) {
-            // No progress possible: write back and treat as converged.
-            U[0] = alpha_1;
-            U[4] = m_1 * (e_1 + ke);
-            U[5] = m_2 * (e_2 + ke);
-            return true;
-        }
-
-        // p dV work, equal and opposite.
-        const double p_bar = 0.5 * (p1.P + p2.P);
-        e_1 -= p_bar * dalpha_actual / m_1;
-        e_2 += p_bar * dalpha_actual / m_2;
-
-        alpha_1 = alpha_1_new;
-    }
-
-    // Not converged within max_iter: best-effort write-back.
-    U[0] = alpha_1;
-    U[4] = m_1 * (e_1 + ke);
-    U[5] = m_2 * (e_2 + ke);
-    return false;
-}
 
 // =====================================================================
 //  X3 -- the coupled relaxation operator (CAMR.ps_relax_mode=5, the

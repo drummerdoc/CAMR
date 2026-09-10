@@ -232,9 +232,9 @@ F-2  BL-3b transverse acoustic coupling (`ps_wp_transverse=2`). LANDED (retired,
 
 F-3  Shear dissipation (`ps_shear_diss`, Jameson sensor-gated flux-form damping of the transverse velocity odd-even, energy-consistent, $\alpha$ untouched). LANDED (retired, O-6): rejected as a knob (X-23), the code is deleted and the key aborts. Physical viscosity (`ps_mu`) is the one dissipation lever in 2-D; the decks that set `ps_shear_diss = 0` no longer name it.
 
-F-4  Impedance-weighted mechanical kernel (`ps_mech_kernel=1`, `ps_pelanti_relax_cell`). DORMANT: selectable only inside the sequential chain (mode 4), which is itself dormant. Standalone measurements (B1 −33 %, B5 −47 % in L2 u) motivated carrying it; never A/B'd inside X3.
+F-4  Impedance-weighted mechanical kernel (`ps_mech_kernel=1`, `ps_pelanti_relax_cell`). DELETED with mode 4; standalone measurements (B1 −33 %, B5 −47 % in L2 u) motivated carrying it, it was never A/B'd inside X3, and `ps_mech_kernel` now aborts.
 
-F-5  Relaxation modes 1, 2, 4 and their sub-dials (`ps_mech_close`, `ps_mt_form`, `ps_mt_nest_pr`, `ps_mt_explicit`, `ps_mt_gref`, `ps_mt_bootstrap`, `ps_mt_step_frac`, `ps_mt_alpha_thr`, `ps_mt_tau`, `ps_mt_tau_model`). DORMANT; ~1000 lines. Mode 2 (isochoric $P$ + finite-rate thermal, no $\alpha$-adjusting work path) is still the configuration pinned by the 2-D pipe-break decks (θ = MT τ = 1e-3 s, flash off) and scores better than X3 on B2/B7/B9 in the battery — an unhurried measured campaign, blocked on O-12/O-3. Mode 1 is refuted (X-25); mode 4 is the sequential chain X3 replaced. `ps_mt_tau_model=2` (ASY1, τ derived from the state as $|\mathrm{d}m_{\mathrm{eq}}|/\Gamma_{\mathrm{SRT}}$) is the candidate that deletes the hand-set τ; `=1` (HRM, formerly aliased to 0) is retired and aborts.
+F-5  Relaxation modes and their sub-dials. Modes 1 (refuted, X-25) and 4 (the sequential chain X3 replaced) are DELETED with `ps_mech_close`; `ps_relax_mode` accepts 0, 2 and 5. Mode 2 (isochoric $P$ + finite-rate thermal + the split Gibbs-driven transfer source, `ps_mt_*` dials) is RETAINED as the finite-rate control closure: the second mode-5 evidence pass (plan §3.11) completed the production deck at mode-2 cost but left two closure-level questions open — a bulk liquid expanded past its spinodal in the 3650→3700 window while mode 2 heals it, and a condensation shell at the jet head that compression-heated vapour should not form — and mode 2 is the only independent closure to measure them against. It goes when [DECIDE-32] is settled.
 
 F-6  The EOS harvester (`ps_harvest*`), warm-start (`eos_warmstart*`) and MLP aliases (`eos_mlp*`). LANDED (retired, O-7): the state harvester, the warm-start hooks (`ps_warmstart_Tinit.H`, `state_from_rho_e_phase_fixed`, the `T_init` argument of `co2_solve_rho_e`) and the aliases are deleted and every key aborts. The active-learning/MLP programme was retired in favour of the bicubic table (E-3), and the warm-start seed was already discarded by both robust solvers.
 
@@ -294,7 +294,7 @@ O-1  Retire `ps_lw_skip_contact` modes 0/1 to the single taper path. OPEN; after
 
 O-2  Retire the `ps_promote_checked=0` / `ps_floor_indep=0` opt-outs. OPEN; same condition. Retirement makes the reachability test unconditional on ~26 % of faces every stage — take a performance read first.
 
-O-3  Retire relaxation modes 1/2/4 and the mode-≠5 sub-dials (~1000 lines). OPEN; contingent on O-12. The canonical-gate checks that use modes 2/4 are re-baselined onto mode 5 in the same commit.
+O-3  Retire relaxation modes 1/2/4 and the mode-≠5 sub-dials. LANDED for 1 and 4 (gate checks 2 and 5b re-baselined onto mode 5: B4 θ-independence 0.126 at θ = 1e-4 and 1e-7, B2 max|u| = 31.7); mode 2 retained, see F-5.
 
 O-4  `ps_wp_order` default 1 → 2. LANDED (L-2).
 
@@ -342,11 +342,11 @@ The standalone driver existed to learn lessons cheaply; this table records where
 | A4 — vanish fold at every stage | `ps_apply_vanish_fold` after both RK stages, in the source step, after avgDown and regrid, at $\alpha_{\mathrm{vanish}} = 10^{-8}$ unconditionally (P-6) | closed |
 | A5 — clamp after both RK stages | the fold/floor/clean sequence runs on the stage-1 intermediate in `CAMR_advance.cpp` | closed |
 | A6 — never substitute mixture $e$ into a branch-locked EOS | `ps_phase_quot` (checked construction) in ctoprim and the flux; two copies (`face_from_state`, `ps_phase_speeds_from_state`) still carry the `m > 1e-12 ? … : e_mix` form — O-16 | partial |
-| B1 — impedance-weighted mechanical kernel | `ps_mech_kernel=1` selects `ps_pelanti_relax_cell` inside the dormant mode-4 chain only (F-4) | dormant |
+| B1 — impedance-weighted mechanical kernel | deleted with mode 4 (F-4) | closed |
 | B2 — EOS-validity guard with bracketing in relaxation | superseded: every EOS query is bracketed at the source (E-1), and X3 operates only on Independent phases | closed by construction |
 | B3 — second pressure pass after mass transfer | the unconditional post-source reproject (R-12); inside X3 the constraint is enforced continuously | closed |
 | B4 — dome-gate the instantaneous MT solver | the one coexistence predicate is asked once inside X3 (R-3, R-8); the fixed-$\alpha$ target solve is consistent with the step (R-6) | closed |
-| B5 — mode 1 is under-determined | refuted and dormant (X-25, F-5); O-3 deletes it | closed |
+| B5 — mode 1 is under-determined | refuted (X-25) and deleted (F-5) | closed |
 | C1 — $c_{\mathrm{frozen}}^2 = Y_1 c_1^2 + Y_2 c_2^2$ with no extra $\alpha$ factor, one copy | `ps_cmix2` / `ps_frozen_cmix_from_state`, delegated to by NSCBC and the derives (S-2) | closed |
 | C2 — skip the LW correction on the contact wave | the jump-based taper `ps_lw_skip_contact=2` (H-5); blanket skip refuted (X-17) | closed |
 | C3 — no primitive reconstruction under wave propagation | `ps_recon` retired; wp works from cell averages (H-2) | closed |

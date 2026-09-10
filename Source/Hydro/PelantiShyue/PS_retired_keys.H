@@ -58,6 +58,8 @@ inline void ps_abort_on_retired_keys()
         { "ps_dm_census",      "the [PS-DM] census is deleted" },
         { "ps_relax_verbose",  "the [ps_relax] anomaly line is deleted; use ps_pres_diag / ps_diag_alpha" },
         { "ps_flash_ev_diag",  "the [PS-FLASH-EV] hook is deleted; [PS-FLASH-REF] prints under ps_pres_diag" },
+        { "ps_mech_kernel",    "the impedance-weighted mechanical kernel is deleted; the alpha-adjusting projection is the only one" },
+        { "ps_mech_close",     "the closing mechanical pass belonged to the deleted sequential chain (ps_relax_mode=4)" },
         { "ps_dilute_closure", "the dilute energy closure is deleted" },
         { "ps_dilute_alpha0",  "the dilute energy closure is deleted" },
         { "ps_dilute_probe",   "the 0-D probe is deleted; the kept self-tests are ps_ptg_selftest, ps_relax_sweep, ps_x3_test" },

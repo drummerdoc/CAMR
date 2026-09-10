@@ -489,7 +489,7 @@ Pressure equilibrium is instantaneous by model closure: $\alpha_1$ is the free v
 
 $$e_1 \mapsto e_1 - \frac{P_I\,\Delta\alpha_1}{\alpha_1\rho_1}, \quad e_2 \mapsto e_2 + \frac{P_I\,\Delta\alpha_1}{\alpha_2\rho_2}, \quad P_I = \frac12(P_1 + P_2),$$
 
-equal and opposite in $\mathcal{E}_k$, the discrete form of $\mp P_I\,\partial_t\alpha_1$ in the phase-energy equations. The Newton step is capped at a fraction of $\min(\alpha_1, 1-\alpha_1)$ and — the relaxation domain barrier — restricted to the interval on which both $\rho_k(\alpha)$ stay inside the EOS density domain, with probes and iterates projected onto it; $P_k(\rho_k)$ is undefined off-domain, so a Newton that steps past the edge is evaluating garbage, and an entry state outside the feasible interval returns false and is left to the folds. This is solver correctness, not a guard; it prevents at creation the mechanism in which the relaxation dilutes a low-mass phase's volume, drives $\rho_k$ off-domain, fails, and leaves the cell stuck while the hydro ratchets it further. The alternative impedance-weighted kernel (`CAMR.ps_mech_kernel=1`) remains selectable.
+equal and opposite in $\mathcal{E}_k$, the discrete form of $\mp P_I\,\partial_t\alpha_1$ in the phase-energy equations. The Newton step is capped at a fraction of $\min(\alpha_1, 1-\alpha_1)$ and — the relaxation domain barrier — restricted to the interval on which both $\rho_k(\alpha)$ stay inside the EOS density domain, with probes and iterates projected onto it; $P_k(\rho_k)$ is undefined off-domain, so a Newton that steps past the edge is evaluating garbage, and an entry state outside the feasible interval returns false and is left to the folds. This is solver correctness, not a guard; it prevents at creation the mechanism in which the relaxation dilutes a low-mass phase's volume, drives $\rho_k$ off-domain, fails, and leaves the cell stuck while the hydro ratchets it further. Rejected: the impedance-weighted kernel of Pelanti & Shyue §4.2 (a Picard iteration on $\Delta\alpha_1 = (P_1 - P_2)/(\xi_1/\alpha_1 + \xi_2/\alpha_2)$). Why: it was measured only standalone (B1 −33 %, B5 −47 % in the $u$ error) and never inside X3, and it lived only in the deleted sequential chain; the Newton on $\alpha_1$ with the domain barrier is the single mechanical projection.
 
 ### 5.3 Thermal relaxation, the coexistence gate and its consequences
 
@@ -575,7 +575,7 @@ $$\theta = \theta_0\,\alpha_v^{-0.54}\,\psi^{-1.76}, \quad \theta_0 = 3.84\times
 
 ### 5.7 Other relaxation modes, and the two configurations
 
-`CAMR.ps_relax_mode=0` is mechanical only (instantaneous $P_1 = P_2$, no thermal leg, no transfer) and is what the frozen-limit tests use. Modes 1 (isochoric $P$ and $T$ equilibrium), 2 (isochoric pressure equilibrium plus finite-rate thermal relaxation at $\theta$, with the split mass-transfer source of §5.4 when `ps_mt_tau` > 0) and 4 (the sequential chain: mechanical → thermal → flash → transfer with re-projections, plus a closing mechanical pass `CAMR.ps_mech_close=1`) remain selectable and are candidates for retirement; mode 3 aborts. An unrecognised mode aborts at the single read site rather than falling through to a different physics.
+`CAMR.ps_relax_mode=0` is mechanical only (instantaneous $P_1 = P_2$, no thermal leg, no transfer) and is what the frozen-limit tests use. Mode 2 (isochoric pressure equilibrium plus finite-rate thermal relaxation at $\theta$, with the split Gibbs-driven mass-transfer source of §5.4 when `ps_mt_tau` > 0) is retained as the finite-rate control closure: it is the closure the production results to date were made with, and the only independent one to measure X3's open closure questions against (the spinodal crossing of the 3650→3700 window, the condensation shell at the jet head; `DESIGN_DECISIONS.md` F-5). Modes 1 (isochoric $P$ and $T$ equilibrium, refuted), 3 (a finite-rate mechanical leg, refuted) and 4 (the sequential chain X3 replaced, with its `ps_mech_kernel`/`ps_mech_close` sub-dials) are deleted and abort with their replacement named. An unrecognised mode aborts at the single read site rather than falling through to a different physics.
 
 Two configurations exist and are stated once here. The 1-D acceptance battery runs bare defaults: mode 5, $\theta = 10^{-7}$ s, flash on at $\tau_f = 10^{-7}$ s (nucleating from absent phases), SRT transfer at $D = 0.1$ m. The 2-D pipe-break production decks (`Exec/CO2_PipeBreak/inputs.satjet_demo2`, `_demo3`) pin mode 2 with $\theta = \tau_{\mathrm{MT}} = 10^{-3}$ s and the flash off (saturated reservoir, no nucleation), together with the pressure and temperature floors of §4.5. Whether the 2-D decks move to mode 5 during the next production run, so that modes 1/2 can be retired, is an open decision.
 
@@ -587,7 +587,7 @@ The mechanical closure lets the two phases disagree about pressure for one step 
 
 | key | default | meaning |
 |:--|:--|:--|
-| `CAMR.ps_relax_mode` | 5 | X3 coupled operator; 0 mechanical only; 1/2/4 legacy; 3 aborts |
+| `CAMR.ps_relax_mode` | 5 | X3 coupled operator; 0 mechanical only; 2 finite-rate control closure; 1, 3, 4 retired (abort) |
 | `CAMR.ps_theta_tau` | 1e-7 s | thermal rate; $\le 0$ = instantaneous $T_1 = T_2$ constraint |
 | `CAMR.ps_coexist_action` | 0 | band-exit policy: 0 count, 1 abort (runaway clause always active); 2/3/4 retired, abort |
 | `CAMR.ps_mt_srt_d` | 0.1 m | morphology length $D$ in $\Sigma$ (§5.6, open) |
@@ -596,8 +596,6 @@ The mechanical closure lets the two phases disagree about pressure for one step 
 | `CAMR.ps_mt_update_alpha` | −1 (auto → on) | the (E.1) rule in the split source |
 | `CAMR.ps_mt_tau` | 1e-7 s | split-source rate, modes ≠ 5 only |
 | `CAMR.ps_mt_tau_model`, `ps_mt_form` | 0, 0 | split-source variants, modes ≠ 5 only (`ps_mt_tau_model = 1` retired, aborts) |
-| `CAMR.ps_mech_kernel` | 0 | 1 = impedance-weighted mechanical kernel |
-| `CAMR.ps_mech_close` | 1 | closing mechanical pass, mode 4 |
 | `CAMR.ps_flash_tau` | 1e-7 s | flash rate; $\le 0$ = off |
 | `CAMR.ps_flash_alpha_thr` | 0.10 | dominance threshold |
 | `CAMR.ps_flash_metastable_margin` | 0.10 | saturation undershoot required |
@@ -924,4 +922,4 @@ Targeted transverse-shear dissipation (the former `ps_shear_diss`): a conservati
 
 Also removed: the one-sided phase-energy fluctuation register (§1.5, §4.9), the EOS state harvester and the warm-start hooks (§7.3, §7.5), the `ps_state_from_cons` mixture-pressure and sound-speed switches (volume-weighted $P_{\mathrm{mix}}$ and the Wood frozen $c$ are the one branch), the dilute-phase energy closure (superseded by presence), the refuted A/B arms listed at the end of chapters 2–6, and the investigation diagnostics of §8.6.
 
-Still dormant, default off: `ps_tfloor_fold`, `ps_pres_floor`/`ps_temp_floor` in 1-D, and the mode-1/2/4 relaxation chain with its `ps_mech_kernel`/`ps_mech_close`/`ps_mt_*` knobs (kept because the 2-D production decks pin mode 2; §5.7).
+Still dormant, default off: `ps_tfloor_fold`, `ps_pres_floor`/`ps_temp_floor` in 1-D, and the mode-2 relaxation with its `ps_mt_*` knobs (kept as the finite-rate control closure; §5.7).

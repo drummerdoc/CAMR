@@ -145,8 +145,7 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                     // their metastable state.  docs/DESIGN_DECISIONS.md R-12.
                     if (Uv[0] != Uv_pre[0] || Uv[1] != Uv_pre[1] ||
                         Uv[4] != Uv_pre[4]) {
-                        if (ps_mech_kernel() == 1) { hem::ps_pelanti_relax_cell(Uv, eos); }
-                        else                        { hem::ps_pressure_relax_cell(Uv, eos); }
+                        hem::ps_pressure_relax_cell(Uv, eos);
                     }
                     ps_unpack_v6(U, i, j, k, Uv);
                 }
@@ -252,8 +251,7 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                     // returns true from its internal gates with Uv untouched,
                     // and gated metastable cells must not be relaxed here.
                     if (Uv[1] != Uv_pre[1] || Uv[4] != Uv_pre[4]) {
-                        if (ps_mech_kernel() == 1) { hem::ps_pelanti_relax_cell(Uv, eos); }
-                        else                        { hem::ps_pressure_relax_cell(Uv, eos); }
+                        hem::ps_pressure_relax_cell(Uv, eos);
                     }
                     ps_unpack_v6(U, i, j, k, Uv);
                 }

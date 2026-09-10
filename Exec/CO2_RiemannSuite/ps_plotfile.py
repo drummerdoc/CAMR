@@ -1,13 +1,6 @@
 #!/usr/bin/env python3
-"""AMReX 1-D plotfile reader — the only part of the retired run_ac_suite.py
-that anything still used.
-
-run_ac_suite.py was RETIRED (STATUS 5.5: "must not be used to evaluate a
-change") because it replayed each stored reference's job_info onto the
-command line, silently re-creating the configuration the reference was minted
-under and so unable to see a change to the defaults.  Ten scripts nonetheless
-imported it for these three functions, which kept a retired harness alive in
-the tree.  Extracted 2026-08-17 (S4).
+"""AMReX 1-D plotfile reader: header, one variable, case name from a
+plotfile prefix.  Shared by every 1-D harness here.
 """
 import os, re, struct
 import numpy as np

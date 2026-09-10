@@ -38,7 +38,7 @@ constexpr int PS_COUNTERS_FLR_NCAUSE = 21;
 //  thermal leg moved a T by > 1 K, ran and stood, or was gate-skipped;
 //  the post-thermal states cost two branch-locked solves, so they are
 //  formed only under CAMR.ps_pres_diag.  [PS-DT]: |T1-T2| at entry and
-//  exit of the leg (completeness), fed by mode 4 and by X3.
+//  exit of the leg (completeness), fed by X3.
 //  Docs/MODEL_AND_ALGORITHM.md §8.6.
 // ---------------------------------------------------------------------
 struct PsPresDiag {

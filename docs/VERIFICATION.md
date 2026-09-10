@@ -95,11 +95,11 @@ Why B12 exists. Every strong-compression case is single-phase (A, C3), saturated
 |:--|:--|:--|:--|:--|
 | 0 build freshness | — | executable mtime newer than every `*.H`/`*.cpp` under `Source/` | — | live |
 | 1 frozen A/C battery | `ps_relax_mode=0`, `ps_mt_tau=0`, `ps_flash_tau=0` on A1–A6, C1–C3, run with `prob.alpha_trace` 1e-6 and 0 | per-case (ρ, u, P) rel-L2 within ±2e-3 of the `EXPECT` tuples; C1 all fields < 5e-4; battery mean within 2e-3 of 0.0350 | mean 0.0350; C1 0.000 (the normalised metric carries ~1e-6 round-off from ~800 steps of uniform advection, hence 5e-4 not 1e-6) | live; the headline gate |
-| 2 B4 flatness | `ps_relax_mode=4`, θ = τ_MT = τ_flash = τ at τ = 1e-4 and 1e-7 | u-err within 0.02 of 0.129 at both τ; Δ between them < 0.01 | 0.129 | live (measured at the code default `ps_flash_metastable_margin` 0.10) but sets the dead environment variable `PS_FLASH_METASTABLE_MARGIN=0` (the knob is `CAMR.ps_flash_metastable_margin`, default 0.10, so the flatness is measured at margin 0.10); depends on mode 4 |
+| 2 B4 θ-independence | `ps_relax_mode=5`, θ = τ_flash at 1e-4 and 1e-7 | u-err within 0.02 of 0.126 at both θ; Δ between them < 0.01 | 0.126 | live (measured at the code default `ps_flash_metastable_margin` 0.10) but sets the dead environment variable `PS_FLASH_METASTABLE_MARGIN=0` (the knob is `CAMR.ps_flash_metastable_margin`, default 0.10, so the flatness is measured at margin 0.10); depends on mode 4 |
 | 3 B9 mode-2 pin | `ps_relax_mode=2`, θ = τ_MT = 1e-4 on B9, one run | u-err within 0.02 of 0.752 | 0.752 | live; formerly an A/B against `ps_src_p_reproject=0` (0.845), whose arm is deleted with the dial, so the check now pins the single remaining path; depends on mode 2 |
 | 4 zero-trace B4 | frozen config, `prob.alpha_trace=0` on B4 | u-err within 0.02 of 0.131 | 0.131 | live |
 | 5a B5 frozen | frozen config, `alpha_trace=0` on B5 | u-err within 0.03 of 0.388 | 0.388 | live (a presence-gated operator, not a guard, produces this number) |
-| 5b B2 front stability | mode 4, τ = 1e-7, `ps_mech_kernel=1` | max\|u\| < 120 m/s | ~700 with the standard kernel | live; depends on mode 4 |
+| 5b B2 front stability | mode 5 at defaults, zero trace | max\|u\| < 120 m/s | 31.7 | live |
 | 6 B12 two-phase wall reflection | frozen config on B12 | far field undisturbed, mirror symmetry, R ≤ 0.25 | R = 0.0097 | live |
 
 Check 8 in detail. B12 is a plotfile check that needs no sound speed. With $\rho_k = m_k/\alpha_k$ per phase, the far-field cell $e$ (undisturbed at $t_{\mathrm{end}}$) and the shocked-plateau cell $k = \arg\max P$, the per-phase relative compressions are $c_1 = \rho_1[k]/\rho_1[e] - 1$ and $c_2 = \rho_2[k]/\rho_2[e] - 1$ and the metric is

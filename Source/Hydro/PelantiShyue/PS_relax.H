@@ -4,7 +4,7 @@
 //  PS_relax.H — the relaxation dispatch of the six-equation Pelanti–Shyue
 //  model on the CAMR grid: the EOS callback (ps_make_camr_eos_api), the
 //  presence relax gate and entry gate, the per-mode cell wrappers over
-//  the hem kernels (modes 0, 1, 2, 4 and the default coupled X3, mode 5),
+//  the hem kernels (modes 0, 2 and the default coupled X3, mode 5),
 //  the relaxation dials, and ps_apply_relaxation with its sweep reports
 //  ([PS-PRES], [PS-GATE], [PS-DT], [PS-X3]).
 //  Algorithm: docs/MODEL_AND_ALGORITHM.md §5.  Included through the
@@ -155,7 +155,7 @@ bool ps_presence_relax_gate(amrex::Real a1, amrex::Real m1, amrex::Real m2,
 }
 
 // -----------------------------------------------------------------
-//  ps_relax_entry_gate — the entry test the mode 1, 2, 4 and 5 relax
+//  ps_relax_entry_gate — the entry test the mode 2 and 5 relax
 //  cells share: alpha_1 finite and inside [ALPHA_ROUNDOFF, 1 -
 //  ALPHA_ROUNDOFF], both partial masses positive, and the presence gate
 //  (docs §4.7), whose refusal is counted.  Returns true when the cell may
@@ -255,51 +255,13 @@ ps_mechanical_relax_cell(int i, int j, int k,
 
 
 // -----------------------------------------------------------------
-//  ps_pt_equilibrium_relax_cell (ps_relax_mode=1): isochoric (alpha
-//  fixed) joint P and T equilibrium by a short Picard alternation of
-//  hem::ps_iso_pressure_relax_cell and hem::ps_iso_thermal_relax_cell,
-//  each conserving m1 e1 + m2 e2 — the full-equilibrium (HEM-like) limit
-//  as an idempotent projection.  Writes UE1/UE2 only; alpha, the phase
-//  masses, momentum and UEDEN/UEINT are untouched.  A failed iteration
-//  leaves the cell unchanged.  Docs/MODEL_AND_ALGORITHM.md §5.7.
-//  Retire-candidate: see docs/DESIGN_DECISIONS.md §5.
-// -----------------------------------------------------------------
-inline void
-ps_pt_equilibrium_relax_cell(int i, int j, int k,
-                             amrex::Array4<amrex::Real> const& U,
-                             hem::PsPhaseAPI const& eos,
-                             int outer_iters = 3)
-{
-    using amrex::Real;
-    // Near-pure cells are skipped (the iso kernels skip them too).
-    Real alpha1_in, m1, m2;
-    if (!ps_relax_entry_gate(i, j, k, U, alpha1_in, m1, m2)) return;
-
-    // |rho u| in V6[3]; only ½(V6[3]/rho)² is used.
-    hem::V6 Uv = ps_pack_v6(U, i, j, k, alpha1_in, m1, m2);
-
-    // Picard alternation P-relax <-> T-relax.
-    bool ok = true;
-    for (int it = 0; it < outer_iters; ++it) {
-        if (!hem::ps_iso_pressure_relax_cell(Uv, eos)) { ok = false; break; }
-        if (!hem::ps_iso_thermal_relax_cell (Uv, eos)) { ok = false; break; }
-    }
-    if (!ok) return;   // failure: leave the cell unchanged
-
-    U(i,j,k, UE1) = Uv[4];
-    U(i,j,k, UE2) = Uv[5];
-}
-
-
-// -----------------------------------------------------------------
 //  ps_ptg_relax_cell (ps_relax_mode=2): isochoric pressure equilibrium
 //  plus finite-rate thermal relaxation, T1 -> T2 at rate 1/theta (exact
-//  exponential), in the same Picard alternation as mode 1.  With
+//  exponential), in a three-sweep Picard alternation.  With
 //  theta > 0 the cell is not re-pinned on the dome, so the split
 //  mass-transfer source keeps a Gibbs driving force while the partial
 //  thermal coupling bounds the per-phase energies.  Writes UE1/UE2 only.
-//  This is the mode the 2-D pipe-break decks pin (docs §5.7).
-//  Retire-candidate: see docs/DESIGN_DECISIONS.md §5.
+//  Retained as the finite-rate control closure (docs §5.7).
 // -----------------------------------------------------------------
 inline void
 ps_ptg_relax_cell(int i, int j, int k,
@@ -327,145 +289,7 @@ ps_ptg_relax_cell(int i, int j, int k,
 }
 
 
-inline int ps_mech_kernel();     // defined with the cached dials below
 inline int ps_coexist_action();
-inline int ps_mech_close();
-
-// -----------------------------------------------------------------
-//  ps_canonical_relax_cell (ps_relax_mode=4): the sequential chain.
-//  Alpha-adjusting mechanical relaxation first (P1 = P2 with alpha free,
-//  kernel per ps_mech_kernel), then finite-rate isochoric thermal
-//  relaxation at the new alpha, gated by the coexistence test, then the
-//  closing mechanical pass (ps_mech_close).  Each equation owns one DOF —
-//  P1 = P2 owns alpha, the thermal rate owns the energy split — which is
-//  why this is not mode 2, whose two fixed-alpha projections fight over
-//  the single energy-split DOF.  Writes UALPHA1, UE1, UE2; a failed
-//  mechanical pass leaves the cell unchanged.  Docs §5.7.
-//  Retire-candidate: see docs/DESIGN_DECISIONS.md §5.
-// -----------------------------------------------------------------
-inline void
-ps_canonical_relax_cell(int i, int j, int k,
-                        amrex::Array4<amrex::Real> const& U,
-                        hem::PsPhaseAPI const& eos,
-                        amrex::Real dt, amrex::Real theta)
-{
-    using amrex::Real;
-    Real alpha1_in, m1, m2;
-    if (!ps_relax_entry_gate(i, j, k, U, alpha1_in, m1, m2)) return;
-    const Real rho_mix = m1 + m2;
-
-    hem::V6 Uv = ps_pack_v6(U, i, j, k, alpha1_in, m1, m2);
-
-    // Mechanical first (alpha-adjusting; preserves m_k and mixture rho-E);
-    // kernel per ps_mech_kernel, failure policy as mode 0.
-    if (ps_mech_kernel() == 1) {
-        if (!hem::ps_pelanti_relax_cell(Uv, eos)) return;
-    } else {
-        int reason = hem::PSR_OK;
-        if (!hem::ps_pressure_relax_cell(Uv, eos, hem::PsPressureRelaxParams{},
-                                         &reason)) {
-            return;
-        }
-    }
-    // Thermal second (isochoric at the new alpha; theta <= 0 -> instantaneous),
-    // gated by the coexistence test, both T_k inside (T_triple, T_crit): at a
-    // cross-critical material contact the two "phases" are two single-phase
-    // fluids, and driving T1 -> T2 there walks the smeared contact toward
-    // the dome and collapses the star velocity (docs §5.3).  Bounds are EOS
-    // metadata, shared with the mass-transfer and flash gates.
-    {
-        const double a1n = Uv[0];
-        const double r1n = Uv[1] / a1n, r2n = Uv[2] / (1.0 - a1n);
-        const double ken = 0.5 * (Uv[3]/rho_mix) * (Uv[3]/rho_mix);
-        const double e1n = Uv[4]/Uv[1] - ken, e2n = Uv[5]/Uv[2] - ken;
-        hem::PsPhase q1{}, q2{};
-        eos.state_from_rho_e_phase(1, r1n, e1n, q1);
-        eos.state_from_rho_e_phase(2, r2n, e2n, q2);
-        const double Ttr = eos.t_triple(), Tcr = eos.t_crit();
-        const bool coexist = q1.valid && q2.valid &&
-                             hem::ps_in_coexistence_band(q1.T, q2.T, eos);
-        //  An out-of-band cell stands, with one exception: the runaway
-        //  clause, mirrored from the X3 gate — a hi-side-only exit whose
-        //  supercritical phase is beyond 2 T_crit is a ratcheting sliver,
-        //  not a material contact, so the leg runs.  Both states must be
-        //  valid; ungating the predicate never licenses the kernel on a
-        //  phase with no state.  Docs §5.3.
-        bool run_thermal = coexist;
-        if (!coexist && q1.valid && q2.valid) {
-            const bool lo_side = (q1.T <= Ttr) || (q2.T <= Ttr);
-            const bool hi_side = (q1.T >= Tcr) || (q2.T >= Tcr);
-            if (hi_side && !lo_side &&
-                std::max(q1.T, q2.T) > 2.0 * Tcr) {
-                run_thermal = true;
-            }
-        }
-        if (run_thermal) {
-            hem::ps_iso_thermal_relax_cell_finite(Uv, eos, double(dt),
-                                                  double(theta));
-        }
-        //  Closing mechanical pass (ps_mech_close): an isochoric dT moves
-        //  each phase's P along its own isochore, and the two
-        //  compressibilities differ by orders, so the thermal leg leaves a
-        //  P1 != P2 residual the next hydro step's fluxes would otherwise
-        //  consume.  Same kernel and failure policy as the opening pass.
-        //  Only when the thermal leg ran — a gate-skipped cell is already at
-        //  the Newton tolerance.  Placed before the [PS-PRES] instrument so
-        //  that measures the true chain exit.
-        if (run_thermal && ps_mech_close() != 0) {
-            if (ps_mech_kernel() == 1) {
-                hem::ps_pelanti_relax_cell(Uv, eos);
-            } else {
-                hem::ps_pressure_relax_cell(Uv, eos);
-            }
-        }
-        //  [PS-PRES]: the P1 != P2 residual at chain exit, split by cause
-        //  (leg moved a T by > 1 K / ran and stood / gate-skipped, where the
-        //  residual is read off q1/q2 with no extra solves).
-        if (ps_pres_diag() != 0) {
-            PsPresDiag& pd = ps_pres_diag_data();
-            if (run_thermal) {
-                const double a1t = Uv[0];
-                const double r1t = Uv[1] / a1t, r2t = Uv[2] / (1.0 - a1t);
-                const double ket = 0.5 * (Uv[3]/rho_mix) * (Uv[3]/rho_mix);
-                const double e1t = Uv[4]/Uv[1] - ket, e2t = Uv[5]/Uv[2] - ket;
-                hem::PsPhase t1{}, t2{};
-                eos.state_from_rho_e_phase(1, r1t, e1t, t1);
-                eos.state_from_rho_e_phase(2, r2t, e2t, t2);
-                if (t1.valid && t2.valid && t1.P > 0.0) {
-                    const double pref = std::max(std::abs(t1.P), std::abs(t2.P));
-                    const double dp = std::abs(t1.P - t2.P) / pref;
-                    //  [PS-DT] entry/exit |T1-T2| census.
-                    {
-                        const double dt_pre  = std::abs(q1.T - q2.T);
-                        const double dt_post = std::abs(t1.T - t2.T);
-                        ++pd.n_dt;
-                        pd.dtpre_sum  += dt_pre;
-                        pd.dtpost_sum += dt_post;
-                        if (dt_pre  > pd.dtpre_max)  pd.dtpre_max  = dt_pre;
-                        if (dt_post > pd.dtpost_max) pd.dtpost_max = dt_post;
-                    }
-                    const bool moved = (std::abs(t1.T - q1.T) > 1.0) ||
-                                       (std::abs(t2.T - q2.T) > 1.0);
-                    if (moved) { ++pd.n_run_moved; pd.dp_moved_sum += dp;
-                        if (dp > pd.dp_moved_max) pd.dp_moved_max = dp; }
-                    else       { ++pd.n_run_still; pd.dp_still_sum += dp;
-                        if (dp > pd.dp_still_max) pd.dp_still_max = dp; }
-                } else {
-                    ++pd.n_postinval;
-                }
-            } else if (q1.valid && q2.valid && q1.P > 0.0) {
-                const double pref = std::max(std::abs(q1.P), std::abs(q2.P));
-                const double dp = std::abs(q1.P - q2.P) / pref;
-                ++pd.n_skipped; pd.dp_skip_sum += dp;
-                if (dp > pd.dp_skip_max) pd.dp_skip_max = dp;
-            }
-        }
-    }
-
-    U(i,j,k, UALPHA1) = Real(Uv[0]);
-    U(i,j,k, UE1)     = Real(Uv[4]);
-    U(i,j,k, UE2)     = Real(Uv[5]);
-}
 
 // -----------------------------------------------------------------
 //  ps_x3_grid_relax_cell (ps_relax_mode=5, the default): the coupled X3
@@ -474,7 +298,7 @@ ps_canonical_relax_cell(int i, int j, int k,
 //  integrated by sub-stepped backward Euler on that manifold, with one
 //  eligibility question (ps_coexist_action).  The flash stays upstream in
 //  ps_apply_sources as the birth channel; the split transfer source is
-//  compiled out at this mode.  Entry gates as the canonical cell; entry
+//  compiled out at this mode.  Entry gates as mode 2; entry
 //  and projection failures leave the cell untouched, a sub-step bail-out
 //  keeps its partial, admissible, conservative progress.  Writes alpha,
 //  both masses and UE1/UE2; mixture rho, momentum and E are invariant.
@@ -487,7 +311,7 @@ ps_x3_grid_relax_cell(int i, int j, int k,
                       amrex::Real dt, amrex::Real theta)
 {
     using amrex::Real;
-    // Entry gates as the canonical cell applies them (presence refusal counted).
+    // Entry gates (presence refusal counted).
     Real alpha1_in, m1, m2;
     if (!ps_relax_entry_gate(i, j, k, U, alpha1_in, m1, m2)) return;
     hem::V6 Uv = ps_pack_v6(U, i, j, k, alpha1_in, m1, m2);
@@ -527,35 +351,29 @@ ps_x3_grid_relax_cell(int i, int j, int k,
 
 
 
-// CAMR.ps_mech_kernel (0): the alpha-adjusting mechanical kernel of the
-// sequential chain (mode 4) and the post-source reproject.  0 =
-// hem::ps_pressure_relax_cell, Newton on alpha; 1 = hem::ps_pelanti_relax_cell,
-// the acoustic-impedance-weighted delta-alpha solve, which bounds the
-// per-step alpha excursion by the physical partition of the interface
-// pressure jump rather than by a tuned damper.  Docs §5.2.
-inline int ps_mech_kernel()
-{
-    static const int v = ps_dial_int("ps_mech_kernel", 0);
-    return v;
-}
-
 // CAMR.ps_relax_mode (5): 5 = the coupled X3 operator
 // (ps_x3_grid_relax_cell); 0 = mechanical only, for frozen-limit tests;
-// 1 = isochoric P+T equilibrium; 2 = isochoric P + finite-rate thermal
-// (the 2-D pipe-break decks); 4 = the sequential chain; 3 aborts at
-// dispatch.  The default is 5 because the code defaults are the acceptance
+// 2 = isochoric P + finite-rate thermal with the split Gibbs-driven
+// transfer source (the finite-rate alternative, retained as the control
+// closure while the X3 rate closure is under study, docs §5.7).  The
+// default is 5 because the code defaults are the acceptance
 // configuration.  This is the single read site, and an unrecognised value
 // aborts here rather than falling through to mode-0 physics while the
-// split transfer source (gated on != 5) silently re-opens.  3 passes this
-// whitelist so ps_apply_relaxation can refuse it with its replacement
-// named.  Docs/MODEL_AND_ALGORITHM.md §5.7.
+// split transfer source (gated on != 5) silently re-opens.  The former
+// modes 1 (P+T equilibrium) and 4 (sequential chain) and 3 (finite-rate
+// mechanical leg) abort with their replacement named.
 inline int ps_relax_mode()
 {
     static const int m = []() -> int {
         const int v = ps_dial_int("ps_relax_mode", 5);
-        if (v != 0 && v != 1 && v != 2 && v != 3 && v != 4 && v != 5) {
+        if (v == 1 || v == 3 || v == 4) {
             amrex::Abort("CAMR.ps_relax_mode = " + std::to_string(v) +
-                         " is not a mode (valid: 0,1,2,4,5)");
+                         " is retired: use 5 (coupled X3), 2 (finite-rate "
+                         "thermal + split transfer) or 0 (mechanical only)");
+        }
+        if (v != 0 && v != 2 && v != 5) {
+            amrex::Abort("CAMR.ps_relax_mode = " + std::to_string(v) +
+                         " is not a mode (valid: 0,2,5)");
         }
         return v;
     }();
@@ -590,21 +408,7 @@ inline int ps_coexist_action()
     return a;
 }
 
-//  CAMR.ps_mech_close (1): closing mechanical pass after the thermal leg
-//  of the sequential chain — live in mode 4 only — so the chain exits
-//  honouring P1 = P2 instead of leaving a percent-level residual for the
-//  next hydro step's fluxes; 0 = no closing pass, for A/B.  X3 (mode 5)
-//  needs no such pass: its constraint holds at every path evaluation.
-//  Retire-candidate: see docs/DESIGN_DECISIONS.md §5.
-inline int ps_mech_close()
-{
-    static const int v = ps_dial_int("ps_mech_close", 1);
-    return v;
-}
-
-
-
-// CAMR.ps_theta_tau (1e-7 s): thermal relaxation time, modes 2, 4 and 5.
+// CAMR.ps_theta_tau (1e-7 s): thermal relaxation time, modes 2 and 5.
 //   theta > 0   finite backward-Euler rate (the linearised T1-T2 decay time).
 //   theta <= 0  instantaneous thermal equilibrium: at mode 5, T1 = T2 joins
 //               the P1 = P2 constraint.  It never means "thermal off" —
@@ -645,14 +449,6 @@ ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
     // Dispatch on ps_relax_mode (documented at its accessor).
     const int relax_mode = ps_relax_mode();
     const amrex::Real theta = ps_theta_tau();
-    //  Mode 3 (a finite-rate mechanical leg) passes the whitelist in
-    //  ps_relax_mode and is refused here with its replacement named:
-    //  0 for instantaneous mechanical relaxation, 5 for the coupled source.
-    //  Docs/MODEL_AND_ALGORITHM.md §5.2.
-    if (relax_mode == 3) {
-        amrex::Abort("CAMR.ps_relax_mode=3 is retired: use 5 (coupled X3) "
-                     "or 0 (mechanical only)");
-    }
 
     for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
         const amrex::Box bx = mfi.growntilebox(nghost);
@@ -664,12 +460,8 @@ ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
             ps_corridor_project(i, j, k, U, l_pres);
             if (relax_mode == 5) {
                 ps_x3_grid_relax_cell(i, j, k, U, eos, dt, theta);
-            } else if (relax_mode == 4) {
-                ps_canonical_relax_cell(i, j, k, U, eos, dt, theta);
             } else if (relax_mode == 2) {
                 ps_ptg_relax_cell(i, j, k, U, eos, dt, theta);
-            } else if (relax_mode == 1) {
-                ps_pt_equilibrium_relax_cell(i, j, k, U, eos);
             } else {
                 ps_mechanical_relax_cell(i, j, k, U, eos);
             }

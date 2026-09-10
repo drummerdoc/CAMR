@@ -14,15 +14,15 @@ Checks:
      the recorded values (mean 0.0350, C1 exact), at the corridor seed
      prob.alpha_trace=1e-6 and again at prob.alpha_trace=0 (exact-zero
      absent phases; the presence paths must give the same battery)
-  2. B4 canonical flatness — mode 4, u-err ~0.129 at tau=1e-4 AND 1e-7
-     (the stiff-limit corruption is gone); measured at the code default
-     CAMR.ps_flash_metastable_margin = 0.10
-  3. B9 production config (mode 2, tau=1e-4) — u-err matches the recorded
-     value 0.752 (sources re-establish P1 = P2 where the state changed)
+  2. B4 theta-independence — mode 5 at theta = 1e-4 AND 1e-7, u-err
+     ~0.126 at both (the X3 fixed point is theta-independent); measured
+     at the code default CAMR.ps_flash_metastable_margin = 0.10
+  3. B9 finite-rate control closure (mode 2, tau=1e-4) — u-err matches
+     the recorded value 0.752
   4. zero-trace two-phase — frozen B4 with prob.alpha_trace=0 (fold and
      birth live), u-err ~0.131
   5. operator gating — frozen B5 at zero trace, u-err ~0.388; B2 front
-     stable with the pelanti mechanical kernel at mode 4 (umax < 120)
+     stable at mode 5 (umax < 120)
   6. B12 two-phase wall reflection — far field undisturbed, mirror
      symmetry at round-off, per-phase compression bound R <= 0.25
 
@@ -152,24 +152,26 @@ for label, extra, pref in (('alpha_trace=1e-6', {}, 'vc_'),
     check(f'A/C battery mean ~ 0.0350 ({label})', abs(mean - 0.0350) < 2e-3, f'mean={mean:.4f}')
 
 # ---------------------------------------------------------------- check 2
-print('== 2. B4 canonical flatness (mode 4) ==')
-#  Measured at the code default CAMR.ps_flash_metastable_margin = 0.10.
+print('== 2. B4 theta-independence (mode 5) ==')
+#  X3 at theta = 1e-4 and 1e-7 s (flash tau swept with it); the fixed point
+#  is theta-independent, so the u error must not move.  Measured at the
+#  code default CAMR.ps_flash_metastable_margin = 0.10.
 u_errs = {}
 for tau in (1e-4, 1e-7):
     m = run_case('B4-Cross-critical',
-                 {'CAMR.ps_relax_mode': 4, 'CAMR.ps_theta_tau': tau,
-                  'CAMR.ps_mt_tau': tau, 'CAMR.ps_flash_tau': tau},
-                 f'vc4_B4_{tau:.0e}_')
+                 {'CAMR.ps_relax_mode': 5, 'CAMR.ps_theta_tau': tau,
+                  'CAMR.ps_flash_tau': tau},
+                 f'vc5_B4_{tau:.0e}_')
     u_errs[tau] = l2(m, load_hem_analytic('B4'))['u'] if m else float('nan')
-check('B4 u-err ~0.129 at tau=1e-4', abs(u_errs[1e-4] - 0.129) < 0.02,
+check('B4 u-err ~0.126 at theta=1e-4', abs(u_errs[1e-4] - 0.126) < 0.02,
       f'got {u_errs[1e-4]:.3f}')
-check('B4 u-err ~0.129 at tau=1e-7', abs(u_errs[1e-7] - 0.129) < 0.02,
+check('B4 u-err ~0.126 at theta=1e-7', abs(u_errs[1e-7] - 0.126) < 0.02,
       f'got {u_errs[1e-7]:.3f}')
-check('B4 flat across tau', abs(u_errs[1e-4] - u_errs[1e-7]) < 0.01,
+check('B4 flat across theta', abs(u_errs[1e-4] - u_errs[1e-7]) < 0.01,
       f'delta={abs(u_errs[1e-4]-u_errs[1e-7]):.4f}')
 
 # ---------------------------------------------------------------- check 3
-print('== 3. B9 production config (mode 2, tau=1e-4) ==')
+print('== 3. B9 finite-rate control closure (mode 2, tau=1e-4) ==')
 m = run_case('B9-Deep-Expansion',
              {'CAMR.ps_relax_mode': 2, 'CAMR.ps_theta_tau': 1e-4,
               'CAMR.ps_mt_tau': 1e-4},
@@ -211,17 +213,14 @@ else:
     check('frozen B5 u-err ~0.39 (guard retired)',
           abs(e['u'] - 0.388) < 0.03, f"got {e['u']:.3f}")
 m = run_case('B2-Evap-wave',
-             {'CAMR.ps_relax_mode': 4, 'CAMR.ps_theta_tau': 1e-7,
-              'CAMR.ps_mt_tau': 1e-7, 'CAMR.ps_flash_tau': 1e-7,
-              'CAMR.ps_mech_kernel': 1,
-              'prob.alpha_trace': 0.0},
-             'v4_B2_')
+             {'CAMR.ps_relax_mode': 5, 'prob.alpha_trace': 0.0},
+             'v5_B2_')
 if m is None:
-    check('pelanti kernel front stability', False, 'run failed')
+    check('B2 front stability', False, 'run failed')
 else:
     umax = float(np.max(np.abs(m['u'])))
-    check('pelanti kernel: B2 front stable (umax < 120)',
-          umax < 120.0, f'umax={umax:.1f} (standard kernel: ~700)')
+    check('B2 front stable (umax < 120)',
+          umax < 120.0, f'umax={umax:.1f}')
 
 # ---------------------------------------------------------------- check 6
 #  B12 two-phase wall reflection — the per-phase compression bound.

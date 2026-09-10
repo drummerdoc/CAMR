@@ -1,15 +1,10 @@
 #!/usr/bin/env python3
 """
-Run the 1-D Riemann cases against the EXACT solutions.
-
-This replaces run_ac_suite.py as the acceptance harness.  run_ac_suite
-replays each stored reference's job_info -- INCLUDING CAMR.ps_flux -- onto
-the command line, so it silently re-creates the configuration the (retired)
-c1_ references were minted under and cannot see a change to the defaults.
-
-Here the case states come from full_suite.CD, the run settings are stated
-explicitly below, and the comparison is against independently computed exact
-solutions:
+Run the 1-D Riemann cases against the EXACT solutions: the acceptance
+harness.  The case states come from full_suite.CD, the run settings are
+stated explicitly below (never replayed from a stored job_info, which would
+hide a change to the defaults), and the comparison is against independently
+computed exact solutions:
    A/C (single phase)  -> suite/profiles/<case>.csv   (frozen/exact Riemann)
    B   (two phase)     -> suite/exact_<short>_pr.csv  (HEM Riemann)
 
@@ -29,15 +24,11 @@ N     = int(os.environ.get('NCELL', '64'))
 SINGLE = ('A1-Sod-strong','A2-Sod-weak','A3-Lax-like','A4-Double-rare',
           'A5-Two-shock','A6-Near-vacuum','C1-Identity','C2-Acoustic-limit',
           'C3-Strong-shock-V')
-#  All ten B cases now have an independent HEM reference in the standalone's
-#  suite/ (B1/B2/B4/B9 pre-existed; B3/B5/B6/B7/B8/B10 generated 2026-08-11 by
-#  exact_riemann.py, whose CASES table was extended with their initial
-#  conditions -- regenerating B9 with that edit reproduced the stored reference
-#  BIT-IDENTICALLY, which is the check that the edit changed nothing).
-#  B3 is the exception: it is a STATIONARY CONTACT (saturated liquid | saturated
-#  vapour at the same T, hence equal P, both at rest), so its exact solution is
-#  the initial condition for all time and it is built analytically -- the star
-#  solve degenerates at P* == P_L == P_R and returned the PR pole density.
+#  Every B case has an independent HEM reference from the standalone
+#  exact_riemann.py, vendored under refs/exact/.  B3 is a stationary contact
+#  (saturated liquid | saturated vapour at the same T, hence equal P, both at
+#  rest), so its exact solution is the initial condition for all time and is
+#  built analytically: the star solve degenerates at P* == P_L == P_R.
 TWOPHASE = {'B1-Comp-L-expand':'B1',        'B2-Evap-wave':'B2',
             'B3-Sat-LV-contact':'B3',       'B4-Cross-critical':'B4',
             'B5-Both-2P':'B5',              'B6-Sat-V-shock':'B6',
@@ -45,22 +36,16 @@ TWOPHASE = {'B1-Comp-L-expand':'B1',        'B2-Evap-wave':'B2',
             'B9-Deep-Expansion':'B9',       'B10-Cross-critical-hot':'B10',
             'B11-Subcrit-contact-dT':'B11'}
 
-#  STAGE 4 (2026-08-15, PLAN_measurements_and_fixes.md): THE ACCEPTANCE
-#  BRACKET.  Every HEM reference above rewards the equilibrium limit (D21):
-#  a model permanently at equal p and T scores better while containing less
-#  physics.  The battery therefore now scores BOTH limits:
-#    * B11 is the FROZEN-limit CONTACT anchor (full scored membership: its
-#      exact solution is the translated initial condition -- zero
-#      equilibration -- so a model that equilibrates at a smeared contact is
-#      punished there);
-#    * the flashing pair below is ALSO scored against the FROZEN (tau ->
-#      infinity, no phase change) exact solutions of the same ICs
-#      (exact_riemann.py --model frozen, N=800, HEM regen verified
-#      bit-identical the day these were minted).  The same plotfile gets an
-#      HEM row and a FROZEN row; the truth lies between them, so a model can
-#      no longer win a row by sitting at either limit.  While B2/B9 abort
-#      (their standing red state) neither row scores -- the bracket becomes
-#      informative the day they complete (Stage 6).
+#  The acceptance bracket.  Every HEM reference rewards the equilibrium
+#  limit: a model permanently at equal p and T scores better while
+#  containing less physics.  The battery therefore scores both limits: B11
+#  is the frozen-limit contact anchor (its exact solution is the translated
+#  initial condition, zero equilibration, so a model that equilibrates at a
+#  smeared contact is punished there), and the flashing pair below is also
+#  scored against the frozen (tau -> infinity, no phase change) exact
+#  solutions of the same initial conditions.  The same plotfile gets an HEM
+#  row and a FROZEN row; the truth lies between them, so a model cannot win
+#  a row by sitting at either limit (docs/VERIFICATION.md section 1).
 FROZEN_BRACKET = {'B2-Evap-wave':'B2', 'B9-Deep-Expansion':'B9'}
 
 def load_profile(name):
@@ -83,17 +68,12 @@ def run(case, flux, pref):
         'prob.x_diaph':0.5,'prob.alpha_trace':0.0,'prob.p_amb':5.0e6,
         'CAMR.cfl':0.25,'CAMR.do_mol':0,'stop_time':tf,
         'CAMR.ps_flux':flux,'CAMR.ps_wp_order':2}
-    #  PROBE MODE (S4, 2026-08-17): PROBE_OV="k=v,k=v" appends overrides
-    #  (applied last, so they always win).  Default off.
-    #  THETA-DEFAULTS (2026-08-24) + BATCH 3a: the acceptance configuration
-    #  is PURE CODE DEFAULTS for ALL 20 cases — this harness passes NO
-    #  relaxation dials at all, so any change to any default is visible in
-    #  this table (the G-DEF principle, completed).  The historical A/C
-    #  sixth dial (ps_do_relax=0, AUDIT B3) was dropped after the measured
-    #  flip: all 9 A/C rows at bare defaults (relaxation ON) are identical
-    #  to the baseline at every printed decimal — relaxation is inert on
-    #  single-phase states (D22 A/C invariance, WORKLOG 2026-08-24 B3a).
-    #  (PS_NODIALS is retired: "no dials" is now simply the default path.)
+    #  The acceptance configuration is the code's defaults for all 20 cases:
+    #  this harness passes no relaxation dial at all, so any change to any
+    #  default is visible in the table.  Relaxation is inert on single-phase
+    #  states, so the A/C rows are the same with it on or off.  PROBE_OV=
+    #  "k=v,k=v" appends overrides for one-off probes (applied last, so they
+    #  always win).
     ov.update(F.camr_side(c[1],'L')); ov.update(F.camr_side(c[2],'R'))
     #  PROBE_OV is applied LAST so its overrides always win (applied before
     #  camr_side it would be silently clobbered on any prob.* key it sets).
@@ -113,9 +93,9 @@ def read(pref, tf=None):
     g=[p for p in glob.glob(pref+'*') if os.path.isdir(p) and '.old' not in p and '.temp' not in p]
     if not g: return None
     p=max(g,key=os.path.getmtime)
-    #  AUDIT 2026-08-24 A6: verify the plotfile is from THIS run at THE
-    #  requested time.  Without this a run that hit max_step early (rc=0),
-    #  or wrote no new plotfile, scored a stale/short plotfile as `ok`.
+    #  The plotfile must be from this run at the requested time: a run that
+    #  hit max_step early (rc=0), or wrote no new plotfile, would otherwise
+    #  score a stale or short plotfile as `ok`.
     if tf is not None:
         _, t = R.hdr(p)
         if abs(t - tf) > max(1e-9, 1e-6*abs(tf)):
@@ -133,16 +113,17 @@ def l2(num, ana):
     So rel-L2 flatters rho and P by their background and is honest about u,
     which makes the u column look systematically worse and invites the
     conclusion that velocity is the badly-resolved field.  It is not.
-    Measured 2026-08-11: normalise instead by each field's own VARIATION
+    Normalising instead by each field's own VARIATION
     across the exact solution, max-min, and all three land in one band
     (5.6e-3 .. 1.6e-1) with u the BEST-resolved field in five cases.
     C2-Acoustic is the extreme -- a 0.05 bar perturbation on 30 bar, so its P
     denominator is ~6e2x the actual signal, and its apparent 1e-4 vs 1.2e-1
     rho/u split is entirely the denominators.
 
-    Both are printed.  rel-L2 stays FIRST and unchanged so the recorded
-    acceptance numbers in WORKLOG.md remain directly comparable; the variation
-    columns are what you use to compare one field against another.
+    Both are printed.  rel-L2 stays first and unchanged so the recorded
+    acceptance numbers (refs/exact_suite_BASE.txt) remain directly
+    comparable; the variation columns are what you use to compare one field
+    against another.
 
     Third rule: where the exact field is identically zero (B3 is a stationary
     contact, exact u == 0 everywhere) a relative norm has no denominator.
@@ -189,9 +170,8 @@ def main():
           ' identically zero there)' % '')
     for case in cases:
         pref='ex_%s_%s_'%(flux,case.split('-')[0])
-        #  AUDIT 2026-08-24 B16: a timeout or a missing reference used to
-        #  raise out of main() and kill the WHOLE battery (after burning the
-        #  run time); mark the row failed and keep going instead.
+        #  A timeout or a missing reference marks the row failed and the
+        #  battery keeps going.
         try:
             rc,out=run(case,flux,pref)
         except subprocess.TimeoutExpired:

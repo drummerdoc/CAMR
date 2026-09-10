@@ -41,7 +41,7 @@ The 1-D acceptance battery and the 2-D pipe-break decks run different relaxation
 
 They differ for a reason, not by accident. The 1-D battery is the correctness instrument and runs the code's defaults so that any change to a default is visible in the acceptance table; mode 5 is the default because its fixed point is the HEM flash and it is the configuration the limit tests and the 0-D self-tests certify. The 2-D decks are production runs that predate mode 5: mode 2 retains thermal non-equilibrium ($T_l \ne T_v$) so the finite-rate mass transfer keeps a Gibbs driving force and flashes continuously over ~τ/Δt steps (τ ≪ Δt makes the transfer impulsive), the 1e-3 s rates spread the plume's flashing over the resolved time scale, flash is off because the reservoir is already on the dome and nucleation at the orifice lip is the known amplifier of round-off asymmetry, and the physical viscosity gives the orifice shear layer a resolved thickness instead of a grid-scale checkerboard. The deck headers still describe mode 1; the decks set mode 2.
 
-Whether to move the 2-D decks to mode 5 in the next production run, so that modes 1, 2 and 4 and their sub-dials can be retired and the two configurations become one story, is an open decision, [DECIDE-12]. Until it is taken, mode 2 must stay selectable.
+Mode 5 has since completed the production deck (demo2 to 2.5 ms, both restart windows) at the cost of mode 2 and with a cleaner first window; two closure-level questions remain open — a bulk liquid expanded past its spinodal in the second window, and the condensation shell at the jet head ([DECIDE-32]) — so mode 2 is retained as the finite-rate control closure while they are settled, and the 2-D decks still pin it. Modes 1 and 4 are retired.
 
 ## 3. Dial reference
 
@@ -61,11 +61,9 @@ The table below is built from the read sites in `Source/` (`pp.query`, `pp.conta
 | `ps_bl_reflux` | 1 | Coarse–fine treatment of the non-conservative slots: nonzero = co-move α with its refluxed partial mass in `CAMR::reflux` (without it $\rho_k = m_k/\alpha_k$ drifts in the C-F layer and XC2D dies at coarse step 22); 0 = off (conservative FluxRegister only, for A/B). Decks historically set 2, which is still accepted and means on. | production |
 | `ps_do_relax` | 1 | Run the relaxation stage. 0 with mode 5 and `ps_mt_tau > 0` aborts (no operator would own mass transfer). Force-added to `job_info`. | production |
 | `ps_strang` | 0 | 1 = Strang splitting of the reaction stage around the hydro (second order in time with `do_mol=1`); 0 = Lie. Force-added. | alternative |
-| `ps_relax_mode` | 5 | 5 = X3 coupled P–T–g source; 0 = instantaneous mechanical only (frozen-limit runs); 1 = instantaneous P+T; 2 = P plus finite-rate thermal at 1/`ps_theta_tau`; 4 = canonical chain; 3 (retired) and any other value abort. | production (5, 0); 1/2/4 retire-candidate [DECIDE-3], blocked by [DECIDE-12] |
+| `ps_relax_mode` | 5 | 5 = X3 coupled P–T–g source; 0 = instantaneous mechanical only (frozen-limit runs); 2 = P plus finite-rate thermal at 1/`ps_theta_tau` with the split Gibbs-driven transfer source (the finite-rate control closure); 1, 3, 4 (retired) and any other value abort. | production (5, 0); 2 control |
 | `ps_theta_tau` | 1e-7 s | Thermal relaxation time; ≤ 0 means instantaneous thermal equilibrium in X3. | production |
-| `ps_mech_kernel` | 0 | Mechanical kernel for modes 4/2 reproject: 0 = validated α-adjusting projection, 1 = impedance-weighted Δα solve. | retire-candidate [DECIDE-3] |
-| `ps_mech_close` | 1 | Mode-4 mechanical re-closure after the thermal leg. | retire-candidate [DECIDE-3] |
-| `ps_coexist_action` | 0 | Response when a phase leaves the coexistence band $(T_{\mathrm{triple}}, T_{\mathrm{crit}})$: 0 count only (the runaway clause is always active); 1 abort with cell context. The former hard side tests 2/3/4 are retired and abort. Modes 4 and 5. | production (0); 1 diagnostic |
+| `ps_coexist_action` | 0 | Response when a phase leaves the coexistence band $(T_{\mathrm{triple}}, T_{\mathrm{crit}})$: 0 count only (the runaway clause is always active); 1 abort with cell context. The former hard side tests 2/3/4 are retired and abort. Mode 5. | production (0); 1 diagnostic |
 | `ps_pres_floor` | 0 Pa | > 0: `ps_apply_floor` raises each Independent phase's energy so its EOS pressure is at least this. Pipe-break 1e5. | production (2-D) |
 | `ps_temp_floor` | 0 K | > 0: likewise for temperature; the PR two-phase EOS is invalid below the triple point 216.6 K. Pipe-break 216.6. | production (2-D) |
 | `ps_tfloor_fold` | 0 K | > 0: fold a phase whose temperature falls below this into its host. Deliberately separate from `ps_temp_floor` (binding them folded 1132 mixed cells to a pure phase at densities where none exists). | alternative |
@@ -90,7 +88,7 @@ The table below is built from the read sites in `Source/` (`pp.query`, `pp.conta
 | `ps_mt_form` | 0 | 0 exact-relaxation to the equilibrium target; 1 backward-Euler SRT form. | retire-candidate [DECIDE-3] |
 | `ps_mt_no_dome_gate` | 0 | 1 disables the coexistence-band gate on transfer (non-CO₂ or mock EOS). | alternative |
 | `ps_single_phase_threshold` | 5e-3 | α below which a phase is skipped by the relaxation kernels. | production |
-| `ps_pr_fd1` | 0 | One-sided finite difference in the pressure-relaxation Newton (modes 1/2). | retire-candidate [DECIDE-3] |
+| `ps_pr_fd1` | 0 | One-sided finite difference in the pressure-relaxation Newton (mode 2). | retire-candidate [DECIDE-3] |
 | `ps_alpha_cond` | 2e-2 | Presence: $\alpha_k \ge \alpha_{\mathrm{cond}}$ is Independent (full six-equation phase). | production |
 | `ps_alpha_birth` | 4e-2 | Flash-nucleation seed level, $= 2\alpha_{\mathrm{cond}}$. | production |
 | `ps_presence_vanish` | 1e-8 | $\alpha_k \le \alpha_{\mathrm{vanish}}$ (or $m_k \le 0$) is ABSENT; the vanish fold's threshold. Must stay > 0. | production |

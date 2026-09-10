@@ -1,0 +1,16 @@
+tag: BASE (post-cleanup baseline, re-recorded after the solver changes of the mode-5 qualification)
+camr: co2-eos at the commit that adds this file (retirement of relaxation modes 1 and 4)
+amrex: 65db2e4e678a15acec1b666d4c42e339ad5b9ec0
+host: Linux aarch64 (Cowork VM), g++ 11.4.0
+exe: CAMR1d.gnu.PS.PR.ex, DIM=1 USE_MPI=FALSE COMP=gnu Eos_Model=PR TINY_PROFILE=FALSE XTRA_CXXFLAGS="-ffp-contract=off"
+gate: verify_canonical ALL PASS (A/C mean 0.0350, C1 exact, B12 R=0.0097; checks 2 and 5b re-baselined onto mode 5:
+      B4 u-err 0.126 at theta = 1e-4 and 1e-7, B2 max|u| = 31.7)
+acceptance table (refs/exact_suite_BASE.txt) vs the pre-cleanup table: B2 P 0.1516 -> 0.1524, B7 u 0.7465 -> 0.7478,
+      B11 u/P +-1e-4; every other row identical to four decimals.
+fingerprints: characterization/BASE_nc_defaults.json and BASE_nc_matched.json (21 cases each, contraction-free).
+      Relative to the pre-cleanup BASE_nc_* records (now in git history): A/C rows at 1e-16 (the additive
+      energy-identity resync), B rows at 1e-8 .. 1e-3 (the X3 Newton predictor and line search, the additive
+      resync), B12 alpha_1 5e-3; in the matched configuration (trace seed 1e-6) A1 alpha_1 6e-3 and A6 8e-4
+      (the Corridor projection acting on the shock-drifted trace).  Solver changes, each with its
+      derivation: docs/MODEL_AND_ALGORITHM.md 4.8 (Corridor projection, seeding), 5.1 (X3 Newton),
+      8.3 (energy-identity resync); the measurements behind them: docs/PLAN_cleanup_for_sharing.md 3.11.
