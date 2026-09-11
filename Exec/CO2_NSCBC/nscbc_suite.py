@@ -58,8 +58,8 @@ def run(name, dim, args, stop, plot_per):
     rc = -1 for a case that is not finished yet."""
     import time, re
     d = os.path.join(HERE, 'runs', name); os.makedirs(d, exist_ok=True)
-    if ONLY and ONLY not in name:
-        return -99, [], 0
+    if ONLY and ((ONLY.endswith('$') and name != ONLY[:-1]) or (not ONLY.endswith('$') and ONLY not in name)):
+        return -99, [], 0   # NSCBC_ONLY=substring, or exact name with a trailing $
     plots = lambda: sorted(p for p in glob.glob(os.path.join(d, 'plt_*')) if not p.endswith('.old'))
     chks  = lambda: sorted(p for p in glob.glob(os.path.join(d, 'chk_*')) if not p.endswith('.old'))
     resume = os.environ.get('NSCBC_RESUME', '') != ''
