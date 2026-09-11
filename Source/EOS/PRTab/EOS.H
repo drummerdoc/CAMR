@@ -47,6 +47,7 @@
 // PR state machinery (a forwarder to ../PR): analytic reconstruction
 // from T, the exact fallback, and the validity probe.
 #include "hem_pr_state.H"
+#include "pr_psat_tab.H"
 // Table lookups (rho,e) -> (T,s) on the three branches.
 #include "prtab_bicubic.H"
 

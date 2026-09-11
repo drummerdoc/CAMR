@@ -39,6 +39,7 @@
 #include "PhysicsConstants.H"
 
 #include "hem_pr_state.H"
+#include "pr_psat_tab.H"
 
 #define NUM_SPECIES 3
 

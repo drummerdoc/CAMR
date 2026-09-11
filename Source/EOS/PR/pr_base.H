@@ -6,7 +6,8 @@
 //  same PR cubic, so the fluid, the critical / triple constants, the
 //  density domain and the saturation entries are one definition).
 //  Included by PR/EOS.H and PRTab/EOS.H INSIDE namespace EOS, before
-//  the (rho,e) solves; carries no #include of its own.
+//  the (rho,e) solves; carries no #include of its own (pr_psat_tab.H is
+//  included by the backend header at file scope).
 // =====================================================================
 
   // ----------------------------------------------------------------
@@ -77,25 +78,29 @@
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   bool        has_density_pole() { return true; }
 
-  // Saturation pressure P_sat(T) [Pa]: the Span-Wagner reduced-vapour-
-  // pressure fit for CO2, clamped to P_triple below T_triple and to P_c
-  // above T_c.  Exposed through the EOS so the flash and relaxation stay
-  // fluid-agnostic (PsPhaseAPI.Psat_of_T).  Pure arithmetic: device-safe.
+  // Saturation pressure P_sat(T) [Pa]: this EOS's own coexistence curve —
+  // the Peng-Robinson equal-fugacity pressure of co2_fluid(), tabulated
+  // (pr_psat_tab.H, cubic Hermite on knots uniform in sqrt(1 - T/Tc),
+  // 4e-9 relative) so the flash trigger, the Corridor projection and the
+  // fan sit on the same dome the two-phase states are built on
+  // (satStateL/V, co2_sat_LV).  Clamped to the coexistence value at
+  // T_triple below it and to P_c within 0.5 K of T_c.  Pure arithmetic:
+  // device-safe.  docs/DESIGN_DECISIONS.md R-16.
   AMREX_GPU_HOST_DEVICE
   AMREX_FORCE_INLINE
   amrex::Real Psat(amrex::Real T)
   {
-      const hem::PRFluid f = co2_fluid();
-      const amrex::Real T_c = f.pr.Tc;
-      const amrex::Real P_c = f.pr.Pc;
-      if (T <= T_triple()) return amrex::Real(5.18e5);   // triple-point P
-      if (T >= T_c)        return P_c;
-      const amrex::Real tau = amrex::Real(1.0) - T / T_c;
-      const amrex::Real s = amrex::Real(-7.0602087) * tau
-                          + amrex::Real( 1.9391218) * std::pow(tau, amrex::Real(1.5))
-                          + amrex::Real(-1.6463597) * std::pow(tau, amrex::Real(2.5))
-                          + amrex::Real(-3.2995634) * std::pow(tau, amrex::Real(5.0));
-      return P_c * std::exp(T_c / T * s);
+      using namespace pr_psat;
+      if (T <= T_triple()) return amrex::Real(P_TRIPLE);
+      double th = 1.0 - double(T) / TC;
+      th = (th > 0.0) ? std::sqrt(th) : 0.0;
+      if (th <= TH_LO) return amrex::Real(co2_fluid().pr.Pc);
+      double x = (th - TH_LO) / DTH;
+      x = (x > double(NPS - 1) - 1e-12) ? double(NPS - 1) - 1e-12 : x;
+      const int i = int(x);
+      const double t = x - double(i), h = DTH, t2 = t * t, t3 = t2 * t;
+      return amrex::Real(PS[i] * (2*t3 - 3*t2 + 1) + PSP[i] * h * (t3 - 2*t2 + t)
+                       + PS[i+1] * (-2*t3 + 3*t2) + PSP[i+1] * h * (t3 - t2));
   }
 
   // Saturated liquid / vapour (rho, e) at T on the PR coexistence curve,
