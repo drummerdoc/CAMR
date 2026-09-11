@@ -41,7 +41,7 @@ OUT  = os.environ.get('FLASH_OUT', './flash_red_runs')
 os.makedirs(OUT, exist_ok=True)
 
 T_SCORE = 8.0e-5           # scoring time (the reference dies just past it)
-RED = {'ref': 2.3644, 'leg': 2.1022, 'v2e': 1.4838, 'v2s': 1.6675}   # v2s re-pinned at [DECIDE-27c], sigma 0
+RED = {'ref': 2.3649, 'leg': 2.1022, 'v2e': 1.4838, 'v2s': 2.4689}   # re-pinned at R-16 (one saturation curve), sigma 0
 
 COMMON = ['inputs', 'CAMR.cfl=0.25', 'prob.alpha_trace=1.0e-6',
           'prob.u_L=0', 'prob.u_R=0', 'stop_time=2.5e-4',
@@ -117,7 +117,7 @@ def main():
                     'ABORTED — ALARM: the reference completes at bare defaults')
         vs = ('%+8.1f%%' % (100.0 * (q['vented'] - ref_v) / ref_v)) if (ref_v and tag != 'ref') else '-'
         print('%-5s %10.3e %12.4f %10.4f %9s   %s' % (tag, q['t'], q['vented'], RED[tag], vs, note))
-    print('\nPin: v2s deficit -29.5%% at [DECIDE-27c] (the face carries no flash physics of its own, B-4); zero nscbc_zg refusals.')
+    print('\nPin: v2s +4.4%% vs the boundary-free reference at R-16; zero nscbc_zg refusals.')
 
 if __name__ == '__main__':
     main()

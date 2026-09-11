@@ -1,19 +1,19 @@
-x-lo  runs/s0/plt_xlo_00300
-       transverse spread: rho=3.41e-13  P=7.45e-09  alpha_1=8.88e-16  u_axial=4.26e-14
-x-hi  runs/s0/plt_xhi_00300
-       transverse spread: rho=3.41e-13  P=7.45e-09  alpha_1=8.88e-16  u_axial=4.26e-14
-y-lo  runs/s0/plt_ylo_00300
+x-lo  runs/r16/plt_xlo_00300
+       transverse spread: rho=3.41e-13  P=7.45e-09  alpha_1=8.88e-16  u_axial=8.53e-14
+x-hi  runs/r16/plt_xhi_00300
+       transverse spread: rho=3.41e-13  P=7.45e-09  alpha_1=8.88e-16  u_axial=9.95e-14
+y-lo  runs/r16/plt_ylo_00300
        transverse spread: rho=0.00e+00  P=0.00e+00  alpha_1=0.00e+00  u_axial=0.00e+00
-y-hi  runs/s0/plt_yhi_00300
+y-hi  runs/r16/plt_yhi_00300
        transverse spread: rho=0.00e+00  P=0.00e+00  alpha_1=0.00e+00  u_axial=0.00e+00
 
 max|a-b| / max|a| per field   (tol 1.0e-12)
 pair                rho          P    alpha_1    u_axial
-x-lo vs x-hi   1.64e-14   1.09e-13   3.99e-14   9.07e-14
-x-lo vs y-lo   1.50e-14   7.49e-14   2.85e-14   9.44e-14
-x-lo vs y-hi   1.84e-14   8.19e-14   3.50e-14   1.11e-13
-x-hi vs y-lo   1.66e-14   7.91e-14   3.35e-14   8.58e-14
-x-hi vs y-hi   2.11e-14   9.35e-14   3.03e-14   1.03e-13
-y-lo vs y-hi   1.70e-14   7.87e-14   4.11e-14   1.33e-13
+x-lo vs x-hi   2.97e-14   1.32e-13   7.75e-14   5.42e-14
+x-lo vs y-lo   2.59e-14   1.82e-13   8.54e-14   6.58e-14
+x-lo vs y-hi   3.26e-14   1.41e-13   9.79e-14   3.58e-14
+x-hi vs y-lo   2.68e-14   1.61e-13   5.37e-14   7.22e-14
+x-hi vs y-hi   2.23e-14   1.00e-13   3.86e-14   4.23e-14
+y-lo vs y-hi   2.60e-14   1.17e-13   5.97e-14   7.36e-14
 
-PASS: worst relative difference 1.33e-13 <= tol 1.0e-12
+PASS: worst relative difference 1.82e-13 <= tol 1.0e-12

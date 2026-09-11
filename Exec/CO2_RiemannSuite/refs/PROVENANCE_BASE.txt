@@ -1,5 +1,5 @@
-tag: BASE (post-cleanup baseline, re-recorded after the solver changes of the mode-5 qualification)
-camr: co2-eos at the commit that adds this file (retirement of relaxation modes 1 and 4)
+tag: BASE (re-recorded 2026-09-11 at R-16, the PR coexistence Psat; previous BASE at 6a28954 in git history)
+camr: co2-eos at 5ec44e1 (R-16) + the docs/re-baseline commit that adds this file
 amrex: 65db2e4e678a15acec1b666d4c42e339ad5b9ec0
 host: Linux aarch64 (Cowork VM), g++ 11.4.0
 exe: CAMR1d.gnu.PS.PR.ex, DIM=1 USE_MPI=FALSE COMP=gnu Eos_Model=PR TINY_PROFILE=FALSE XTRA_CXXFLAGS="-ffp-contract=off"
@@ -14,3 +14,7 @@ fingerprints: characterization/BASE_nc_defaults.json and BASE_nc_matched.json (2
       (the Corridor projection acting on the shock-drifted trace).  Solver changes, each with its
       derivation: docs/MODEL_AND_ALGORITHM.md 4.8 (Corridor projection, seeding), 5.1 (X3 Newton),
       8.3 (energy-identity resync); the measurements behind them: docs/PLAN_cleanup_for_sharing.md 3.11.
+R-16 re-baseline (this record vs the 6a28954 BASE): A/C rows identical (defaults) / 1e-9 (matched);
+      B2 P 0.1524 -> 0.1496, B7 P 0.3263 -> 0.3282, B9 P 0.1449 -> 0.1447; fingerprints B2/B7/B9 at 1e-3
+      (pressure), matched A1/A6 at 1e-9..1e-10.  Also in this tree: [DECIDE-27c] (NSCBC mixture pressure,
+      sigma 0) — inert on this battery (NSCBC off).

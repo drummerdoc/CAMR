@@ -1,8 +1,8 @@
 == xlo
-[PS-VALIDATE] D post sources (flash): nonfinite=0 alpha_oob=0 m_neg=0 massid=0 (worst 1.63769225e-16) energyid=0 (worst 6.250296516e-16) rho_domain bulk=0 trace=0 reachable bulk=0 trace=0 splitamp=1 e1_min=31824.42265 e2_max=99808.02111
+[PS-VALIDATE] D post sources (flash): nonfinite=0 alpha_oob=0 m_neg=0 massid=0 (worst 2.167252612e-16) energyid=0 (worst 6.517148371e-16) rho_domain bulk=0 trace=0 reachable bulk=0 trace=0 splitamp=1 e1_min=25839.125 e2_max=124740.9891
 == xhi
-[PS-VALIDATE] D post sources (flash): nonfinite=0 alpha_oob=0 m_neg=0 massid=0 (worst 1.63769225e-16) energyid=0 (worst 4.688245843e-16) rho_domain bulk=0 trace=0 reachable bulk=0 trace=0 splitamp=1 e1_min=31824.42265 e2_max=99808.02111
+[PS-VALIDATE] D post sources (flash): nonfinite=0 alpha_oob=0 m_neg=0 massid=0 (worst 2.040738102e-16) energyid=0 (worst 4.786641863e-16) rho_domain bulk=0 trace=0 reachable bulk=0 trace=0 splitamp=1 e1_min=25839.125 e2_max=124740.9891
 == ylo
-[PS-VALIDATE] D post sources (flash): nonfinite=0 alpha_oob=0 m_neg=0 massid=0 (worst 1.637390712e-16) energyid=0 (worst 4.690618988e-16) rho_domain bulk=0 trace=0 reachable bulk=0 trace=0 splitamp=1 e1_min=31824.42265 e2_max=99808.02111
+[PS-VALIDATE] D post sources (flash): nonfinite=0 alpha_oob=0 m_neg=0 massid=0 (worst 1.928496177e-16) energyid=0 (worst 3.712417802e-16) rho_domain bulk=0 trace=0 reachable bulk=0 trace=0 splitamp=1 e1_min=25839.125 e2_max=124740.9891
 == yhi
-[PS-VALIDATE] D post sources (flash): nonfinite=0 alpha_oob=0 m_neg=0 massid=0 (worst 1.63769225e-16) energyid=0 (worst 4.684319353e-16) rho_domain bulk=0 trace=0 reachable bulk=0 trace=0 splitamp=1 e1_min=31824.42265 e2_max=99808.02111
+[PS-VALIDATE] D post sources (flash): nonfinite=0 alpha_oob=0 m_neg=0 massid=0 (worst 1.928496177e-16) energyid=0 (worst 5.328247319e-16) rho_domain bulk=0 trace=0 reachable bulk=0 trace=0 splitamp=1 e1_min=25839.125 e2_max=124740.9891

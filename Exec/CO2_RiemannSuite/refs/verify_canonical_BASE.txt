@@ -28,12 +28,12 @@
   [PASS] B4 u-err ~0.126 at theta=1e-7  (got 0.126)
   [PASS] B4 flat across theta  (delta=0.0000)
 == 3. B9 finite-rate control closure (mode 2, tau=1e-4) ==
-  [PASS] B9 u-err reproduces the recorded value (~0.752)  (got 0.752)
+  [PASS] B9 u-err reproduces the recorded value (~0.752)  (got 0.754)
 == 4. zero-trace two-phase: frozen B4 with exactly absent phases (fold + birth live) ==
   [PASS] frozen B4 zero-trace u-err ~0.131  (got 0.127)
 == 5. operator gating under presence ==
   [PASS] frozen B5 u-err ~0.39 (guard retired)  (got 0.402)
-  [PASS] B2 front stable (umax < 120)  (umax=31.7)
+  [PASS] B2 front stable (umax < 120)  (umax=31.4)
 == 6. B12 two-phase wall reflection: per-phase compression bound ==
          P2/P1=1.83  rho_1: 936.4->941.5  rho_2: 88.28->138.19  R=0.0097
          alpha_1 invariance max|alpha_1-alpha_1^0| = 4.39e-03   (0 => alpha is frozen through the acoustic waves)
