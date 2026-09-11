@@ -35,3 +35,8 @@ N3 alpha blob (mixture, alpha_1 0.05 -> 0.20, u0 = 50 m/s, same faces)
 N4 mean-pressure recovery, vapour at rest, p0 = 1.1 p_amb, both faces NSCBC, (P_mean - P_amb)/(p0 - P_amb):
   sigma 0     1.00 .76 .63 .53 .29 .25 .06 .01 .008 .006 .005 .003 .001 ... (per ms) — gone in ~7 ms
   sigma 0.25  1.00 .80 .68 .59 .39 .36 .19 .13 .13 .10 .08 .07 .04 .03 .02 .02 .015 .01 — ~5x slower
+N2 2-D cylindrical pressure pulse (vapour, 1 % of p0, w = 0.08 m, 64x64 on 1 m x 1 m, four NSCBC faces)
+  amplitude reaching the faces ~2.2 kPa (t = 2 ms; 1/sqrt(r) decay from 19.6 kPa); residual after
+  the wave has left (t >= 4 ms): sigma 0  143 Pa (~6.5 % of the arriving amplitude, corners and
+  oblique incidence — the 1-D normal-incidence figure is 0.05 %); sigma 0.25  235-330 Pa (~11-15 %)
+  and it decays more slowly (0.041 -> 0.012 of A over 4-6 ms against 0.008 -> 0.007).

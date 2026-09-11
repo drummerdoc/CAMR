@@ -48,6 +48,7 @@ def t_of(p):
 
 ONLY = os.environ.get('NSCBC_ONLY', '')   # substring filter on the case name (chunked runs)
 REUSE = os.environ.get('NSCBC_REUSE', '') != ''   # score existing output without re-running
+CHUNK = int(os.environ.get('NSCBC_CHUNK', '250'))  # steps per checkpoint chunk
 
 def run(name, dim, args, stop, plot_per):
     """Run one case, in checkpoint chunks so a wall budget (NSCBC_BUDGET s,
@@ -70,12 +71,12 @@ def run(name, dim, args, stop, plot_per):
             subprocess.run(['mv', old, old + '.old'])
         if os.path.exists(os.path.join(d, 'run.log')): open(os.path.join(d, 'run.log'), 'w').close()
     base = [exe(dim), os.path.join(HERE, 'inputs.base'), f'stop_time={stop}', f'amr.plot_per={plot_per}',
-            'amr.plot_file=plt_', 'amr.checkpoint_files_output=1', 'amr.check_file=chk_', 'amr.check_int=250'] + args
+            'amr.plot_file=plt_', 'amr.checkpoint_files_output=1', 'amr.check_file=chk_', f'amr.check_int={CHUNK}'] + args
     t0 = time.time(); rc = 0
     while True:
         c = chks()
         step = int(c[-1].split('_')[-1]) if c else 0
-        cmd = base + ([f'amr.restart={os.path.basename(c[-1])}'] if c else []) + [f'max_step={step + 250}']
+        cmd = base + ([f'amr.restart={os.path.basename(c[-1])}'] if c else []) + [f'max_step={step + CHUNK}']
         with open(os.path.join(d, 'run.log'), 'a') as fh:
             rc = subprocess.run(cmd, cwd=d, stdout=fh, stderr=subprocess.STDOUT).returncode
         if rc != 0: break
@@ -193,9 +194,9 @@ def test_N2():
     from fingerprint_plt import load
     for sig in (0.25, 0.0):
         name = f'N2_s{sig}'
-        args = ['amr.n_cell=128 128', 'amr.max_grid_size=32', f'CAMR.ps_bc_nscbc_sigma={sig}', 'prob.ic=2', 'prob.amp=0.01',
-                'prob.w=0.05', 'amr.derive_plot_vars=pressure']
-        rc, fs, zg = run(name, 2, args, 8.0e-3, 1.0e-3)
+        args = ['amr.n_cell=64 64', 'amr.max_grid_size=32', f'CAMR.ps_bc_nscbc_sigma={sig}', 'prob.ic=2', 'prob.amp=0.01',
+                'prob.w=0.08', 'amr.derive_plot_vars=pressure']
+        rc, fs, zg = run(name, 2, args, 6.0e-3, 1.0e-3)
         if rc == -99: continue
         if rc == -1: rows.append((name, 'UNFINISHED (resume with NSCBC_RESUME=1)')); continue
         if rc != 0 or len(fs) < 3:
