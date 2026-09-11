@@ -194,7 +194,6 @@ struct PsCounters {
     long   nscbc_zg_slots    = 0;
     long   nscbc_zg_pack     = 0;
     long   nscbc_flash       = 0;
-    long   nscbc_pmix_fail   = 0;
     // ---- clean_state mass repairs (PS_guards.H), [PS-FLOOR] ----------
     long   mass_neg          = 0;
     long   mass_nonfinite    = 0;
@@ -252,7 +251,7 @@ struct PsCounters {
         ctop_seen = ctop_sub = ctop_host_floor = 0;
         flux_sanit = reflux_cap = reflux_clamp = 0;
         nscbc_zg_c = nscbc_zg_sup = nscbc_zg_slots = nscbc_zg_pack = 0;
-        nscbc_flash = nscbc_pmix_fail = 0;
+        nscbc_flash = 0;
     }
     void reset_mass() { mass_neg = mass_nonfinite = 0; mass_neg_kg = 0.0; }
     void reset_face() {

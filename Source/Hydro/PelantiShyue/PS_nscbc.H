@@ -9,8 +9,9 @@
 //  persistent boundary state.  With u_out the outward normal velocity and
 //  ρc the Wallis frozen impedance of the boundary cell (as the flux):
 //      R+ = u_out + P/(ρc)  leaves; extrapolated (minmod slope, 3 cells)
-//      R- = u_out − P/(ρc)  enters; set from the far field (u=0, P_amb)
-//                           with the restoring pull −σ(P_N − P_amb)/(ρc)
+//      R- = u_out − P/(ρc)  enters; set from the far field (u=0, P_amb);
+//                           σ > 0 holds back σ(P_N − P_amb)/(ρc) of it (a
+//                           partial reflection, default 0)
 //      u_g = ½(R+ + R-),  P_g = ½ρc(R+ − R-).
 //  Ghost thermodynamics never inverts (ρ, P): each present phase moves
 //  along its own isentrope by the common dP, in one linearised step or
@@ -43,11 +44,17 @@ namespace PS_NSCBC {
 // Runtime tunables, resolved in BCfill.cpp (dials documented there).
 struct Params {
     amrex::Real P_amb   = amrex::Real(1.01325e5);   // Pa, far-field pressure of this face
-    amrex::Real sigma   = amrex::Real(0.25);        // Poinsot-Lele restoring pull on R-
+    amrex::Real sigma   = amrex::Real(0.0);         // held-back fraction of (P_N - P_amb); 0 = Hedstrom
     PsPres      pres{};                              // presence params (by value)
     // R+ extrapolation: 1 = copy R+_N (reproduces the standalone driver's
     // NONREFLECTING fill bit-for-bit); 2 = minmod slope over three cells.
     int         nscbc_order = 2;
+    // Impedance of the face cell in the invariants and the Mach dispatch:
+    // 0 = frozen (Wallis, Y-weighted c^2), 1 = relaxed (Wood,
+    // 1/(rho c^2) = sum alpha_k/(rho_k c_k^2)), the speed a pressure-
+    // relaxed two-phase wave actually travels at.  Temporary A/B selector
+    // ([DECIDE-27d], docs/VERIFICATION.md §6.4 N1b).
+    int         impedance = 0;
 };
 
 
@@ -63,14 +70,19 @@ _zero_gradient_ghost(const amrex::Real s_N[NVAR],
     for (int n = 0; n < NVAR; ++n) s_ghost[n] = s_N[n];
 }
 
-// Mixture primitives and species Y[] of one cell; P is the stock
-// single-fluid inversion, used only inside the acoustic invariants as a
-// consistent stencil quantity (the pack never reads it).  A failed or
-// sub-1 Pa inversion returns P = 1 Pa and is counted (nscbc pmix_fail).
+// Mixture primitives and species Y[] of one cell.  P is the six-equation
+// mixture pressure alpha_1 P_1 + alpha_2 P_2 from the same host-slaved
+// phase decomposition the impedance and the pack use (P_1 = P_2 after
+// relaxation).  The single-fluid auto-detect inversion of the mixture
+// (rho, e) is not this pressure: on a vapour-rich saturated mixture it
+// lands on a wrong in-dome root (25 bar for phases at 41.6 bar at
+// alpha_1 = 0.05) and turns a face at rest into a piston
+// (docs/VERIFICATION.md §6.4, N1b).
 AMREX_GPU_HOST_DEVICE
 AMREX_FORCE_INLINE
 void
 _cell_primitives(const amrex::Real s[NVAR],
+                 const PsPres&     pres,
                  amrex::Real& rho,
                  amrex::Real& u_x,
                  amrex::Real& u_y,
@@ -97,11 +109,8 @@ _cell_primitives(const amrex::Real s[NVAR],
     for (int n = 0; n < NUM_SPECIES; ++n) {
         Y[n] = ps_finite_or(s[UFS + n], Real(0.0)) * inv_rho;
     }
-    EOS::REY2P(rho, e_spec, Y, P);
-    if (!std::isfinite(P) || P < ps_guard::P_FLOOR_PA) {
-        P = ps_guard::P_FLOOR_PA;
-        ps_guard::count_nscbc_pmix_fail();
-    }
+    const PsPhaseSpeeds ph = ps_phase_speeds_from_state(s, pres);
+    P = ph.alpha1 * ph.P1 + ph.alpha2 * ph.P2;
 }
 
 // ---------------------------------------------------------------------
@@ -211,9 +220,9 @@ outflow_face(const amrex::Real s_N  [NVAR],
     Real rho_Nm1, ux_Nm1, uy_Nm1, uz_Nm1, e_Nm1, P_Nm1;
     Real rho_Nm2, ux_Nm2, uy_Nm2, uz_Nm2, e_Nm2, P_Nm2;
     Real Y_N[NUM_SPECIES], Y_Nm1[NUM_SPECIES], Y_Nm2[NUM_SPECIES];
-    _cell_primitives(s_N,   rho_N,   ux_N,   uy_N,   uz_N,   e_N,   P_N,   Y_N);
-    _cell_primitives(s_Nm1, rho_Nm1, ux_Nm1, uy_Nm1, uz_Nm1, e_Nm1, P_Nm1, Y_Nm1);
-    _cell_primitives(s_Nm2, rho_Nm2, ux_Nm2, uy_Nm2, uz_Nm2, e_Nm2, P_Nm2, Y_Nm2);
+    _cell_primitives(s_N,   p.pres, rho_N,   ux_N,   uy_N,   uz_N,   e_N,   P_N,   Y_N);
+    _cell_primitives(s_Nm1, p.pres, rho_Nm1, ux_Nm1, uy_Nm1, uz_Nm1, e_Nm1, P_Nm1, Y_Nm1);
+    _cell_primitives(s_Nm2, p.pres, rho_Nm2, ux_Nm2, uy_Nm2, uz_Nm2, e_Nm2, P_Nm2, Y_Nm2);
 
     auto pick_un = [idir] (Real ux, Real uy, Real uz) -> Real {
         if      (idir == 0) return ux;
@@ -230,7 +239,16 @@ outflow_face(const amrex::Real s_N  [NVAR],
     const PsPhaseSpeeds ph = ps_phase_speeds_from_state(s_N, p.pres);
     const Real Yw1 = ph.m1 / ph.rho;
     const Real Yw2 = Real(1.0) - Yw1;
-    const Real c2f = ps_cmix2(Yw1, Yw2, ph.c1, ph.c2);
+    Real c2f = ps_cmix2(Yw1, Yw2, ph.c1, ph.c2);
+    if (p.impedance == 1) {
+        // Wood: each present phase contributes its compressibility by
+        // volume; reduces to the single phase's c^2 as alpha -> 0.
+        const Real k1 = (ph.alpha1 > Real(0.0) && ph.c1 > Real(0.0))
+                        ? ph.alpha1 / (ph.rho1 * ph.c1 * ph.c1) : Real(0.0);
+        const Real k2 = (ph.alpha2 > Real(0.0) && ph.c2 > Real(0.0))
+                        ? ph.alpha2 / (ph.rho2 * ph.c2 * ph.c2) : Real(0.0);
+        if (k1 + k2 > Real(0.0)) c2f = Real(1.0) / (ph.rho * (k1 + k2));
+    }
     const Real c_N = (c2f > Real(0.0)) ? std::sqrt(c2f)
                                        : amrex::max(ph.c1, ph.c2);
     if (!std::isfinite(c_N) || c_N <= Real(0.0)) {

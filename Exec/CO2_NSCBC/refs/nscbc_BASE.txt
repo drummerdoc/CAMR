@@ -1,0 +1,21 @@
+NSCBC verification set — recorded 2026-09-11 on the [DECIDE-27c] tree (mixture pressure
+in the invariants; sigma default 0; impedance selector default frozen), CAMR1d.gnu.PS.PR.ex,
+Linux aarch64 VM, g++ 11.4.  r = reflected / incident pressure amplitude (signed).
+
+N1  vapour 20 bar / 280 K, velocity pulse 1 m/s (p' 5 kPa) unless noted, both faces NSCBC
+  sigma 0.25  256 cells  order 2          r = +0.1325   (prediction sigma/2 = 0.125)
+  sigma 0.25  256 cells  order 1          r = +0.1355
+  sigma 0.25  512 cells  order 2          r = +0.1422
+  sigma 0.25  256 cells  pulse 50 m/s     r = +0.1345   (p' 2.6 bar)
+  sigma 0     256 cells  order 2          r = +0.0005   (was +0.0041 before 27c)
+  sigma 0     512 cells  order 2          r = +0.0005   (was +0.0040)
+  sigma 0     256 cells  pulse 50 m/s     r = +0.0197   (before 27c)
+  zero-gradient copy (ps_bc_use_nscbc=0)  r = -0.0001
+N1b saturated mixture 280 K, alpha_1 = 0.05, mode 5 defaults, pulse 1 m/s, sigma 0
+  wave speed 156-158 m/s (Wood; frozen derive 282), amplitude 11.1 -> 8.5 kPa over 2.5 ms
+  frozen impedance (default)              r = +0.22     (prediction 0.29)
+  Wood impedance (impedance=1)            r = -0.07 .. +0.09 (face-cell arrival transient)
+  before 27c (auto-detect pressure): face at rest drove u = -18 m/s, +5.6 bar inward, step 1
+flashing_front.py v2s at this tree: 1.6675 (reference 2.3644, -29.5 %); before 27c 2.2431 at
+  sigma 0.25 and 2.4000 at sigma 0 — the auto-detect root equalled the HEM pressure at the
+  flashing vent by accident; the face has no flash physics of its own (B-4).

@@ -1,0 +1,54 @@
+# =====================================================================
+#  inputs.base — NSCBC verification set, settings shared by every run
+#  (docs/VERIFICATION.md §6.4).  nscbc_suite.py includes it and sets the
+#  geometry, faces, disturbance and dials of each test on the command
+#  line; a run is a pure function of this file plus that line.
+# =====================================================================
+amrex.fpe_trap_invalid = 0
+
+max_step  = 100000
+stop_time = 4.0e-3
+
+geometry.is_periodic = 0 0 0
+geometry.coord_sys   = 0
+geometry.prob_lo     = 0.0  0.0  0.0
+geometry.prob_hi     = 1.0  1.0  1.0
+amr.n_cell           = 256  256  256
+amr.max_level        = 0
+amr.blocking_factor  = 16
+amr.max_grid_size    = 64
+
+# Every face is an NSCBC outflow unless a test overrides it.
+CAMR.lo_bc = Inflow Inflow Inflow
+CAMR.hi_bc = Inflow Inflow Inflow
+
+CAMR.cfl = 0.4
+CAMR.fixed_dt = 0
+CAMR.allow_negative_energy = 1
+CAMR.do_mol = 0
+CAMR.ppm_type = 1
+
+CAMR.ps_hydro = 1
+CAMR.ps_flux  = wp
+CAMR.ps_bc_use_nscbc = 1
+CAMR.ps_validate = 1
+
+CAMR.v = 0
+amr.v = 0
+CAMR.sum_interval = -1
+CAMR.redistribution_type = StateRedist
+
+amr.plot_files_output = 1
+amr.plot_int = -1
+amr.plot_per = 5.0e-4
+amr.derive_plot_vars = pressure x_velocity soundspeed
+amr.checkpoint_files_output = 0
+
+prob.p0    = 2.0e6
+prob.T0    = 280.0
+# prob.p_amb: unset -> p0 (Psat(T0) for two_phase); N4 sets p0 above it.
+prob.ic    = 1
+prob.amp   = 1.0
+prob.xc    = 0.5
+prob.yc    = 0.5
+prob.w     = 0.03

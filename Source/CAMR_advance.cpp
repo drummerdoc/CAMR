@@ -286,19 +286,16 @@ CAMR::CAMR_advance (Real time,
             amrex::Long nt_ = pc.nscbc_zg_slots;
             amrex::Long np_ = pc.nscbc_zg_pack;
             amrex::Long nf_ = pc.nscbc_flash;
-            amrex::Long nm_ = pc.nscbc_pmix_fail;
             amrex::ParallelDescriptor::ReduceLongSum(nc_);
             amrex::ParallelDescriptor::ReduceLongSum(ns_);
             amrex::ParallelDescriptor::ReduceLongSum(nt_);
             amrex::ParallelDescriptor::ReduceLongSum(np_);
             amrex::ParallelDescriptor::ReduceLongSum(nf_);
-            amrex::ParallelDescriptor::ReduceLongSum(nm_);
             amrex::Print() << " | nscbc_zg(c=" << nc_
                            << ",sup=" << ns_
                            << ",slots=" << nt_
                            << ",pack=" << np_ << ")"
-                           << " nscbc_flash=" << nf_
-                           << " pmix_fail=" << nm_ << "\n";
+                           << " nscbc_flash=" << nf_ << "\n";
             pc.reset_guards();
             // Face audit, gated on CAMR.ps_face_diag (0); the counters
             // themselves cost a few compares per face.  The health lines

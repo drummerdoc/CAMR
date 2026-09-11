@@ -60,3 +60,4 @@ Source/EOS/GERG/tools/gerg_edge_cliff
 Exec/CO2_PipeBreak/harvest/out/
 Exec/CO2_PipeBreak/harvest/eos_valid
 Exec/CO2_PipeBreak/harvest/*.npz
+Exec/CO2_NSCBC/results.txt

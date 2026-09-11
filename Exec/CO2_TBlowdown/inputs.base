@@ -49,7 +49,6 @@ CAMR.ps_flux  = wp
 #  PS_nscbc.H (PS_NSCBC::outflow_face) serves any face, which is what
 #  the orientation suite tests.
 CAMR.ps_bc_use_nscbc = 1
-CAMR.ps_bc_nscbc_sigma = 0.25
 
 CAMR.v = 1
 amr.v = 1
