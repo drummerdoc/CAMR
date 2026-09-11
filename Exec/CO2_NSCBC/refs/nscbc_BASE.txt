@@ -19,3 +19,19 @@ N1b saturated mixture 280 K, alpha_1 = 0.05, mode 5 defaults, pulse 1 m/s, sigma
 flashing_front.py v2s at this tree: 1.6675 (reference 2.3644, -29.5 %); before 27c 2.2431 at
   sigma 0.25 and 2.4000 at sigma 0 — the auto-detect root equalled the HEM pressure at the
   flashing vent by accident; the face has no flash physics of its own (B-4).
+
+Recorded 2026-09-11 after 26fa0a9 (same tree):
+N1b zero-gradient copy (ps_bc_use_nscbc=0)    r = +0.225  — the same as the frozen-impedance NSCBC:
+  the reflection of a relaxed wave is the frozen Riemann fan at the face, not the invariant
+  construction (a relaxed wave projects onto both frozen characteristics; sub-characteristic
+  condition).  The boundary condition has to be posed on the relaxed system (O-26 b).
+N3 entropy spot (vapour, T +5 % at fixed P, u0 = 50 m/s, x-lo zero-gradient inflow, x-hi NSCBC sigma 0)
+  max|p'|/p0 before exit 9.4e-6, during 7.3e-6, after 2.0e-6  — leaves cleanly.
+N3 alpha blob (mixture, alpha_1 0.05 -> 0.20, u0 = 50 m/s, same faces)
+  max|p'|/p0 4.5e-3 throughout: NOT the blob — with a 50 m/s mean flow the mixture outflow face
+  sets a steady -0.18 bar offset at t < 1 ms (before the blob arrives) that propagates upstream at
+  the relaxed speed; the vapour face with the same mean flow shows 2e-5 of p0.  Unexplained;
+  instrument before use (the NSCBC far field carries no velocity, u_amb = 0).
+N4 mean-pressure recovery, vapour at rest, p0 = 1.1 p_amb, both faces NSCBC, (P_mean - P_amb)/(p0 - P_amb):
+  sigma 0     1.00 .76 .63 .53 .29 .25 .06 .01 .008 .006 .005 .003 .001 ... (per ms) — gone in ~7 ms
+  sigma 0.25  1.00 .80 .68 .59 .39 .36 .19 .13 .13 .10 .08 .07 .04 .03 .02 .02 .015 .01 — ~5x slower

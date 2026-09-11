@@ -14,6 +14,7 @@
 #     D   NSCBC, sigma 4.0
 #     E   NSCBC, R+ order 1 (CAMR.ps_bc_nscbc_order=1)                  -> is the extrapolation order involved?
 #     F   NSCBC, sigma 0 (the sigma term off: full far-field invariant)  -> the strongest pull to p_amb the formula gives
+#     H   as F with the Wood (relaxed) face impedance, CAMR.ps_bc_nscbc_impedance=1 ([DECIDE-27d])
 #     G   as F on a 4 m domain (40 slot widths, same dx: 512x128 base)     -> does the recompression stay near 20 D (physics)
 #                                                                        or move to the new outlet (boundary-made)?  ~2x the F cost
 #
@@ -39,6 +40,7 @@ opt_for() {   # macOS ships bash 3.2 (no associative arrays)
     E) echo "CAMR.ps_bc_nscbc_order=1" ;;
     F) echo "CAMR.ps_bc_nscbc_sigma=0" ;;
     G) echo "CAMR.ps_bc_nscbc_sigma=0 geometry.prob_hi=4.0 1.0 amr.n_cell=512 128" ;;
+    H) echo "CAMR.ps_bc_nscbc_impedance=1" ;;
     *) echo "unknown variant $1" >&2; exit 3 ;;
   esac
 }

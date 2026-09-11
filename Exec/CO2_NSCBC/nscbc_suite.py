@@ -19,7 +19,9 @@ margin of its prediction.
        (CAMR.ps_bc_nscbc_impedance = 1) 0.07-0.09.  Before [DECIDE-27c] the
        face drove a 5.6 bar wave into a mixture at rest (the auto-detect
        mixture pressure, 25 bar for phases at 41.6 bar).
-  N3   convected entropy spot / alpha blob leaving at u0 = 50 m/s: the
+  N3   convected entropy spot / alpha blob leaving at u0 = 50 m/s through the
+       x-hi NSCBC face (x-lo is a zero-gradient inflow: the NSCBC far field has
+       no velocity, so an NSCBC inflow at u0 != 0 is a different test): the
        pressure the face manufactures, max|p'| after exit vs before.
   N4   mean-pressure recovery from p0 = 1.1 p_amb through both faces.
   N2   2-D cylindrical pressure pulse through four NSCBC faces (needs the
@@ -106,6 +108,7 @@ def test_N1(two_phase=False):
         for imp in (0, 1):
             for sig in (0.0, 0.25):
                 variants.append((256, sig, 1.0, 2, imp))
+        variants.append((256, 0.0, 1.0, 2, -1))   # zero-gradient control (NSCBC off)
     else:
         for n in (256, 512):
             for sig in (0.25, 0.0):
@@ -115,9 +118,10 @@ def test_N1(two_phase=False):
         variants.append((256, 0.0, 1.0, 1, 0))
     stop, t_inc, t_ref = (4.0e-3, 1.0e-3, 3.5e-3) if not two_phase else (6.0e-3, 2.75e-3, 5.5e-3)
     for (n, sig, amp, order, imp) in variants:
-        name = f"{'N1b' if two_phase else 'N1'}_n{n}_s{sig}_a{amp:g}_o{order}" + ('_wood' if imp else '')
+        name = f"{'N1b' if two_phase else 'N1'}_n{n}_s{sig}_a{amp:g}_o{order}" + ('_wood' if imp == 1 else '_zg' if imp == -1 else '')
         args = [f'amr.n_cell={n}', f'CAMR.ps_bc_nscbc_sigma={sig}', f'prob.amp={amp}',
-                f'CAMR.ps_bc_nscbc_order={order}', f'CAMR.ps_bc_nscbc_impedance={imp}', 'prob.ic=1']
+                f'CAMR.ps_bc_nscbc_order={order}', f'CAMR.ps_bc_nscbc_impedance={max(imp, 0)}', 'prob.ic=1']
+        if imp == -1: args.append('CAMR.ps_bc_use_nscbc=0')
         if two_phase: args += ['prob.two_phase=1', 'prob.a1_0=0.05']
         rc, fs, zg = run(name, 1, args, stop, 5.0e-4)
         if rc == -99: continue
@@ -134,7 +138,7 @@ def test_N1(two_phase=False):
         c_meas = (x2 - x1) / (t_inc - 0.5e-3)
         r = ref / inc
         pred = sig / 2
-        if two_phase and not imp:
+        if two_phase and imp == 0:
             pred += 0.29   # (Z_frozen - Z_wood)/(Z_frozen + Z_wood) at alpha_1 = 0.05, 280 K
         # margin: half the prediction, or the measured floors -- 0.02 for a
         # frozen-impedance face, 0.10 for the Wood face in the mixture, whose
@@ -151,7 +155,8 @@ def test_N3():
         for sig in (0.25, 0.0):
             name = f'N3_{label}_s{sig}'
             args = ['amr.n_cell=256', f'CAMR.ps_bc_nscbc_sigma={sig}', f'prob.ic={ic}', f'prob.amp={amp}',
-                    'prob.u0=50', 'prob.xc=0.7', f'prob.two_phase={tp}']
+                    'prob.u0=50', 'prob.xc=0.7', f'prob.two_phase={tp}',
+                    'CAMR.ps_bc_nscbc_xlo=0']   # the inflow face is a plain copy: the NSCBC far field is at rest (no u_amb)
             stop = 12.0e-3  # 0.3 m at 50 m/s = 6 ms to the face, +6 ms
             rc, fs, zg = run(name, 1, args, stop, 1.0e-3)
             if rc == -99: continue
