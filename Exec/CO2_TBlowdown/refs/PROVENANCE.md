@@ -1,3 +1,4 @@
-TBlowdown orientation suite reference — recorded 2026-09-05, CAMR e888488+ps_wp_order default 2, serial gnu -O3 build (CAMR2d.gnu.PS.PR.ex, TINY_PROFILE=FALSE), Linux aarch64 VM.
-Decks inputs-sym-{x,y}-{lo,hi} run to max_step 300 in 50/25-step checkpoint chunks; ps_validate=1 on the final chunk.
-Result: all four orientations agree to 8.7e-14 relative (sym_compare_BASE.txt); validator: nonfinite=0 alpha_oob=0 m_neg=0 massid=0.
+TBlowdown orientation suite reference — recorded 2026-09-11 at 26fa0a9 ([DECIDE-27c]: NSCBC invariants on the six-equation mixture pressure, sigma default 0), serial gnu -O3 build (CAMR2d.gnu.PS.PR.ex, TINY_PROFILE=FALSE), Linux aarch64 VM.
+Decks inputs-sym-{x,y}-{lo,hi} run to max_step 300 (0-250 in one chunk, 250-300 restarted with ps_validate=1).
+Result: all four orientations agree to 1.33e-13 relative (sym_compare_BASE.txt); validator: nonfinite=0 alpha_oob=0 m_neg=0 massid=0 on every orientation.
+Relative to the 2026-09-05 record (sigma 0.25, auto-detect mixture pressure at the face; in git history): the tube vents less through the consistent face — level-0 means at step 300: density 398.96 -> 404.26 (+1.3 %), pressure 8.393 -> 8.577 MPa, alpha_1 0.9738 -> 0.9908, alpha2_rho2 1.211 -> 1.075 (-11 %); minimum density at the vent end 217.7 -> 347.1. Same direction and cause as the flashing_front re-pin (VERIFICATION.md §6.3/6.4): the face carries no flash physics of its own.
