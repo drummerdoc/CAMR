@@ -8,24 +8,22 @@
 #
 #   ./nscbc_xhi_test.sh [NRANKS] [MAXSTEP] [VARIANT ...]
 #   variants (default: all):
-#     A   as shipped: NSCBC on xhi, sigma 0.25, p_amb 20 bar           (the control)
+#     A   as shipped: NSCBC on xhi, p_amb 20 bar                        (the control; sigma 0 since B-4)
 #     B   xhi on the linearised-invariant path (CAMR.ps_bc_nscbc_xhi=0)  -> is the fan/branch the cause?
-#     C   NSCBC, sigma 1.0                                               -> is the mean-pressure relaxation too weak?
-#     D   NSCBC, sigma 4.0
 #     E   NSCBC, R+ order 1 (CAMR.ps_bc_nscbc_order=1)                  -> is the extrapolation order involved?
-#     F   NSCBC, sigma 0 (the sigma term off: full far-field invariant)  -> the strongest pull to p_amb the formula gives
-#     H   as F with the Wood (relaxed) face impedance, CAMR.ps_bc_nscbc_impedance=1 ([DECIDE-27d])
-#     G   as F on a 4 m domain (40 slot widths, same dx: 512x128 base)     -> does the recompression stay near 20 D (physics)
+#     G   as A on a 4 m domain (40 slot widths, same dx: 512x128 base)     -> does the recompression stay near 20 D (physics)
+#   (C, D, F — sigma 1.0 / 4.0 / 0 — and H — the Wood impedance — are recorded in
+#    docs/DESIGN_DECISIONS.md B-4 and X-33; both keys are retired and abort.)
 #                                                                        or move to the new outlet (boundary-made)?  ~2x the F cost
 #
 #   afterwards:  python3 xhi_probe.py runs/nscbc_xhi/A/plt_*_05000 runs/nscbc_xhi/B/plt_*_05000 ...
 #
-# Nothing here changes code or defaults; sigma and the order are existing dials (a parameter study,
-# not a new threshold). Keep the Mac's production run in mind before launching all five.
+# Nothing here changes code or defaults (a parameter study, not a new threshold).  Keep the Mac's
+# production run in mind before launching several.
 set -euo pipefail
 cd "$(dirname "$0")"
 NR=${1:-6}; MS=${2:-6000}; shift $(( $# >= 2 ? 2 : $# )) || true
-VARS=${*:-A B C D E F}
+VARS=${*:-A B E}
 EXE=$(ls -t ./CAMR2d.*.MPI.PS.PR.ex 2>/dev/null | head -1) || { echo "build the 2-D MPI exe first (make -j8 DIM=2 USE_MPI=TRUE Eos_Model=PR)"; exit 1; }
 newest=$(find ../../Source -type f \( -name '*.H' -o -name '*.cpp' \) -newer "$EXE" | head -1)
 [ -n "$newest" ] && { echo "STALE BINARY: $EXE older than $newest"; exit 2; }
@@ -35,12 +33,8 @@ opt_for() {   # macOS ships bash 3.2 (no associative arrays)
   case "$1" in
     A) echo "" ;;
     B) echo "CAMR.ps_bc_nscbc_xhi=0" ;;
-    C) echo "CAMR.ps_bc_nscbc_sigma=1.0" ;;
-    D) echo "CAMR.ps_bc_nscbc_sigma=4.0" ;;
     E) echo "CAMR.ps_bc_nscbc_order=1" ;;
-    F) echo "CAMR.ps_bc_nscbc_sigma=0" ;;
-    G) echo "CAMR.ps_bc_nscbc_sigma=0 geometry.prob_hi=4.0 1.0 amr.n_cell=512 128" ;;
-    H) echo "CAMR.ps_bc_nscbc_impedance=1" ;;
+    G) echo "geometry.prob_hi=4.0 1.0 amr.n_cell=512 128" ;;
     *) echo "unknown variant $1" >&2; exit 3 ;;
   esac
 }

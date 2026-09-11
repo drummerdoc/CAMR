@@ -74,6 +74,8 @@ inline void ps_abort_on_retired_keys()
         { "ps_relax_hyst",       "the relax gate's hysteresis band is always on" },
         { "ps_resync_mass",      "the mixture-mass resync is always on" },
         { "ps_bc_nscbc_flash",   "the NSCBC outflow fan is always the flash-aware choked fan" },
+        { "ps_bc_nscbc_sigma",   "the NSCBC incoming invariant is the far-field (Hedstrom) value; the sigma term was a partial reflection sigma/2 (B-4)" },
+        { "ps_bc_nscbc_impedance", "the NSCBC face impedance is the frozen (Wallis) one; the Wood impedance held the jet head at the outlet (X-33)" },
         { "ps_p_mode",           "ps_state_from_cons forms the volume-weighted mixture pressure only" },
         { "ps_p_clip",           "ps_state_from_cons forms the volume-weighted mixture pressure only" },
         { "ps_c_mode",           "ps_state_from_cons forms the Wood mixture sound speed only" },

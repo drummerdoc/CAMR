@@ -15,8 +15,8 @@ margin of its prediction.
   N1b  the same pulse in the saturated mixture (mode 5, alpha_1 = 0.05): the
        relaxed wave travels at the Wood speed (156 m/s measured) while the
        frozen face impedance is 282 m/s; prediction (Z_f - Z_w)/(Z_f + Z_w)
-       = 0.29 at sigma = 0, measured 0.22; with the Wood impedance
-       (CAMR.ps_bc_nscbc_impedance = 1) 0.07-0.09.  Before [DECIDE-27c] the
+       = 0.29 at sigma = 0, measured 0.22; with the Wood impedance (retired,
+       X-33: it held the demo3 jet head at the outlet) 0.07-0.09.  Before [DECIDE-27c] the
        face drove a 5.6 bar wave into a mixture at rest (the auto-detect
        mixture pressure, 25 bar for phases at 41.6 bar).
   N3   convected entropy spot / alpha blob leaving at u0 = 50 m/s through the
@@ -105,23 +105,20 @@ def test_N1(two_phase=False):
         # Psat(280 K) is read back from the run log.
         pass
     variants = []
+    # sigma and the impedance selector are retired (B-4, X-33): the rows they
+    # produced are in refs/nscbc_BASE.txt; sig is 0 and imp 0 (frozen) here.
     if two_phase:
-        for imp in (0, 1):
-            for sig in (0.0, 0.25):
-                variants.append((256, sig, 1.0, 2, imp))
+        variants.append((256, 0.0, 1.0, 2, 0))
         variants.append((256, 0.0, 1.0, 2, -1))   # zero-gradient control (NSCBC off)
     else:
         for n in (256, 512):
-            for sig in (0.25, 0.0):
-                for amp in ((1.0, 50.0) if n == 256 else (1.0,)):
-                    variants.append((n, sig, amp, 2, 0))
-        variants.append((256, 0.25, 1.0, 1, 0))
+            for amp in ((1.0, 50.0) if n == 256 else (1.0,)):
+                variants.append((n, 0.0, amp, 2, 0))
         variants.append((256, 0.0, 1.0, 1, 0))
     stop, t_inc, t_ref = (4.0e-3, 1.0e-3, 3.5e-3) if not two_phase else (6.0e-3, 2.75e-3, 5.5e-3)
     for (n, sig, amp, order, imp) in variants:
         name = f"{'N1b' if two_phase else 'N1'}_n{n}_s{sig}_a{amp:g}_o{order}" + ('_wood' if imp == 1 else '_zg' if imp == -1 else '')
-        args = [f'amr.n_cell={n}', f'CAMR.ps_bc_nscbc_sigma={sig}', f'prob.amp={amp}',
-                f'CAMR.ps_bc_nscbc_order={order}', f'CAMR.ps_bc_nscbc_impedance={max(imp, 0)}', 'prob.ic=1']
+        args = [f'amr.n_cell={n}', f'prob.amp={amp}', f'CAMR.ps_bc_nscbc_order={order}', 'prob.ic=1']
         if imp == -1: args.append('CAMR.ps_bc_use_nscbc=0')
         if two_phase: args += ['prob.two_phase=1', 'prob.a1_0=0.05']
         rc, fs, zg = run(name, 1, args, stop, 5.0e-4)
@@ -153,9 +150,9 @@ def test_N1(two_phase=False):
 def test_N3():
     rows = []
     for (ic, amp, tp, label) in ((3, 0.05, 0, 'entropy'), (4, 0.15, 1, 'alpha')):
-        for sig in (0.25, 0.0):
+        for sig in (0.0,):
             name = f'N3_{label}_s{sig}'
-            args = ['amr.n_cell=256', f'CAMR.ps_bc_nscbc_sigma={sig}', f'prob.ic={ic}', f'prob.amp={amp}',
+            args = ['amr.n_cell=256', f'prob.ic={ic}', f'prob.amp={amp}',
                     'prob.u0=50', 'prob.xc=0.7', f'prob.two_phase={tp}',
                     'CAMR.ps_bc_nscbc_xlo=0']   # the inflow face is a plain copy: the NSCBC far field is at rest (no u_amb)
             stop = 12.0e-3  # 0.3 m at 50 m/s = 6 ms to the face, +6 ms
@@ -175,9 +172,9 @@ def test_N3():
 # ---------------------------------------------------------------- N4
 def test_N4():
     rows = []
-    for sig in (0.25, 0.0):
+    for sig in (0.0,):
         name = f'N4_s{sig}'
-        args = ['amr.n_cell=256', f'CAMR.ps_bc_nscbc_sigma={sig}', 'prob.ic=0', 'prob.p0=2.2e6']
+        args = ['amr.n_cell=256', 'prob.ic=0', 'prob.p0=2.2e6']
         rc, fs, zg = run(name, 1, args, 12.0e-3, 1.0e-3)
         if rc == -99: continue
         if rc == -1: rows.append((name, 'UNFINISHED (resume with NSCBC_RESUME=1)')); continue
@@ -192,9 +189,9 @@ def test_N4():
 def test_N2():
     rows = []
     from fingerprint_plt import load
-    for sig in (0.25, 0.0):
+    for sig in (0.0,):
         name = f'N2_s{sig}'
-        args = ['amr.n_cell=64 64', 'amr.max_grid_size=32', f'CAMR.ps_bc_nscbc_sigma={sig}', 'prob.ic=2', 'prob.amp=0.01',
+        args = ['amr.n_cell=64 64', 'amr.max_grid_size=32', 'prob.ic=2', 'prob.amp=0.01',
                 'prob.w=0.08', 'amr.derive_plot_vars=pressure']
         rc, fs, zg = run(name, 2, args, 6.0e-3, 1.0e-3)
         if rc == -99: continue
