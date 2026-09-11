@@ -10,6 +10,7 @@ CEXE_headers += PS_guards.H
 CEXE_headers += PS_ctoprim.H
 CEXE_headers += PS_state.H
 CEXE_headers += PS_nscbc.H
+CEXE_headers += PS_bc_config.H
 CEXE_headers += PS_relaxation.H
 CEXE_headers += PS_relax.H
 CEXE_headers += PS_floors.H

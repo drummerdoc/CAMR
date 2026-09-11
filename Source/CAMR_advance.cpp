@@ -121,34 +121,11 @@ CAMR::CAMR_advance (Real time,
 #ifdef USE_PS_HYDRO
     // Pelanti-Shyue reaction operator (resyncs, folds, floor, relaxation,
     // finite-rate sources; docs/MODEL_AND_ALGORITHM.md §8.5) and its
-    // splitting controls.
-    //   CAMR.ps_do_relax (1): run the relaxation operator
-    //     (ps_apply_relaxation, the whole mechanical/thermal/mass-transfer
-    //     kernel selected by ps_relax_mode); 0 = frozen, for no-relaxation
-    //     tests.
-    //   CAMR.ps_strang (0): 0 = Lie (full-step reaction after hydro, first
-    //     order in time); 1 = Strang (half steps before and after hydro,
-    //     second order; needed to keep do_mol=1 second order with
-    //     relaxation/sources on).
-    static const int ps_do_relax_cached = []() -> int {
-        const int v = ps_dial_int("ps_do_relax", 1);   // resolved value -> job_info
-#ifdef USE_PS_HYDRO
-        //  At mode 5 the X3 kernel inside ps_apply_relaxation owns mass
-        //  transfer and the split MT source in ps_apply_sources is gated
-        //  out, so ps_do_relax=0 with ps_mt_tau>0 would leave no operator
-        //  running it.  Refuse the contradictory configuration.
-        if (v == 0 && ps_relax_mode() == 5 &&
-            ps_source_dials().mt_tau > amrex::Real(0.0)) {
-            amrex::Abort("CAMR.ps_do_relax=0 with ps_relax_mode=5 and "
-                         "ps_mt_tau>0: mode 5's X3 kernel owns mass transfer "
-                         "and is disabled, so no operator would run it. "
-                         "Set ps_mt_tau=0 (A/C-style no-phase-change run) or "
-                         "re-enable ps_do_relax.");
-        }
-#endif
-        return v;
-    }();
-    static const int ps_strang_cached = ps_dial_int("ps_strang", 0);
+    // splitting controls ps_do_relax / ps_strang (PS_sources.H).  The
+    // operator order in apply_ps_reaction below is mirrored by the
+    // relaxed-state boundary pass (CAMR::ps_bc_relaxed); change both.
+    const int ps_do_relax_cached = ps_do_relax();   // accessors in PS_sources.H
+    const int ps_strang_cached   = ps_strang();
     // CAMR.ps_diag_alpha (accessor in PS_diag.H): report the alpha_1
     // range at labelled points so a drive toward a pure phase can be
     // attributed to mass transfer (jump across the relax bracket) or to
@@ -286,6 +263,8 @@ CAMR::CAMR_advance (Real time,
             amrex::Long nt_ = pc.nscbc_zg_slots;
             amrex::Long np_ = pc.nscbc_zg_pack;
             amrex::Long nf_ = pc.nscbc_flash;
+            amrex::Long nr_ = pc.nscbc_rx_fb;
+            amrex::ParallelDescriptor::ReduceLongSum(nr_);
             amrex::ParallelDescriptor::ReduceLongSum(nc_);
             amrex::ParallelDescriptor::ReduceLongSum(ns_);
             amrex::ParallelDescriptor::ReduceLongSum(nt_);
@@ -295,7 +274,8 @@ CAMR::CAMR_advance (Real time,
                            << ",sup=" << ns_
                            << ",slots=" << nt_
                            << ",pack=" << np_ << ")"
-                           << " nscbc_flash=" << nf_ << "\n";
+                           << " nscbc_flash=" << nf_
+                           << " nscbc_rx_fb=" << nr_ << "\n";
             pc.reset_guards();
             // Face audit, gated on CAMR.ps_face_diag (0); the counters
             // themselves cost a few compares per face.  The health lines

@@ -5,6 +5,7 @@
 #ifdef USE_PS_HYDRO
 #include "PS_ctoprim.H"
 #include "PS_umeth.H"                // dial accessors
+#include "PS_bc_config.H"            // ps_bc_rx
 #endif
 
 #include <atomic>
@@ -332,4 +333,14 @@ CAMR::construct_hydro_source (const MultiFab& S,
     } // openmp
 
     BL_PROFILE_VAR_STOP(PC_UMDRV);
+
+#ifdef USE_PS_HYDRO
+    // The relaxed-state characteristic outflow (CAMR.ps_bc_rx): with the
+    // level's increment complete, choose the entering acoustic wave of each
+    // NSCBC boundary cell on the relaxed trial state and rewrite its
+    // hydro_source (CAMR_bc_relaxed.cpp).  Off by default.
+    if (ps_hydro != 0 && ps_bc_rx() != 0) {
+        ps_bc_relaxed(S, src_to_fill, dt);
+    }
+#endif
 }

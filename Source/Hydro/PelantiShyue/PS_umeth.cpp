@@ -45,6 +45,7 @@
 #include "PS_constants.H"
 #include "PS_util.H"
 #include "PS_dials.H"
+#include "PS_bc_config.H"
 
 #include <AMReX_ParmParse.H>
 
@@ -583,6 +584,32 @@ PS_umeth(const Box& bx,
     amrex::ignore_unused(ps_mu_cached);
 #endif
 
+    // Faces where the relaxed-state boundary pass writes the entering
+    // acoustic wave (CAMR.ps_bc_rx = 1 on an NSCBC face): the wave is
+    // modelled there and enters first order, so Pass 2 skips its
+    // correction at that face (CAMR_bc_relaxed.cpp).
+    amrex::GpuArray<int, 6> rx_face{{0, 0, 0, 0, 0, 0}};
+    if (ps_bc_rx() == 1) {
+        const PsNscbcCfg& cfg = ps_nscbc_cfg();
+        for (int f = 0; f < 2*AMREX_SPACEDIM; ++f) rx_face[f] = cfg.uface[f];
+    }
+    const amrex::GpuArray<int, 3> dlo{{AMREX_D_DECL(domlo[0], domlo[1], domlo[2])
+#if (AMREX_SPACEDIM < 3)
+        , 0
+#endif
+#if (AMREX_SPACEDIM < 2)
+        , 0
+#endif
+    }};
+    const amrex::GpuArray<int, 3> dhi{{AMREX_D_DECL(domhi[0], domhi[1], domhi[2])
+#if (AMREX_SPACEDIM < 3)
+        , 0
+#endif
+#if (AMREX_SPACEDIM < 2)
+        , 0
+#endif
+    }};
+
     // Banner (once per rank per run).
     {
         static bool banner_shown = false;
@@ -720,6 +747,11 @@ PS_umeth(const Box& bx,
                     if (t > Real(1.0)) t = Real(1.0);
                     wc_keep = Real(1.0) - t*t*(Real(3.0) - Real(2.0)*t);
                 }
+                //  The entering acoustic wave of a relaxed-state boundary
+                //  face is modelled by the pass and enters first order.
+                const int  If     = (idir == 0) ? i : (idir == 1) ? j : k;
+                const bool rx_lo  = (rx_face[2*idir]     != 0) && (If == dlo[idir]);
+                const bool rx_hi  = (rx_face[2*idir + 1] != 0) && (If == dhi[idir] + 1);
                 Real Ft[NVAR];
                 for (int n = 0; n < NVAR; ++n) Ft[n] = Real(0.0);
                 for (int l = 0; l < 3; ++l) {
@@ -727,6 +759,8 @@ PS_umeth(const Box& bx,
                     if (l == 1 && wl <= Real(0.0)) continue;   // full drop
                     const Real sl = wv(i,j,k, 3*NVAR + l);
                     if (std::abs(sl) < Real(1.0e-30)) continue;
+                    if ((rx_hi && l == 0 && sl < Real(0.0)) ||
+                        (rx_lo && l == 2 && sl > Real(0.0))) continue;
                     const int ni = i - ((idir==0) ? ((sl>Real(0.0))?1:-1) : 0);
                     const int nj = j - ((idir==1) ? ((sl>Real(0.0))?1:-1) : 0);
                     const int nk = k - ((idir==2) ? ((sl>Real(0.0))?1:-1) : 0);

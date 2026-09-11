@@ -75,6 +75,39 @@ inline const PsSourceDials& ps_source_dials()
 }
 
 // -----------------------------------------------------------------
+//  Splitting dials, read once here and shared by CAMR_advance and the
+//  relaxed-state boundary pass (CAMR_bc_relaxed.cpp), which must run
+//  the reaction chain with the same dt_r the advance will use.
+//    CAMR.ps_do_relax (1): run the relaxation operator; 0 = frozen.
+//      At mode 5 the X3 kernel owns mass transfer and the split MT
+//      source is gated out, so ps_do_relax=0 with ps_mt_tau>0 leaves
+//      no operator running it: refused.
+//    CAMR.ps_strang (0): 0 = Lie (full-step reaction after hydro);
+//      1 = Strang (half steps before and after hydro).
+// -----------------------------------------------------------------
+inline int ps_do_relax()
+{
+    static const int v = []() -> int {
+        const int r = ps_dial_int("ps_do_relax", 1);
+        if (r == 0 && ps_relax_mode() == 5 &&
+            ps_source_dials().mt_tau > amrex::Real(0.0)) {
+            amrex::Abort("CAMR.ps_do_relax=0 with ps_relax_mode=5 and "
+                         "ps_mt_tau>0: mode 5's X3 kernel owns mass transfer "
+                         "and is disabled, so no operator would run it. "
+                         "Set ps_mt_tau=0 (A/C-style no-phase-change run) or "
+                         "re-enable ps_do_relax.");
+        }
+        return r; }();
+    return v;
+}
+
+inline int ps_strang()
+{
+    static const int v = ps_dial_int("ps_strang", 0);
+    return v;
+}
+
+// -----------------------------------------------------------------
 //  ps_apply_sources: called from CAMR_advance after ps_apply_relaxation,
 //  under ps_hydro != 0.  dt is the level time step the rate-based
 //  sources integrate over; nghost grows the tile box.  Returns without

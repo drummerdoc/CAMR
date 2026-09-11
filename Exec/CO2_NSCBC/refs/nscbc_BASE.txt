@@ -45,3 +45,10 @@ Re-recorded 2026-09-11 at R-16 (one saturation curve; the mixture's P_LV now equ
   N1b frozen impedance, sigma 0    r = +0.223   (was +0.222)
   N1b Wood impedance,   sigma 0    r = -0.074   (was -0.074)
   N1 vapour rows unchanged by construction (no dome involvement).
+
+Recorded 2026-09-11, relaxed-state pass (CAMR.ps_bc_rx=1, docs/PLAN_relaxed_boundary.md §12), same VM/compiler:
+N1  vapour, 256 cells, sigma 0 (retired):  ghost only r = +0.0005;  pass (wood Z) -0.00004;  pass (trial Z) -0.00002
+N1b mixture alpha_1 = 0.05, mode 5:        ghost only r = +0.241;   pass (wood Z) +0.067;    pass (trial Z) -0.011   (wave 139 m/s)
+N1b mode 0 (mechanical only, mt/flash off): ghost only r = +0.144;   pass +0.005 either Z                              (wave 174 m/s, Wood)
+N2  2-D pulse residual max|p'|/A at 4/5/6 ms: ghost only 0.0083/0.0067/0.0071;  pass 0.0091/0.0072/0.0056
+ps_bc_rx=0 and =2 bit-identical to the pre-edit binary (N1, N1b, N2); fb = 0 everywhere.

@@ -395,6 +395,16 @@ protected:
   //  reset_internal_energy runs every time.  CAMR.lazy_temp = 0 makes the
   //  refresh unconditional.
   void clean_state(amrex::MultiFab& S, bool refresh_temp = true);
+#ifdef USE_PS_HYDRO
+  //  The characteristic outflow posed on the relaxed state (CAMR.ps_bc_rx):
+  //  a post-processor on hydro_source at the boundary cells of the NSCBC
+  //  faces; ps_reaction_trial is the reaction chain it evaluates on trial
+  //  states (CAMR_bc_relaxed.cpp, docs/PLAN_relaxed_boundary.md).
+  void ps_bc_relaxed(const amrex::MultiFab& S, amrex::MultiFab& hyd_src,
+                     amrex::Real dt);
+  void ps_reaction_trial(amrex::MultiFab& T, amrex::Real dt_r,
+                         long& relaxed, long& flashed);
+#endif
 #ifdef CAMR_USE_MOVING_EB
   void ZeroingOutForPlotting(amrex::MultiFab& S);
 #endif

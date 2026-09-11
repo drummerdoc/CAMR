@@ -5,6 +5,7 @@
 
 #include "CAMR.H"
 #include "prob.H"
+#include "PS_bc_config.H"
 
 #ifdef USE_PS_HYDRO
 #include "PS_nscbc.H"
@@ -187,23 +188,13 @@ struct PCHypFillExtDir
   }
 };
 
-void
-CAMR_bcfill_hyp(
-  amrex::Box const& bx,
-  amrex::FArrayBox& data,
-  const int dcomp,
-  const int numcomp,
-  amrex::Geometry const& geom,
-  const amrex::Real time,
-  const amrex::Vector<amrex::BCRec>& bcr,
-  const int bcomp,
-  const int scomp)
+// NSCBC dispatch settings, read once per run (the ParmParse table is
+// fixed after startup).  This is the single accessor for the boundary
+// dials (docs/MODEL_AND_ALGORITHM.md §6.5), shared by the ghost fill
+// below and the relaxed-state pass (CAMR_bc_relaxed.cpp):
+const PsNscbcCfg&
+ps_nscbc_cfg()
 {
-  const ProbParmDevice* lprobparm = CAMR::d_prob_parm;
-
-  // NSCBC dispatch settings, read once per run (the ParmParse table is
-  // fixed after startup).  This is the single accessor for the boundary
-  // dials (docs/MODEL_AND_ALGORITHM.md §6.5):
   //   CAMR.ps_bc_use_nscbc (0): global NSCBC outflow switch.
   //   CAMR.ps_bc_nscbc_order (2): R+ extrapolation order, 1 or 2.
   //   CAMR.ps_bc_p_amb_{x,y,z}{lo,hi} (-1 = inherit prob.p_amb): per-face
@@ -214,10 +205,7 @@ CAMR_bcfill_hyp(
   // The resolved values (after the no-USE_PS_HYDRO force-off and the
   // order forcing) are added back to the table so job_info records the BC
   // path that actually ran even when the deck was silent.
-  struct NscbcCfg { int use; int order;
-                    amrex::GpuArray<amrex::Real, 2*AMREX_SPACEDIM> pamb;
-                    amrex::GpuArray<int, 2*AMREX_SPACEDIM> uface; };
-  static const NscbcCfg nscbc_cfg = []() -> NscbcCfg {
+  static const PsNscbcCfg cfg = []() -> PsNscbcCfg {
     int u = 0;
     int od = 2;
     amrex::ParmParse pp("CAMR");
@@ -294,8 +282,26 @@ CAMR_bcfill_hyp(
     pp.add("ps_bc_p_amb_zlo", pa[4]);
     pp.add("ps_bc_p_amb_zhi", pa[5]);
 #endif
-    return NscbcCfg{u, od, pa, uf};
+    return PsNscbcCfg{u, od, pa, uf};
   }();
+  return cfg;
+}
+
+void
+CAMR_bcfill_hyp(
+  amrex::Box const& bx,
+  amrex::FArrayBox& data,
+  const int dcomp,
+  const int numcomp,
+  amrex::Geometry const& geom,
+  const amrex::Real time,
+  const amrex::Vector<amrex::BCRec>& bcr,
+  const int bcomp,
+  const int scomp)
+{
+  const ProbParmDevice* lprobparm = CAMR::d_prob_parm;
+
+  const PsNscbcCfg& nscbc_cfg = ps_nscbc_cfg();
   const int         nscbc_order = nscbc_cfg.order;
 
   // One-time banner so run logs record which outflow BC path is in play.
