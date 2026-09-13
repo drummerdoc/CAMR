@@ -53,3 +53,5 @@ ps_bc_rx_z default set to trial after these rows.
 N1b mode 0 (mechanical only, mt/flash off): ghost only r = +0.144;   pass +0.005 either Z                              (wave 174 m/s, Wood)
 N2  2-D pulse residual max|p'|/A at 4/5/6 ms: ghost only 0.0083/0.0067/0.0071;  pass 0.0091/0.0072/0.0056
 ps_bc_rx=0 and =2 bit-identical to the pre-edit binary (N1, N1b, N2); fb = 0 everywhere.
+Recorded 2026-09-13, ps_bc_rx_form=value (Hedstrom on the relaxed step, I = P_inf), trial Z:
+N1  vapour   pass (value) r = +0.0005 (the ghost's own number);  N1b mode 5  pass (value) r = +0.0052  (rate form -0.011)

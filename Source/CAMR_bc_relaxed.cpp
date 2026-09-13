@@ -149,6 +149,7 @@ CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt)
     const Real dt_r = (ps_strang() != 0) ? Real(0.5) * dt : dt;
     const int nsec = ps_bc_rx_nsec();
     const bool z_trial = (ps_bc_rx_z() == 1);
+    const bool form_value = (ps_bc_rx_form() == 1);
     const int probe = ps_bc_rx_probe();
     int pc_iv[3]; const bool has_pc = ps_bc_rx_probe_cell(pc_iv);
     const Box& domain = geom.Domain();
@@ -321,9 +322,16 @@ CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt)
         //  equilibrium slope the reaction chain itself imposes on the cell,
         //  whatever the relaxation regime.  A degenerate pair (drho~ = 0 or
         //  a non-positive slope) keeps the Wood value and is counted.
+        //  Form (ps_bc_rx_form): value = the Hedstrom condition on the relaxed
+        //  step, I(q~) = P_inf (the far field at rest), the relaxed analogue
+        //  of the ghost's R- target and what anchors the face to P_inf;
+        //  rate = I(q~) = I(q_N), Poinsot-Lele's L_in = 0 over the step,
+        //  which carries no far field (demo3 xhi: the arrival is never
+        //  relieved, docs/PLAN_relaxed_boundary.md §13).
         auto gof = [&](Array4<Real> const& ax, int i, int j, int k, int ps, int us) noexcept -> Real {
             const Real Z = ax(i,j,k,RX_Z);
-            return (ax(i,j,k,ps) - Z * ax(i,j,k,us)) - (ax(i,j,k,RX_PN) - Z * ax(i,j,k,RX_UN));
+            const Real I_ref = form_value ? P_inf : (ax(i,j,k,RX_PN) - Z * ax(i,j,k,RX_UN));
+            return (ax(i,j,k,ps) - Z * ax(i,j,k,us)) - I_ref;
         };
         long nrel = 0, nfl = 0;
         evaluate(RX_A0, RX_P0, RX_U0, RX_R0, nrel, nfl);
@@ -463,7 +471,7 @@ CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt)
                 << "  |g|/P max=" << gmax
                 << "  P~=" << pt_sum * inv
                 << "  Mw: " << mw_sum * inv << " / " << (n_ent ? mw_max : 0.0)
-                << "  reversed=" << n_rev << " relaxed=" << nr << " flash=" << nf
+                << "  reversed=" << n_rev << " relaxed=" << nr << " src=" << nf
                 << " fb=" << n_fb << " zfb=" << n_zfb << "\n";
         }
     }}

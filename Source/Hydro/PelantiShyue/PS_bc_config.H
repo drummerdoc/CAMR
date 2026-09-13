@@ -78,6 +78,22 @@ inline int ps_bc_rx_z()
     return v;
 }
 
+//  CAMR.ps_bc_rx_form (rate): the condition on the relaxed invariant
+//  I = P - Z u_out of the boundary cell after the step.  rate: I(q~) = I(q_N)
+//  (Poinsot-Lele L_in = 0; no far field enters); value: I(q~) = P_inf
+//  (Hedstrom: the incoming invariant at its far-field value, the relaxed
+//  analogue of the ghost fill's R- target).
+inline int ps_bc_rx_form()
+{
+    static const int v = []() -> int {
+        const std::string s = ps_dial_string("ps_bc_rx_form", "rate");
+        if (s == "rate")  return 0;
+        if (s == "value") return 1;
+        amrex::Abort("CAMR.ps_bc_rx_form must be rate or value");
+        return 0; }();
+    return v;
+}
+
 //  CAMR.ps_bc_rx_probe (0): 0 off; 1 the [PS-BCRX] per-face line every
 //  step; 2 at the ps_diag_mass cadence is not implemented (every step).
 inline int ps_bc_rx_probe()
