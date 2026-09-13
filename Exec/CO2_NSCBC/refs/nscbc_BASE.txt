@@ -55,3 +55,9 @@ N2  2-D pulse residual max|p'|/A at 4/5/6 ms: ghost only 0.0083/0.0067/0.0071;  
 ps_bc_rx=0 and =2 bit-identical to the pre-edit binary (N1, N1b, N2); fb = 0 everywhere.
 Recorded 2026-09-13, ps_bc_rx_form=value (Hedstrom on the relaxed step, I = P_inf), trial Z:
 N1  vapour   pass (value) r = +0.0005 (the ghost's own number);  N1b mode 5  pass (value) r = +0.0052  (rate form -0.011)
+Recorded 2026-09-13, face type vent (ps_bc_rx_type_*=vent, P~ = P_inf / choked) vs nr (value form):
+N1  vent |r| = 0.93 (a pressure node);  N4 (P_mean-P_amb)/(p0-P_amb) per ms:
+  ghost      1.000 .763 .528 .293 .060 .008 .006 .003 .001 0 ...
+  nr (value) 1.000 .761 .526 .291 .058 .008 .006 .003 .001 0 ...   (G4 at K = 0: the ghost's own trace)
+  vent       1.000 .537 .080 -.371 -.817 -.572 -.122 .332 .790 .742 .630 .286 -.169 -.616  (open-end ringing)
+flashing_front v2s: vent 2.4689 (every step refused -> the fan's wave, i.e. the ghost's own pin); nr (value) 1.4674, -38 %

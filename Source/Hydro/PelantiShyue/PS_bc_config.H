@@ -94,6 +94,30 @@ inline int ps_bc_rx_form()
     return v;
 }
 
+//  CAMR.ps_bc_rx_type_{x,y,z}{lo,hi} (nr): the face type of the relaxed
+//  boundary on that face.  nr = the characteristic outflow (the incoming
+//  relaxed invariant at its far-field value); vent = the exit at ambient,
+//  P~ = P_inf, choked at the relaxed sound speed where that is
+//  supersonic — the physics the ghost fill's choked-fan branch supplied
+//  at large jumps.  A deck choice per face, never a runtime predicate on
+//  the state.  Unknown strings abort.
+inline const amrex::GpuArray<int, 6>& ps_bc_rx_type()
+{
+    static const amrex::GpuArray<int, 6> t = []() -> amrex::GpuArray<int, 6> {
+        amrex::GpuArray<int, 6> r{{0, 0, 0, 0, 0, 0}};
+        static const char* keys[6] = {"ps_bc_rx_type_xlo", "ps_bc_rx_type_xhi",
+                                      "ps_bc_rx_type_ylo", "ps_bc_rx_type_yhi",
+                                      "ps_bc_rx_type_zlo", "ps_bc_rx_type_zhi"};
+        for (int f = 0; f < 2*AMREX_SPACEDIM; ++f) {
+            const std::string s = ps_dial_string(keys[f], "nr");
+            if (s == "nr")        r[f] = 0;
+            else if (s == "vent") r[f] = 1;
+            else amrex::Abort(std::string("CAMR.") + keys[f] + " must be nr or vent");
+        }
+        return r; }();
+    return t;
+}
+
 //  CAMR.ps_bc_rx_probe (0): 0 off; 1 the [PS-BCRX] per-face line every
 //  step; 2 at the ps_diag_mass cadence is not implemented (every step).
 inline int ps_bc_rx_probe()

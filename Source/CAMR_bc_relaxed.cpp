@@ -33,6 +33,8 @@
 #include "PS_sources.H"
 #include "PS_counters.H"
 #include "PS_util.H"
+#include "PS_presence.H"
+#include "PS_promote.H"
 
 #include <AMReX_MultiFab.H>
 #include <AMReX_ParallelDescriptor.H>
@@ -59,6 +61,8 @@ enum RxAux {
     RX_P0, RX_U0, RX_R0,   // relaxed (P, u_out, rho) of the trial at a0
     RX_P1, RX_U1, RX_R1,   // ... at a1
     RX_PC, RX_UC, RX_RC,   // ... at the current secant amplitude
+    RX_PB, RX_UB,          // ... at a_best
+    RX_GMODE,              // condition solved: 0 nr, 1 vent (P~ = P_inf), 2 choke
     RX_FLAG,       // 0 skip (no entering wave / no fan), 1 active, 2 refused
     RX_RELAXED,    // trial state changed through relaxation (0/1)
     RX_FLASHED,    // trial state changed through the sources (0/1)
@@ -76,6 +80,53 @@ Real wood_c(const PS_HLLC::Face& f) noexcept
     if (f.alpha_2 > Real(0.0)) inv += f.alpha_2 / (f.rho_2 * f.c_2 * f.c_2);
     const Real c2 = (inv > Real(0.0)) ? Real(1.0) / (f.rho_mix * inv) : Real(-1.0);
     return (std::isfinite(c2) && c2 > Real(0.0)) ? std::sqrt(c2) : f.c_frozen;
+}
+
+//  Whether the branch-locked queries ps_cell_state would make on this
+//  state have a root: the host phase always, the other phase only when
+//  it exists and is reachable Independent (the same dispatch).  A trial
+//  state that fails is refused, never handed to the aborting query.
+bool trial_ok(const Real U[NVAR], const PsPres& pr) noexcept
+{
+    const Real rho = ps_finite_or(U[URHO], Real(0.0));
+    if (!(rho > Real(0.0))) return false;
+    Real a1 = ps_finite_or(U[UALPHA1], Real(1.0));
+    if (a1 < Real(0.0)) a1 = Real(0.0);
+    if (a1 > Real(1.0)) a1 = Real(1.0);
+    const Real a2 = Real(1.0) - a1;
+    const Real m1 = amrex::max(ps_finite_or(U[UM1RHO1], Real(0.0)), Real(0.0));
+    const Real m2 = amrex::max(ps_finite_or(U[UM2RHO2], Real(0.0)), Real(0.0));
+    const Real inv = Real(1.0) / rho;
+    const Real ke = ps_kinetic_energy(ps_finite_or(U[UMX], Real(0.0)) * inv,
+#if (AMREX_SPACEDIM >= 2)
+                                      ps_finite_or(U[UMY], Real(0.0)) * inv,
+#else
+                                      Real(0.0),
+#endif
+#if (AMREX_SPACEDIM == 3)
+                                      ps_finite_or(U[UMZ], Real(0.0)) * inv);
+#else
+                                      Real(0.0));
+#endif
+    const PsPhaseQuot q1 = ps_phase_quot(a1, m1, ps_finite_or(U[UE1], Real(0.0)), ke, pr);
+    const PsPhaseQuot q2 = ps_phase_quot(a2, m2, ps_finite_or(U[UE2], Real(0.0)), ke, pr);
+    const bool host1 = (a1 >= a2);
+    Real Y[NUM_SPECIES]; ps_pure_species(Y);
+    Real P, T, S, C;
+    auto has_root = [&](const PsPhaseQuot& q, bool liquid) -> bool {
+        if (!q.exists || !std::isfinite(q.rho) || !std::isfinite(q.e)) return false;
+        return EOS::REY2PTSc_phase_try(q.rho, q.e, Y, liquid ? hem::Phase3::Liquid : hem::Phase3::Vapor, P, T, S, C);
+    };
+    if (host1) {
+        if (!has_root(q1, true)) return false;
+        const PsRegime rg2 = ps_regime(a2, m2, pr);
+        if (q2.exists && ps_regime_reach(rg2, q2.rho, q2.e, false, pr) == PsRegime::Independent && !has_root(q2, false)) return false;
+    } else {
+        if (!has_root(q2, false)) return false;
+        const PsRegime rg1 = ps_regime(a1, m1, pr);
+        if (q1.exists && ps_regime_reach(rg1, q1.rho, q1.e, true, pr) == PsRegime::Independent && !has_root(q1, true)) return false;
+    }
+    return true;
 }
 
 //  Mixture pressure and outward normal velocity of one cell state.
@@ -160,11 +211,16 @@ CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt)
     for (int side = 0; side < 2; ++side) {
         const int fidx = 2*idir + side;
         if (cfg.uface[fidx] == 0) continue;
+        // Only a face the ghost fill treats as characteristic outflow
+        // (CAMR.lo_bc / hi_bc = Inflow, ext_dir); a wall or symmetry face
+        // with the global switch on is not a boundary of this pass.
+        if (((side == 0) ? phys_bc.lo(idir) : phys_bc.hi(idir)) != Inflow) continue;
         const Real n_sgn = (side == 1) ? Real(1.0) : Real(-1.0);   // outward sign of u_n
         const int  N_pos = (side == 1) ? domain.bigEnd(idir) : domain.smallEnd(idir);
         const int  g_off = (side == 1) ? +1 : -1;                 // ghost layer 1
         const Real dx    = geom.CellSize(idir);
         const Real P_inf = (cfg.pamb[fidx] > Real(0.0)) ? cfg.pamb[fidx] : h_prob_parm->p_amb;
+        const int  ftype = ps_bc_rx_type()[fidx];   // 0 nr, 1 vent
 
         // ---- the strip of boundary cells on this level -----------------
         Box strip = domain;
@@ -267,10 +323,13 @@ CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt)
                         ax(i,j,k,RX_FLAG) = Real(2.0);
                         return;
                     }
+                    Real Ut[NVAR];
                     for (int n = 0; n < NVAR; ++n) {
-                        t(i,j,k,n) = UN[n] + kn(i,j,k,n) - (dt / dx) * s * (Us[n] - UN[n]);
-                        if (!std::isfinite(t(i,j,k,n))) { ax(i,j,k,RX_FLAG) = Real(2.0); }
+                        Ut[n] = UN[n] + kn(i,j,k,n) - (dt / dx) * s * (Us[n] - UN[n]);
+                        t(i,j,k,n) = Ut[n];
+                        if (!std::isfinite(Ut[n])) { ax(i,j,k,RX_FLAG) = Real(2.0); }
                     }
+                    if (ax(i,j,k,RX_FLAG) != Real(2.0) && !trial_ok(Ut, l_pres)) ax(i,j,k,RX_FLAG) = Real(2.0);
                     if (ax(i,j,k,RX_FLAG) == Real(2.0)) {
                         for (int n = 0; n < NVAR; ++n) t(i,j,k,n) = UN[n];
                     }
@@ -285,6 +344,7 @@ CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt)
                     if (ax(i,j,k,RX_FLAG) != Real(1.0)) return;
                     Real Ut[NVAR];
                     for (int n = 0; n < NVAR; ++n) Ut[n] = t(i,j,k,n);
+                    if (!trial_ok(Ut, l_pres)) { ax(i,j,k,RX_FLAG) = Real(2.0); return; }
                     Real P, uout, cw;
                     cell_P_uout(Ut, idir, n_sgn, l_pres, P, uout, cw);
                     if (!std::isfinite(P) || !std::isfinite(uout)) { ax(i,j,k,RX_FLAG) = Real(2.0); return; }
@@ -315,28 +375,74 @@ CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt)
         };
 
         // ---- 3. Secant: seeds, the impedance, then a fixed number of updates
-        //  g(a) = [P~ - Z u~_out] - [P_N - Z u_out,N] from the stored relaxed
-        //  (P~, u~) of each trial.  Z is the Wood impedance of q_N
-        //  (ps_bc_rx_z = wood) or, with ps_bc_rx_z = trial, rho_N c_eq with
-        //  c_eq^2 = dP~/drho~ measured between the two seed trials: the
-        //  equilibrium slope the reaction chain itself imposes on the cell,
-        //  whatever the relaxation regime.  A degenerate pair (drho~ = 0 or
-        //  a non-positive slope) keeps the Wood value and is counted.
-        //  Form (ps_bc_rx_form): value = the Hedstrom condition on the relaxed
-        //  step, I(q~) = P_inf (the far field at rest), the relaxed analogue
-        //  of the ghost's R- target and what anchors the face to P_inf;
-        //  rate = I(q~) = I(q_N), Poinsot-Lele's L_in = 0 over the step,
-        //  which carries no far field (demo3 xhi: the arrival is never
-        //  relieved, docs/PLAN_relaxed_boundary.md §13).
+        //  nr face: g(a) = [P~ - Z u~_out] - I_ref from the stored relaxed
+        //  (P~, u~) of each trial; I_ref = P_inf (ps_bc_rx_form = value, the
+        //  Hedstrom condition on the relaxed step) or I(q_N) (rate,
+        //  Poinsot-Lele's L_in = 0 over the step, no far field).  Z is the
+        //  Wood impedance of q_N (ps_bc_rx_z = wood) or rho_N c_eq with
+        //  c_eq^2 = dP~/drho~ measured between the two seed trials (trial):
+        //  the equilibrium slope the reaction chain itself imposes on the
+        //  cell; a degenerate pair keeps Wood and is counted.
+        //  vent face: g(a) = P~ - P_inf (the exit at ambient); where that
+        //  solution leaves the cell relaxed-supersonic, u~_out > c_eq, the
+        //  choke g(a) = u~_out - c_eq is solved instead (the throat), from
+        //  the ambient solution as seed.  This is the physics the ghost's
+        //  choked-fan branch supplied at large jumps, as a face type rather
+        //  than a strain cap.  docs/PLAN_relaxed_boundary.md §13.
         auto gof = [&](Array4<Real> const& ax, int i, int j, int k, int ps, int us) noexcept -> Real {
             const Real Z = ax(i,j,k,RX_Z);
+            const int  gm = int(ax(i,j,k,RX_GMODE));
+            if (gm == 1) return ax(i,j,k,ps) - P_inf;
+            if (gm == 2) return ax(i,j,k,us) - Z / ax(i,j,k,RX_RN);
             const Real I_ref = form_value ? P_inf : (ax(i,j,k,RX_PN) - Z * ax(i,j,k,RX_UN));
             return (ax(i,j,k,ps) - Z * ax(i,j,k,us)) - I_ref;
+        };
+        //  The fixed-count secant from the seeds in (A0, A1) with their g in
+        //  (G0, G1); leaves the best pair in (ABEST, GBEST).
+        auto secant = [&](long& nrel, long& nfl) {
+            for (int it = 0; it < nsec; ++it) {
+                for (MFIter mfi(T); mfi.isValid(); ++mfi) {
+                    auto const& ax = AX.array(mfi);
+                    amrex::LoopOnCpu(mfi.validbox(), [&] (int i, int j, int k) noexcept {
+                        if (ax(i,j,k,RX_FLAG) != Real(1.0)) return;
+                        const Real a0 = ax(i,j,k,RX_A0), g0 = ax(i,j,k,RX_G0);
+                        const Real a1 = ax(i,j,k,RX_A1), g1 = ax(i,j,k,RX_G1);
+                        const Real dg = g1 - g0;
+                        Real a2 = a1;
+                        if (dg != Real(0.0) && std::isfinite(dg)) a2 = a1 - g1 * (a1 - a0) / dg;
+                        if (!std::isfinite(a2)) a2 = a1;
+                        ax(i,j,k,RX_ACUR) = a2;
+                    });
+                }
+                evaluate(RX_ACUR, RX_PC, RX_UC, RX_RC, nrel, nfl);
+                for (MFIter mfi(T); mfi.isValid(); ++mfi) {
+                    auto const& ax = AX.array(mfi);
+                    amrex::LoopOnCpu(mfi.validbox(), [&] (int i, int j, int k) noexcept {
+                        if (ax(i,j,k,RX_FLAG) != Real(1.0)) return;
+                        const Real g2 = gof(ax, i, j, k, RX_PC, RX_UC);
+                        if (!std::isfinite(g2)) { ax(i,j,k,RX_FLAG) = Real(2.0); return; }
+                        ax(i,j,k,RX_A0) = ax(i,j,k,RX_A1); ax(i,j,k,RX_G0) = ax(i,j,k,RX_G1);
+                        ax(i,j,k,RX_A1) = ax(i,j,k,RX_ACUR); ax(i,j,k,RX_G1) = g2;
+                    });
+                }
+            }
+            for (MFIter mfi(T); mfi.isValid(); ++mfi) {
+                auto const& ax = AX.array(mfi);
+                amrex::LoopOnCpu(mfi.validbox(), [&] (int i, int j, int k) noexcept {
+                    if (ax(i,j,k,RX_FLAG) != Real(1.0)) return;
+                    const bool one = std::abs(ax(i,j,k,RX_G1)) <= std::abs(ax(i,j,k,RX_G0));
+                    ax(i,j,k,RX_ABEST) = one ? ax(i,j,k,RX_A1) : ax(i,j,k,RX_A0);
+                    ax(i,j,k,RX_GBEST) = one ? ax(i,j,k,RX_G1) : ax(i,j,k,RX_G0);
+                    ax(i,j,k,RX_PB)    = one ? ax(i,j,k,RX_P1) : ax(i,j,k,RX_P0);
+                    ax(i,j,k,RX_UB)    = one ? ax(i,j,k,RX_U1) : ax(i,j,k,RX_U0);
+                });
+            }
         };
         long nrel = 0, nfl = 0;
         evaluate(RX_A0, RX_P0, RX_U0, RX_R0, nrel, nfl);
         evaluate(RX_A1, RX_P1, RX_U1, RX_R1, nrel, nfl);
         long n_zfb = 0;
+        const int fmode = (ftype == 1) ? 1 : 0;
         for (MFIter mfi(T); mfi.isValid(); ++mfi) {
             auto const& ax = AX.array(mfi);
             amrex::LoopOnCpu(mfi.validbox(), [&] (int i, int j, int k) noexcept {
@@ -351,46 +457,50 @@ CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt)
                         ++n_zfb;
                     }
                 }
+                ax(i,j,k,RX_GMODE) = Real(fmode);
                 ax(i,j,k,RX_G0) = gof(ax, i, j, k, RX_P0, RX_U0);
                 ax(i,j,k,RX_G1) = gof(ax, i, j, k, RX_P1, RX_U1);
                 if (!std::isfinite(ax(i,j,k,RX_G0)) || !std::isfinite(ax(i,j,k,RX_G1))) ax(i,j,k,RX_FLAG) = Real(2.0);
             });
         }
-        for (int it = 0; it < nsec; ++it) {
+        secant(nrel, nfl);
+        //  vent: the cells whose ambient solution is relaxed-supersonic are
+        //  re-solved on the choke, seeded by that solution and the fan's.
+        long n_choke = 0;
+        if (ftype == 1) {
             for (MFIter mfi(T); mfi.isValid(); ++mfi) {
                 auto const& ax = AX.array(mfi);
                 amrex::LoopOnCpu(mfi.validbox(), [&] (int i, int j, int k) noexcept {
                     if (ax(i,j,k,RX_FLAG) != Real(1.0)) return;
-                    const Real a0 = ax(i,j,k,RX_A0), g0 = ax(i,j,k,RX_G0);
-                    const Real a1 = ax(i,j,k,RX_A1), g1 = ax(i,j,k,RX_G1);
-                    const Real dg = g1 - g0;
-                    Real a2 = a1;
-                    if (dg != Real(0.0) && std::isfinite(dg)) a2 = a1 - g1 * (a1 - a0) / dg;
-                    if (!std::isfinite(a2)) a2 = a1;
-                    ax(i,j,k,RX_ACUR) = a2;
+                    const Real ceq = ax(i,j,k,RX_Z) / ax(i,j,k,RX_RN);
+                    if (ax(i,j,k,RX_UB) > ceq) {
+                        ++n_choke;
+                        ax(i,j,k,RX_GMODE) = Real(2.0);
+                        ax(i,j,k,RX_A0) = ax(i,j,k,RX_ABEST);
+                        ax(i,j,k,RX_G0) = ax(i,j,k,RX_UB) - ceq;
+                        Real a1 = ax(i,j,k,RX_AFAN);
+                        if (a1 == ax(i,j,k,RX_A0)) a1 = Real(0.0);
+                        ax(i,j,k,RX_A1) = a1;
+                    } else {
+                        ax(i,j,k,RX_FLAG) = Real(3.0);   // parked: keeps its ambient solution
+                    }
                 });
             }
-            evaluate(RX_ACUR, RX_PC, RX_UC, RX_RC, nrel, nfl);
+            evaluate(RX_A1, RX_P1, RX_U1, RX_R1, nrel, nfl);
             for (MFIter mfi(T); mfi.isValid(); ++mfi) {
                 auto const& ax = AX.array(mfi);
                 amrex::LoopOnCpu(mfi.validbox(), [&] (int i, int j, int k) noexcept {
                     if (ax(i,j,k,RX_FLAG) != Real(1.0)) return;
-                    const Real g2 = gof(ax, i, j, k, RX_PC, RX_UC);
-                    if (!std::isfinite(g2)) { ax(i,j,k,RX_FLAG) = Real(2.0); return; }
-                    ax(i,j,k,RX_A0) = ax(i,j,k,RX_A1); ax(i,j,k,RX_G0) = ax(i,j,k,RX_G1);
-                    ax(i,j,k,RX_A1) = ax(i,j,k,RX_ACUR); ax(i,j,k,RX_G1) = g2;
+                    ax(i,j,k,RX_G1) = gof(ax, i, j, k, RX_P1, RX_U1);
+                    if (!std::isfinite(ax(i,j,k,RX_G1))) ax(i,j,k,RX_FLAG) = Real(2.0);
                 });
             }
-        }
-        //  Best of the pairs (a0,g0), (a1,g1) by |g|.
-        for (MFIter mfi(T); mfi.isValid(); ++mfi) {
-            auto const& ax = AX.array(mfi);
-            amrex::LoopOnCpu(mfi.validbox(), [&] (int i, int j, int k) noexcept {
-                if (ax(i,j,k,RX_FLAG) != Real(1.0)) return;
-                const bool one = std::abs(ax(i,j,k,RX_G1)) <= std::abs(ax(i,j,k,RX_G0));
-                ax(i,j,k,RX_ABEST) = one ? ax(i,j,k,RX_A1) : ax(i,j,k,RX_A0);
-                ax(i,j,k,RX_GBEST) = one ? ax(i,j,k,RX_G1) : ax(i,j,k,RX_G0);
-            });
+            secant(nrel, nfl);
+            for (MFIter mfi(T); mfi.isValid(); ++mfi) {
+                auto const& ax = AX.array(mfi);
+                amrex::LoopOnCpu(mfi.validbox(), [&] (int i, int j, int k) noexcept {
+                    if (ax(i,j,k,RX_FLAG) == Real(3.0)) ax(i,j,k,RX_FLAG) = Real(1.0); });
+            }
         }
         //  The last trial evaluated is at a1; re-evaluate at a_best when the
         //  probe is on so its relaxed/flashed census and P~, Mw are those
@@ -461,9 +571,10 @@ CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt)
             long nr = nrel, nf = nfl;
             ParallelDescriptor::ReduceLongSum(nr); ParallelDescriptor::ReduceLongSum(nf);
             ParallelDescriptor::ReduceLongSum(n_zfb);
+            ParallelDescriptor::ReduceLongSum(n_choke);
             const Real inv = (n_ent > 0) ? Real(1.0) / Real(n_ent) : Real(0.0);
             amrex::Print() << "[PS-BCRX] L" << level << " step " << step << " " << fnm[fidx]
-                << (mode == 1 ? " write" : " probe")
+                << (mode == 1 ? " write" : " probe") << (ftype == 1 ? " vent" : " nr")
                 << " n=" << n_ent
                 << " a*: " << a_sum * inv << " / " << (n_ent ? a_min : 0.0) << " / " << (n_ent ? a_max : 0.0)
                 << "  a_fan: " << af_sum * inv << " / " << (n_ent ? af_min : 0.0) << " / " << (n_ent ? af_max : 0.0)
@@ -472,7 +583,7 @@ CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt)
                 << "  P~=" << pt_sum * inv
                 << "  Mw: " << mw_sum * inv << " / " << (n_ent ? mw_max : 0.0)
                 << "  reversed=" << n_rev << " relaxed=" << nr << " src=" << nf
-                << " fb=" << n_fb << " zfb=" << n_zfb << "\n";
+                << " fb=" << n_fb << " zfb=" << n_zfb << " choked=" << n_choke << "\n";
         }
     }}
 }
