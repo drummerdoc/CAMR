@@ -61,15 +61,16 @@ inline int ps_bc_rx_nsec()
     return v;
 }
 
-//  CAMR.ps_bc_rx_z (wood): the impedance Z in the incoming relaxed
-//  invariant P - Z u_out.  wood = rho c_w of the boundary cell (mechanical
-//  equilibrium, analytic); trial = rho c_eq with c_eq^2 = dP~/drho~
+//  CAMR.ps_bc_rx_z (trial): the impedance Z in the incoming relaxed
+//  invariant P - Z u_out.  trial = rho c_eq with c_eq^2 = dP~/drho~
 //  measured between the two seed trials, the slope the reaction chain
-//  imposes (equilibrium when thermal and mass transfer are fast).
+//  imposes whatever the relaxation regime (N1b -0.011); wood = rho c_w
+//  of the boundary cell, the analytic mechanical-equilibrium control
+//  (N1b +0.067 at mode 5, the Wood-equilibrium gap; equal at mode 0).
 inline int ps_bc_rx_z()
 {
     static const int v = []() -> int {
-        const std::string s = ps_dial_string("ps_bc_rx_z", "wood");
+        const std::string s = ps_dial_string("ps_bc_rx_z", "trial");
         if (s == "wood")  return 0;
         if (s == "trial") return 1;
         amrex::Abort("CAMR.ps_bc_rx_z must be wood or trial");
