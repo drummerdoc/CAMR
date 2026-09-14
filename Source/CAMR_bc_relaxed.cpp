@@ -35,6 +35,7 @@
 #include "PS_util.H"
 #include "PS_presence.H"
 #include "PS_promote.H"
+#include "PS_nscbc.H"      // _fan_march, _pack_state: the vent outflow wave model
 
 #include <AMReX_MultiFab.H>
 #include <AMReX_ParallelDescriptor.H>
@@ -62,7 +63,8 @@ enum RxAux {
     RX_P1, RX_U1, RX_R1,   // ... at a1
     RX_PC, RX_UC, RX_RC,   // ... at the current secant amplitude
     RX_PB, RX_UB,          // ... at a_best
-    RX_GMODE,              // condition solved: 0 nr, 1 vent (P~ = P_inf), 2 choke
+    RX_GMODE,              // condition solved: 0 nr, 1 vent (P~ = P_inf), 2 choke, 3 vent inflow, 4 vent outflow (fan wave)
+    RX_SFAN,               // speed of the fan's entering wave (gm 4)
     RX_FLAG,       // 0 skip (no entering wave / no fan), 1 active, 2 refused
     RX_RELAXED,    // trial state changed through relaxation (0/1)
     RX_FLASHED,    // trial state changed through the sources (0/1)
@@ -237,7 +239,9 @@ CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt)
         MultiFab QN (sba, sdm, NVAR,    0);   // q_N
         MultiFab KN (sba, sdm, NVAR,    0);   // known increment (dt x)
         MultiFab AX (sba, sdm, RX_NAUX, 0);
+        MultiFab WV (sba, sdm, NVAR,    0);   // the fan's entering wave (vent outflow)
         AX.setVal(Real(0.0));
+        WV.setVal(Real(0.0));
 
         // Counters: the trials are not part of the solution's accounting.
         const PsCounters snap = ps_counters();
@@ -308,20 +312,27 @@ CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt)
                 auto const& qn = QN.const_array(mfi);
                 auto const& kn = KN.const_array(mfi);
                 auto const& ax = AX.array(mfi);
+                auto const& wv = WV.const_array(mfi);
                 amrex::LoopOnCpu(bx, [&] (int i, int j, int k) noexcept {
                     Real UN[NVAR];
                     for (int n = 0; n < NVAR; ++n) { UN[n] = qn(i,j,k,n); t(i,j,k,n) = UN[n]; }
                     if (ax(i,j,k,RX_FLAG) != Real(1.0)) return;
                     const Real a     = ax(i,j,k,aslot);
-                    const Real s     = ax(i,j,k,RX_S);
-                    const Real c_eff = ax(i,j,k,RX_CEFF);
-                    const PS_HLLC::Face fN = PS_HLLC::face_from_state(idir, UN, l_pres);
-                    const Real S_M = fN.u_n - n_sgn * a / (fN.rho_mix * c_eff);
+                    Real s = ax(i,j,k,RX_S);
                     Real Us[NVAR];
-                    int cause = 0;
-                    if (!PS_HLLC::ps_star_state(idir, fN, UN, s, S_M, Us, &cause)) {
-                        ax(i,j,k,RX_FLAG) = Real(2.0);
-                        return;
+                    if (ax(i,j,k,RX_GMODE) == Real(4.0)) {
+                        // vent outflow: the wave is the fan's, fixed.
+                        s = ax(i,j,k,RX_SFAN);
+                        for (int n = 0; n < NVAR; ++n) Us[n] = UN[n] + wv(i,j,k,n);
+                    } else {
+                        const Real c_eff = ax(i,j,k,RX_CEFF);
+                        const PS_HLLC::Face fN = PS_HLLC::face_from_state(idir, UN, l_pres);
+                        const Real S_M = fN.u_n - n_sgn * a / (fN.rho_mix * c_eff);
+                        int cause = 0;
+                        if (!PS_HLLC::ps_star_state(idir, fN, UN, s, S_M, Us, &cause)) {
+                            ax(i,j,k,RX_FLAG) = Real(2.0);
+                            return;
+                        }
                     }
                     Real Ut[NVAR];
                     for (int n = 0; n < NVAR; ++n) {
@@ -447,10 +458,12 @@ CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt)
         long nrel = 0, nfl = 0;
         evaluate(RX_A0, RX_P0, RX_U0, RX_R0, nrel, nfl);
         evaluate(RX_A1, RX_P1, RX_U1, RX_R1, nrel, nfl);
-        long n_zfb = 0, n_vin = 0;
+        long n_zfb = 0, n_vin = 0, n_vfan = 0;
         const int fmode = (ftype == 1) ? 1 : 0;
         for (MFIter mfi(T); mfi.isValid(); ++mfi) {
             auto const& ax = AX.array(mfi);
+            auto const& qn = QN.const_array(mfi);
+            auto const& wv = WV.array(mfi);
             amrex::LoopOnCpu(mfi.validbox(), [&] (int i, int j, int k) noexcept {
                 if (ax(i,j,k,RX_FLAG) != Real(1.0)) return;
                 if (z_trial) {
@@ -468,10 +481,54 @@ CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt)
                 //  cell's own relaxed evolution, no entering wave); inflow
                 //  cells take the plenum's inflow relation (gm 3).
                 if (fmode == 1 && ax(i,j,k,RX_U0) < Real(0.0)) { ax(i,j,k,RX_GMODE) = Real(3.0); ++n_vin; }
+                else if (fmode == 1) {
+                    //  vent outflow: the entering wave is the fan between q_N
+                    //  and the fan-end state (_fan_march to P_inf or the
+                    //  throat, HEM re-closure along the path), its amplitude
+                    //  fixed by the fan — the ghost fill's large-jump
+                    //  construction as this face type's wave model.
+                    Real UN[NVAR];
+                    for (int n = 0; n < NVAR; ++n) UN[n] = qn(i,j,k,n);
+                    const PsPhaseSpeeds ph = ps_phase_speeds_from_state(UN, l_pres);
+                    const Real P_Nm = ph.alpha1 * ph.P1 + ph.alpha2 * ph.P2;
+                    const Real un   = (idir == 0) ? ph.ux : (idir == 1) ? ph.uy : ph.uz;
+                    const Real P_t  = amrex::max(P_inf, amrex::max(Real(1.0e-3) * P_inf, Real(ps_guard::P_FLOOR_PA)));
+                    const bool p1 = (ph.m1 > ps_const::M_TINY), p2 = (ph.m2 > ps_const::M_TINY);
+                    const PS_NSCBC::FanEnd fe = PS_NSCBC::_fan_march(ph, P_Nm, n_sgn * un, P_t, p1, p2, ph.alpha1 >= ph.alpha2);
+                    Real Y_N[NUM_SPECIES];
+                    for (int n = 0; n < NUM_SPECIES; ++n) Y_N[n] = ps_finite_or(UN[UFS + n], Real(0.0)) / ph.rho;
+                    Real s_end[NVAR];
+                    PS_HLLC::Fluctuations fl;
+                    const bool ok = fe.ok
+                        && PS_NSCBC::_pack_state(ph, idir, n_sgn, fe.u_out,
+                                                 (fe.m1 > ps_const::M_TINY) ? fe.m1 : Real(0.0),
+                                                 (fe.m2 > ps_const::M_TINY) ? fe.m2 : Real(0.0),
+                                                 fe.e1, fe.e2, fe.alpha1, Y_N, UN, s_end)
+                        && ((side == 1) ? PS_HLLC::fluctuations(idir, UN, s_end, fl, l_pres)
+                                        : PS_HLLC::fluctuations(idir, s_end, UN, fl, l_pres));
+                    const int l = (side == 1) ? 0 : 2;
+                    const bool entering = ok && ((side == 1) ? (fl.s[l] < Real(0.0)) : (fl.s[l] > Real(0.0)));
+                    if (!ok) { ax(i,j,k,RX_FLAG) = Real(2.0); return; }
+                    ax(i,j,k,RX_GMODE) = Real(4.0);
+                    ax(i,j,k,RX_SFAN)  = entering ? fl.s[l] : Real(0.0);
+                    for (int n = 0; n < NVAR; ++n) wv(i,j,k,n) = entering ? fl.W[l][n] : Real(0.0);
+                    //  Reported amplitude: the HLLC pressure jump of that wave.
+                    const PS_HLLC::Face fN = PS_HLLC::face_from_state(idir, UN, l_pres);
+                    ax(i,j,k,RX_ABEST) = entering ? fN.rho_mix * ax(i,j,k,RX_CEFF) * n_sgn * (fN.u_n - fl.s[1]) : Real(0.0);
+                    ax(i,j,k,RX_GBEST) = Real(0.0);
+                    ++n_vfan;
+                    return;
+                }
                 ax(i,j,k,RX_G0) = gof(ax, i, j, k, RX_P0, RX_U0);
                 ax(i,j,k,RX_G1) = gof(ax, i, j, k, RX_P1, RX_U1);
                 if (!std::isfinite(ax(i,j,k,RX_G0)) || !std::isfinite(ax(i,j,k,RX_G1))) ax(i,j,k,RX_FLAG) = Real(2.0);
             });
+        }
+        //  vent outflow cells carry the fan's wave: parked through the secants.
+        for (MFIter mfi(T); mfi.isValid(); ++mfi) {
+            auto const& ax = AX.array(mfi);
+            amrex::LoopOnCpu(mfi.validbox(), [&] (int i, int j, int k) noexcept {
+                if (ax(i,j,k,RX_FLAG) == Real(1.0) && ax(i,j,k,RX_GMODE) == Real(4.0)) ax(i,j,k,RX_FLAG) = Real(5.0); });
         }
         secant(nrel, nfl);
         //  vent: the cells whose ambient solution is relaxed-supersonic are
@@ -512,6 +569,11 @@ CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt)
                     if (ax(i,j,k,RX_FLAG) == Real(3.0)) ax(i,j,k,RX_FLAG) = Real(1.0); });
             }
         }
+        for (MFIter mfi(T); mfi.isValid(); ++mfi) {
+            auto const& ax = AX.array(mfi);
+            amrex::LoopOnCpu(mfi.validbox(), [&] (int i, int j, int k) noexcept {
+                if (ax(i,j,k,RX_FLAG) == Real(5.0)) ax(i,j,k,RX_FLAG) = Real(1.0); });
+        }
         //  The last trial evaluated is at a1; re-evaluate at a_best when the
         //  probe is on so its relaxed/flashed census and P~, Mw are those
         //  of the chosen amplitude (one extra sweep).
@@ -536,6 +598,7 @@ CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt)
             auto const& qn = QN.const_array(mfi);
             auto const& kn = KN.const_array(mfi);
             auto const& ax = AX.const_array(mfi);
+            auto const& wv = WV.const_array(mfi);
             auto const& hs = hyd_src.array(gidx[mfi.index()]);
             amrex::LoopOnCpu(bx, [&] (int i, int j, int k) noexcept {
                 const Real fl = ax(i,j,k,RX_FLAG);
@@ -552,7 +615,12 @@ CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt)
                 pt_sum += ax(i,j,k,RX_PT);
                 mw_sum += ax(i,j,k,RX_MW); mw_max = amrex::max(mw_max, ax(i,j,k,RX_MW));
                 if (ax(i,j,k,RX_MW) < Real(0.0)) ++n_rev;
-                if (mode == 1) {
+                if (mode == 1 && ax(i,j,k,RX_GMODE) == Real(4.0)) {
+                    for (int n = 0; n < NVAR; ++n) {
+                        const Real dq = kn(i,j,k,n) - (dt / dx) * ax(i,j,k,RX_SFAN) * wv(i,j,k,n);
+                        hs(i,j,k,n) = ps_finite_or(dq / dt, Real(0.0));
+                    }
+                } else if (mode == 1) {
                     Real UN[NVAR];
                     for (int n = 0; n < NVAR; ++n) UN[n] = qn(i,j,k,n);
                     const PS_HLLC::Face fN = PS_HLLC::face_from_state(idir, UN, l_pres);
@@ -583,6 +651,7 @@ CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt)
             ParallelDescriptor::ReduceLongSum(n_zfb);
             ParallelDescriptor::ReduceLongSum(n_choke);
             ParallelDescriptor::ReduceLongSum(n_vin);
+            ParallelDescriptor::ReduceLongSum(n_vfan);
             const Real inv = (n_ent > 0) ? Real(1.0) / Real(n_ent) : Real(0.0);
             amrex::Print() << "[PS-BCRX] L" << level << " step " << step << " " << fnm[fidx]
                 << (mode == 1 ? " write" : " probe") << (ftype == 1 ? " vent" : " nr")
@@ -594,7 +663,7 @@ CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt)
                 << "  P~=" << pt_sum * inv
                 << "  Mw: " << mw_sum * inv << " / " << (n_ent ? mw_max : 0.0)
                 << "  reversed=" << n_rev << " relaxed=" << nr << " src=" << nf
-                << " fb=" << n_fb << " zfb=" << n_zfb << " choked=" << n_choke << " vin=" << n_vin << "\n";
+                << " fb=" << n_fb << " zfb=" << n_zfb << " choked=" << n_choke << " vin=" << n_vin << " vfan=" << n_vfan << "\n";
         }
     }}
 }

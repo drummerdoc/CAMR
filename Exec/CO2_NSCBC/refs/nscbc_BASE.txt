@@ -63,3 +63,5 @@ N1  vent |r| = 0.93 (a pressure node);  N4 (P_mean-P_amb)/(p0-P_amb) per ms:
 flashing_front v2s: vent 2.6978 (+14.1 %; four early steps accepted unconverged, then every step refused -> the fan wave); nr (value) 1.4674, -38 %
 Recorded 2026-09-14, vent with the plenum inflow relation (R12): N4 both faces vent, per ms:
   1.000 .538 .082 -.370 -.816 -.728 -.511 -.293 -.073 .007 .003 .002   (inflow phase absorbed; was ringing)
+Recorded 2026-09-14, the fan as the vent outflow wave model (e011e0a refactor bit-identical; then vent uses _fan_march):
+flashing_front v2s vent 2.4689 (= the ghost pin, no refusals; face cell relaxed at 5.5 bar, Mw 1.1-1.24);  N4 both vent 1 .540 .084 -.367 -.814 -.731 -.514 -.295 -.076 .008;  N1 vent |r| 0.92
