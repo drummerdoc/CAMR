@@ -394,7 +394,13 @@ CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt)
             const int  gm = int(ax(i,j,k,RX_GMODE));
             if (gm == 1) return ax(i,j,k,ps) - P_inf;
             if (gm == 2) return ax(i,j,k,us) - Z / ax(i,j,k,RX_RN);
-            const Real I_ref = form_value ? P_inf : (ax(i,j,k,RX_PN) - Z * ax(i,j,k,RX_UN));
+            //  gm == 3: a vent cell in reversed flow — the plenum feeds it from
+            //  rest at P_inf, so the static pressure sits below P_inf by the
+            //  dynamic head; the Hedstrom value condition is that relation
+            //  linearised (P_g < P_inf for inward u), the one the ghost's
+            //  linear branch applied there.  A static-pressure Dirichlet on
+            //  an inflow cell over-drives it (R3: Mach -2 inflow patches).
+            const Real I_ref = (form_value || gm == 3) ? P_inf : (ax(i,j,k,RX_PN) - Z * ax(i,j,k,RX_UN));
             return (ax(i,j,k,ps) - Z * ax(i,j,k,us)) - I_ref;
         };
         //  The fixed-count secant from the seeds in (A0, A1) with their g in
@@ -441,7 +447,7 @@ CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt)
         long nrel = 0, nfl = 0;
         evaluate(RX_A0, RX_P0, RX_U0, RX_R0, nrel, nfl);
         evaluate(RX_A1, RX_P1, RX_U1, RX_R1, nrel, nfl);
-        long n_zfb = 0;
+        long n_zfb = 0, n_vin = 0;
         const int fmode = (ftype == 1) ? 1 : 0;
         for (MFIter mfi(T); mfi.isValid(); ++mfi) {
             auto const& ax = AX.array(mfi);
@@ -458,6 +464,10 @@ CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt)
                     }
                 }
                 ax(i,j,k,RX_GMODE) = Real(fmode);
+                //  vent: the flow direction is read on the a = 0 trial (the
+                //  cell's own relaxed evolution, no entering wave); inflow
+                //  cells take the plenum's inflow relation (gm 3).
+                if (fmode == 1 && ax(i,j,k,RX_U0) < Real(0.0)) { ax(i,j,k,RX_GMODE) = Real(3.0); ++n_vin; }
                 ax(i,j,k,RX_G0) = gof(ax, i, j, k, RX_P0, RX_U0);
                 ax(i,j,k,RX_G1) = gof(ax, i, j, k, RX_P1, RX_U1);
                 if (!std::isfinite(ax(i,j,k,RX_G0)) || !std::isfinite(ax(i,j,k,RX_G1))) ax(i,j,k,RX_FLAG) = Real(2.0);
@@ -473,7 +483,7 @@ CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt)
                 amrex::LoopOnCpu(mfi.validbox(), [&] (int i, int j, int k) noexcept {
                     if (ax(i,j,k,RX_FLAG) != Real(1.0)) return;
                     const Real ceq = ax(i,j,k,RX_Z) / ax(i,j,k,RX_RN);
-                    if (ax(i,j,k,RX_UB) > ceq) {
+                    if (ax(i,j,k,RX_GMODE) == Real(1.0) && ax(i,j,k,RX_UB) > ceq) {
                         ++n_choke;
                         ax(i,j,k,RX_GMODE) = Real(2.0);
                         ax(i,j,k,RX_A0) = ax(i,j,k,RX_ABEST);
@@ -572,6 +582,7 @@ CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt)
             ParallelDescriptor::ReduceLongSum(nr); ParallelDescriptor::ReduceLongSum(nf);
             ParallelDescriptor::ReduceLongSum(n_zfb);
             ParallelDescriptor::ReduceLongSum(n_choke);
+            ParallelDescriptor::ReduceLongSum(n_vin);
             const Real inv = (n_ent > 0) ? Real(1.0) / Real(n_ent) : Real(0.0);
             amrex::Print() << "[PS-BCRX] L" << level << " step " << step << " " << fnm[fidx]
                 << (mode == 1 ? " write" : " probe") << (ftype == 1 ? " vent" : " nr")
@@ -583,7 +594,7 @@ CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt)
                 << "  P~=" << pt_sum * inv
                 << "  Mw: " << mw_sum * inv << " / " << (n_ent ? mw_max : 0.0)
                 << "  reversed=" << n_rev << " relaxed=" << nr << " src=" << nf
-                << " fb=" << n_fb << " zfb=" << n_zfb << " choked=" << n_choke << "\n";
+                << " fb=" << n_fb << " zfb=" << n_zfb << " choked=" << n_choke << " vin=" << n_vin << "\n";
         }
     }}
 }

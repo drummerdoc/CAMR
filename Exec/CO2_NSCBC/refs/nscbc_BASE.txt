@@ -60,4 +60,6 @@ N1  vent |r| = 0.93 (a pressure node);  N4 (P_mean-P_amb)/(p0-P_amb) per ms:
   ghost      1.000 .763 .528 .293 .060 .008 .006 .003 .001 0 ...
   nr (value) 1.000 .761 .526 .291 .058 .008 .006 .003 .001 0 ...   (G4 at K = 0: the ghost's own trace)
   vent       1.000 .537 .080 -.371 -.817 -.572 -.122 .332 .790 .742 .630 .286 -.169 -.616  (open-end ringing)
-flashing_front v2s: vent 2.4689 (every step refused -> the fan's wave, i.e. the ghost's own pin); nr (value) 1.4674, -38 %
+flashing_front v2s: vent 2.6978 (+14.1 %; four early steps accepted unconverged, then every step refused -> the fan wave); nr (value) 1.4674, -38 %
+Recorded 2026-09-14, vent with the plenum inflow relation (R12): N4 both faces vent, per ms:
+  1.000 .538 .082 -.370 -.816 -.728 -.511 -.293 -.073 .007 .003 .002   (inflow phase absorbed; was ringing)
