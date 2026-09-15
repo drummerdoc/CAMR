@@ -9,9 +9,11 @@
 //  the HLLC star jump of N for pressure amplitude a (ps_star_state,
 //  S_M(a) = u_N - n a / rho_N c_eff), the rest of N's increment is known
 //  (hydro_source), and a is chosen so that the reaction chain applied to
-//  the trial state leaves the incoming relaxed invariant
-//  I = P - rho c_w u_out of N unchanged (Hedstrom on the relaxed step).
-//  Secant on a, seeds {0, a_fan}, fixed count; a refusal keeps the fan's
+//  the trial state puts the incoming relaxed invariant I = P - Z u_out of
+//  N at its far-field value (Hedstrom on the relaxed step; nr faces and
+//  vent inflow cells).  Secant on a, seeds {0, a_fan}, fixed count.  A
+//  vent outflow cell takes the choked fan (_fan_march) as its entering
+//  wave instead, amplitude fixed by the fan.  A refusal keeps the fan's
 //  wave and is counted (nscbc_rx_fb).  The trial evaluations run the
 //  production operators on a strip MultiFab of the boundary cells with
 //  the counters snapshotted, so the health lines see only the solution.
@@ -62,8 +64,7 @@ enum RxAux {
     RX_P0, RX_U0, RX_R0,   // relaxed (P, u_out, rho) of the trial at a0
     RX_P1, RX_U1, RX_R1,   // ... at a1
     RX_PC, RX_UC, RX_RC,   // ... at the current secant amplitude
-    RX_PB, RX_UB,          // ... at a_best
-    RX_GMODE,              // condition solved: 0 nr, 1 vent (P~ = P_inf), 2 choke, 3 vent inflow, 4 vent outflow (fan wave)
+    RX_GMODE,              // condition: 0 nr, 3 vent inflow (Hedstrom value relation), 4 vent outflow (the fan's wave)
     RX_SFAN,               // speed of the fan's entering wave (gm 4)
     RX_FLAG,       // 0 skip (no entering wave / no fan), 1 active, 2 refused
     RX_RELAXED,    // trial state changed through relaxation (0/1)
@@ -386,25 +387,17 @@ CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt)
         };
 
         // ---- 3. Secant: seeds, the impedance, then a fixed number of updates
-        //  nr face: g(a) = [P~ - Z u~_out] - I_ref from the stored relaxed
-        //  (P~, u~) of each trial; I_ref = P_inf (ps_bc_rx_form = value, the
-        //  Hedstrom condition on the relaxed step) or I(q_N) (rate,
-        //  Poinsot-Lele's L_in = 0 over the step, no far field).  Z is the
-        //  Wood impedance of q_N (ps_bc_rx_z = wood) or rho_N c_eq with
-        //  c_eq^2 = dP~/drho~ measured between the two seed trials (trial):
-        //  the equilibrium slope the reaction chain itself imposes on the
-        //  cell; a degenerate pair keeps Wood and is counted.
-        //  vent face: g(a) = P~ - P_inf (the exit at ambient); where that
-        //  solution leaves the cell relaxed-supersonic, u~_out > c_eq, the
-        //  choke g(a) = u~_out - c_eq is solved instead (the throat), from
-        //  the ambient solution as seed.  This is the physics the ghost's
-        //  choked-fan branch supplied at large jumps, as a face type rather
-        //  than a strain cap.  docs/PLAN_relaxed_boundary.md §13.
+        //  g(a) = [P~ - Z u~_out] - I_ref from the stored relaxed (P~, u~) of
+        //  each trial; I_ref = P_inf (ps_bc_rx_form = value, the Hedstrom
+        //  condition on the relaxed step) or I(q_N) (rate, Poinsot-Lele's
+        //  L_in = 0 over the step, no far field).  Z is the Wood impedance
+        //  of q_N (ps_bc_rx_z = wood) or rho_N c_eq with c_eq^2 = dP~/drho~
+        //  measured between the two seed trials (trial): the equilibrium
+        //  slope the reaction chain itself imposes on the cell; a degenerate
+        //  pair keeps Wood and is counted.  docs/PLAN_relaxed_boundary.md.
         auto gof = [&](Array4<Real> const& ax, int i, int j, int k, int ps, int us) noexcept -> Real {
             const Real Z = ax(i,j,k,RX_Z);
             const int  gm = int(ax(i,j,k,RX_GMODE));
-            if (gm == 1) return ax(i,j,k,ps) - P_inf;
-            if (gm == 2) return ax(i,j,k,us) - Z / ax(i,j,k,RX_RN);
             //  gm == 3: a vent cell in reversed flow — the plenum feeds it from
             //  rest at P_inf, so the static pressure sits below P_inf by the
             //  dynamic head; the Hedstrom value condition is that relation
@@ -450,8 +443,6 @@ CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt)
                     const bool one = std::abs(ax(i,j,k,RX_G1)) <= std::abs(ax(i,j,k,RX_G0));
                     ax(i,j,k,RX_ABEST) = one ? ax(i,j,k,RX_A1) : ax(i,j,k,RX_A0);
                     ax(i,j,k,RX_GBEST) = one ? ax(i,j,k,RX_G1) : ax(i,j,k,RX_G0);
-                    ax(i,j,k,RX_PB)    = one ? ax(i,j,k,RX_P1) : ax(i,j,k,RX_P0);
-                    ax(i,j,k,RX_UB)    = one ? ax(i,j,k,RX_U1) : ax(i,j,k,RX_U0);
                 });
             }
         };
@@ -459,7 +450,6 @@ CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt)
         evaluate(RX_A0, RX_P0, RX_U0, RX_R0, nrel, nfl);
         evaluate(RX_A1, RX_P1, RX_U1, RX_R1, nrel, nfl);
         long n_zfb = 0, n_vin = 0, n_vfan = 0;
-        const int fmode = (ftype == 1) ? 1 : 0;
         for (MFIter mfi(T); mfi.isValid(); ++mfi) {
             auto const& ax = AX.array(mfi);
             auto const& qn = QN.const_array(mfi);
@@ -476,12 +466,12 @@ CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt)
                         ++n_zfb;
                     }
                 }
-                ax(i,j,k,RX_GMODE) = Real(fmode);
+                ax(i,j,k,RX_GMODE) = Real(0.0);
                 //  vent: the flow direction is read on the a = 0 trial (the
                 //  cell's own relaxed evolution, no entering wave); inflow
                 //  cells take the plenum's inflow relation (gm 3).
-                if (fmode == 1 && ax(i,j,k,RX_U0) < Real(0.0)) { ax(i,j,k,RX_GMODE) = Real(3.0); ++n_vin; }
-                else if (fmode == 1) {
+                if (ftype == 1 && ax(i,j,k,RX_U0) < Real(0.0)) { ax(i,j,k,RX_GMODE) = Real(3.0); ++n_vin; }
+                else if (ftype == 1) {
                     //  vent outflow: the entering wave is the fan between q_N
                     //  and the fan-end state (_fan_march to P_inf or the
                     //  throat, HEM re-closure along the path), its amplitude
@@ -531,44 +521,6 @@ CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt)
                 if (ax(i,j,k,RX_FLAG) == Real(1.0) && ax(i,j,k,RX_GMODE) == Real(4.0)) ax(i,j,k,RX_FLAG) = Real(5.0); });
         }
         secant(nrel, nfl);
-        //  vent: the cells whose ambient solution is relaxed-supersonic are
-        //  re-solved on the choke, seeded by that solution and the fan's.
-        long n_choke = 0;
-        if (ftype == 1) {
-            for (MFIter mfi(T); mfi.isValid(); ++mfi) {
-                auto const& ax = AX.array(mfi);
-                amrex::LoopOnCpu(mfi.validbox(), [&] (int i, int j, int k) noexcept {
-                    if (ax(i,j,k,RX_FLAG) != Real(1.0)) return;
-                    const Real ceq = ax(i,j,k,RX_Z) / ax(i,j,k,RX_RN);
-                    if (ax(i,j,k,RX_GMODE) == Real(1.0) && ax(i,j,k,RX_UB) > ceq) {
-                        ++n_choke;
-                        ax(i,j,k,RX_GMODE) = Real(2.0);
-                        ax(i,j,k,RX_A0) = ax(i,j,k,RX_ABEST);
-                        ax(i,j,k,RX_G0) = ax(i,j,k,RX_UB) - ceq;
-                        Real a1 = ax(i,j,k,RX_AFAN);
-                        if (a1 == ax(i,j,k,RX_A0)) a1 = Real(0.0);
-                        ax(i,j,k,RX_A1) = a1;
-                    } else {
-                        ax(i,j,k,RX_FLAG) = Real(3.0);   // parked: keeps its ambient solution
-                    }
-                });
-            }
-            evaluate(RX_A1, RX_P1, RX_U1, RX_R1, nrel, nfl);
-            for (MFIter mfi(T); mfi.isValid(); ++mfi) {
-                auto const& ax = AX.array(mfi);
-                amrex::LoopOnCpu(mfi.validbox(), [&] (int i, int j, int k) noexcept {
-                    if (ax(i,j,k,RX_FLAG) != Real(1.0)) return;
-                    ax(i,j,k,RX_G1) = gof(ax, i, j, k, RX_P1, RX_U1);
-                    if (!std::isfinite(ax(i,j,k,RX_G1))) ax(i,j,k,RX_FLAG) = Real(2.0);
-                });
-            }
-            secant(nrel, nfl);
-            for (MFIter mfi(T); mfi.isValid(); ++mfi) {
-                auto const& ax = AX.array(mfi);
-                amrex::LoopOnCpu(mfi.validbox(), [&] (int i, int j, int k) noexcept {
-                    if (ax(i,j,k,RX_FLAG) == Real(3.0)) ax(i,j,k,RX_FLAG) = Real(1.0); });
-            }
-        }
         for (MFIter mfi(T); mfi.isValid(); ++mfi) {
             auto const& ax = AX.array(mfi);
             amrex::LoopOnCpu(mfi.validbox(), [&] (int i, int j, int k) noexcept {
@@ -649,7 +601,6 @@ CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt)
             long nr = nrel, nf = nfl;
             ParallelDescriptor::ReduceLongSum(nr); ParallelDescriptor::ReduceLongSum(nf);
             ParallelDescriptor::ReduceLongSum(n_zfb);
-            ParallelDescriptor::ReduceLongSum(n_choke);
             ParallelDescriptor::ReduceLongSum(n_vin);
             ParallelDescriptor::ReduceLongSum(n_vfan);
             const Real inv = (n_ent > 0) ? Real(1.0) / Real(n_ent) : Real(0.0);
@@ -663,7 +614,7 @@ CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt)
                 << "  P~=" << pt_sum * inv
                 << "  Mw: " << mw_sum * inv << " / " << (n_ent ? mw_max : 0.0)
                 << "  reversed=" << n_rev << " relaxed=" << nr << " src=" << nf
-                << " fb=" << n_fb << " zfb=" << n_zfb << " choked=" << n_choke << " vin=" << n_vin << " vfan=" << n_vfan << "\n";
+                << " fb=" << n_fb << " zfb=" << n_zfb << " vin=" << n_vin << " vfan=" << n_vfan << "\n";
         }
     }}
 }

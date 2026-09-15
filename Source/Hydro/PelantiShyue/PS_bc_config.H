@@ -97,11 +97,10 @@ inline int ps_bc_rx_form()
 //  CAMR.ps_bc_rx_type_{x,y,z}{lo,hi} (nr): the face type of the relaxed
 //  boundary on that face.  nr = the characteristic outflow (the incoming
 //  relaxed invariant at its far-field value); vent = a plenum at P_inf:
-//  outflow cells leave at P~ = P_inf, choked at the relaxed sound speed
-//  where that is supersonic (the physics the ghost fill's choked-fan
-//  branch supplied at large jumps), inflow cells enter from rest at
-//  P_inf on the Hedstrom value relation (static pressure below P_inf by
-//  the dynamic head).  A deck choice per face, never a runtime predicate on
+//  outflow cells take the choked fan to P_inf or the throat (_fan_march,
+//  HEM re-closure along the path) as their entering wave, inflow cells
+//  enter from rest at P_inf on the Hedstrom value relation (static
+//  pressure below P_inf by the dynamic head).  A deck choice per face, never a runtime predicate on
 //  the state.  Unknown strings abort.
 inline const amrex::GpuArray<int, 6>& ps_bc_rx_type()
 {
