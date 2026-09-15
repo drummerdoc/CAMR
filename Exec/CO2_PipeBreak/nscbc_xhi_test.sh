@@ -8,11 +8,12 @@
 #
 #   ./nscbc_xhi_test.sh [NRANKS] [MAXSTEP] [VARIANT ...]
 #   variants (default: all):
-#     A   as shipped: NSCBC on xhi, p_amb 20 bar                        (the control; sigma 0 since B-4)
+#     A   the deck as it ships: the relaxed boundary on xhi (vent) and ylo/yhi (nr), p_amb 20 bar
+#     Z   the ghost-only characteristic outflow (CAMR.ps_bc_rx=0), the matched baseline of the F/A-series
 #     B   xhi on the linearised-invariant path (CAMR.ps_bc_nscbc_xhi=0)  -> is the fan/branch the cause?
 #     E   NSCBC, R+ order 1 (CAMR.ps_bc_nscbc_order=1)                  -> is the extrapolation order involved?
-#     R   the relaxed-state pass on the three NSCBC faces (CAMR.ps_bc_rx=1; docs/PLAN_relaxed_boundary.md §13
-#         gives the cheaper restart-from-F protocol used instead of a run from zero)
+#     R   A with the probe line and the validator on (docs/PLAN_relaxed_boundary.md §13 gives the
+#         cheaper restart-from-F protocol used instead of a run from zero)
 #     G   as A on a 4 m domain (40 slot widths, same dx: 512x128 base)     -> does the recompression stay near 20 D (physics)
 #   (C, D, F — sigma 1.0 / 4.0 / 0 — and H — the Wood impedance — are recorded in
 #    docs/DESIGN_DECISIONS.md B-4 and X-33; both keys are retired and abort.)
@@ -37,7 +38,8 @@ opt_for() {   # macOS ships bash 3.2 (no associative arrays)
     B) echo "CAMR.ps_bc_nscbc_xhi=0" ;;
     E) echo "CAMR.ps_bc_nscbc_order=1" ;;
     G) echo "geometry.prob_hi=4.0 1.0 amr.n_cell=512 128" ;;
-    R) echo "CAMR.ps_bc_rx=1 CAMR.ps_bc_rx_probe=1 CAMR.ps_validate=1" ;;
+    Z) echo "CAMR.ps_bc_rx=0" ;;
+    R) echo "CAMR.ps_bc_rx_probe=1 CAMR.ps_validate=1" ;;
     *) echo "unknown variant $1" >&2; exit 3 ;;
   esac
 }
