@@ -120,6 +120,23 @@ inline const amrex::GpuArray<int, 6>& ps_bc_rx_type()
     return t;
 }
 
+//  CAMR.ps_bc_rx_ghost (nscbc): the ghost fill on an NSCBC face.  nscbc =
+//  the characteristic-invariant ghost of PS_nscbc.H (outgoing waves and
+//  the reversed-flow contact at the face come from it); copy = every ghost
+//  layer is the boundary cell (no outgoing wave, no contact; the relaxed
+//  boundary's modelled wave is the only boundary signal).  Independent of
+//  ps_bc_rx: copy at ps_bc_rx = 0 is the zero-gradient control.
+inline int ps_bc_rx_ghost()
+{
+    static const int v = []() -> int {
+        const std::string s = ps_dial_string("ps_bc_rx_ghost", "nscbc");
+        if (s == "nscbc") return 0;
+        if (s == "copy")  return 1;
+        amrex::Abort("CAMR.ps_bc_rx_ghost must be nscbc or copy");
+        return 0; }();
+    return v;
+}
+
 //  CAMR.ps_bc_rx_probe (0): 0 off; 1 the [PS-BCRX] per-face line every
 //  step; 2 at the ps_diag_mass cadence is not implemented (every step).
 inline int ps_bc_rx_probe()

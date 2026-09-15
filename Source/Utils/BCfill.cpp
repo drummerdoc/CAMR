@@ -23,6 +23,8 @@ struct PCHypFillExtDir
   // global switch would replace wholesale.
   amrex::GpuArray<int, 2*AMREX_SPACEDIM> use_nscbc_face;
   int         nscbc_order;    // 1 or 2: R+ extrapolation order.
+  int         nscbc_copy;     // 1: NSCBC faces take a zero-gradient copy of N
+                              //    (CAMR.ps_bc_rx_ghost = copy; PS_bc_config.H)
   // Per-face ambient pressure targets, indexed [2*idir + (0=lo,1=hi)];
   // a value <= 0 inherits prob.p_amb at fill time.
   amrex::GpuArray<amrex::Real, 2*AMREX_SPACEDIM> p_amb_face;
@@ -34,6 +36,7 @@ struct PCHypFillExtDir
   explicit PCHypFillExtDir(const ProbParmDevice* d_prob_parm,
                            const amrex::GpuArray<int, 2*AMREX_SPACEDIM>& use_nscbc_face_,
                            int         nscbc_order_,
+                           int         nscbc_copy_,
                            const amrex::GpuArray<amrex::Real, 2*AMREX_SPACEDIM>& p_amb_face_
 #ifdef USE_PS_HYDRO
                            , const PsPres& pres_
@@ -42,6 +45,7 @@ struct PCHypFillExtDir
     : lprobparm(d_prob_parm)
     , use_nscbc_face(use_nscbc_face_)
     , nscbc_order(nscbc_order_)
+    , nscbc_copy(nscbc_copy_)
     , p_amb_face(p_amb_face_)
 #ifdef USE_PS_HYDRO
     , pres(pres_)
@@ -133,6 +137,12 @@ struct PCHypFillExtDir
           s_N  [n] = dest(ivN,   n);
           s_Nm1[n] = dest(ivNm1, n);
           s_Nm2[n] = dest(ivNm2, n);
+        }
+        if (nscbc_copy != 0) {
+          // The copy ghost: the face carries no outgoing wave and no
+          // contact; the relaxed boundary supplies the entering wave.
+          for (int n = 0; n < NVAR; n++) dest(iv, n) = s_N[n];
+          return;
         }
         PS_NSCBC::Params params;
         params.pres = pres;
@@ -324,6 +334,11 @@ CAMR_bcfill_hyp(
 
   amrex::GpuBndryFuncFab<PCHypFillExtDir> hyp_bndry_func(
     PCHypFillExtDir{lprobparm, nscbc_cfg.uface, nscbc_order,
+#ifdef USE_PS_HYDRO
+                    ps_bc_rx_ghost(),
+#else
+                    0,
+#endif
                     nscbc_cfg.pamb
 #ifdef USE_PS_HYDRO
                     , ps_presence_params()   // host-side read
