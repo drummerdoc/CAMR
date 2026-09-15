@@ -87,53 +87,6 @@ Real wood_c(const PS_HLLC::Face& f) noexcept
     return (std::isfinite(c2) && c2 > Real(0.0)) ? std::sqrt(c2) : f.c_frozen;
 }
 
-//  Whether the branch-locked queries ps_cell_state would make on this
-//  state have a root: the host phase always, the other phase only when
-//  it exists and is reachable Independent (the same dispatch).  A trial
-//  state that fails is refused, never handed to the aborting query.
-bool trial_ok(const Real U[NVAR], const PsPres& pr) noexcept
-{
-    const Real rho = ps_finite_or(U[URHO], Real(0.0));
-    if (!(rho > Real(0.0))) return false;
-    Real a1 = ps_finite_or(U[UALPHA1], Real(1.0));
-    if (a1 < Real(0.0)) a1 = Real(0.0);
-    if (a1 > Real(1.0)) a1 = Real(1.0);
-    const Real a2 = Real(1.0) - a1;
-    const Real m1 = amrex::max(ps_finite_or(U[UM1RHO1], Real(0.0)), Real(0.0));
-    const Real m2 = amrex::max(ps_finite_or(U[UM2RHO2], Real(0.0)), Real(0.0));
-    const Real inv = Real(1.0) / rho;
-    const Real ke = ps_kinetic_energy(ps_finite_or(U[UMX], Real(0.0)) * inv,
-#if (AMREX_SPACEDIM >= 2)
-                                      ps_finite_or(U[UMY], Real(0.0)) * inv,
-#else
-                                      Real(0.0),
-#endif
-#if (AMREX_SPACEDIM == 3)
-                                      ps_finite_or(U[UMZ], Real(0.0)) * inv);
-#else
-                                      Real(0.0));
-#endif
-    const PsPhaseQuot q1 = ps_phase_quot(a1, m1, ps_finite_or(U[UE1], Real(0.0)), ke, pr);
-    const PsPhaseQuot q2 = ps_phase_quot(a2, m2, ps_finite_or(U[UE2], Real(0.0)), ke, pr);
-    const bool host1 = (a1 >= a2);
-    Real Y[NUM_SPECIES]; ps_pure_species(Y);
-    Real P, T, S, C;
-    auto has_root = [&](const PsPhaseQuot& q, bool liquid) -> bool {
-        if (!q.exists || !std::isfinite(q.rho) || !std::isfinite(q.e)) return false;
-        return EOS::REY2PTSc_phase_try(q.rho, q.e, Y, liquid ? hem::Phase3::Liquid : hem::Phase3::Vapor, P, T, S, C);
-    };
-    if (host1) {
-        if (!has_root(q1, true)) return false;
-        const PsRegime rg2 = ps_regime(a2, m2, pr);
-        if (q2.exists && ps_regime_reach(rg2, q2.rho, q2.e, false, pr) == PsRegime::Independent && !has_root(q2, false)) return false;
-    } else {
-        if (!has_root(q2, false)) return false;
-        const PsRegime rg1 = ps_regime(a1, m1, pr);
-        if (q1.exists && ps_regime_reach(rg1, q1.rho, q1.e, true, pr) == PsRegime::Independent && !has_root(q1, true)) return false;
-    }
-    return true;
-}
-
 //  Mixture pressure and outward normal velocity of one cell state.
 void cell_P_uout(const Real U[NVAR], int idir, Real n_sgn, const PsPres& pr,
                  Real& P, Real& uout, Real& cw) noexcept
@@ -341,7 +294,7 @@ CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt)
                         t(i,j,k,n) = Ut[n];
                         if (!std::isfinite(Ut[n])) { ax(i,j,k,RX_FLAG) = Real(2.0); }
                     }
-                    if (ax(i,j,k,RX_FLAG) != Real(2.0) && !trial_ok(Ut, l_pres)) ax(i,j,k,RX_FLAG) = Real(2.0);
+                    if (ax(i,j,k,RX_FLAG) != Real(2.0) && !ps_bc_state_ok(Ut, l_pres)) ax(i,j,k,RX_FLAG) = Real(2.0);
                     if (ax(i,j,k,RX_FLAG) == Real(2.0)) {
                         for (int n = 0; n < NVAR; ++n) t(i,j,k,n) = UN[n];
                     }
@@ -356,7 +309,7 @@ CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt)
                     if (ax(i,j,k,RX_FLAG) != Real(1.0)) return;
                     Real Ut[NVAR];
                     for (int n = 0; n < NVAR; ++n) Ut[n] = t(i,j,k,n);
-                    if (!trial_ok(Ut, l_pres)) { ax(i,j,k,RX_FLAG) = Real(2.0); return; }
+                    if (!ps_bc_state_ok(Ut, l_pres)) { ax(i,j,k,RX_FLAG) = Real(2.0); return; }
                     Real P, uout, cw;
                     cell_P_uout(Ut, idir, n_sgn, l_pres, P, uout, cw);
                     if (!std::isfinite(P) || !std::isfinite(uout)) { ax(i,j,k,RX_FLAG) = Real(2.0); return; }

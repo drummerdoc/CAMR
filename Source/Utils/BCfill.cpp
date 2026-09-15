@@ -23,8 +23,9 @@ struct PCHypFillExtDir
   // global switch would replace wholesale.
   amrex::GpuArray<int, 2*AMREX_SPACEDIM> use_nscbc_face;
   int         nscbc_order;    // 1 or 2: R+ extrapolation order.
-  int         nscbc_copy;     // 1: NSCBC faces take a zero-gradient copy of N
-                              //    (CAMR.ps_bc_rx_ghost = copy; PS_bc_config.H)
+  int         nscbc_ghost;    // NSCBC-face ghost fill: 0 the characteristic
+                              // ghost, 1 a copy of N, 2 the minmod extrapolation
+                              // of the state (CAMR.ps_bc_rx_ghost; PS_bc_config.H)
   // Per-face ambient pressure targets, indexed [2*idir + (0=lo,1=hi)];
   // a value <= 0 inherits prob.p_amb at fill time.
   amrex::GpuArray<amrex::Real, 2*AMREX_SPACEDIM> p_amb_face;
@@ -36,7 +37,7 @@ struct PCHypFillExtDir
   explicit PCHypFillExtDir(const ProbParmDevice* d_prob_parm,
                            const amrex::GpuArray<int, 2*AMREX_SPACEDIM>& use_nscbc_face_,
                            int         nscbc_order_,
-                           int         nscbc_copy_,
+                           int         nscbc_ghost_,
                            const amrex::GpuArray<amrex::Real, 2*AMREX_SPACEDIM>& p_amb_face_
 #ifdef USE_PS_HYDRO
                            , const PsPres& pres_
@@ -45,7 +46,7 @@ struct PCHypFillExtDir
     : lprobparm(d_prob_parm)
     , use_nscbc_face(use_nscbc_face_)
     , nscbc_order(nscbc_order_)
-    , nscbc_copy(nscbc_copy_)
+    , nscbc_ghost(nscbc_ghost_)
     , p_amb_face(p_amb_face_)
 #ifdef USE_PS_HYDRO
     , pres(pres_)
@@ -138,10 +139,43 @@ struct PCHypFillExtDir
           s_Nm1[n] = dest(ivNm1, n);
           s_Nm2[n] = dest(ivNm2, n);
         }
-        if (nscbc_copy != 0) {
+        if (nscbc_ghost == 1) {
           // The copy ghost: the face carries no outgoing wave and no
           // contact; the relaxed boundary supplies the entering wave.
           for (int n = 0; n < NVAR; n++) dest(iv, n) = s_N[n];
+          return;
+        }
+        if (nscbc_ghost == 2) {
+          // The extrapolated ghost: each conserved slot continued past
+          // the face on its minmod slope over N-2, N-1, N (the slope the
+          // characteristic ghost forms for R+, applied to the state), so
+          // the outgoing waves keep their second-order correction at the
+          // face; the relaxed boundary supplies the entering wave.  A
+          // continuation that leaves the admissible set (a negative
+          // partial mass or mixture density, alpha outside [0, 1], or a
+          // phase state with no EOS root) is refused to the copy and
+          // counted (nscbc_zg slots).
+          amrex::Real s_g[NVAR];
+          for (int n = 0; n < NVAR; n++) {
+            const amrex::Real d1 = s_N[n] - s_Nm1[n];
+            const amrex::Real d0 = s_Nm1[n] - s_Nm2[n];
+            amrex::Real sl = amrex::Real(0.0);
+            if (d1 * d0 > amrex::Real(0.0)) {
+              sl = (std::abs(d1) < std::abs(d0)) ? d1 : d0;
+            }
+            s_g[n] = s_N[n] + static_cast<amrex::Real>(layer) * sl;
+          }
+          //  Admissibility is the EOS's to decide (contract 3): the
+          //  branch-locked (rho, e) queries the cell state makes must
+          //  have a root on the continued state, as for a trial of the
+          //  relaxed boundary.
+          const bool ok = std::isfinite(s_g[URHO]) && s_g[URHO] > amrex::Real(0.0)
+                       && s_g[UM1RHO1] >= amrex::Real(0.0) && s_g[UM2RHO2] >= amrex::Real(0.0)
+                       && s_g[UALPHA1] >= amrex::Real(0.0) && s_g[UALPHA1] <= amrex::Real(1.0)
+                       && s_g[UEINT] > amrex::Real(0.0)
+                       && ps_bc_state_ok(s_g, pres);
+          if (!ok) ps_guard::count_nscbc_zg_slots();
+          for (int n = 0; n < NVAR; n++) dest(iv, n) = ok ? s_g[n] : s_N[n];
           return;
         }
         PS_NSCBC::Params params;

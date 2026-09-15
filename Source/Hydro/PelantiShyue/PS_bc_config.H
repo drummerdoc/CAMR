@@ -26,6 +26,62 @@ const PsNscbcCfg& ps_nscbc_cfg();
 #include "PS_dials.H"
 #include <AMReX.H>
 #include <AMReX_ParmParse.H>
+#include "IndexDefines.H"
+#include "PS_presence.H"
+#include "PS_promote.H"
+#include "PS_util.H"
+#include "EOS.H"
+#include <cmath>
+
+//  Whether the branch-locked queries ps_cell_state would make on this
+//  state have a root: the host phase always, the other phase only when
+//  it exists and is reachable Independent (the same dispatch).  A state
+//  that fails is refused by its caller (a trial of the relaxed boundary,
+//  an extrapolated ghost), never handed to the aborting query.  Host-only.
+inline bool ps_bc_state_ok(const amrex::Real U[NVAR], const PsPres& pr) noexcept
+{
+    using amrex::Real;
+    const Real rho = ps_finite_or(U[URHO], Real(0.0));
+    if (!(rho > Real(0.0))) return false;
+    amrex::Real a1 = ps_finite_or(U[UALPHA1], Real(1.0));
+    if (a1 < Real(0.0)) a1 = Real(0.0);
+    if (a1 > Real(1.0)) a1 = Real(1.0);
+    const amrex::Real a2 = Real(1.0) - a1;
+    const amrex::Real m1 = amrex::max(ps_finite_or(U[UM1RHO1], Real(0.0)), Real(0.0));
+    const amrex::Real m2 = amrex::max(ps_finite_or(U[UM2RHO2], Real(0.0)), Real(0.0));
+    const amrex::Real inv = Real(1.0) / rho;
+    const amrex::Real ke = ps_kinetic_energy(ps_finite_or(U[UMX], Real(0.0)) * inv,
+#if (AMREX_SPACEDIM >= 2)
+                                      ps_finite_or(U[UMY], Real(0.0)) * inv,
+#else
+                                      Real(0.0),
+#endif
+#if (AMREX_SPACEDIM == 3)
+                                      ps_finite_or(U[UMZ], Real(0.0)) * inv);
+#else
+                                      Real(0.0));
+#endif
+    const PsPhaseQuot q1 = ps_phase_quot(a1, m1, ps_finite_or(U[UE1], Real(0.0)), ke, pr);
+    const PsPhaseQuot q2 = ps_phase_quot(a2, m2, ps_finite_or(U[UE2], Real(0.0)), ke, pr);
+    const bool host1 = (a1 >= a2);
+    amrex::Real Y[NUM_SPECIES]; ps_pure_species(Y);
+    amrex::Real P, T, S, C;
+    auto has_root = [&](const PsPhaseQuot& q, bool liquid) -> bool {
+        if (!q.exists || !std::isfinite(q.rho) || !std::isfinite(q.e)) return false;
+        return EOS::REY2PTSc_phase_try(q.rho, q.e, Y, liquid ? hem::Phase3::Liquid : hem::Phase3::Vapor, P, T, S, C);
+    };
+    if (host1) {
+        if (!has_root(q1, true)) return false;
+        const PsRegime rg2 = ps_regime(a2, m2, pr);
+        if (q2.exists && ps_regime_reach(rg2, q2.rho, q2.e, false, pr) == PsRegime::Independent && !has_root(q2, false)) return false;
+    } else {
+        if (!has_root(q2, false)) return false;
+        const PsRegime rg1 = ps_regime(a1, m1, pr);
+        if (q1.exists && ps_regime_reach(rg1, q1.rho, q1.e, true, pr) == PsRegime::Independent && !has_root(q1, true)) return false;
+    }
+    return true;
+}
+
 
 //  CAMR.ps_bc_rx (1): the relaxed-state boundary on every face with NSCBC
 //  enabled.  1 = the boundary chooses the entering acoustic wave and
@@ -92,15 +148,20 @@ inline const amrex::GpuArray<int, 6>& ps_bc_rx_type()
 //  the characteristic-invariant ghost of PS_nscbc.H (outgoing waves and
 //  the reversed-flow contact at the face come from it); copy = every ghost
 //  layer is the boundary cell (no outgoing wave, no contact; the relaxed
-//  boundary's modelled wave is the only boundary signal).  Independent of
-//  ps_bc_rx: copy at ps_bc_rx = 0 is the zero-gradient control.
+//  boundary's modelled wave is the only boundary signal; first order at
+//  the face on outgoing waves, PLAN_relaxed_boundary §13.9); extrap =
+//  the state continued past the face on its minmod slope (the outgoing
+//  waves keep their second-order correction; no invariants, no far
+//  field).  Independent of ps_bc_rx: copy at ps_bc_rx = 0 is the
+//  zero-gradient control.
 inline int ps_bc_rx_ghost()
 {
     static const int v = []() -> int {
         const std::string s = ps_dial_string("ps_bc_rx_ghost", "nscbc");
-        if (s == "nscbc") return 0;
-        if (s == "copy")  return 1;
-        amrex::Abort("CAMR.ps_bc_rx_ghost must be nscbc or copy");
+        if (s == "nscbc")  return 0;
+        if (s == "copy")   return 1;
+        if (s == "extrap") return 2;
+        amrex::Abort("CAMR.ps_bc_rx_ghost must be nscbc, copy or extrap");
         return 0; }();
     return v;
 }
