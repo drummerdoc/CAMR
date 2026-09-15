@@ -10,8 +10,10 @@
 //  S_M(a) = u_N - n a / rho_N c_eff), the rest of N's increment is known
 //  (hydro_source), and a is chosen so that the reaction chain applied to
 //  the trial state puts the incoming relaxed invariant I = P - Z u_out of
-//  N at its far-field value (Hedstrom on the relaxed step; nr faces and
-//  vent inflow cells).  Secant on a, seeds {0, a_fan}, fixed count.  A
+//  N at its far-field value P_inf (Hedstrom on the relaxed step; nr faces
+//  and vent inflow cells), Z = rho_N c_eq measured on the two seed trials
+//  (the Wood impedance where that pair is degenerate, counted as zfb).
+//  Secant on a, seeds {0, a_fan}, fixed count.  A
 //  vent outflow cell takes the choked fan (_fan_march) as its entering
 //  wave instead, amplitude fixed by the fan.  A refusal keeps the fan's
 //  wave and is counted (nscbc_rx_fb).  The trial evaluations run the
@@ -202,8 +204,6 @@ CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt)
     const PsPres l_pres = ps_presence_params();
     const Real dt_r = (ps_strang() != 0) ? Real(0.5) * dt : dt;
     const int nsec = ps_bc_rx_nsec();
-    const bool z_trial = (ps_bc_rx_z() == 1);
-    const bool form_value = (ps_bc_rx_form() == 1);
     const int probe = ps_bc_rx_probe();
     int pc_iv[3]; const bool has_pc = ps_bc_rx_probe_cell(pc_iv);
     const Box& domain = geom.Domain();
@@ -387,25 +387,21 @@ CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt)
         };
 
         // ---- 3. Secant: seeds, the impedance, then a fixed number of updates
-        //  g(a) = [P~ - Z u~_out] - I_ref from the stored relaxed (P~, u~) of
-        //  each trial; I_ref = P_inf (ps_bc_rx_form = value, the Hedstrom
-        //  condition on the relaxed step) or I(q_N) (rate, Poinsot-Lele's
-        //  L_in = 0 over the step, no far field).  Z is the Wood impedance
-        //  of q_N (ps_bc_rx_z = wood) or rho_N c_eq with c_eq^2 = dP~/drho~
-        //  measured between the two seed trials (trial): the equilibrium
-        //  slope the reaction chain itself imposes on the cell; a degenerate
-        //  pair keeps Wood and is counted.  docs/PLAN_relaxed_boundary.md.
+        //  g(a) = [P~ - Z u~_out] - P_inf from the stored relaxed (P~, u~) of
+        //  each trial: the Hedstrom condition on the relaxed step (the
+        //  incoming invariant at its far-field value; the rate form
+        //  I(q~) = I(q_N) carries no far field and plugged the demo3 plane,
+        //  docs/PLAN_relaxed_boundary.md §13.1).  Z = rho_N c_eq with
+        //  c_eq^2 = dP~/drho~ measured between the two seed trials, the
+        //  equilibrium slope the reaction chain itself imposes on the cell;
+        //  a degenerate pair keeps the Wood impedance and is counted (zfb).
+        //  On a vent cell in reversed flow (gm 3) the same relation is the
+        //  plenum's inflow condition: fed from rest at P_inf, the static
+        //  pressure sits below P_inf by the dynamic head (a static-pressure
+        //  Dirichlet there over-drives it, R3: Mach -2 inflow patches).
         auto gof = [&](Array4<Real> const& ax, int i, int j, int k, int ps, int us) noexcept -> Real {
             const Real Z = ax(i,j,k,RX_Z);
-            const int  gm = int(ax(i,j,k,RX_GMODE));
-            //  gm == 3: a vent cell in reversed flow — the plenum feeds it from
-            //  rest at P_inf, so the static pressure sits below P_inf by the
-            //  dynamic head; the Hedstrom value condition is that relation
-            //  linearised (P_g < P_inf for inward u), the one the ghost's
-            //  linear branch applied there.  A static-pressure Dirichlet on
-            //  an inflow cell over-drives it (R3: Mach -2 inflow patches).
-            const Real I_ref = (form_value || gm == 3) ? P_inf : (ax(i,j,k,RX_PN) - Z * ax(i,j,k,RX_UN));
-            return (ax(i,j,k,ps) - Z * ax(i,j,k,us)) - I_ref;
+            return (ax(i,j,k,ps) - Z * ax(i,j,k,us)) - P_inf;
         };
         //  The fixed-count secant from the seeds in (A0, A1) with their g in
         //  (G0, G1); leaves the best pair in (ABEST, GBEST).
@@ -456,7 +452,7 @@ CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt)
             auto const& wv = WV.array(mfi);
             amrex::LoopOnCpu(mfi.validbox(), [&] (int i, int j, int k) noexcept {
                 if (ax(i,j,k,RX_FLAG) != Real(1.0)) return;
-                if (z_trial) {
+                {
                     const Real dP = ax(i,j,k,RX_P1) - ax(i,j,k,RX_P0);
                     const Real dr = ax(i,j,k,RX_R1) - ax(i,j,k,RX_R0);
                     const Real c2 = (dr != Real(0.0)) ? dP / dr : Real(-1.0);

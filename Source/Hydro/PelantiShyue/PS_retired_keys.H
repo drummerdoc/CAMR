@@ -76,6 +76,8 @@ inline void ps_abort_on_retired_keys()
         { "ps_bc_nscbc_flash",   "the NSCBC outflow fan is always the flash-aware choked fan" },
         { "ps_bc_nscbc_sigma",   "the NSCBC incoming invariant is the far-field (Hedstrom) value; the sigma term was a partial reflection sigma/2 (B-4)" },
         { "ps_bc_nscbc_impedance", "the NSCBC face impedance is the frozen (Wallis) one; the Wood impedance held the jet head at the outlet (X-33)" },
+        { "ps_bc_rx_form",       "the relaxed boundary is the Hedstrom value condition I = P_inf; the rate form (L_in = 0) has no far field and plugged the outlet (PLAN_relaxed_boundary §13.1)" },
+        { "ps_bc_rx_z",          "the relaxed boundary measures its impedance on the seed trials (Wood is the degenerate-pair fallback, counted as zfb)" },
         { "ps_p_mode",           "ps_state_from_cons forms the volume-weighted mixture pressure only" },
         { "ps_p_clip",           "ps_state_from_cons forms the volume-weighted mixture pressure only" },
         { "ps_c_mode",           "ps_state_from_cons forms the Wood mixture sound speed only" },

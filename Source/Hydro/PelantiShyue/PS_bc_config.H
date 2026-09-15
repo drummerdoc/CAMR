@@ -27,16 +27,18 @@ const PsNscbcCfg& ps_nscbc_cfg();
 #include <AMReX.H>
 #include <AMReX_ParmParse.H>
 
-//  CAMR.ps_bc_rx (0): the relaxed-state boundary pass on every face with
-//  NSCBC enabled.  0 = off (the ghost-only characteristic outflow);
-//  1 = the pass chooses the entering acoustic wave's amplitude and writes
-//  it into hydro_source; 2 = probe only (evaluate and print, write
-//  nothing; bit-identical to 0).  Any other value aborts.  Host-only
-//  (the reaction chain is a std::function EOS path): a GPU build aborts.
+//  CAMR.ps_bc_rx (1): the relaxed-state boundary on every face with NSCBC
+//  enabled.  1 = the boundary chooses the entering acoustic wave and
+//  writes it into hydro_source (the default: docs/PLAN_relaxed_boundary.md
+//  §13.7); 0 = the ghost-only characteristic outflow, the matched
+//  baseline until the ghost construction is retired; 2 = probe only
+//  (evaluate and print, write nothing; bit-identical to 0).  Any other
+//  value aborts.  Host-only (the reaction chain is a std::function EOS
+//  path, as is the whole PS reaction chain): a GPU build aborts.
 inline int ps_bc_rx()
 {
     static const int v = []() -> int {
-        const int r = ps_dial_int("ps_bc_rx", 0);
+        const int r = ps_dial_int("ps_bc_rx", 1);
         if (r != 0 && r != 1 && r != 2) {
             amrex::Abort("CAMR.ps_bc_rx must be 0 (off), 1 (write-back) or 2 (probe only)");
         }
@@ -58,39 +60,6 @@ inline int ps_bc_rx_nsec()
         const int n = ps_dial_int("ps_bc_rx_nsec", 2);
         if (n < 0 || n > 8) amrex::Abort("CAMR.ps_bc_rx_nsec must be in [0, 8]");
         return n; }();
-    return v;
-}
-
-//  CAMR.ps_bc_rx_z (trial): the impedance Z in the incoming relaxed
-//  invariant P - Z u_out.  trial = rho c_eq with c_eq^2 = dP~/drho~
-//  measured between the two seed trials, the slope the reaction chain
-//  imposes whatever the relaxation regime (N1b -0.011); wood = rho c_w
-//  of the boundary cell, the analytic mechanical-equilibrium control
-//  (N1b +0.067 at mode 5, the Wood-equilibrium gap; equal at mode 0).
-inline int ps_bc_rx_z()
-{
-    static const int v = []() -> int {
-        const std::string s = ps_dial_string("ps_bc_rx_z", "trial");
-        if (s == "wood")  return 0;
-        if (s == "trial") return 1;
-        amrex::Abort("CAMR.ps_bc_rx_z must be wood or trial");
-        return 0; }();
-    return v;
-}
-
-//  CAMR.ps_bc_rx_form (rate): the condition on the relaxed invariant
-//  I = P - Z u_out of the boundary cell after the step.  rate: I(q~) = I(q_N)
-//  (Poinsot-Lele L_in = 0; no far field enters); value: I(q~) = P_inf
-//  (Hedstrom: the incoming invariant at its far-field value, the relaxed
-//  analogue of the ghost fill's R- target).
-inline int ps_bc_rx_form()
-{
-    static const int v = []() -> int {
-        const std::string s = ps_dial_string("ps_bc_rx_form", "rate");
-        if (s == "rate")  return 0;
-        if (s == "value") return 1;
-        amrex::Abort("CAMR.ps_bc_rx_form must be rate or value");
-        return 0; }();
     return v;
 }
 
