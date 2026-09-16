@@ -155,6 +155,10 @@ struct PCHypFillExtDir
           // partial mass or mixture density, alpha outside [0, 1], or a
           // phase state with no EOS root) is refused to the copy and
           // counted (nscbc_zg slots).
+          //  The phase slots and the momenta are continued; the mixture
+          //  is assembled from the phases (rho = m1 + m2, rho E = E1 + E2
+          //  exactly, as _pack_state does), so the six-equation identities
+          //  hold on the ghost to round-off, not to truncation.
           amrex::Real s_g[NVAR];
           for (int n = 0; n < NVAR; n++) {
             const amrex::Real d1 = s_N[n] - s_Nm1[n];
@@ -164,6 +168,23 @@ struct PCHypFillExtDir
               sl = (std::abs(d1) < std::abs(d0)) ? d1 : d0;
             }
             s_g[n] = s_N[n] + static_cast<amrex::Real>(layer) * sl;
+          }
+          s_g[URHO] = s_g[UM1RHO1] + s_g[UM2RHO2];
+          {
+            const amrex::Real inv = (s_g[URHO] > amrex::Real(0.0)) ? amrex::Real(1.0) / s_g[URHO] : amrex::Real(0.0);
+            const amrex::Real ke = amrex::Real(0.5) * inv * (s_g[UMX] * s_g[UMX]
+#if (AMREX_SPACEDIM >= 2)
+                                                          + s_g[UMY] * s_g[UMY]
+#endif
+#if (AMREX_SPACEDIM == 3)
+                                                          + s_g[UMZ] * s_g[UMZ]
+#endif
+                                                          );   // rho ke
+            s_g[UEDEN] = s_g[UE1] + s_g[UE2];
+            s_g[UEINT] = s_g[UEDEN] - ke;
+            const amrex::Real invN = amrex::Real(1.0) / s_N[URHO];
+            for (int n = 0; n < NUM_SPECIES; n++) s_g[UFS + n] = s_N[UFS + n] * invN * s_g[URHO];
+            s_g[UTEMP] = s_N[UTEMP];
           }
           //  Admissibility is the EOS's to decide (contract 3): the
           //  branch-locked (rho, e) queries the cell state makes must
