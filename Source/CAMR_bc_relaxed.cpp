@@ -245,13 +245,16 @@ CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt)
                 ax(i,j,k,RX_ZW)   = fN.rho_mix * cw;
                 ax(i,j,k,RX_Z)    = fN.rho_mix * cw;
                 ax(i,j,k,RX_FLAG) = Real(1.0);
-                //  Seeds: a0 = 0; a1 = a_fan, else the Hedstrom amplitude.
-                Real a1 = ax(i,j,k,RX_AFAN);
-                if (a1 == Real(0.0)) {
-                    a1 = Real(0.5) * (P_inf - fN.P_mix + fN.rho_mix * fN.c_frozen * (n_sgn * fN.u_n));
-                }
+                //  Seeds: a0 = 0; a1 = whichever of the fan's amplitude and
+                //  the Hedstrom amplitude 1/2 (P_inf - P_N + rho c_f u_out)
+                //  has the larger magnitude, so the pair is spaced whenever
+                //  either carries signal (a ghost that continues the cell
+                //  sends a round-off wave; an exact-zero test on it left the
+                //  secant with coincident seeds, docs §13.14).
+                const Real a_fan = ax(i,j,k,RX_AFAN);
+                const Real a_H   = Real(0.5) * (P_inf - fN.P_mix + fN.rho_mix * fN.c_frozen * (n_sgn * fN.u_n));
                 ax(i,j,k,RX_A0) = Real(0.0);
-                ax(i,j,k,RX_A1) = a1;
+                ax(i,j,k,RX_A1) = (std::abs(a_fan) >= std::abs(a_H)) ? a_fan : a_H;
             });
         }
 
