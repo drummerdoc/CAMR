@@ -150,11 +150,23 @@ struct PCHypFillExtDir
           // the face on its minmod slope over N-2, N-1, N (the slope the
           // characteristic ghost forms for R+, applied to the state), so
           // the outgoing waves keep their second-order correction at the
-          // face; the relaxed boundary supplies the entering wave.  A
-          // continuation that leaves the admissible set (a negative
-          // partial mass or mixture density, alpha outside [0, 1], or a
-          // phase state with no EOS root) is refused to the copy and
-          // counted (nscbc_zg slots).
+          // face; the relaxed boundary supplies the entering wave.  Only
+          // where the flow leaves: on a cell whose normal velocity points
+          // inward the contact wave enters and would carry a continued
+          // composition in with it (a feedback through the ghost's
+          // alpha, docs/PLAN_relaxed_boundary.md §13.15), so an inflow
+          // cell takes the copy.  The predicate is the sign of u_n, the
+          // one the contact wave itself carries.  A continuation that
+          // leaves the admissible set (a negative partial mass or mixture
+          // density, alpha outside [0, 1], or a phase state with no EOS
+          // root) is refused to the copy and counted (nscbc_zg slots).
+          {
+            const amrex::Real un_out = -static_cast<amrex::Real>(sgn) * s_N[UMX + idir] / s_N[URHO];
+            if (!(un_out > amrex::Real(0.0))) {
+              for (int n = 0; n < NVAR; n++) dest(iv, n) = s_N[n];
+              return;
+            }
+          }
           //  The phase slots and the momenta are continued; the mixture
           //  is assembled from the phases (rho = m1 + m2, rho E = E1 + E2
           //  exactly, as _pack_state does), so the six-equation identities
