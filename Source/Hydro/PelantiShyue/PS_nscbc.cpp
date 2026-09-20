@@ -1,5 +1,5 @@
 // =====================================================================
-//  CAMR_bc_relaxed.cpp — the characteristic outflow posed on the relaxed
+//  PS_nscbc.cpp — the characteristic outflow posed on the relaxed
 //  state (CAMR::ps_bc_relaxed), a post-processor on the boundary cell's
 //  predicted increment.  docs/PLAN_relaxed_boundary.md (derivation).
 //
@@ -25,13 +25,13 @@
 //  ps_bc_nscbc_probe prints the per-face line.  The flux register is
 //  untouched (a domain face never refluxes).  Host-only (the reaction
 //  chain is a std::function EOS path): a GPU build with an NSCBC face
-//  aborts.  Dials: PS_bc_config.H.
+//  aborts.  Dials: PS_nscbc.H.
 // =====================================================================
 #include "CAMR.H"
 #include "IndexDefines.H"
 
 #ifdef USE_PS_HYDRO
-#include "PS_bc_config.H"
+#include "PS_nscbc.H"
 #include "PS_hllc.H"
 #include "PS_wavespeed.H"
 #include "PS_relaxation.H"

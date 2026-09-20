@@ -76,7 +76,7 @@ inline const PsSourceDials& ps_source_dials()
 
 // -----------------------------------------------------------------
 //  Splitting dials, read once here and shared by CAMR_advance and the
-//  relaxed-state boundary pass (CAMR_bc_relaxed.cpp), which must run
+//  relaxed-state boundary pass (PS_nscbc.cpp), which must run
 //  the reaction chain with the same dt_r the advance will use.
 //    CAMR.ps_do_relax (1): run the relaxation operator; 0 = frozen.
 //      At mode 5 the X3 kernel owns mass transfer and the split MT

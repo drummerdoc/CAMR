@@ -1,12 +1,11 @@
-#ifndef PS_BC_CONFIG_H
-#define PS_BC_CONFIG_H
+#ifndef PS_NSCBC_H
+#define PS_NSCBC_H
 // =====================================================================
-//  PS_bc_config.H — the resolved per-face outflow configuration and the
-//  dials of the relaxed-state boundary pass (PS_bc_relaxed, in
-//  CAMR_bc_relaxed.cpp).  ps_nscbc_cfg() is the single read site of the
-//  CAMR.ps_bc_use_nscbc / ps_bc_nscbc_* / ps_bc_p_amb_* keys (defined
-//  in Utils/BCfill.cpp, documented there); the ghost fill and the
-//  relaxed pass read the same resolved faces and far-field targets.
+//  PS_nscbc.H — the NSCBC faces: the resolved per-face configuration
+//  (ps_nscbc_cfg, read in Utils/BCfill.cpp where the enable and far-field
+//  keys are documented), the dials of the relaxed boundary
+//  (CAMR::ps_bc_relaxed, PS_nscbc.cpp), and the EOS admissibility test
+//  shared by the extrapolated ghost and the boundary's trials.
 //  Host-only.  docs/PLAN_relaxed_boundary.md.
 // =====================================================================
 
@@ -146,4 +145,4 @@ inline bool ps_bc_nscbc_probe_cell(int iv[3])
     return c[3] != 0;
 }
 #endif // USE_PS_HYDRO
-#endif // PS_BC_CONFIG_H
+#endif // PS_NSCBC_H

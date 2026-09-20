@@ -5,7 +5,7 @@
 
 #include "CAMR.H"
 #include "prob.H"
-#include "PS_bc_config.H"
+#include "PS_nscbc.H"
 #ifdef USE_PS_HYDRO
 #include "PS_guards.H"     // count_nscbc_zg_slots
 #endif
@@ -129,7 +129,7 @@ struct PCHypFillExtDir
           // The ghost on an NSCBC face: each conserved slot continued past
           // the face on its minmod slope over N-2, N-1, N, so the outgoing
           // waves keep their second-order correction at the face; the
-          // relaxed boundary (CAMR_bc_relaxed.cpp) supplies the entering
+          // relaxed boundary (PS_nscbc.cpp) supplies the entering
           // wave and the far field, and no ghost state is constructed.  Only
           // where the flow leaves: on a cell whose normal velocity points
           // inward the contact wave enters and would carry a continued
@@ -234,7 +234,7 @@ struct PCHypFillExtDir
 // NSCBC dispatch settings, read once per run (the ParmParse table is
 // fixed after startup).  This is the single accessor for the boundary
 // dials (docs/MODEL_AND_ALGORITHM.md §6.5), shared by the ghost fill
-// below and the relaxed-state pass (CAMR_bc_relaxed.cpp):
+// below and the relaxed-state pass (PS_nscbc.cpp):
 const PsNscbcCfg&
 ps_nscbc_cfg()
 {

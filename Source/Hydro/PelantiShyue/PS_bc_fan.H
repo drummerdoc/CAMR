@@ -6,7 +6,7 @@
 //                  decomposition toward the face target, marched in
 //                  isentropic substeps with HEM re-closure inside the
 //                  dome, and the conserved state assembled from its end.
-//  Used by the relaxed boundary (CAMR_bc_relaxed.cpp) on vent outflow
+//  Used by the relaxed boundary (PS_nscbc.cpp) on vent outflow
 //  cells; docs/MODEL_AND_ALGORITHM.md §6.3.
 // =====================================================================
 

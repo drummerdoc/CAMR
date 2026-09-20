@@ -337,7 +337,7 @@ CAMR::construct_hydro_source (const MultiFab& S,
     // The relaxed boundary of the NSCBC faces: with the level's increment
     // complete, choose the entering acoustic wave of each NSCBC boundary
     // cell on the relaxed trial state and rewrite its hydro_source
-    // (CAMR_bc_relaxed.cpp; a no-op without an NSCBC face).
+    // (PS_nscbc.cpp; a no-op without an NSCBC face).
     if (ps_hydro != 0) {
         ps_bc_relaxed(S, src_to_fill, dt);
     }

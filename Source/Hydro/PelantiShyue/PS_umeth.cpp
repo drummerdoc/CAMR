@@ -45,7 +45,7 @@
 #include "PS_constants.H"
 #include "PS_util.H"
 #include "PS_dials.H"
-#include "PS_bc_config.H"
+#include "PS_nscbc.H"
 
 #include <AMReX_ParmParse.H>
 
@@ -585,7 +585,7 @@ PS_umeth(const Box& bx,
 #endif
 
     // NSCBC faces: the relaxed boundary writes the entering acoustic wave
-    // there (CAMR_bc_relaxed.cpp), modelled and entering first order, so
+    // there (PS_nscbc.cpp), modelled and entering first order, so
     // Pass 2 skips its correction at that face.
     amrex::GpuArray<int, 6> rx_face{{0, 0, 0, 0, 0, 0}};
     {

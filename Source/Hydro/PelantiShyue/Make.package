@@ -1,6 +1,7 @@
 # Pelanti-Shyue six-equation wave-propagation hydro module; compiled only when USE_PS_HYDRO = TRUE (guarded in Exec/Make.CAMR).
 CEXE_headers += PS_umeth.H
 CEXE_sources += PS_umeth.cpp
+CEXE_sources += PS_nscbc.cpp
 CEXE_headers += hem_pelanti_shyue.H
 CEXE_headers += hem_eos_api.H
 CEXE_headers += hem_relax_x3.H
@@ -10,7 +11,7 @@ CEXE_headers += PS_guards.H
 CEXE_headers += PS_ctoprim.H
 CEXE_headers += PS_state.H
 CEXE_headers += PS_bc_fan.H
-CEXE_headers += PS_bc_config.H
+CEXE_headers += PS_nscbc.H
 CEXE_headers += PS_relaxation.H
 CEXE_headers += PS_relax.H
 CEXE_headers += PS_floors.H
