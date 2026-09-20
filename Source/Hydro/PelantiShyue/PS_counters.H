@@ -190,7 +190,7 @@ struct PsCounters {
     long   reflux_cap        = 0;
     long   reflux_clamp      = 0;
     long   nscbc_zg_slots    = 0;   // NSCBC extrapolated ghosts refused to the copy
-    long   nscbc_zg_cause[5] = {0, 0, 0, 0, 0};   // ... by first failing test: rho, m_k < 0, alpha outside [0,1], rho e <= 0, no EOS root
+    long   nscbc_zg_cause[4] = {0, 0, 0, 0};   // ... by first failing test (ps_bc_state_cause): rho, m_k < 0, alpha outside [0,1], no EOS root
     long   nscbc_flash       = 0;
     long   nscbc_rx_fb       = 0;   // relaxed-state pass: cells kept on the fan's wave
     // ---- clean_state mass repairs (PS_guards.H), [PS-FLOOR] ----------

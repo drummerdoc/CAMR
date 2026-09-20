@@ -35,19 +35,23 @@ const PsNscbcCfg& ps_nscbc_cfg();
 //  state have a root: the host phase always, the other phase only when
 //  it exists and is reachable Independent (the same dispatch).  A state
 //  that fails is refused by its caller (a trial of the relaxed boundary,
-//  an extrapolated ghost), never handed to the aborting query.  Host-only:
-//  both callers are compiled out of, or abort in, a GPU build.
-inline bool ps_bc_state_ok(const amrex::Real U[NVAR], const PsPres& pr) noexcept
+//  an extrapolated ghost), never handed to the aborting query.  The one
+//  admissibility predicate of the boundary: nothing is clamped, and the
+//  sign of the internal energy is not tested (it is the EOS's reference).
+//  Returns -1 when admissible, else the first failing test: 0 rho not
+//  finite and positive, 1 a negative partial mass, 2 alpha outside
+//  [0, 1], 3 no EOS root.  Host-only: both callers are compiled out of,
+//  or abort in, a GPU build.
+inline int ps_bc_state_cause(const amrex::Real U[NVAR], const PsPres& pr) noexcept
 {
     using amrex::Real;
-    const Real rho = ps_finite_or(U[URHO], Real(0.0));
-    if (!(rho > Real(0.0))) return false;
-    amrex::Real a1 = ps_finite_or(U[UALPHA1], Real(1.0));
-    if (a1 < Real(0.0)) a1 = Real(0.0);
-    if (a1 > Real(1.0)) a1 = Real(1.0);
+    const Real rho = U[URHO];
+    if (!(std::isfinite(rho) && rho > Real(0.0))) return 0;
+    const amrex::Real m1 = U[UM1RHO1], m2 = U[UM2RHO2];
+    if (!(m1 >= Real(0.0) && m2 >= Real(0.0))) return 1;
+    const amrex::Real a1 = U[UALPHA1];
+    if (!(a1 >= Real(0.0) && a1 <= Real(1.0))) return 2;
     const amrex::Real a2 = Real(1.0) - a1;
-    const amrex::Real m1 = amrex::max(ps_finite_or(U[UM1RHO1], Real(0.0)), Real(0.0));
-    const amrex::Real m2 = amrex::max(ps_finite_or(U[UM2RHO2], Real(0.0)), Real(0.0));
     const amrex::Real inv = Real(1.0) / rho;
     const amrex::Real ke = ps_kinetic_energy(ps_finite_or(U[UMX], Real(0.0)) * inv,
 #if (AMREX_SPACEDIM >= 2)
@@ -70,16 +74,17 @@ inline bool ps_bc_state_ok(const amrex::Real U[NVAR], const PsPres& pr) noexcept
         return EOS::REY2PTSc_phase_try(q.rho, q.e, Y, liquid ? hem::Phase3::Liquid : hem::Phase3::Vapor, P, T, S, C);
     };
     if (host1) {
-        if (!has_root(q1, true)) return false;
+        if (!has_root(q1, true)) return 3;
         const PsRegime rg2 = ps_regime(a2, m2, pr);
-        if (q2.exists && ps_regime_reach(rg2, q2.rho, q2.e, false, pr) == PsRegime::Independent && !has_root(q2, false)) return false;
+        if (q2.exists && ps_regime_reach(rg2, q2.rho, q2.e, false, pr) == PsRegime::Independent && !has_root(q2, false)) return 3;
     } else {
-        if (!has_root(q2, false)) return false;
+        if (!has_root(q2, false)) return 3;
         const PsRegime rg1 = ps_regime(a1, m1, pr);
-        if (q1.exists && ps_regime_reach(rg1, q1.rho, q1.e, true, pr) == PsRegime::Independent && !has_root(q1, true)) return false;
+        if (q1.exists && ps_regime_reach(rg1, q1.rho, q1.e, true, pr) == PsRegime::Independent && !has_root(q1, true)) return 3;
     }
-    return true;
+    return -1;
 }
+inline bool ps_bc_state_ok(const amrex::Real U[NVAR], const PsPres& pr) noexcept { return ps_bc_state_cause(U, pr) < 0; }
 
 
 //  CAMR.ps_bc_nscbc_nsec (2): secant updates after the two seeds {0, a_fan},
