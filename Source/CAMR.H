@@ -396,7 +396,7 @@ protected:
   //  refresh unconditional.
   void clean_state(amrex::MultiFab& S, bool refresh_temp = true);
 #ifdef USE_PS_HYDRO
-  //  The characteristic outflow posed on the relaxed state (CAMR.ps_bc_rx):
+  //  The characteristic outflow posed on the relaxed state (NSCBC faces):
   //  a post-processor on hydro_source at the boundary cells of the NSCBC
   //  faces; ps_reaction_trial is the reaction chain it evaluates on trial
   //  states (CAMR_bc_relaxed.cpp, docs/PLAN_relaxed_boundary.md).

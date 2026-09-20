@@ -9,7 +9,7 @@
 #  with three differences:
 #   (1) per-face characteristic (NSCBC) outflow on x-hi, y-lo and y-hi
 #       (ps_bc_nscbc_{xhi,ylo,yhi} = 1), posed on the relaxed state
-#       (ps_bc_rx = 1) with x-hi a vent and the lateral faces nr
+#       with x-hi a vent and the lateral faces nr
 #       (docs/PLAN_relaxed_boundary.md §13.7); the x-lo inlet face stays on
 #       bcnormal (global ps_bc_use_nscbc = 0);
 #   (2) alpha-gradient refinement tag 0.01 instead of 0.1;
@@ -45,8 +45,6 @@ CAMR.ps_bc_use_nscbc = 0    # global switch off: the x-lo reservoir inlet stays 
 CAMR.ps_bc_nscbc_xhi = 1    # per-face NSCBC outflow: downstream far field
 CAMR.ps_bc_nscbc_ylo = 1    # per-face NSCBC outflow: lower edge of the full plane
 CAMR.ps_bc_nscbc_yhi = 1    # per-face NSCBC outflow: upper edge of the full plane
-CAMR.ps_bc_rx = 1           # the relaxed boundary on the NSCBC faces (the default, pinned:
-                            # the face-type keys below act only when it runs)
 CAMR.ps_bc_rx_type_xhi = vent   # the outlet is a plenum at p_amb: outflow cells take the
                                 # choked fan's wave, inflow cells the stagnation relation
 CAMR.ps_bc_rx_type_ylo = nr     # lateral edges: characteristic outflow, waves leave

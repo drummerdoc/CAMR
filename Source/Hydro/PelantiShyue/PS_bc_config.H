@@ -82,31 +82,6 @@ inline bool ps_bc_state_ok(const amrex::Real U[NVAR], const PsPres& pr) noexcept
 }
 
 
-//  CAMR.ps_bc_rx (1): the relaxed-state boundary on every face with NSCBC
-//  enabled.  1 = the boundary chooses the entering acoustic wave and
-//  writes it into hydro_source (the default: docs/PLAN_relaxed_boundary.md
-//  §13.7); 0 = the extrapolated ghost alone (no entering wave written:
-//  the ghost-only control, retired at item 5b); 2 = probe only
-//  (evaluate and print, write nothing; bit-identical to 0).  Any other
-//  value aborts.  Host-only (the reaction chain is a std::function EOS
-//  path, as is the whole PS reaction chain): a GPU build aborts.
-inline int ps_bc_rx()
-{
-    static const int v = []() -> int {
-        const int r = ps_dial_int("ps_bc_rx", 1);
-        if (r != 0 && r != 1 && r != 2) {
-            amrex::Abort("CAMR.ps_bc_rx must be 0 (off), 1 (write-back) or 2 (probe only)");
-        }
-#if defined(AMREX_USE_GPU)
-        if (r != 0) {
-            amrex::Abort("CAMR.ps_bc_rx: the relaxed-state boundary pass is host-only "
-                         "(it runs the reaction chain on trial states); build without GPU");
-        }
-#endif
-        return r; }();
-    return v;
-}
-
 //  CAMR.ps_bc_rx_nsec (2): secant updates after the two seeds {0, a_fan},
 //  a fixed count (no tolerance); the final residual is reported by the probe.
 inline int ps_bc_rx_nsec()

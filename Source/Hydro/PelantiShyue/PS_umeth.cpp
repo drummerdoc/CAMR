@@ -584,12 +584,11 @@ PS_umeth(const Box& bx,
     amrex::ignore_unused(ps_mu_cached);
 #endif
 
-    // Faces where the relaxed-state boundary pass writes the entering
-    // acoustic wave (CAMR.ps_bc_rx = 1 on an NSCBC face): the wave is
-    // modelled there and enters first order, so Pass 2 skips its
-    // correction at that face (CAMR_bc_relaxed.cpp).
+    // NSCBC faces: the relaxed boundary writes the entering acoustic wave
+    // there (CAMR_bc_relaxed.cpp), modelled and entering first order, so
+    // Pass 2 skips its correction at that face.
     amrex::GpuArray<int, 6> rx_face{{0, 0, 0, 0, 0, 0}};
-    if (ps_bc_rx() == 1) {
+    {
         const PsNscbcCfg& cfg = ps_nscbc_cfg();
         for (int f = 0; f < 2*AMREX_SPACEDIM; ++f) rx_face[f] = cfg.uface[f];
     }

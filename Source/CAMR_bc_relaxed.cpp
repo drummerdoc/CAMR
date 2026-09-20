@@ -20,11 +20,12 @@
 //  production operators on a strip MultiFab of the boundary cells with
 //  the counters snapshotted, so the health lines see only the solution.
 //
-//  Contract: reads Sborder (ghosts filled) and hydro_source; with
-//  ps_bc_rx = 1 rewrites hydro_source on the boundary cells of the
-//  selected faces, every slot; with ps_bc_rx = 2 writes nothing and
-//  prints.  The flux register is untouched (a domain face never refluxes).
-//  Host-only.  Dials: PS_bc_config.H.
+//  Contract: reads Sborder (ghosts filled) and hydro_source; rewrites
+//  hydro_source on the boundary cells of every NSCBC face, every slot;
+//  ps_bc_rx_probe prints the per-face line.  The flux register is
+//  untouched (a domain face never refluxes).  Host-only (the reaction
+//  chain is a std::function EOS path): a GPU build with an NSCBC face
+//  aborts.  Dials: PS_bc_config.H.
 // =====================================================================
 #include "CAMR.H"
 #include "IndexDefines.H"
@@ -148,10 +149,11 @@ void
 CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt)
 {
     BL_PROFILE("CAMR::ps_bc_relaxed()");
-    const int mode = ps_bc_rx();
-    if (mode == 0) return;
+#if defined(AMREX_USE_GPU)
+    amrex::Abort("the relaxed boundary (NSCBC faces) is host-only: it runs the reaction chain on trial states; build without GPU");
+#endif
     if (do_mol) {
-        amrex::Abort("CAMR.ps_bc_rx: not ported to do_mol=1 (the pass would be needed at both Heun stages)");
+        amrex::Abort("NSCBC faces: not ported to do_mol=1 (the relaxed boundary would be needed at both Heun stages)");
     }
     const PsNscbcCfg& cfg = ps_nscbc_cfg();
     const PsPres l_pres = ps_presence_params();
@@ -493,7 +495,7 @@ CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt)
         // Restore the solution's counters, then count this pass's refusals.
         ps_counters() = snap;
 
-        // ---- 4. Write-back (mode 1) -------------------------------------
+        // ---- 4. Write-back ----------------------------------------------
         long n_ent = 0, n_fb = 0, n_rev = 0;
         Real a_sum = 0, a_min = 1e300, a_max = -1e300, af_sum = 0, af_min = 1e300, af_max = -1e300;
         Real dmax = 0, gmax = 0, pt_sum = 0, mw_sum = 0, mw_max = -1e300;
@@ -519,12 +521,12 @@ CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt)
                 pt_sum += ax(i,j,k,RX_PT);
                 mw_sum += ax(i,j,k,RX_MW); mw_max = amrex::max(mw_max, ax(i,j,k,RX_MW));
                 if (ax(i,j,k,RX_MW) < Real(0.0)) ++n_rev;
-                if (mode == 1 && ax(i,j,k,RX_GMODE) == Real(4.0)) {
+                if (ax(i,j,k,RX_GMODE) == Real(4.0)) {
                     for (int n = 0; n < NVAR; ++n) {
                         const Real dq = kn(i,j,k,n) - (dt / dx) * ax(i,j,k,RX_SFAN) * wv(i,j,k,n);
                         hs(i,j,k,n) = ps_finite_or(dq / dt, Real(0.0));
                     }
-                } else if (mode == 1) {
+                } else {
                     Real UN[NVAR];
                     for (int n = 0; n < NVAR; ++n) UN[n] = qn(i,j,k,n);
                     const PS_HLLC::Face fN = PS_HLLC::face_from_state(idir, UN, l_pres);
@@ -557,7 +559,7 @@ CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt)
             ParallelDescriptor::ReduceLongSum(n_vfan);
             const Real inv = (n_ent > 0) ? Real(1.0) / Real(n_ent) : Real(0.0);
             amrex::Print() << "[PS-BCRX] L" << level << " step " << step << " " << fnm[fidx]
-                << (mode == 1 ? " write" : " probe") << (ftype == 1 ? " vent" : " nr")
+                << " write" << (ftype == 1 ? " vent" : " nr")
                 << " n=" << n_ent
                 << " a*: " << a_sum * inv << " / " << (n_ent ? a_min : 0.0) << " / " << (n_ent ? a_max : 0.0)
                 << "  a_fan: " << af_sum * inv << " / " << (n_ent ? af_min : 0.0) << " / " << (n_ent ? af_max : 0.0)

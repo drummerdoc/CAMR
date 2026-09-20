@@ -80,6 +80,7 @@ inline void ps_abort_on_retired_keys()
         { "ps_bc_rx_z",          "the relaxed boundary measures its impedance on the seed trials (Wood is the degenerate-pair fallback, counted as zfb)" },
         { "ps_bc_rx_ghost",      "the ghost on an NSCBC face is the extrapolated state (continued where the flow leaves, copied where it enters); the characteristic construction of PS_nscbc.H and the copy ghost are deleted (PLAN_relaxed_boundary §13.17, item 5a)" },
         { "ps_bc_nscbc_order",   "the characteristic ghost construction is deleted; the extrapolated ghost has one order (minmod over three cells)" },
+        { "ps_bc_rx",            "the relaxed boundary runs on every NSCBC face; the ghost-only control (0) and the probe-only mode (2) are deleted (item 5b); ps_bc_rx_probe prints the per-face line" },
         { "ps_p_mode",           "ps_state_from_cons forms the volume-weighted mixture pressure only" },
         { "ps_p_clip",           "ps_state_from_cons forms the volume-weighted mixture pressure only" },
         { "ps_c_mode",           "ps_state_from_cons forms the Wood mixture sound speed only" },
