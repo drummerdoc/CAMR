@@ -100,7 +100,6 @@ The boundary of an NSCBC face is the extrapolated ghost plus the relaxed boundar
 - Variant G (`nscbc_xhi_test.sh G`, 40 D, about twice an F run): only if the demo3 outlets are to be ranked and not compared — the 20 D station read as an interior column. The domain question is settled for the near field (O-26 d).
 - The `anchor` face type: the rate form $I(\tilde q) = I(q_N)$ plus a Rudy–Strikwerda term $K(P - P_\infty)$, $K = \sigma(1 - M^2)c/L$, for a chosen mean-pressure recovery time $1/K$. The value form already recovers N4 in two traversals with no dial, so `anchor` waits for a measured need; the bare rate form is refuted (X-34).
 - A fine AMR level on a domain face (untested); `do_mol = 1` with an NSCBC face (aborts: the pass would be needed at both Heun stages); a device path (the pass is host-only because the reaction chain is, §6.4).
-- The T-Blowdown decks run their 100 bar → 1 bar outlet as `nr`; the flashing-front pin says that is the `vent` type's case (`VERIFICATION.md` §7.1).
 
 ## 8. The Corridor state: the two items downstream of the projection
 

@@ -10,5 +10,8 @@ geometry.prob_hi     =   0.125    1.0    0.125
 # Wall at y=lo, vent at y=hi.  Tangential (x, z) always SlipWall.
 CAMR.lo_bc       =  SlipWall   SlipWall   SlipWall
 CAMR.hi_bc       =  SlipWall   Inflow     SlipWall
+#  The outlet vents 100 bar to 1 bar: a plenum (vent) face, whose outflow
+#  wave is the choked fan (docs/MODEL_AND_ALGORITHM.md §6.3).
+CAMR.ps_bc_nscbc_type_yhi = vent
 
 amr.plot_file = plt_sym_y_lo_

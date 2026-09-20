@@ -37,6 +37,9 @@ amr.n_cell           =   128   16   16
 
 CAMR.lo_bc       =  SlipWall   SlipWall   SlipWall
 CAMR.hi_bc       =  Inflow     SlipWall   SlipWall
+#  The outlet vents 100 bar to 1 bar: a plenum (vent) face, whose outflow
+#  wave is the choked fan (docs/MODEL_AND_ALGORITHM.md §6.3).
+CAMR.ps_bc_nscbc_type_xhi = vent
 
 CAMR.cfl = 0.25
 CAMR.fixed_dt = 0
