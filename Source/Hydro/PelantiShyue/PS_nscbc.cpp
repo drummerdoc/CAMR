@@ -75,15 +75,33 @@ enum RxAux {
     RX_NAUX
 };
 
-//  Wood (mechanical-equilibrium) sound speed of a face state; a phase
-//  with alpha = 0 drops out, so a single-phase cell returns its own c.
-Real wood_c(const PS_HLLC::Face& f) noexcept
+//  Wood (mechanical-equilibrium) sound speed, 1/(rho c^2) = sum_k
+//  alpha_k/(rho_k c_k^2); a phase with alpha = 0 drops out, so a
+//  single-phase cell returns its own c.  fallback is returned when the
+//  sum is degenerate.
+Real wood_speed(Real a1, Real rho1, Real c1, Real a2, Real rho2, Real c2,
+                Real rho, Real fallback) noexcept
 {
     Real inv = Real(0.0);
-    if (f.alpha_1 > Real(0.0)) inv += f.alpha_1 / (f.rho_1 * f.c_1 * f.c_1);
-    if (f.alpha_2 > Real(0.0)) inv += f.alpha_2 / (f.rho_2 * f.c_2 * f.c_2);
-    const Real c2 = (inv > Real(0.0)) ? Real(1.0) / (f.rho_mix * inv) : Real(-1.0);
-    return (std::isfinite(c2) && c2 > Real(0.0)) ? std::sqrt(c2) : f.c_frozen;
+    if (a1 > Real(0.0)) inv += a1 / (rho1 * c1 * c1);
+    if (a2 > Real(0.0)) inv += a2 / (rho2 * c2 * c2);
+    const Real cw2 = (inv > Real(0.0)) ? Real(1.0) / (rho * inv) : Real(-1.0);
+    return (std::isfinite(cw2) && cw2 > Real(0.0)) ? std::sqrt(cw2) : fallback;
+}
+Real wood_c(const PS_HLLC::Face& f) noexcept
+{
+    return wood_speed(f.alpha_1, f.rho_1, f.c_1, f.alpha_2, f.rho_2, f.c_2, f.rho_mix, f.c_frozen);
+}
+
+//  The modelled entering wave: the HLLC star state of the boundary cell
+//  for pressure amplitude a (S_M(a) = u_N - n a / (rho_N c_eff)).  False
+//  when the star state refuses.
+bool modelled_star(int idir, Real n_sgn, const Real UN[NVAR], Real a, Real c_eff,
+                   Real s, const PsPres& pr, Real Us[NVAR]) noexcept
+{
+    const PS_HLLC::Face fN = PS_HLLC::face_from_state(idir, UN, pr);
+    const Real S_M = fN.u_n - n_sgn * a / (fN.rho_mix * c_eff);
+    return PS_HLLC::ps_star_state(idir, fN, UN, s, S_M, Us);
 }
 
 //  Mixture pressure and outward normal velocity of one cell state.
@@ -94,11 +112,7 @@ void cell_P_uout(const Real U[NVAR], int idir, Real n_sgn, const PsPres& pr,
     P = ph.alpha1 * ph.P1 + ph.alpha2 * ph.P2;
     const Real un = (idir == 0) ? ph.ux : (idir == 1) ? ph.uy : ph.uz;
     uout = n_sgn * un;
-    Real inv = Real(0.0);
-    if (ph.alpha1 > Real(0.0)) inv += ph.alpha1 / (ph.rho1 * ph.c1 * ph.c1);
-    if (ph.alpha2 > Real(0.0)) inv += ph.alpha2 / (ph.rho2 * ph.c2 * ph.c2);
-    const Real c2 = (inv > Real(0.0)) ? Real(1.0) / (ph.rho * inv) : Real(-1.0);
-    cw = (std::isfinite(c2) && c2 > Real(0.0)) ? std::sqrt(c2) : amrex::max(ph.c1, ph.c2);
+    cw = wood_speed(ph.alpha1, ph.rho1, ph.c1, ph.alpha2, ph.rho2, ph.c2, ph.rho, amrex::max(ph.c1, ph.c2));
 }
 
 }  // namespace
@@ -277,10 +291,7 @@ CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt)
                         s = ax(i,j,k,RX_SFAN);
                         for (int n = 0; n < NVAR; ++n) Us[n] = UN[n] + wv(i,j,k,n);
                     } else {
-                        const Real c_eff = ax(i,j,k,RX_CEFF);
-                        const PS_HLLC::Face fN = PS_HLLC::face_from_state(idir, UN, l_pres);
-                        const Real S_M = fN.u_n - n_sgn * a / (fN.rho_mix * c_eff);
-                        if (!PS_HLLC::ps_star_state(idir, fN, UN, s, S_M, Us)) {
+                        if (!modelled_star(idir, n_sgn, UN, a, ax(i,j,k,RX_CEFF), s, l_pres, Us)) {
                             ax(i,j,k,RX_FLAG) = Real(2.0);
                             return;
                         }
@@ -521,10 +532,8 @@ CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt)
                 } else {
                     Real UN[NVAR];
                     for (int n = 0; n < NVAR; ++n) UN[n] = qn(i,j,k,n);
-                    const PS_HLLC::Face fN = PS_HLLC::face_from_state(idir, UN, l_pres);
-                    const Real S_M = fN.u_n - n_sgn * a / (fN.rho_mix * ax(i,j,k,RX_CEFF));
                     Real Us[NVAR];
-                    if (!PS_HLLC::ps_star_state(idir, fN, UN, ax(i,j,k,RX_S), S_M, Us)) {
+                    if (!modelled_star(idir, n_sgn, UN, a, ax(i,j,k,RX_CEFF), ax(i,j,k,RX_S), l_pres, Us)) {
                         ++n_fb; ++ps_counters().nscbc_rx_fb; return;
                     }
                     for (int n = 0; n < NVAR; ++n) {

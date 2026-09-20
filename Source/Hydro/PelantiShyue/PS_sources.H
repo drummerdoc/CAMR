@@ -37,6 +37,19 @@
 #include <AMReX_BLProfiler.H>
 #include <cmath>
 
+//  Report helpers of the source driver: a cumulative count printed only
+//  when it has grown, and the non-zero entries of a cause table.
+inline void ps_print_when_grown(long& prev, long now, const char* text)
+{
+    if (now > prev) { amrex::Print() << text << now << "\n"; prev = now; }
+}
+inline void ps_print_causes(const char* const* names, long& (*count)(int), int first, int n)
+{
+    for (int c = first; c < n; ++c) {
+        if (count(c) > 0) amrex::Print() << "  " << names[c] << "=" << count(c);
+    }
+}
+
 // -----------------------------------------------------------------
 //  Cached dial reads (one-shot ParmParse, read once on the host).
 // -----------------------------------------------------------------
@@ -186,11 +199,8 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
         }
         // Cumulative flash count, printed only when it changes.
         static long s_prev_flash = 0;
-        const long nf = hem::ps_flash_source_count();
-        if (nf > s_prev_flash) {
-            amrex::Print() << "[ps_flash] cumulative cells flashed = " << nf << "\n";
-            s_prev_flash = nf;
-        }
+        ps_print_when_grown(s_prev_flash, hem::ps_flash_source_count(),
+                            "[ps_flash] cumulative cells flashed = ");
         // [PS-FLASH-REF] (ps_pres_diag): the kernel's refusal-cause table
         // per sweep, so "zero events" decomposes by cause.
         {
@@ -205,12 +215,7 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                     tot += hem::ps_flash_refuse_count(c);
                 if (tot + hem::ps_flash_refuse_count(0) > 0) {
                     amrex::Print() << "[PS-FLASH-REF]";
-                    for (int c = 0; c < hem::PS_FLR_NCAUSE; ++c) {
-                        if (hem::ps_flash_refuse_count(c) > 0) {
-                            amrex::Print() << "  " << fn[c] << "="
-                                           << hem::ps_flash_refuse_count(c);
-                        }
-                    }
+                    ps_print_causes(fn, hem::ps_flash_refuse_count, 0, hem::PS_FLR_NCAUSE);
                     amrex::Print() << "\n";
                 }
                 hem::ps_flash_refuse_reset();
@@ -353,12 +358,7 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                         "phase_inval", "gh_nonfin", "coexist", "frac",
                         "gscreen", "dm_zero", "writeback", "be_rate" };
                     amrex::Print() << "[PS-MTCAUSE]";
-                    for (int c = 1; c < hem::PS_MT_NCAUSE; ++c) {
-                        if (hem::ps_mt_cause(c) > 0) {
-                            amrex::Print() << "  " << nm[c] << "="
-                                           << hem::ps_mt_cause(c);
-                        }
-                    }
+                    ps_print_causes(nm, hem::ps_mt_cause, 1, hem::PS_MT_NCAUSE);
                     amrex::Print() << "   (total=" << tot << ")" << std::endl;
                     // [PS-MTCOEX]: the coexistence gate's closing quantity is
                     // otherwise unobservable (the plotfile Temp is floored at
@@ -397,12 +397,8 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
         }
 
         static long s_prev_mt = 0;
-        const long nmt = hem::ps_mass_transfer_count();
-        if (nmt > s_prev_mt) {
-            amrex::Print() << "[ps_mt] cumulative cells with finite-rate MT = "
-                           << nmt << "\n";
-            s_prev_mt = nmt;
-        }
+        ps_print_when_grown(s_prev_mt, hem::ps_mass_transfer_count(),
+                            "[ps_mt] cumulative cells with finite-rate MT = ");
         BL_PROFILE_VAR_STOP(ps_src_mt);
     }
 
@@ -469,12 +465,8 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
             });
         }
         static long s_prev_tp = 0;
-        const long ntp = hem::ps_triple_point_count();
-        if (ntp > s_prev_tp) {
-            amrex::Print() << "[ps_triple_point] cells below CO2 triple point "
-                           << "(cumulative) = " << ntp << "\n";
-            s_prev_tp = ntp;
-        }
+        ps_print_when_grown(s_prev_tp, hem::ps_triple_point_count(),
+                            "[ps_triple_point] cells below CO2 triple point (cumulative) = ");
         BL_PROFILE_VAR_STOP(ps_src_tp);
     }
 }
