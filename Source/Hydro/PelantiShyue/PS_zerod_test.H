@@ -133,7 +133,7 @@ inline int ps_ptg_zerod_selftest()
             s_in.valid?s_in.p1.T:0, s_in.valid?s_in.p2.T:0,
             s_in.valid?s_in.p1.g:0, s_in.valid?s_in.p2.g:0, (int)ok, (int)s.valid,
             conv ? "conv" : "noconv",
-            dP, dT, dg, dome, dM, dE, dm, dir_ok ? "dir ok" : "DIR BAD",
+            dP, dT, dg, dome, dM, dE, dm, dir_ok ? "dir as entry g" : "dir against entry g (info)",
             pass ? "PASS" : "**FAIL**");
         amrex::Print() << line;
     }

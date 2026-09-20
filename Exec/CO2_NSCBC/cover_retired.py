@@ -5,9 +5,9 @@ Reads the two tables of Source/Hydro/PelantiShyue/PS_retired_keys.H and runs
 the 1-D executable once per row with the key set (max_step=0: the tables are
 checked at startup), asserting a non-zero exit and the row's own
 "CAMR.<key> ... is retired" message.  Then the boundary dials whose bad
-values must abort at the first ghost fill (max_step=1): an unknown face type,
+values must abort at startup too (resolved in read_params): an unknown face type,
 ps_bc_nscbc_nsec out of range, an explicit NSCBC enable on a wall face, and
-do_mol=1 with an NSCBC face.  Prints one line per failure and a PASS/FAIL
+do_mol=1 with an NSCBC face (that one at the first step, max_step=1).  Prints one line per failure and a PASS/FAIL
 summary; exit code 0 on PASS.  docs/VERIFICATION.md §6.4.
 
 Usage:  [EXE=...] python3 cover_retired.py
@@ -31,9 +31,9 @@ keys = re.findall(r'\{\s*"([a-z_0-9]+)",\s*"', src)
 vals = re.findall(r'\{\s*"([a-z_0-9]+)",\s*(-?\d+),\s*"', src)
 cases = [(['CAMR.%s=0' % k], 0, 'CAMR.%s is retired' % k) for k in keys]
 cases += [(['CAMR.%s=%s' % (k, v)], 0, 'CAMR.%s = %s is retired' % (k, v)) for k, v in vals]
-cases += [(['CAMR.ps_bc_nscbc_type_xhi=foo'], 1, 'must be nr or vent'),
-          (['CAMR.ps_bc_nscbc_nsec=9'], 1, 'ps_bc_nscbc_nsec must be in'),
-          (['CAMR.lo_bc=SlipWall', 'CAMR.ps_bc_nscbc_xlo=1'], 1, 'is not Inflow'),
+cases += [(['CAMR.ps_bc_nscbc_type_xhi=foo'], 0, 'must be nr or vent'),
+          (['CAMR.ps_bc_nscbc_nsec=9'], 0, 'ps_bc_nscbc_nsec must be in'),
+          (['CAMR.lo_bc=SlipWall', 'CAMR.ps_bc_nscbc_xlo=1'], 0, 'is not Inflow'),
           (['CAMR.do_mol=1', 'CAMR.cfl=0.25'], 1, 'do_mol=1')]
 bad = 0
 for args, ms, msg in cases:

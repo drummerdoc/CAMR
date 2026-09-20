@@ -26,6 +26,7 @@
 #include "PS_wavespeed.H"      // ps_guard counters (clean_state repairs)
 #include "PS_promote.H"       // checked promotion (ps_regime_reach)
 #include "PS_retired_keys.H"  // ps_abort_on_retired_keys (read_params)
+#include "PS_nscbc.H"         // the boundary dials, resolved in read_params
 #include "PS_constants.H"     // ps_const::ALPHA_REFLUX_MIN (reflux)
 #endif
 
@@ -116,6 +117,12 @@ CAMR::read_params()
   // Retired CAMR.ps_* keys abort here, before any PS accessor reads the
   // table (PS_retired_keys.H).
   ps_abort_on_retired_keys();
+  // Resolve the boundary dials now, so a bad value aborts at startup and
+  // the first plotfile's job_info carries the resolved face set.
+  ps_nscbc_cfg();
+  ps_bc_nscbc_type();
+  ps_bc_nscbc_nsec();
+  ps_bc_nscbc_probe();
 #endif
 
   pp.query("v", verbose);
