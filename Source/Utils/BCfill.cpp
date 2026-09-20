@@ -84,7 +84,9 @@ struct PCHypFillExtDir
         return r;
       };
 
-#ifdef USE_PS_HYDRO
+#if defined(USE_PS_HYDRO) && !defined(AMREX_USE_GPU)
+      // Host builds only: the admissibility test below queries the EOS on
+      // the host, and ps_nscbc_cfg() aborts a GPU build with an NSCBC face.
       if (use_nscbc_face[2*idir + ((sgn > 0) ? 0 : 1)] != 0
           && (sgn > 0 ? (domlo[idir] + 2 <= domhi[idir])
                       : (domhi[idir] - 2 >= domlo[idir]))) {
@@ -304,6 +306,14 @@ ps_nscbc_cfg()
       uf[f] = 0;   // same safety as u above.
 #endif
     }
+#if defined(AMREX_USE_GPU)
+    for (int f = 0; f < 2*AMREX_SPACEDIM; ++f) {
+      if (uf[f] == 1) {
+        amrex::Abort("NSCBC faces are host-only (the ghost fill and the relaxed "
+                     "boundary query the EOS on the host): build without GPU.");
+      }
+    }
+#endif
     pp.add("ps_bc_use_nscbc",   u);
     // Resolved per-face NSCBC enables -> job_info (0/1, after inheritance).
     pp.add("ps_bc_nscbc_xlo", uf[0]);

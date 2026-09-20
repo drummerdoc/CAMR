@@ -35,7 +35,8 @@ const PsNscbcCfg& ps_nscbc_cfg();
 //  state have a root: the host phase always, the other phase only when
 //  it exists and is reachable Independent (the same dispatch).  A state
 //  that fails is refused by its caller (a trial of the relaxed boundary,
-//  an extrapolated ghost), never handed to the aborting query.  Host-only.
+//  an extrapolated ghost), never handed to the aborting query.  Host-only:
+//  both callers are compiled out of, or abort in, a GPU build.
 inline bool ps_bc_state_ok(const amrex::Real U[NVAR], const PsPres& pr) noexcept
 {
     using amrex::Real;
