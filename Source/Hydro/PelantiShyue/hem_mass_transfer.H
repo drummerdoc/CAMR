@@ -266,7 +266,8 @@ inline bool ps_mass_transfer_relax_cell(
 //  dalpha_1 = -dm/rho_1 (donor density invariant, receiver density a
 //  convex combination, invariant-domain-preserving at any rate) with
 //  alpha clamped to exact [0,1] so the presence ladder owns small alpha.
-//  Any other value (including -1) aborts: the caller resolves the dial.
+//  Any other value (including the dial's auto value -1) aborts: the
+//  caller resolves the dial.
 inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
                                           double dt, double tau_g,
                                           double alpha_floor = ps_const::ALPHA_ROUNDOFF,
@@ -377,9 +378,9 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
     // target can travel the step's path.  update_alpha arrives resolved
     // (0/1) from PS_sources; a caller passing the auto value aborts rather
     // than getting a second default.
-    if (update_alpha < 0) {
-        amrex::Abort("ps_mass_transfer_finite_cell: update_alpha=-1 (auto) "
-                     "must be resolved by the caller (PS_sources does)");
+    if (update_alpha != 0 && update_alpha != 1) {
+        amrex::Abort("ps_mass_transfer_finite_cell: update_alpha must arrive "
+                     "resolved to 0 or 1 (PS_sources resolves the auto value -1)");
     }
     const bool upd_hoisted = (update_alpha != 0);
 
@@ -651,15 +652,9 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
         // mediant of rho_2 and rho_1 -- in-domain at any rate.
         const double dalpha = -dm / rho_1;
         alpha_new = alpha1 + dalpha;
-        if (update_alpha == 1) {
-            // Presence semantics: exact bounds; the 0.9 m cap keeps alpha interior.
-            if (alpha_new < 0.0) alpha_new = 0.0;
-            if (alpha_new > 1.0) alpha_new = 1.0;
-        } else {
-            // alpha_floor clamps for other nonzero values.
-            if (alpha_new < alpha_floor)         alpha_new = alpha_floor;
-            if (alpha_new > 1.0 - alpha_floor)   alpha_new = 1.0 - alpha_floor;
-        }
+        // Presence semantics: exact bounds; the 0.9 m cap keeps alpha interior.
+        if (alpha_new < 0.0) alpha_new = 0.0;
+        if (alpha_new > 1.0) alpha_new = 1.0;
     }
     // Refuse a non-finite or non-positive write-back: one bad step would
     // inject a NaN that freezes wave propagation through the cell.

@@ -237,6 +237,7 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
         // dalpha_1 = -dm/rho_1 (the (E.1) rule); -1 auto (resolves to 1),
         // 0 force off, 1 force on.  Host-read once, captured by value.
         static const int mt_upd_key = ps_dial_int("ps_mt_update_alpha", -1);
+        if (mt_upd_key < -1 || mt_upd_key > 1) amrex::Abort("CAMR.ps_mt_update_alpha must be -1, 0 or 1");
         const int l_mt_upd = (mt_upd_key >= 0) ? mt_upd_key : 1;
         // ps_mt_diag >= 2 also enables the contraction-ratio measurement in
         // the kernel (a second equilibrium solve per transferring cell).
