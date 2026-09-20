@@ -3,8 +3,7 @@
 // =====================================================================
 //  PS_presence.H — presence-discrete phase-state parameters, the regime
 //  classifier and the checked phase-state construction.
-//  Reference: docs/MODEL_AND_ALGORITHM.md ch. 4 (constants and their
-//  evidence: §4.3).
+//  Reference: docs/MODEL_AND_ALGORITHM.md ch. 4 (the constants: §4.3).
 //
 //  A phase in a cell is in exactly one regime, determined by its own
 //  alpha_k and m_k with no auxiliary flag:
@@ -35,22 +34,21 @@
 #include "PS_dials.H"      // ps_dial_int / ps_dial_real (host-side read)
 
 struct PsPres {
-    // alpha_vanish [-] = 1e-8: death edge.  At this alpha the reconstructed
-    // density carries relative error eta/alpha ~ 2e4 (eta = the scheme's
-    // per-step mass inconsistency), i.e. no recoverable information at any
-    // accuracy target, so folding discards nothing; four decades below
-    // alpha_cond so there is no flip-flop channel.
+    // alpha_vanish [-] = 1e-8: death edge.  The reconstructed density
+    // carries relative error eta/alpha (eta = the scheme's per-step mass
+    // inconsistency), so at this alpha it holds no recoverable information
+    // and folding discards nothing; four decades below alpha_cond so there
+    // is no flip-flop channel.  Derivations and evidence: docs §4.3.
     amrex::Real alpha_vanish = amrex::Real(1.0e-8);
-    // alpha_cond [-] = 2e-2: conditioning bound eta_max/eps with the 2-D
-    // production eta_max = 9.6e-4 and a 5 % accuracy target (1.92e-2).
+    // alpha_cond [-] = 2e-2: conditioning bound eta_max/eps at a 5 %
+    // accuracy target on rho_k.
     amrex::Real alpha_cond   = amrex::Real(2.0e-2);
     // alpha_birth [-] = 2 alpha_cond: flash seed level, far enough above
     // alpha_cond that one step of eta-scale erosion cannot demote a newborn.
     amrex::Real alpha_birth  = amrex::Real(4.0e-2);
     // rho_deg [kg/m^3] = 0.5: density-degeneracy floor for Independent
-    // promotion and the corridor reap; separates the smallest legitimate
-    // Independent density in the battery (1.4) from the measured degenerate
-    // promotion (0.076) by a factor ~3 both ways.
+    // promotion and the corridor reap; lies between the smallest legitimate
+    // Independent density and a degenerate promotion (docs §4.3).
     amrex::Real rho_deg      = amrex::Real(0.5);
     // e_deg band [J/kg] for the fold's energy reap; physical CO2 on this
     // EOS's scale spans about [-1.5e5, 4e6].
@@ -58,11 +56,11 @@ struct PsPres {
     amrex::Real e_deg_hi     = amrex::Real( 2.0e7);
     // CAMR.ps_promote_checked (1): a would-be-Independent phase is demoted
     // to Corridor when its (rho_k, e_k) has no root on its own branch
-    // (PS_promote.H); 0 = A/B opt-out.  On because it is provably inert on
-    // the healthy path and closes the inherited-corrupt promotion abort.
+    // (PS_promote.H); 0 = opt-out, for comparison.  On by default: it is
+    // inert where every promoted phase has a root.
     int         promote_checked = 1;
     // CAMR.ps_floor_indep (1): ps_apply_floor's per-phase leg acts on
-    // Independent phases only; 0 = A/B opt-out.  A corridor phase is
+    // Independent phases only; 0 = opt-out.  A corridor phase is
     // host-slaved and never branch-queried, so flooring it only manufactures
     // non-conservative energy drift with no face-level consumer.
     int         floor_indep     = 1;
@@ -152,7 +150,8 @@ inline const PsPres& ps_presence_params()
         v.floor_indep     = ps_dial_int ("ps_floor_indep",       v.floor_indep);
         v.e_deg_lo        = ps_dial_real("ps_presence_e_deg_lo", v.e_deg_lo);
         v.e_deg_hi        = ps_dial_real("ps_presence_e_deg_hi", v.e_deg_hi);
-        // ps_presence_vanish is also the fold threshold and must stay > 0.
+        // ps_presence_vanish is also the fold threshold; a value <= 0
+        // disables the vanish fold (hem::ps_apply_vanish_fold refuses it).
         return v;
     }();
     return p;

@@ -21,8 +21,10 @@ namespace ps_const {
 //  relaxation entry gates, the folds and the source kernels.
 constexpr amrex::Real ALPHA_ROUNDOFF   = amrex::Real(1.0e-6);
 
-//  Phase-presence threshold on a partial mass m_k = alpha_k rho_k
-//  [kg/m³]: below it the phase quotient E_k/m_k is not formed.
+//  Presence threshold on a partial mass m_k = alpha_k rho_k, or on the
+//  sum m_1 + m_2 [kg/m³], in the boundary code (PS_bc_fan.H,
+//  PS_nscbc.cpp): at or below it the phase is treated as absent and the
+//  mass is not used as a divisor.
 constexpr amrex::Real M_TINY           = amrex::Real(1.0e-12);
 
 //  Lower floor on the mixture density rho = m_1 + m_2 [kg/m³] before it

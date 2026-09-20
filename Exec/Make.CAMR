@@ -16,57 +16,36 @@ ifeq ($(USE_MOVING_EB), TRUE)
   DEFINES += -DCAMR_USE_MOVING_EB
 endif
 
-# Pelanti-Shyue six-equation hydro module (co2-eos-cfd Phase 4).
-# Off by default; per-case opt-in via USE_PS_HYDRO := TRUE in the
-# Exec GNUmakefile.  When set, the conservative state grows by 5
-# components (α₁, α_k ρ_k, α_k ρ_k E_k) and the PelantiShyue Hydro
-# module is compiled in.  See Source/Hydro/PelantiShyue/README.md .
-# NOTE: the Bdirs += line belongs alongside the other Bdirs additions
-# further down (after `Bdirs :=`); here we only set DEFINES + the
-# suffix so build-output directories are separable.
+# Pelanti-Shyue six-equation hydro module.  Off by default; per-case
+# opt-in via USE_PS_HYDRO := TRUE in the Exec GNUmakefile.  When set, the
+# conservative state grows by 5 components (α₁, α_k ρ_k, α_k ρ_k E_k) and
+# the PelantiShyue Hydro module is compiled in (its Bdirs line is with the
+# other Bdirs additions below; here only DEFINES and the suffix are set, so
+# build-output directories are separable).
+# See Source/Hydro/PelantiShyue/README.md.
 ifeq ($(USE_PS_HYDRO), TRUE)
   DEFINES += -DUSE_PS_HYDRO
   USERSuffix += .PS
   # The PS module requires the extended EOS contract (T_triple, per-phase
   # branch-locked entry points, saturation curve...).  GammaLaw does not
   # provide it; fail early with a clear message instead of a wall of
-  # missing-function errors.  (AUDIT 2026-08-24, A2.)
+  # missing-function errors.
   ifeq ($(Eos_Model),$(filter $(Eos_Model),GammaLaw))
     $(error USE_PS_HYDRO=TRUE requires an EOS backend with the extended PS contract (PR, PRTab, GERG, GERGTab); Eos_Model=$(Eos_Model) does not provide it)
   endif
 endif
 
 # ---------------------------------------------------------------------
-#  Put the EOS backend into the executable name AND the object directory.
-#
-#  Without this, PR / PRTab / GERG / GERGTab all produce the SAME filename
-#  (CAMR2d.llvm.TPROF.MPI.PS.ex).  Two consequences, both of which cost real
-#  time during the 2026-08 pipe-break debugging:
-#
-#   1. A binary built for one backend can be run for another with nothing to
-#      show for it but wrong physics.  Hand-copying executables into
-#      per-backend subfolders to avoid this is itself error-prone.
-#
-#   2. More seriously, AMReX derives the OBJECT directory from the same
-#      suffix, so every backend shared one set of .o files while being
-#      compiled with different -DUSE_*_EOS defines.  Make compares only
-#      timestamps, so switching Eos_Model without `make realclean` silently
-#      reused objects built for the previous backend.
-#
-#  TWO THINGS MATTER HERE, both learned the hard way:
-#
-#   * Use `:=` concatenation, NOT `+=`.  On a non-empty variable `+=` inserts
-#     a SPACE, giving USERSuffix = ".PS .PR", which splits every derived path
-#     ("tmp_build_dir/s/2d.llvm.TPROF.MPI.PS" / ".PR.EXE/AMReX_Config.H").
-#     `+=` looked fine for .EB/.PS only because USERSuffix was empty then.
-#
-#   * This must come BEFORE `all: $(executable)` below.  Prerequisites are
-#     expanded when the rule is read, so a later change to USERSuffix leaves
-#     `all` depending on the OLD name while the rules build the NEW one.
-#     Eos_Model is set in the Exec GNUmakefile before this file is included,
-#     so it is already available here.
-#
-#  Result: CAMR2d.llvm.TPROF.MPI.PS.PR.ex, ...PS.GERGTab.ex, etc.
+#  Put the EOS backend into the executable name and the object directory
+#  (CAMR2d.llvm.TPROF.MPI.PS.PR.ex, ...PS.GERGTab.ex).  Without it a binary
+#  built for one backend can be run for another unnoticed, and, because
+#  AMReX derives the object directory from the same suffix, switching
+#  Eos_Model without `make realclean` silently reuses objects compiled
+#  with another backend's -DUSE_*_EOS defines (make compares timestamps).
+#  Use `:=` concatenation, not `+=`: on a non-empty variable `+=` inserts a
+#  space (USERSuffix = ".PS .PR") and splits every derived path.  This must
+#  come before `all: $(executable)` (prerequisites are expanded when the
+#  rule is read); Eos_Model is set by the Exec GNUmakefile before this.
 # ---------------------------------------------------------------------
 ifneq ($(Eos_Model),)
   USERSuffix := $(USERSuffix).$(Eos_Model)
@@ -79,16 +58,13 @@ endif
 	@echo SUCCESS
 
 # ---------------------------------------------------------------------
-#  PRTab table EOS generation.
-#
-#  The bicubic PR table (prtab_table_data.cpp, ~6 MB) is NOT committed; the
-#  repo carries only a tiny #error placeholder, so a build before the table
-#  is generated fails early with a clear message.  Generate all three
-#  branches (auto + liquid + vapor) with:   make tables
-#  Requires a host g++ and python3 with numpy + scipy.  The generated files are
-#  git-ignored; remove them (so the next build re-trips the guard) with:
-#      make clean-tables
-#  Neither is invoked by `make clean` / `make realclean`.
+#  PRTab table EOS generation.  The bicubic PR table
+#  (prtab_table_data.cpp, ~6 MB) is generated, not committed, and
+#  git-ignored; a PRTab build without it fails early at the $(error) guard
+#  below.  Generate all three branches (auto + liquid + vapor) with
+#  `make tables` (needs a host g++ and python3 with numpy + scipy); remove
+#  them with `make clean-tables`.  Neither is invoked by `make clean` /
+#  `make realclean`.
 # ---------------------------------------------------------------------
 PRTAB_TOOLS  := $(CAMR_HOME)/Source/EOS/PRTab/tools
 PRTAB_DATA   := $(CAMR_HOME)/Source/EOS/PRTab/prtab_table_data.cpp
@@ -114,14 +90,13 @@ endif
 ifeq ($(Eos_Model),$(filter $(Eos_Model),PRTab))
    DEFINES += -DUSE_PRTAB_EOS
    EOS_DIR = PRTab
-   # NOTE: do NOT add PR to the include path — it would shadow
-   # PRTab/EOS.H (both are named EOS.H, and an earlier -I wins), silently
-   # compiling the PR backend.  PRTab carries its own copies of the PR
-   # fallback headers (hem_pr_state.H, hem_saturation_amrex.H).
-   #
-   # The generated tables (prtab_table_data.cpp / _params.H) are git-ignored.
-   # FAIL EARLY with a clear message if they are absent — EXCEPT when the goal
-   # is to generate/clean them (else `make tables` would block itself).
+   # Do not add PR to the include path: it would shadow PRTab/EOS.H (both
+   # are named EOS.H, and an earlier -I wins), silently compiling the PR
+   # backend.  PRTab reaches the PR state machinery through its own
+   # forwarding headers (hem_pr_state.H, hem_saturation_amrex.H).
+   # The generated tables (prtab_table_data.cpp / _params.H) are
+   # git-ignored: fail early if they are absent, except when the goal is
+   # to generate or clean them (else `make tables` would block itself).
    ifeq (,$(filter tables clean-tables,$(MAKECMDGOALS)))
      ifeq (,$(wildcard $(PRTAB_DATA)))
        $(error PRTab EOS tables not generated -- run: make tables  (needs g++ + python3/numpy/scipy))
@@ -152,12 +127,11 @@ endif
 ifeq ($(Eos_Model),$(filter $(Eos_Model),GERG))
    DEFINES += -DUSE_GERG_EOS
    EOS_DIR = GERG
-   # (suffix added below, after all backends have been selected)
-   # GERG-2008 pure-CO2 backend (analytic stage; guarded evaluator +
-   # generated saturation/edge splines, all committed headers -- no
-   # table-generation step needed yet).  hem_pr_state.H is included via
-   # -I Source/ ("EOS/PR/...") for the hem::Phase3 interface
-   # type ONLY -- no PR function is called (no cross-EOS fallback).
+   # GERG-2008 pure-CO2 backend: guarded evaluator plus generated
+   # saturation/edge splines, all committed headers, so there is no
+   # table-generation step.  hem_pr_state.H is included via -I Source/
+   # ("EOS/PR/...") for the hem::Phase3 interface type only; no PR
+   # function is called (no cross-EOS fallback).
 endif
 
 Bdirs := $(CAMR_HOME)/Source

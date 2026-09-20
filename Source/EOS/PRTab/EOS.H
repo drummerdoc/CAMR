@@ -4,7 +4,6 @@
 //  PRTab EOS backend for CAMR: the PR backend with the (rho,e) -> T
 //  inversion replaced by a bicubic Catmull-Rom table lookup
 //  (docs/MODEL_AND_ALGORITHM.md §7.3-7.4; PRTab/README.md).
-//
 //  Algorithm: T (and s) are read from tables of T(log10 rho, e) on three
 //  branches — auto, liquid, vapour — with a Hermite dome-refinement patch
 //  on the branch tables (prtab_bicubic.H); the state is then rebuilt
@@ -12,23 +11,19 @@
 //  P and c are mutually consistent and the van der Waals loop of the
 //  metastable branches is represented exactly.  The table is the
 //  metastable-branch continuation the six-equation model asks for.
-//
 //  Contract: the same namespace EOS free-function set as PR/EOS.H, with
 //  the same domain metadata and saturation entries.  Validity ("is this
 //  (rho,e) a state on this branch") is decided on the analytic PR
 //  surface, never by table coverage; any range or out-of-distribution
 //  rejection falls back to the exact PR solve, which aborts on no root.
 //  With the table off a PRTab build reproduces PR exactly.
-//
 //  Layout: this file owns the table gates, the table-vs-PR census and
 //  the two table solves; the fluid is EOS/PR/pr_base.H and the whole
 //  contract surface is EOS/PR/pr_contract.H, which routes its ring
 //  caches to the table solves under USE_PRTAB_EOS (set by Make.CAMR for
 //  Eos_Model := PRTab), exactly as GERGTab does relative to GERG.
-//
-//  Dials: CAMR.eos_table (1), CAMR.eos_table_auto (1),
-//  CAMR.eos_table_branch (1), CAMR.eos_diag (0) — see the accessors
-//  below.  Units: SI.
+//  Dials (accessors below): CAMR.eos_table (1), CAMR.eos_table_auto (1),
+//  CAMR.eos_table_branch (1), CAMR.eos_diag (0).  Units: SI.
 // =====================================================================
 
 #include <AMReX.H>
@@ -286,8 +281,8 @@ namespace EOS {
   {
       const hem::PRFluid f = co2_fluid();
 #if !defined(__CUDA_ARCH__) && !defined(__HIP_DEVICE_COMPILE__) && !defined(__SYCL_DEVICE_ONLY__)
-      if (!prtab_enabled()) return hem::state_from_rho_e(f, rho, e);  // A/B: pure PR
-      if (!prtab_auto_enabled()) return hem::state_from_rho_e(f, rho, e); // split A/B
+      if (!prtab_enabled()) return hem::state_from_rho_e(f, rho, e);  // table off: pure PR
+      if (!prtab_auto_enabled()) return hem::state_from_rho_e(f, rho, e); // auto-path table off
 #endif
       // Out-of-distribution guard on the whitened (rho,e).
       const double xr = (double(rho) - prtab::RHO_M) / prtab::RHO_S;

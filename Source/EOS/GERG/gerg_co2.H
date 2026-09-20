@@ -3,10 +3,8 @@
 // =====================================================================
 //  gerg_co2.H -- device-inline GERG-2008 pure-CO2 Helmholtz EOS.
 //
-//  Executable spec / coefficient source: gerg_co2_ref.py (this dir);
-//  coefficients verbatim from thermopack src/gergdatadb.f90 (CO2 entry)
-//  and alpha0 form from src/gerg.f90 alpha0Derivs_GERG.
-//  This header must match the python spec to ~1e-14 (see gerg_selftest).
+//  Coefficients verbatim from thermopack src/gergdatadb.f90 (CO2 entry);
+//  alpha0 form from src/gerg.f90 alpha0Derivs_GERG.
 //
 //  Design constraints (CAMR GPU-safety):
 //   - branch-free fixed-op evaluation, no iteration, no data-dependent

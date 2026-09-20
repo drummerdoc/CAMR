@@ -2,7 +2,6 @@
 //  hem_pelanti_shyue.H -- per-cell kernels of the Pelanti-Shyue
 //  six-equation two-phase model (Pelanti & Shyue, J. Comput. Phys. 259,
 //  2014) for a single real-fluid substance with phase change.
-//
 //  Contents: the per-phase state structs and EOS callback contract
 //  (PsPhaseAPI); the presence folds; mechanical (P_1 = P_2), thermal
 //  and mass-transfer relaxation kernels; the coupled X3 operator
@@ -20,9 +19,9 @@
 //  refusal is a verdict).  Mixture mass, momentum and total energy are
 //  invariant under every kernel by construction.
 //
-//  Dials: all read once via the CAMR.* ParmParse accessors below and
-//  documented at their accessor (ps_dial_*, ps_diag_*, and the
-//  function-local statics in the kernels).
+//  Dials: CAMR.* keys read once, through the accessors of hem_eos_api.H
+//  (ps_dial_*, ps_diag_*) and function-local statics in the kernels; each
+//  is documented at its read site.
 // =====================================================================
 #pragma once
 

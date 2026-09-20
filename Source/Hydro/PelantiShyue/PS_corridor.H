@@ -16,8 +16,7 @@
 //  host state are exactly what they were.  Rejected: exchanging energy
 //  with the host to put e_k at saturation as well — it hands the
 //  corrupted phase-energy split of the cell to the host, which then has
-//  no root itself (measured: the resumed demo2 run aborted on the vapour
-//  host at rho = 26, e = -65 kJ/kg).
+//  no root itself.
 //
 //  Contract: called for every cell of the relaxation sweep before the
 //  mode dispatch; returns without writing when the pair is not
@@ -65,9 +64,8 @@ void ps_corridor_project(int i, int j, int k,
     //  A Corridor phase whose own (rho_k, e_k) has a root on its branch
     //  keeps its state (a smeared real phase, or a trace the hydro can
     //  evaluate); the projection replaces only a state the branch has no
-    //  root for.  Projecting every Corridor phase was measured to move B4
-    //  and B10 and abort B7: at a cross-critical contact the Corridor
-    //  liquid is resolved liquid, and giving it the host's density is wrong.
+    //  root for.  At a cross-critical contact the Corridor liquid is
+    //  resolved liquid, and giving it the host's density would be wrong.
     {
         const Real ak = (kc == 1) ? a1 : a2, mk0 = (kc == 1) ? m1 : m2;
         const Real rk = mk0 / ak, ek = U(i,j,k, (kc == 1) ? UE1 : UE2) / mk0 - ke;
@@ -108,9 +106,7 @@ void ps_corridor_project(int i, int j, int k,
         rt = rho_h;
     }
     //  Volume only: the phase mass and energy are kept, alpha_k = m_k / rho_t.
-    //  Nothing is exchanged with the host, so the mixture and the host state
-    //  are untouched.  (Exchanging energy with the host was measured to hand
-    //  a corrupted phase-energy split to the host, which then aborted.)
+    //  Nothing is exchanged with the host (rejected alternative: header).
     const Real mk = (kc == 1) ? m1 : m2;
     const Real ak_new = mk / rt;
     if (!(ak_new > Real(0.0)) || !(ak_new < Real(1.0))) return;

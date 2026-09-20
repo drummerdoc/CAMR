@@ -3,13 +3,13 @@
 // =====================================================================
 //  PS_guards.H  --  single-source guards and guard counters for the
 //  Pelanti-Shyue module.
-//
 //  Principle (docs/MODEL_AND_ALGORITHM.md §8.2): Category A constants
 //  (triple point, critical point, covolume, validity box) come from the
 //  EOS backend's domain metadata and are never tuned; Category B guards
 //  (against the structural singularities rho_k = m_k/alpha_k,
 //  e_k = E_k/m_k, branch-locked calls outside their domain) are fluid-
-//  independent and defined exactly ONCE here, called from every site.
+//  independent and defined once, here; the pressure guards are applied by
+//  ps_cell_state (PS_state.H), and PS_bc_fan.H applies P_FLOOR_PA inline.
 //  Every early return and every substitution is counted: a guard that is
 //  never reached and a guard that is reached but never trips look
 //  identical from outside and need different fixes, so `seen` is counted
@@ -95,10 +95,11 @@ amrex::Real sanitize_stock_pressure(amrex::Real P_stock) noexcept
 
 // ---------------------------------------------------------------------
 #if !defined(AMREX_USE_GPU)
-//  clean_state repairs: a negative or non-finite partial mass is set to
-//  zero, which makes that phase Absent (a representable state) rather than
-//  a fictitious sliver; a non-finite alpha is not repaired, it aborts.
-//  mass_neg_kg bounds as well as counts: the summed mass created by zeroing.
+//  clean_state repairs (CAMR.cpp): a negative or non-finite partial mass
+//  is set to zero, which makes that phase Absent (a representable state)
+//  rather than a fictitious sliver; a finite alpha is clamped to [0,1], a
+//  non-finite alpha is not repaired, it aborts.  mass_neg_kg bounds as
+//  well as counts: the summed mass created by zeroing negative masses.
 inline void  count_mass_neg()       { ++ps_counters().mass_neg; }
 inline void  add_mass_neg(double dm) { ps_counters().mass_neg_kg += dm; }
 inline void  count_mass_nonfinite() { ++ps_counters().mass_nonfinite; }

@@ -7,27 +7,22 @@
 //  ps_validate_state(S, label) sweeps the valid region and reports,
 //  never repairs, violations of the admissible-state invariants:
 //    V1  finiteness of {alpha_1, m_1, m_2, URHO, UE1, UE2, UEDEN}
-//    V2  alpha_1 in [0, 1]
-//    V3  m_k >= 0
-//    V4  URHO == m_1 + m_2        (mixture mass stored twice)
-//    V5  UE1 + UE2 == UEDEN       (mixture energy stored twice)
+//    V2  alpha_1 in [0, 1]            V3  m_k >= 0
+//    V4  URHO == m_1 + m_2            (mixture mass stored twice)
+//    V5  UE1 + UE2 == UEDEN           (mixture energy stored twice)
 //    V6  rho_k = m_k/alpha_k inside the EOS domain [rho_min, rho_max],
 //        bucketed BULK (alpha_k >= 1e-2) vs TRACE: a trace violation is
 //        expected at fronts, a bulk one is a defect.
 //    V7  (rho_k, e_k) reachable on phase k's own branch, asked through the
-//        PsPhaseAPI validity channel (backend-agnostic, never aborts in
-//        the sweep).  V6 tests density only; a phase can sit inside the
-//        density domain with an energy far below the coldest reachable e.
-//    V8  split amplification (|UE1| + |UE2|) / |UE1 + UE2|: printed, not
-//        gated (healthy ~1.4; a runaway reaches tens).
+//        PsPhaseAPI validity channel (never aborts); V6 tests density
+//        only, and an in-domain density can carry an unreachable energy.
+//    V8  split amplification (|UE1| + |UE2|) / |UE1 + UE2|: printed, not gated.
 //    V9  extrema of e_1 and e_2 with locations: printed, not gated.
 //
-//  Dial: CAMR.ps_validate (0): 0 off; 1 count and one report line per
-//  sweep; 2 as 1 plus abort on the first bulk-bucket violation.
-//  V4/V5 use a 1e-10 relative tolerance: post-resync drift is round-off,
-//  while the post-hydro drift eta ~ 3e-4 trips at the "A enter" stage by
-//  design; the per-stage labels localise which operator breaks which
-//  invariant.  Host-only diagnostic (LoopOnCpu).
+//  Dial: CAMR.ps_validate (0), documented at ps_validate_mode below.
+//  V4/V5 use a 1e-10 relative tolerance (round-off after the resyncs), so
+//  the raw post-hydro drift trips by design; the per-stage labels localise
+//  which operator breaks which invariant.  Host-only (LoopOnCpu).
 // =====================================================================
 #ifdef USE_PS_HYDRO
 
@@ -42,7 +37,8 @@
 #include <AMReX_Print.H>
 #include <cmath>
 
-// CAMR.ps_validate (0): the tripwire's mode.
+// CAMR.ps_validate (0): 0 off; 1 count and one report line per sweep;
+// 2 as 1 plus abort on the first bulk-bucket violation.
 inline int ps_validate_mode()
 {
     static const int v = ps_dial_int("ps_validate", 0);
@@ -66,16 +62,17 @@ ps_validate_state(amrex::MultiFab& S, const char* label, int nghost = 0)
     // std::function is legal here).  Built once.
     const PsPres l_pr_v7 = ps_presence_params();
     static const hem::PsPhaseAPI api_v7 = ps_make_camr_eos_api();
-    // First V7 offender, for a report that can be fed straight to probe_pr.
+    // First V7 offender, reported with its (rho, e) so it can be replayed.
     int  v7_i=0, v7_j=0, v7_k=0, v7_ph=0;
     Real v7_a=0.0, v7_r=0.0, v7_e=0.0;
     bool v7_seen=false;
     Real w_v4 = 0.0, w_v5 = 0.0;              // worst relative identity drift
     // V8: V5 is blind to how the total is split, and ps_resync_phase_energy
-    // preserves a bad split exactly (fixed-ratio rescale).  R = (|UE1| +
-    // |UE2|) / |UE1 + UE2| is a pure cancellation ratio with no tuned
-    // constant; R > 1 is normal for CO2 (the phase energies have opposite
-    // signs), so it is reported per stage, never gated.
+    // restores only the sum (the defect is added in proportion to the phase
+    // masses), so a bad split survives it.  R = (|UE1| + |UE2|) / |UE1 + UE2|
+    // is a pure cancellation ratio with no tuned constant; R > 1 is normal
+    // for CO2 (the phase energies have opposite signs), so it is reported
+    // per stage, never gated.
     Real w_v8 = 1.0;
     int  v8_i = 0, v8_j = 0, v8_k = 0;
     Real v8_a1 = 0.0, v8_E1 = 0.0, v8_E2 = 0.0, v8_sum = 0.0;
@@ -243,7 +240,7 @@ ps_validate_state(amrex::MultiFab& S, const char* label, int nghost = 0)
     }
 
     // Name the worst split cell above R = 2: a printing cut, not a physical
-    // threshold, so a healthy run (R ~ 1.4) stays quiet.
+    // threshold.
     if (v8_seen && w_v8 > Real(2.0)) {
         amrex::Print() << "[PS-VALIDATE]   worst phase-energy split: ("
                        << v8_i << "," << v8_j << "," << v8_k << ")"
@@ -253,8 +250,7 @@ ps_validate_state(amrex::MultiFab& S, const char* label, int nghost = 0)
                        << "  |parts|/|whole|=" << w_v8 << "\n";
     }
 
-    // Name the first unreachable phase state in a form that can be replayed:
-    //   echo "<rho> <e> 1.0 0.0" | ./probe_pr
+    // Name the first unreachable phase state with its (rho, e).
     if ((n_v7_bulk + n_v7_trace) > 0 && v7_seen) {
         amrex::Print() << "[PS-VALIDATE]   first unreachable phase state: ("
                        << v7_i << "," << v7_j << "," << v7_k << ") phase "

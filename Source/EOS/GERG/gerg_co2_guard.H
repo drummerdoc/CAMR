@@ -6,7 +6,6 @@
 //  (gerg_co2_sat.H): the kernel-facing (T, rho) API.  Every entry is
 //  total, branch-guarded, monotone-regularised, Newton-free and a fixed
 //  operation sequence (docs/MODEL_AND_ALGORITHM.md §7.3).
-//
 //  Policy:
 //   - T clamped to [T_trip, T_max], rho to [RHO_MIN, RHO_MAX]; states
 //     outside are the caller's model decision, never the EOS's.
@@ -52,28 +51,15 @@ constexpr double RHO_MAX   = 1500.0;   // kg/m3 (GERG CO2 validity edge)
 
 // ---- Extension sound speed (CAMR.gerg_ext_c) ---------------------------
 //  The extension surface P = P_edge + CSQ_FLOOR (rho - rho_edge) at fixed
-//  T has cv and dP/dT|rho frozen at the edge, so its own isentropic
-//  sound speed is not free but follows from the identity
-//      c^2 = (dP/drho)_T + T (dP/dT)_rho^2 / (rho^2 cv),
-//  continuous with the raw surface at the edge.  The thermal term is
-//  capped at its edge value; uncapped, the liquid extension's c grows as
-//  1/rho^2.  Freezing gamma at the edge instead (c = c_edge throughout)
-//  is refuted: see docs/MODEL_AND_ALGORITHM.md §7.3.
-//
-//  CAMR.gerg_ext_c (1): c from the extension surface's identity, capped;
-//  0 = c = sqrt(CSQ_FLOOR) = 50 m/s throughout the extension, a 3.5x-7x
-//  discontinuity at the edge that drives a growing finest-level
-//  oscillation.  0 exists for reproduction and bisection only; it is not
-//  a tuning knob and both settings cost the same.
-//
-//  This header is AMReX-free and cannot read ParmParse: the flag is a
-//  settable value that EOS::gerg_ext_c_init() (GERG/EOS.H, called from
-//  CAMR::read_params) sets from CAMR.gerg_ext_c and force-adds so every
-//  job_info records which surface produced the plotfile.  Unset, it
-//  falls back to the GERG_EXT_C environment variable for the standalone
-//  probe harnesses; ParmParse wins when both are present.
-//  Retire-candidate (the getenv fallback; dials are CAMR.* keys only):
-//  see docs/GROUND_RULES.md §1 rule 20.
+//  T has cv and dP/dT|rho frozen at the edge, so its sound speed follows
+//  from c^2 = (dP/drho)_T + T (dP/dT)_rho^2 / (rho^2 cv), continuous with
+//  the raw surface at the edge; the thermal term is capped at its edge
+//  value (uncapped, the liquid extension's c grows as 1/rho^2).  Rejected:
+//  c = c_edge throughout (docs/MODEL_AND_ALGORITHM.md §7.3).
+//  CAMR.gerg_ext_c (1): 0 = c = sqrt(CSQ_FLOOR) = 50 m/s throughout the
+//  extension, discontinuous at the edge; reproduction and bisection only.
+//  Set by EOS::gerg_ext_c_init() (GERG/EOS.H; this header is AMReX-free);
+//  unset, the GERG_EXT_C environment variable is read.
 inline int& ext_c_flag()                     // -1 = not set -> use the env var
 { static int f = -1; return f; }
 inline void set_ext_c(bool on) { ext_c_flag() = on ? 1 : 0; }

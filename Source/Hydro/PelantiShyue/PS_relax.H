@@ -6,7 +6,7 @@
 //  presence relax gate and entry gate, the per-mode cell wrappers over
 //  the hem kernels (modes 0, 2 and the default coupled X3, mode 5),
 //  the relaxation dials, and ps_apply_relaxation with its sweep reports
-//  ([PS-PRES], [PS-GATE], [PS-DT], [PS-X3]).
+//  ([PS-WORK], [PS-CORRIDOR], [PS-GATE], [PS-DT], [PS-X3]).
 //  Algorithm: docs/MODEL_AND_ALGORITHM.md §5.  Included through the
 //  PS_relaxation.H umbrella; PS_folds.H and PS_diag.H build on it.
 // =====================================================================
@@ -114,18 +114,14 @@ ps_make_camr_eos_api()
 // -----------------------------------------------------------------
 //  ps_presence_relax_gate — true when the cell may be relaxed: both
 //  phases Independent, or both relaxable with at least one in the
-//  hysteresis band.  A cell with an Absent or Corridor
-//  phase is single-phase and has nothing to relax; its metastability, if
-//  any, is the flash nucleator's business.  This is what stands in for a
-//  metastable guard: an un-nucleated cell is never dragged to the dome
-//  because it is never relaxed, and a nucleated cell always equilibrates.
-//  See docs/MODEL_AND_ALGORITHM.md §4.5 and §4.7.
+//  hysteresis band (alpha >= alpha_cond/2 with a non-degenerate density
+//  quotient), which moves the source on/off boundary away from the exact
+//  alpha the relaxation itself moves; band passes are counted in
+//  PsCounters::pres_f3_hyst.  A cell with an Absent or Corridor phase is
+//  single-phase: its metastability, if any, is the flash nucleator's
+//  business, so an un-nucleated cell is never dragged to the dome and a
+//  nucleated cell always equilibrates.  docs §4.5, §4.7.
 // -----------------------------------------------------------------
-//  Hysteresis band: a phase in the upper corridor (alpha >= alpha_cond/2)
-//  with a non-degenerate density quotient still counts as relaxable, so
-//  the source on/off boundary is moved away from the exact alpha the
-//  relaxation itself moves.  Gate passes granted through the band are
-//  counted per evaluation in PsCounters::pres_f3_hyst.
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
 bool ps_presence_relax_gate(amrex::Real a1, amrex::Real m1, amrex::Real m2,
                             const PsPres& pr) noexcept
@@ -210,9 +206,7 @@ ps_mechanical_relax_cell(int i, int j, int k,
     // Pack V6 in the layout ps_pressure_relax_cell expects.
     hem::V6 Uv = ps_pack_v6(U, i, j, k, alpha1_in, m1, m2);
 
-    // Default PsPressureRelaxParams (max_iter 30, tol_P_rel 1e-4,
-    // alpha_min ps_const::ALPHA_NEWTON_MIN = 1e-9, step_cap_frac 0.3,
-    // single_phase_threshold = CAMR.ps_single_phase_threshold, 5e-3).
+    // Default PsPressureRelaxParams (hem_relax_x3.H).
     // Uv[0], Uv[4], Uv[5] update in place; Uv[1..3] are invariants.
     int reason = hem::PSR_OK;
     const bool ok = hem::ps_pressure_relax_cell(Uv, eos,
@@ -268,17 +262,15 @@ ps_ptg_relax_cell(int i, int j, int k,
 inline int ps_coexist_action();
 
 // -----------------------------------------------------------------
-//  ps_x3_grid_relax_cell (ps_relax_mode=5, the default): the coupled X3
-//  operator hem::ps_x3_relax_cell.  P1 = P2 is a DAE constraint imposed
-//  at every path evaluation; the thermal and SRT mass-transfer rates are
-//  integrated by sub-stepped backward Euler on that manifold, with one
-//  eligibility question (ps_coexist_action).  The flash stays upstream in
-//  ps_apply_sources as the birth channel; the split transfer source is
-//  compiled out at this mode.  Entry gates as mode 2; entry
-//  and projection failures leave the cell untouched, a sub-step bail-out
-//  keeps its partial, admissible, conservative progress.  Writes alpha,
-//  both masses and UE1/UE2; mixture rho, momentum and E are invariant.
-//  Docs/MODEL_AND_ALGORITHM.md §5.1; 0-D harness CAMR.ps_x3_test.
+//  ps_x3_grid_relax_cell (ps_relax_mode=5, the default): the grid wrapper
+//  of the coupled X3 operator hem::ps_x3_relax_cell (contract and
+//  algorithm at its definition, hem_relax_x3.H; docs §5.1).  The flash
+//  stays upstream in ps_apply_sources as the birth channel; the split
+//  transfer source is not applied at this mode.  Entry gates as mode 2;
+//  entry and projection failures leave the cell untouched, a sub-step
+//  bail-out keeps its partial, admissible, conservative progress.  Writes
+//  alpha, both masses and UE1/UE2; mixture rho, momentum and E are
+//  invariant.
 // -----------------------------------------------------------------
 inline void
 ps_x3_grid_relax_cell(int i, int j, int k,
@@ -335,8 +327,8 @@ ps_x3_grid_relax_cell(int i, int j, int k,
 // default is 5 because the code defaults are the acceptance
 // configuration.  This is the single read site, and an unrecognised value
 // aborts here rather than falling through to mode-0 physics while the
-// split transfer source (gated on != 5) silently re-opens.  The former
-// modes 1, 3, 4 are retired values (PS_retired_keys.H).
+// split transfer source (gated on != 5) silently re-opens.  The
+// values 1, 3, 4 are retired (PS_retired_keys.H).
 inline int ps_relax_mode()
 {
     static const int m = []() -> int {
@@ -352,15 +344,14 @@ inline int ps_relax_mode()
 
 // -----------------------------------------------------------------
 //  CAMR.ps_coexist_action (0): the thermal leg's response when a phase
-//  leaves the coexistence band (T outside (T_triple, T_crit)), modes 4
-//  and 5 (PsX3Params.coexist_action).  One predicate gates thermal
-//  relaxation, mass transfer and the flash, so a cell whose vapour has
-//  left the band has no operator left to bring it back — a self-lock,
-//  silent unless named and counted.  0 = the leg stands (the runaway
-//  clause, a hi-side-only exit beyond 2 T_crit, still runs it); 1 = abort
-//  on the first exit with the cell context.  Any other value aborts: the
-//  high-side veto is load-bearing at cross-critical contacts.  Docs §5.3;
-//  DESIGN_DECISIONS X-5.
+//  leaves the coexistence band (T outside (T_triple, T_crit)), mode 5
+//  (PsX3Params.coexist_action).  One predicate gates thermal relaxation,
+//  mass transfer and the flash, so a cell whose vapour has left the band
+//  has no operator left to bring it back; the exit is named and counted.
+//  0 = the leg stands (the runaway clause of ps_x3_relax_cell still runs
+//  it); 1 = abort on the first exit with the cell context.  Any other
+//  value aborts: the high-side veto is load-bearing at cross-critical
+//  contacts.  Docs §5.3; DESIGN_DECISIONS X-5.
 // -----------------------------------------------------------------
 inline int ps_coexist_action()
 {
@@ -390,9 +381,8 @@ inline amrex::Real ps_theta_tau()
 //   one cell's hydro update, the weight of n_solve in the work estimate
 //   w = 1 + kappa * n_solve that amr.loadbalance_with_workestimates
 //   knapsacks (docs/DESIGN_DECISIONS.md O-23).  Scheduling only: the
-//   solution never reads it.  The default is a placeholder until the
-//   TinyProfiler measurement (t_relax / n_solve) / (t_hydro / n_cell) is
-//   on record.
+//   solution never reads it.  The default is a placeholder, not a measured
+//   ratio (t_relax / n_solve) / (t_hydro / n_cell).
 inline amrex::Real ps_work_kappa()
 {
     static const amrex::Real v = ps_dial_real("ps_work_kappa", amrex::Real(1.0));
@@ -402,7 +392,7 @@ inline amrex::Real ps_work_kappa()
 // -----------------------------------------------------------------
 //  ps_apply_relaxation — the relaxation sweep.  Builds the EOS callback
 //  once, resets the per-sweep counters, dispatches every cell to the
-//  kernel for ps_relax_mode, then prints the gated reports ([PS-PRES],
+//  kernel for ps_relax_mode, then prints the gated reports ([PS-WORK], [PS-CORRIDOR],
 //  [PS-GATE], [PS-DT], [PS-X3]).  Called from apply_ps_reaction under
 //  CAMR.ps_do_relax; do_print = false (the Strang pre-half step, a trial
 //  of the relaxed boundary) prints nothing and leaves the [PS-X3]
@@ -468,10 +458,11 @@ ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
         amrex::AllPrint() << "[PS-WORK] eos_solve=" << (n_solve - n_solve_sweep0)
                           << " cells=" << n_cells_sweep << "\n";
     }
-    // [PS-PRES] (ps_pres_diag): the post-thermal P1 != P2 residual by cause.
+    // Gated reports (ps_pres_diag).
     if (report) {
         const PsPresDiag& pd = ps_pres_diag_data();
         auto mean = [](double s, long n) { return n > 0 ? s/double(n) : 0.0; };
+        //  [PS-CORRIDOR]: corridor projections this sweep, by outcome.
         //  [PS-GATE]: presence-gate refusals this sweep, all modes (cells
         //  [PS-X3] never sees).  Not an anomaly — the gate doing its job —
         //  but a stall routed through it must be visible.

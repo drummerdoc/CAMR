@@ -4,8 +4,7 @@
 //  pr_contract.H — the namespace EOS free-function surface of the PR
 //  family, built on the (rho,e) solves the including backend supplies:
 //    PR    (default)        : co2_solve_rho_e / co2_solve_rho_e_phase
-//                             (hem_pr_state.H bracketed solves, with
-//                             the warm-start gates of PR/EOS.H);
+//                             (the hem_pr_state.H bracketed solves);
 //    PRTab (USE_PRTAB_EOS)  : prtab_state_from_rho_e[_phase] (table
 //                             lookup, PR fallback) plus the table-vs-PR
 //                             census hooks of PRTab/EOS.H.
@@ -19,18 +18,15 @@
 // =====================================================================
 
   // ----------------------------------------------------------------
-  //  (rho, e) -> State ring caches.
-  //
-  //  Host-side 4-slot exact-match rings in front of the auto and the
-  //  per-branch solves.  Two access patterns make them pay: repeated
-  //  calls on one (rho,e) (ctoprim's field-by-field entries) and
-  //  alternating phase-1 / phase-2 pairs, which a single slot would
-  //  thrash; the dominant win is cross-cell reuse in uniform regions
-  //  (~2x on CPU, docs/MODEL_AND_ALGORITHM.md §7.3).  A hit is
-  //  bit-identical to a recompute, so the cache is deterministic and
-  //  box-independent.  The rings are function-local statics: host-only,
-  //  single-threaded (USE_OMP=TRUE is refused by #error), bypassed on
-  //  the device where thousands of concurrent threads share no cache.
+  //  (rho, e) -> State ring caches: host-side 4-slot exact-match rings in
+  //  front of the auto and the per-branch solves.  They serve repeated
+  //  calls on one (rho,e) (ctoprim's field-by-field entries), alternating
+  //  phase-1 / phase-2 pairs, which a single slot would thrash, and
+  //  cross-cell reuse in uniform regions (docs/MODEL_AND_ALGORITHM.md
+  //  §7.3).  A hit is bit-identical to a recompute, so the cache is
+  //  deterministic and box-independent.  The rings are function-local
+  //  statics: host-only, single-threaded (USE_OMP=TRUE is refused by
+  //  #error), bypassed on the device.
   //  `site` tags the call for the PRTab census and is otherwise unused.
   // ----------------------------------------------------------------
 

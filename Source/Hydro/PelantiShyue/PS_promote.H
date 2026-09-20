@@ -17,9 +17,8 @@
 //  [1, 5000] K and reports a sign change (a root) or none.  Applied as an
 //  extra condition on each site's existing "Independent -> branch query,
 //  else host-slave" dispatch, so a demotion falls into the corridor path
-//  with no new control flow.  Refusals are counted; on the 1-D battery
-//  they are zero and the check is bit-identical on and off, which is the
-//  test that no legitimate promotion is unreachable.
+//  with no new control flow.  Refusals are counted ([PS-PROMOTE]); where
+//  every promoted phase has a root the check is inert.
 //
 //  Dial: CAMR.ps_promote_checked (default 1), read in PS_presence.H.
 //  This header isolates the EOS dependency: PS_presence.H has no EOS

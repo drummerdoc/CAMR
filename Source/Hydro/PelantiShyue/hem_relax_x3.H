@@ -49,9 +49,7 @@ struct PsPressureRelaxParams {
 // so mixture mass, momentum and total energy are preserved.  The walk
 // is confined to the EOS density domain (PsPhaseAPI::rho_dom_*).
 // Returns true on convergence; false leaves U unchanged, with the
-// cause in *out_reason (PsRelaxFail) when non-null so the driver can
-// tell an off-domain EOS state from a singular slope or an iteration miss.
-// docs/MODEL_AND_ALGORITHM.md §5.2.
+// cause in *out_reason (PsRelaxFail) when non-null.  docs §5.2.
 enum PsRelaxFail {
     PSR_OK = 0,         // converged
     PSR_BAD_INPUT = 1,  // eos/alpha/m_k/rho invalid on entry
@@ -218,13 +216,12 @@ inline bool ps_pressure_relax_cell(V6& U, const PsPhaseAPI& eos,
 //  Shyue eq. (5)): alpha_1, rho_1, rho_2 fixed, e_1 and e_2 re-
 //  partitioned under m_1 e_1 + m_2 e_2 = const until P_1 = P_2, by a
 //  1-D Newton on e_1 with a validity-guarded bracketing fallback.
-//  Used by relaxation modes 1 and 2 (the 2-D production configuration).
-//  Keeping alpha fixed suits a material-indicator alpha; it also means a
+//  Used by relaxation mode 2 (ps_ptg_relax_cell, PS_relax.H).  Keeping
+//  alpha fixed suits a material-indicator alpha; it also means a
 //  cross-critical cell far from equilibrium can be driven to a common P
-//  at unphysical T_2 (a smeared contact at P_1 = 100 bar, P_2 = 50 bar,
-//  rho_2 = 91 kg/m^3 needs T_2 ~ 570 K) -- the reason X3 uses the
-//  alpha-adjusting kernel instead.  Returns true on a committed
-//  fully-valid state; false leaves U unchanged.
+//  at an unphysical T_2 -- the reason X3 uses the alpha-adjusting kernel
+//  instead.  Returns true on a committed fully-valid state; false leaves
+//  U unchanged.
 // ---------------------------------------------------------------------
 inline bool ps_iso_pressure_relax_cell(V6& U, const PsPhaseAPI& eos,
                                         double tol_rel = 1.0e-5,
@@ -496,30 +493,16 @@ inline bool ps_iso_thermal_relax_cell_finite(V6& U, const PsPhaseAPI& eos,
 
 
 // =====================================================================
-//  X3 -- the coupled relaxation operator (CAMR.ps_relax_mode=5, the
-//  production default; grid wrapper ps_x3_grid_relax_cell in
-//  PS_relax.H).  docs/MODEL_AND_ALGORITHM.md §5.1, §5.3, §5.4.
-//
-//  The mechanical closure P1 = P2 is a constraint imposed by the
-//  alpha-adjusting projector at every path evaluation (T1 = T2 joins it
-//  when theta <= 0); the thermal and mass-transfer legs are simultaneous
-//  finite rates integrated by backward Euler on that manifold, so the
-//  order-dependence of a sequential chain of three projections does not
-//  arise.  Unknowns x = (q, dm): heat and mass moved from phase 1 to
-//  phase 2 over a sub-step, rates at the projected trial state:
-//      dq/dt    = (T1 - T2) / (theta (1/(m1 cv1) + 1/(m2 cv2)))
-//                 (linearised T1-T2 decay time exactly theta; cv by
-//                  centred difference; the fixed point T1 = T2 is
-//                  rate-model-independent)
-//      d(dm)/dt = Gamma_SRT, signed (vapour prefactor, a_geom by direction).
-//  Path admissibility: projection succeeds, phases valid, c_k > 0,
-//  vol-weighted P_mix > 0; an inadmissible Newton trial backtracks toward
-//  the last admissible iterate.  Conservation is by construction
-//  (antisymmetric transfers, conservative projector).  Fixed point:
-//  q = dm = 0 with P1 = P2, T1 = T2, g1 = g2 -- the full-equilibrium
-//  flash of the cell's invariants; both rates vanish there, so the BE
-//  solution cannot cross it at any dt.  0-D acceptance harness:
-//  CAMR.ps_x3_test (PS_zerod_test.H).
+//  X3 -- the coupled relaxation operator (CAMR.ps_relax_mode=5; grid
+//  wrapper ps_x3_grid_relax_cell, PS_relax.H).  docs §5.1, §5.3, §5.4.
+//  P1 = P2 is a constraint imposed by the alpha-adjusting projector at
+//  every path evaluation (T1 = T2 joins it when theta <= 0); the heat q and
+//  mass dm moved from phase 1 to phase 2 are simultaneous finite rates,
+//    dq/dt = (T1-T2)/(theta (1/(m1 cv1) + 1/(m2 cv2))),  d(dm)/dt = Gamma_SRT,
+//  integrated by backward Euler on that manifold, so no operator ordering
+//  arises.  Admissible path state: projection succeeds, phases valid,
+//  c_k > 0, P_mix > 0.  Conservative by construction.  At q = dm = 0 (equal
+//  P, T, g) both rates vanish, so BE cannot cross it.  0-D: CAMR.ps_x3_test.
 // =====================================================================
 //  [PS-X3] outcome counters (PsX3Stats, PS_counters.H).
 inline PsX3Stats&  ps_x3_stats()  { return ps_counters().x3_stats; }

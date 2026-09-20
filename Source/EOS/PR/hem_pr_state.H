@@ -3,7 +3,6 @@
 //  of hem_saturation_amrex.H.  Per-mass SI units in and out (rho
 //  [kg/m^3], P [Pa], e [J/kg], s [J/(kg K)], h [J/kg], c [m/s]);
 //  ideal-gas c_p^ig/R is a NASA 7-coefficient polynomial in T.
-//
 //  Entries: pureParams2 (a, a', a'', b); ideal-gas integrals per mole;
 //  departureFunctions; state_from_T_v (closed form, with the spinodal
 //  extension); state_from_T_P / _metastable; Psat; satStateL/V;
@@ -57,7 +56,7 @@ inline long& n_calls()     { static long n = 0; return n; }
 inline void  reset() { n_T_clamp()=0; n_T_nonconv()=0; n_P_floor()=0; n_P_floor_probe()=0; n_calls()=0; n_noroot_lo()=0; n_noroot_hi()=0; }
 }
 // CAMR.ps_strict_eos (0): bitmask turning repairs into aborts on first
-// occurrence, printing the EOS input for reproduction with probe_pr.
+// occurrence, printing the EOS input for reproduction.
 //   1  Newton non-convergence at the branch-locked site (a missing root)
 //   2  P_pos_floor substitution (the solve succeeded; its P was overridden)
 //   4  the 1 K Newton-iterate clamp (an iteration-level step limiter)
@@ -310,15 +309,13 @@ inline State state_from_T_v(const PRFluid& f, amrex::Real T, amrex::Real v_m,
     // -------- Spinodal extension ---------------------------------------
     //  Inside the dome the PR cubic has a van der Waals loop where
     //  (dP/drho)_T < 0: anti-restoring pressure and imaginary sound speed,
-    //  which amplifies per-phase pressure noise into blow-up when a
-    //  two-phase solver drives a phase past its spinodal.  The requested
-    //  branch is continued monotonically past its edge: beyond the density
-    //  where (dP/drho)_T falls to csq_floor, P is linear in rho with that
-    //  slope, so P is C1 and c real.  States before the edge are untouched
-    //  byte for byte.  One upward march from deep liquid crosses the floor
-    //  twice (liquid edge, then vapour edge), query-independent, so the
-    //  extension is consistent between cells.  Only the local cubic is
-    //  used: fluid-agnostic.
+    //  which a two-phase solver driving a phase past its spinodal amplifies
+    //  into blow-up.  The requested branch is continued monotonically past
+    //  its edge: beyond the density where (dP/drho)_T falls to csq_floor, P
+    //  is linear in rho with that slope, so P is C1 and c real.  States
+    //  before the edge are untouched.  One upward march from deep liquid
+    //  crosses the floor twice (liquid edge, then vapour edge), query-
+    //  independent, so cells agree.  Only the local cubic is used.
     if (T < f.pr.Tc) {                       // no loop above Tc
         const amrex::Real csq_floor = amrex::Real(2500.0);     // (dP/drho)_T floor, (m/s)^2
         auto dpdv_at = [&](amrex::Real vv) {
@@ -795,15 +792,13 @@ inline State state_from_P_rho(const PRFluid& f, amrex::Real P, amrex::Real rho)
 //  ps_newton_solve_T — damped Newton on T for e_PR(T, v_m) = e_target;
 //  the fast path state_from_rho_e tries inside a proven bracket.
 //  Returns false at max_iter (a missing root on this branch).
-//
 //  Convergence needs both a step test |dT| < T_rtol T + T_atol and a
 //  residual test |e_mol - e_target| < e_rtol R T.  The residual is scaled
-//  by the ideal-gas thermal energy R T, never by |e|: liquid CO2 has
-//  e < 0 and passes through zero, and an |e|-relative stop lets the
-//  accepted T depend on the seed.  Requiring both keeps a spuriously
-//  small step near the critical point (huge c_v) from passing as
-//  convergence.  Step capped at 30 % of T; the 1 K iterate clamp is the
-//  step limiter that keeps the cubic evaluable, and it is censused.
+//  by R T, never by |e|: liquid CO2 has e < 0 and passes through zero, and
+//  an |e|-relative stop lets the accepted T depend on the seed.  The step
+//  test alone would pass a spuriously small step near the critical point
+//  (huge c_v).  Step capped at 30 % of T; the 1 K iterate clamp keeps the
+//  cubic evaluable, and it is censused.
 // ---------------------------------------------------------------------
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
 bool ps_newton_solve_T(const PRFluid& f, amrex::Real v_m,

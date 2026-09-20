@@ -60,17 +60,15 @@ struct Face {
 
 // -------------------------------------------------------------------
 //  face_from_state: the Face on one side from that cell's conserved
-//  array — the live per-face state of the wp interior.  The phase state
-//  (alpha_k, m_k, rho_mix, u, rho_k, e_k, P_k, host, P_mix) is the
-//  checked cell state ps_cell_state (PS_state.H), so the face and the
-//  physical flux read one definition.  This function adds only what the
-//  star closure needs beyond it: E_k = e_k + ke, the per-phase sound
-//  speed c_k on the same branch and at the same (rho_k, e_k) the core
-//  queried for P_k (REY2Cs_*, a cache hit on the host), the host's c for
-//  a phase the core did not query, and the host's rho, e, E for an
-//  Absent phase (placeholders multiplied by m_k = 0 downstream).
-//  ps_cell_state floors rho_mix and the phase speeds, so the face state is
-//  always usable; docs §2.1.
+//  array.  The phase state (alpha_k, m_k, rho_mix, u, rho_k, e_k, P_k,
+//  host, P_mix) is the checked cell state ps_cell_state (PS_state.H), so
+//  the face and the physical flux read one definition.  Added here, for
+//  the star closure: E_k = e_k + ke; c_k on the same branch and at the
+//  same (rho_k, e_k) the core queried for P_k (REY2Cs_*, a cache hit on
+//  the host); the host's c for a phase the core did not query; the
+//  host's rho, e, E for an Absent phase (placeholders multiplied by
+//  m_k = 0 downstream).  ps_cell_state floors rho_mix and the phase
+//  speeds, so the face state is always usable; docs §2.1.
 // -------------------------------------------------------------------
 AMREX_GPU_HOST_DEVICE
 AMREX_FORCE_INLINE
@@ -254,34 +252,19 @@ bool ps_star_state(int idir, const Face& fK, const amrex::Real UK[NVAR],
     if (rhos <= Real(0.0)) PS_ST_REFUSE(PS_FL_ST_RHO);
     const Real q1 = fK.rho_1 * (S_K - fK.u_n);
     const Real q2 = fK.rho_2 * (S_K - fK.u_n);
-    const Real Pe1 = fK.P_mix;   // mixture P in the phase energies (H-3)
+    const Real Pe1 = fK.P_mix;   // mixture P in the phase energies
     const Real Pe2 = fK.P_mix;
 
-    //  Relaxed-alpha star state (docs §2.3).  Constraints per side, all
-    //  inherited from the mixture HLLC algebra: (C1) m1*+m2* = r_K rho,
-    //  (C2) u* = S_M, (C3) sum m_k* E_k* = rho* E*_HLLC, (C4) a1*+a2* = 1,
-    //  (C5) m_k* = r_K m_k.  Closure: behind the wave both phases sit at a
-    //  common pressure rise dP, each strained by its own bulk modulus
-    //  B_k = rho_k c_k²:
-    //      s_k = dP/B_k,  rho_k* = rho_k(1+s_k),  alpha_k* = alpha_k r_K/(1+s_k),
-    //  and (C4) is one monotone scalar equation in dP,
-    //      f(dP) = alpha_1 r_K/(1+dP/B1) + alpha_2 r_K/(1+dP/B2) − 1 = 0,
-    //  seeded by the Wood-weighted linearisation and solved with three
-    //  Newton steps at a fixed count (no tolerance to tune).  Energy: each
-    //  phase keeps the kinetic term and is paid P dV for its own volume
-    //  change, E_k* = E_k + (S_M−u) S_M + P s_k/(rho_k(1+s_k)); with
-    //  f(dP) = 0 the sum m_k* E_k* equals the equal-strain mixture sum
-    //  exactly, so (C3) holds and every conserved-slot star component is
-    //  unchanged — only the UALPHA1/UE1/UE2 wave components move.  Equal
-    //  bulk moduli (every single-phase cell, c-slaved corridor faces)
-    //  reduce to the equal-strain form; the equal-strain form is what the
-    //  literal Pelanti B.14 gives and it over-compresses the stiff phase
-    //  by the bulk-modulus ratio.  Degeneracy (non-finite B_k, 1+s_k <= 0,
-    //  vanishing derivative, alpha* outside (0,1)) falls back to the
-    //  equal-strain form for that face and is counted, never clamped.
-    //  Exact alpha in {0,1} skips the solve: the forms coincide there and
-    //  presence needs those values bit-exact.
-    //  Equal-strain values first; the relaxed solve overwrites on success.
+    //  Relaxed-alpha star state (derivation, constraints C1-C5: docs §2.3).
+    //  Both phases take a common pressure rise dP, each strained by its own
+    //  bulk modulus B_k = rho_k c_k²: s_k = dP/B_k, alpha_k* = alpha_k r_K/(1+s_k).
+    //  alpha_1* + alpha_2* = 1 is one monotone equation in dP: Wood-weighted
+    //  seed, three Newton steps (fixed count).  E_k* = E_k + (S_M−u) S_M
+    //  + P s_k/(rho_k(1+s_k)); at the root sum m_k* E_k* equals the equal-strain
+    //  sum, so only the UALPHA1/UE1/UE2 wave components differ.  Degeneracy
+    //  (non-finite B_k, 1+s_k <= 0, vanishing derivative, alpha* outside (0,1))
+    //  falls back to the equal-strain values set first, counted, never clamped.
+    //  Exact alpha in {0,1} skips the solve: presence needs them bit-exact.
     Real a1s = fK.alpha_1;
     Real E1s = fK.E_1 + (S_M - fK.u_n) * (S_M + Pe1 / q1);
     Real E2s = fK.E_2 + (S_M - fK.u_n) * (S_M + Pe2 / q2);
@@ -371,20 +354,15 @@ bool ps_star_state(int idir, const Face& fK, const amrex::Real UK[NVAR],
 
 // -------------------------------------------------------------------
 //  Face audit (host-only, compiled out on GPU, no effect on the
-//  numerics; printed as [PS-FACE] / [PS-FLCAUSE] / [PS-RELAXFB]
-//  under CAMR.ps_face_diag, see CAMR_advance.cpp).  Face
-//  classes: 0 = every (side, phase) Independent; 1 = at least one
-//  Corridor, no Absent; 2 = at least one Absent (a presence front).
-//  Storage is the face section of PsCounters (PS_counters.H):
-//    fl_seen / fl_fail / max_incmis, per class: faces seen by
-//      fluctuations(), faces refused, and the largest per-fluctuation
-//      identity mismatch |Δ(UE1+UE2) − ΔUEDEN|;
-//    mis_i / mis_j / mis_k / mis_dir: location of max_incmis, the face's
-//      high-side cell (i,j,k) and idir as ps_wp_face sees it; -9999 =
-//      nothing recorded;
-//    fl_cause: refusals per cause (PsFlCause), not keyed by class;
-//    fl_side: per side whose star state refused (0 = L, 1 = R).
-//  Reset by PsCounters::reset_face().
+//  numerics; printed as [PS-FACE] / [PS-FLCAUSE] / [PS-RELAXFB] under
+//  CAMR.ps_face_diag, see CAMR_advance.cpp).  Face classes: 0 = every
+//  (side, phase) Independent; 1 = at least one Corridor, no Absent; 2 = at
+//  least one Absent (a presence front).  Storage is the face section of
+//  PsCounters (PS_counters.H): per class, faces seen by fluctuations(),
+//  faces refused, and the largest identity mismatch |Δ(UE1+UE2) − ΔUEDEN|
+//  with its location (high-side cell and idir as ps_wp_face sees it;
+//  -9999 = nothing recorded); refusals per cause (PsFlCause) and per
+//  side (0 = L, 1 = R).  Reset by PsCounters::reset_face().
 // -------------------------------------------------------------------
 
 //  wp_face_class: audit class of a face from the regimes of both phases

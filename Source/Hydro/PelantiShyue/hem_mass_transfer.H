@@ -4,8 +4,8 @@
 //  (PsMassTransferParams, ps_mass_transfer_relax_cell), the finite-rate
 //  step (ps_mass_transfer_finite_cell, SRT / exponential forms) and the
 //  [PS-MTCAUSE] early-return cause split (PsMtCause, PS_MT_REFUSE).
-//  Live for CAMR.ps_relax_mode != 5 (PS_sources.H); retire-candidate,
-//  see docs/DESIGN_DECISIONS.md §5.  Host-only.  Part of the
+//  Live for CAMR.ps_relax_mode != 5 (PS_sources.H); at mode 5 the X3
+//  operator carries the transfer.  Host-only.  Part of the
 //  hem_pelanti_shyue.H umbrella; needs the mechanical projector of
 //  hem_relax_x3.H.  docs/MODEL_AND_ALGORITHM.md §5.4, §5.6.
 // =====================================================================
@@ -252,22 +252,15 @@ inline bool ps_mass_transfer_relax_cell(
 
 // ---------------------------------------------------------------------
 //  Finite-rate mass transfer: the split source for relaxation modes
-//  other than 5 (PS_sources.H).  Default form is the exact relaxation
-//      dm = (1 - exp(-dt/tau)) dm_eq
-//  onto the Gibbs-equilibrium target of ps_mass_transfer_relax_cell,
-//  so the transfer vanishes near equilibrium and cannot overshoot at
-//  any dt/tau.  Mass positivity is enforced by per-step brackets; the
-//  energy moves with the interface enthalpy so mixture energy is
-//  conserved.  tau_g <= 0 turns the source off.
-//  docs/MODEL_AND_ALGORITHM.md §5.4.  Retire-candidate: see
-//  docs/DESIGN_DECISIONS.md §5.
-//
-//  update_alpha: 0 fixed-alpha transfer; 1 the derived (E.1) rule
-//  dalpha_1 = -dm/rho_1 (donor density invariant, receiver density a
-//  convex combination, invariant-domain-preserving at any rate) with
-//  alpha clamped to exact [0,1] so the presence ladder owns small alpha.
-//  Any other value (including the dial's auto value -1) aborts: the
-//  caller resolves the dial.
+//  other than 5 (PS_sources.H); form selected by CAMR.ps_mt_form
+//  (hem_eos_api.H), default the exact relaxation onto the target of
+//  ps_mass_transfer_relax_cell.  Mass positivity is enforced by per-step
+//  brackets; the energy moves with the interface enthalpy so mixture
+//  energy is conserved.  tau_g <= 0 turns the source off.  docs §5.4.
+//  update_alpha: 0 fixed-alpha transfer; 1 the (E.1) rule dalpha_1 =
+//  -dm/rho_1 (donor density invariant, receiver density a mediant), alpha
+//  clamped to exact [0,1] so the presence ladder owns small alpha.  Any
+//  other value (the dial's auto value -1 included) aborts.
 inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
                                           double dt, double tau_g,
                                           double alpha_floor = ps_const::ALPHA_ROUNDOFF,
@@ -356,8 +349,9 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
             return true;   // not a two-phase cell → no mass transfer
     }
 
-    // tau_model: 0 constant tau_g; 2 the derived tau_asy = |dm_eq|/Gamma_SRT
-    // (Lund & Aursand eq. 25); 1 is accepted and behaves as 0.
+    // tau_model: 2 = the derived tau_asy = |dm_eq|/Gamma_SRT (Lund &
+    // Aursand eq. 25); any other value is the constant tau_g (the caller,
+    // PS_sources.H, admits only 0 and 2).
     // Sign convention: dm > 0 means m_1 -> m_2 (evaporation when phase 1
     // is liquid and g_1 > g_2).
     const double g_diff = p1.g - p2.g;
@@ -405,18 +399,8 @@ inline bool ps_mass_transfer_finite_cell(V6& U, const PsPhaseAPI& eos,
     // CAMR.ps_mt_explicit (0): 1 selects the explicit forward-Euler forms
     // at the end of this chain (comparison only; they overshoot at sharp fronts).
     static const bool mt_explicit = ps_dial_int("ps_mt_explicit", 0) != 0;
-    // CAMR.ps_mt_form (0): the form of the finite-rate step.
-    //   0 exact relaxation toward the equilibrium target,
-    //     dm = (1 - exp(-dt/tau)) dm_eq -- the exact solution of
-    //     d(dm)/dt = (dm_eq - dm)/tau, unconditionally stable and unable
-    //     to cross dm_eq; tau_g -> 0 is instantaneous transfer.
-    //   1 backward Euler against the SRT source, F(dm) = dm - dt Gamma_SRT
-    //     (path(dm)) = 0 by a bracketed scalar Newton, Gamma evaluated on
-    //     the step's own path (same carrier, same (E.1) rule).  Needs no
-    //     equilibrium point, so it cannot silently transfer nothing where
-    //     the target Newton fails on order-one driving forces; Gamma -> 0
-    //     at g1 = g2 makes non-overshoot structural.  tau_g is unused on
-    //     this branch.
+    // CAMR.ps_mt_form: 0 exact relaxation, 1 backward Euler against the SRT
+    // source (documented at its accessor, hem_eos_api.H).
     const int mt_form = ps_dial_mt_form();
     if (mt_form == 1) {
         // Gibbs screen: Gamma is proportional to |g1 - g2|, so below the

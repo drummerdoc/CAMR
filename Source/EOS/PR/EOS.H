@@ -3,7 +3,6 @@
 // =====================================================================
 //  PR EOS backend for CAMR: pure-CO2 Peng-Robinson behind CAMR's
 //  namespace EOS { ... } free-function contract.
-//
 //  Algorithm: untranslated Peng-Robinson with a NASA-7 ideal-gas c_p,
 //  device-inline state machinery in hem_pr_state.H (the (rho,e)->T
 //  inversion is a bracketed Illinois solve on [1, 5000] K) and PR
@@ -11,20 +10,16 @@
 //  six-equation model relies on is documented in
 //  docs/MODEL_AND_ALGORITHM.md §7.1; the backend table and domain
 //  metadata are in §7.3.
-//
 //  Contract: every entry is a total function — it returns a state or
 //  refuses (REY2PTS_phase_try returns false; the other inversions
 //  abort with a reproducible diagnostic).  No substitute state is ever
 //  manufactured.  Phase-locked entries (_liquid/_vapor/_phase) evaluate
 //  the named PR branch, continued metastably past the dome; the
 //  auto-detect entries classify against the saturation locus.
-//
-//  Layout: this file owns the PR-specific (rho,e) solves and their
-//  warm-start gates; the fluid and its metadata are pr_base.H, the
-//  contract surface is pr_contract.H (shared with PRTab, which swaps
-//  in its table solves under USE_PRTAB_EOS) and the backend-independent
-//  tail is EOS/EOS_contract.H.
-//
+//  Layout: this file owns the PR-specific (rho,e) solves; the fluid and
+//  its metadata are pr_base.H, the contract surface is pr_contract.H
+//  (shared with PRTab, which swaps in its table solves under
+//  USE_PRTAB_EOS) and the backend-independent tail is EOS/EOS_contract.H.
 //  Units are SI throughout: rho [kg/m3], P [Pa], e [J/kg], T [K].
 //  NUM_SPECIES = 3 keeps the build graph shared with the other
 //  backends; CO2 is one species and every entry ignores Y.

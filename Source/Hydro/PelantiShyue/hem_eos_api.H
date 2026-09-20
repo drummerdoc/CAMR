@@ -4,7 +4,8 @@
 //  the EOS callback contract (PsPhaseAPI), the coexistence-band test,
 //  the fold mechanics (fold_phase, the vanish and T-floor folds), the
 //  runtime and diagnostic dial accessors, and ps_state_from_cons.
-//  AMReX-free apart from amrex::Abort; host-only (std::function EOS).
+//  Uses AMReX only for amrex::Abort and the ParmParse dial reads of
+//  PS_dials.H; host-only (std::function EOS).
 //  Part of the hem_pelanti_shyue.H umbrella; the kernel headers
 //  (hem_relax_x3.H, hem_mass_transfer.H, hem_flash.H) include this one.
 //  docs/MODEL_AND_ALGORITHM.md ch. 4 (presence), §7.2 (EOS contract).
@@ -21,7 +22,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
-#include <AMReX.H>           // amrex::Abort (dial-contract violations)
+#include <AMReX.H>           // amrex::Abort, for the kernel headers that include this one
 #include "PS_constants.H"   // ps_const:: shared numeric floors
 #include "PS_dials.H"       // ps_dial_int / ps_dial_real
 #include "PS_counters.H"    // PsCounters: the diagnostic-counter store
@@ -40,7 +41,7 @@ using V6 = std::array<double, 6>;
 
 // ---------------------------------------------------------------------
 //  Diagnostic counters live in PsCounters (PS_counters.H); the accessors
-//  here are the kernels' one-line handles on its hem section.  The four
+//  here are the kernels' one-line handles on its hem section.  The three
 //  *_count fields are cumulative over the run.
 // ---------------------------------------------------------------------
 inline long& ps_mass_transfer_count()     { return ps_counters().mass_transfer_count; }
@@ -74,7 +75,7 @@ struct PsState {
     double  u        = 0.0;     // mixture velocity [m/s]
     double  rho_mix  = 0.0;     // rho_mix = a1*r1 + a2*r2 [kg/m^3]
     double  P_mix    = 0.0;     // P_mix = a1*P1 + a2*P2 [Pa]
-    double  c_frozen = 0.0;     // frozen sound speed (see below) [m/s]
+    double  c_frozen = 0.0;     // mixture c: the Wood speed (ps_state_from_cons) [m/s]
     bool    valid    = false;   // combined validity (safe default)
 };
 
@@ -200,19 +201,26 @@ inline bool ps_apply_vanish_fold(V6& U, double alpha_vanish)
 //    the one undialled number in the chain (docs/MODEL_AND_ALGORITHM.md §5.6).
 //  CAMR.ps_mt_srt_delta (0.01): receiving-phase seed delta in Sigma
 //    (Lund & Aursand's value), so transfer can start from nothing.
-//  CAMR.ps_mt_no_dome_gate (0): 1 disables the coexistence gate globally
-//    (non-CO2 or mock EOS); read here for both the split kernel and
-//    ps_mass_transfer_relax_cell.
-//  CAMR.ps_mt_form (0): the form of the finite-rate step, documented at
-//    its use in ps_mass_transfer_finite_cell.
 inline double ps_dial_mt_h_weight()       { static const double v = ps_dial_real("ps_mt_h_weight",      0.5); return v; }
 inline double ps_dial_mt_srt_d()          { static const double v = ps_dial_real("ps_mt_srt_d",         0.1); return v; }
 inline double ps_dial_mt_srt_delta()      { static const double v = ps_dial_real("ps_mt_srt_delta",    0.01); return v; }
+//  CAMR.ps_mt_no_dome_gate (0): 1 disables the coexistence gate globally
+//    (non-CO2 or mock EOS), in both split mass-transfer kernels.
 inline int    ps_dial_mt_no_dome_gate()   { static const int    v = ps_dial_int ("ps_mt_no_dome_gate",  0);  return v; }
+//  CAMR.ps_mt_form (0): form of the split finite-rate step
+//    (ps_mass_transfer_finite_cell).  0 = exact relaxation toward the
+//    Gibbs-equilibrium target, dm = (1 - exp(-dt/tau)) dm_eq: unconditionally
+//    stable, cannot cross dm_eq; tau_g -> 0 is instantaneous.  1 = backward
+//    Euler against the SRT source, dm - dt Gamma_SRT(path(dm)) = 0 by a
+//    bracketed scalar Newton on the step's own path (same carrier, same
+//    (E.1) rule); needs no equilibrium point, so a failed target Newton
+//    cannot silently transfer nothing; Gamma -> 0 at g1 = g2 makes
+//    non-overshoot structural; tau_g is unused.
 inline int    ps_dial_mt_form()           { static const int    v = ps_dial_int ("ps_mt_form",          0);  return v; }
 
 //  Diagnostic dials, one read each (all default off).
-//  CAMR.ps_pres_diag (0): [PS-X3]/[PS-DT]/[PS-GATE]/[PS-FLASH-REF] reports.
+//  CAMR.ps_pres_diag (0): the [PS-WORK]/[PS-CORRIDOR]/[PS-GATE]/[PS-DT]/
+//    [PS-X3] sweep reports (PS_relax.H) and [PS-FLASH-REF].
 //  CAMR.ps_mt_diag (0): PsMtStats; >= 2 adds the contraction ratio.
 inline int ps_diag_pres()       { static const int v = ps_dial_int("ps_pres_diag",     0); return v; }
 inline int ps_diag_mt()         { static const int v = ps_dial_int("ps_mt_diag",       0); return v; }
@@ -289,7 +297,7 @@ inline bool ps_apply_tfloor_fold(V6& U, const PsPhaseAPI& eos,
 
 // ---------------------------------------------------------------------
 //  PsState from conservative variables and the EOS callback: fills the
-//  per-phase intensives (P, T, c, s, g), P_mix and c_frozen.  Reached
+//  per-phase intensives (P, T, c, s, g), P_mix and c_frozen (the Wood speed).  Reached
 //  only from the equilibrium-target solve of the split mass-transfer
 //  source and the 0-D harness; the production path builds its cell
 //  state elsewhere.

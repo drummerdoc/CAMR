@@ -7,10 +7,10 @@
 //  relaxation sweep, the hem kernels), reached through ps_counters().
 //  Counting is done by the thin count_*() wrappers at the kernels (no-ops
 //  on GPU builds) or by direct field access from host-only code; the
-//  report sites in CAMR_advance.cpp, PS_relaxation.H and PS_sources.H
+//  report sites in CAMR_advance.cpp, PS_relax.H and PS_sources.H
 //  read the fields, MPI-reduce them per field and reset their section.
 //
-//  Reset cadence, unchanged by the shared storage:
+//  Reset cadence:
 //    reset_guards / reset_face / reset_promote / reset_presence /
 //    fold.reset       : the [PS-MASS] probe (ps_diag_mass) in CAMR_advance
 //    reset_mass       : the [PS-FLOOR] census (CAMR_PS_DIAG builds)
@@ -18,7 +18,7 @@
 //                     : per ps_apply_relaxation sweep
 //    reset_mt_cause, mt_coexist.reset, reset_flash_refuse
 //                     : per PS_sources report
-//    the four *_count fields are cumulative and never reset.
+//    the three *_count fields are cumulative and never reset.
 //
 //  Nothing here touches the numerics: every field is written after the
 //  decision it records has been taken.
@@ -32,13 +32,9 @@ constexpr int PS_COUNTERS_MT_NCAUSE  = 14;
 constexpr int PS_COUNTERS_FLR_NCAUSE = 20;
 
 // ---------------------------------------------------------------------
-//  Per-sweep thermal-leg instruments, reset and reported with the sweep.
-//  [PS-PRES]: the |P1-P2| residual at chain exit, split by whether the
-//  thermal leg moved a T by > 1 K, ran and stood, or was gate-skipped;
-//  the post-thermal states cost two branch-locked solves, so they are
-//  formed only under CAMR.ps_pres_diag.  [PS-DT]: |T1-T2| at entry and
-//  exit of the leg (completeness), fed by X3.
-//  Docs/MODEL_AND_ALGORITHM.md §8.6.
+//  Per-sweep thermal-leg instrument, reset and reported with the sweep.
+//  [PS-DT]: |T1-T2| at entry and exit of the leg (completeness), fed by
+//  X3 under CAMR.ps_pres_diag.  Docs/MODEL_AND_ALGORITHM.md §8.6.
 // ---------------------------------------------------------------------
 struct PsPresDiag {
     // [PS-DT] |T1-T2| at thermal-leg entry and exit, cells whose leg ran
@@ -153,8 +149,8 @@ struct PsX3Stats {
 
 // ---------------------------------------------------------------------
 //  The store.  Field meanings are documented at the counting sites
-//  (PS_guards.H, PS_hllc.H, PS_promote.H, PS_presence.H, PS_relaxation.H,
-//  hem_pelanti_shyue.H).
+//  (PS_guards.H, PS_hllc.H, PS_promote.H, PS_presence.H, PS_relax.H,
+//  PS_corridor.H and the hem_*.H kernel headers).
 // ---------------------------------------------------------------------
 struct PsCounters {
     // ---- guards (PS_guards.H), [PS-GUARD] ----------------------------
@@ -191,11 +187,11 @@ struct PsCounters {
     long   promote_refuse    = 0;
     long   floor_skip        = 0;
 
-    // ---- presence (PS_presence.H, PS_relaxation.H), [PS-FOLD] --------
+    // ---- presence (PS_presence.H, PS_relax.H), [PS-FOLD] -------------
     long   pres_f1_demote    = 0;   // Independent refused for density degeneracy
     long   pres_f3_hyst      = 0;   // gate passes through the hysteresis band
 
-    // ---- relaxation sweep (PS_relaxation.H) --------------------------
+    // ---- relaxation sweep (PS_relax.H) -------------------------------
     //  One counter for the presence-gate refusal at every relax entry
     //  site ([PS-GATE]): identical predicate on identical inputs, so a
     //  per-mode split would only re-encode ps_relax_mode.
@@ -209,7 +205,7 @@ struct PsCounters {
     PsPresDiag  pres;
     PsFoldAudit fold;
 
-    // ---- hem kernels (hem_pelanti_shyue.H) ---------------------------
+    // ---- hem kernels (hem_*.H) --------------------------------------
     long   mass_transfer_count  = 0;
     long   flash_source_count   = 0;
     long   triple_point_count   = 0;
