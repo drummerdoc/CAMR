@@ -1,0 +1,8 @@
+tag:      BASE2
+date:     2026-09-20T17:04Z
+camr:     08c370db429b681893e39af9aad3d7a62a15a896 (0 modified tracked files)
+amrex:    65db2e4e678a15acec1b666d4c42e339ad5b9ec0
+host:     Linux aarch64
+compiler: g++ (Ubuntu 11.4.0-1ubuntu1~22.04.3) 11.4.0
+GERG_EXT_C=<unset>
+note:     re-recorded after audit D11b (one gas constant); BASE stands for everything before it
