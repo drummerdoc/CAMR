@@ -186,3 +186,23 @@ Options for Marc (no code written): **(a)** make the nucleation step implicit in
 ## 11. Item 5e, done (20 Sept)
 
 Seven commits: the boundary comment residue (byte-identical witnesses `nc_D11b` → `nc_E1`); the harness (`nscbc_suite.py` predictions, `flashing_front.py` `vent`/`nr` legs and pins); `MODEL_AND_ALGORITHM.md` §6; `DESIGN_DECISIONS.md` (B-1, B-4–B-8, E-5, X-34–X-39, O-26–O-29, the retired rows, the GC-CBC lessons); `VERIFICATION.md` §6.3, §6.4, §7.1; `RUNNING.md`, `FUTURE_WORK.md` §7 and §1.8, the module README, `Make.package`, `camr_ps_model.tex` §8; and `PLAN_relaxed_boundary.md` removed — its last version is in the parent of the removing commit (`git show <that commit>^:docs/PLAN_relaxed_boundary.md`), and §§1–10 above cite it as it was. Left for the comment pass (§6 item 6), seen on the way: `MODEL_AND_ALGORITHM.md` §8.3/§8.6 still list `rej_high`, `rho_clamp_hi`, `slaved_phase` and other tallies that no longer exist in `Source/`. Left for Marc: `regen_refs.sh 2d` (T-Blowdown's fingerprint is stale since the face-set fix), the `nr`/`vent` choice of the T-Blowdown decks. R8b read: 6838 refused slots over steps 4000–4263, 6831 negative partial mass, 7 α, 0 ρ, 0 EOS — `DESIGN_DECISIONS.md` O-29, [DECIDE-A7].
+
+## 12. Status of every finding (20 Sept, HEAD after the K commits)
+
+| finding | status |
+|---|---|
+| §1 D1–D11 | **done**, one commit each (D4 with [DECIDE-A5], D11 as D11a + D11b with [DECIDE-A3b]); notes in §6 |
+| §2 K1, K2, K4, K5, K6 | **done** (`b120fe0`); `ps_llf_diag` retired |
+| §2 K3 (`PS_umeth`'s 13 unused parameters, the caller's ctoprim/srctoprim/divu on the PS path, the unreachable `#else` stub) | **open** — it changes the shared driver (`CAMR_construct_hydro_source.cpp`, `Hydro_umdrv.cpp`) and removes per-step work, so it wants its own commit with a 2-D witness on the Mac; nothing reads the primitives on the PS path, but that is to be proven by the run, not by reading |
+| §2 K7, K8, K10, K11 | **done** (`2107602`, and the last `(void)` of K10 with this note); `ps_flash_h_mode` retired; K11 deleted 28 entries, the closure of "no caller outside `Source/EOS`" over the call graph, in `pr_contract.H`, `GERG/EOS.H`, `EOS_contract.H`; `TY2Cp` stays (the Cp derive) and now uses `hem::R_gas`. M_TINY is *not* dead (the audit was wrong: `PS_bc_fan.H`, `PS_nscbc.cpp` use it) and stays |
+| §2 K9 (PRTab entropy tables computed and never read) | **open** — needs `make tables` (numpy/scipy) and a PRTab build and run as witness |
+| §2 K12 | **done** (`8d6ae2e`): a second table of retired *values*, aborting at startup |
+| §2 K13 (mode-2-only sub-dials), K14 (`ps_promote_checked=0`, `ps_floor_indep=0`, `ps_lw_skip_contact` 0/1) | **blocked on decisions**: [DECIDE-32] (mode 2 as the control closure) and `PLAN_cleanup` [DECIDE-1/2] (R5/R7e/R8 are the clean production runs they asked for) |
+| §3 R1–R10 (duplicated logic) | **open**, none started. R2, R5, R6, R7, R10 are mechanical; R1, R3, R4, R9 can move a trace-cell number; R8 is the EOS refactor |
+| §4 comments | the boundary residue **done** at 5e; the file-by-file comment pass (≈ 950 lines) **open** |
+| §5 documents | 5e **done**; `MODEL` §8.3/§8.6 cleaned of counters that do not exist; the repetition between documents (dial tables ×6, retired list ×4, the two configurations, the battery inventory) **open** |
+| §6 item 1 decisions | A1–A5, A1b, A3b, A6b (a), A7 (a) **taken** |
+| §7 tests | row 1 **done** (`cover_retired.py`: 74 keys, 8 values, 4 boundary dials, PASS); the other 29 rows **open** |
+| T-Blowdown | decks on `vent`; its 2-D references are to be re-recorded once more (`regen_refs.sh 2d`) |
+
+New finding on the way (**D12**): **the GERG backend does not compile on the PS path.** `PS_corridor.H:100` calls `EOS::PYT2REc_phase_checked`, which exists in `pr_contract.H` (PR, PRTab) and not in `GERG/EOS.H` — so `Eos_Model=GERG` and `GERGTab` have been unbuildable since the Corridor projection landed (syntax check of `PS_nscbc.cpp` and `CAMR_advance.cpp` with `-DUSE_GERG_EOS`; true at HEAD before today's edits as well). PRTab syntax-checks clean. Fix: the GERG twin of `PYT2REc_phase_checked` (the phase-selected $(T,P) \to (\rho, e, c)$ with a has-root flag), then a GERG build as its witness; and a compile-only line per backend in the gate, which would have caught it.

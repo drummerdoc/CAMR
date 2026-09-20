@@ -105,7 +105,6 @@ inline bool ps_pressure_relax_cell(V6& U, const PsPhaseAPI& eos,
     const double e1 = E1_tot - 0.5 * u * u;
     const double e2 = E2_tot - 0.5 * u * u;
 
-    (void)(m1 * e1 + m2 * e2);   // mixture internal energy, conserved by construction
 
     double alpha    = alpha1;
     double rho_1    = m1 / alpha;
