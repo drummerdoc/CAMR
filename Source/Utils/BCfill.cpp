@@ -184,12 +184,15 @@ struct PCHypFillExtDir
           //  branch-locked (rho, e) queries the cell state makes must
           //  have a root on the continued state, as for a trial of the
           //  relaxed boundary.
-          const bool ok = std::isfinite(s_g[URHO]) && s_g[URHO] > amrex::Real(0.0)
-                       && s_g[UM1RHO1] >= amrex::Real(0.0) && s_g[UM2RHO2] >= amrex::Real(0.0)
-                       && s_g[UALPHA1] >= amrex::Real(0.0) && s_g[UALPHA1] <= amrex::Real(1.0)
-                       && s_g[UEINT] > amrex::Real(0.0)
-                       && ps_bc_state_ok(s_g, pres);
-          if (!ok) ps_guard::count_nscbc_zg_slots();
+          //  First failing test, in this order (the cause on [PS-GUARD]).
+          const int cause =
+              !(std::isfinite(s_g[URHO]) && s_g[URHO] > amrex::Real(0.0))                        ? 0
+            : !(s_g[UM1RHO1] >= amrex::Real(0.0) && s_g[UM2RHO2] >= amrex::Real(0.0))            ? 1
+            : !(s_g[UALPHA1] >= amrex::Real(0.0) && s_g[UALPHA1] <= amrex::Real(1.0))            ? 2
+            : !(s_g[UEINT] > amrex::Real(0.0))                                                   ? 3
+            : !ps_bc_state_ok(s_g, pres)                                                         ? 4 : -1;
+          const bool ok = (cause < 0);
+          if (!ok) ps_guard::count_nscbc_zg_slots(cause);
           for (int n = 0; n < NVAR; n++) dest(iv, n) = ok ? s_g[n] : s_N[n];
           return;
         }

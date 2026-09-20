@@ -266,7 +266,14 @@ CAMR::CAMR_advance (Real time,
             amrex::ParallelDescriptor::ReduceLongSum(nf_);
             amrex::Print() << " | nscbc_zg_slots=" << nt_
                            << " nscbc_flash=" << nf_
-                           << " nscbc_rx_fb=" << nr_ << "\n";
+                           << " nscbc_rx_fb=" << nr_;
+            if (nt_ > 0) {   // refusals by first failing test
+                amrex::Long zc_[5];
+                for (int c = 0; c < 5; ++c) { zc_[c] = pc.nscbc_zg_cause[c]; amrex::ParallelDescriptor::ReduceLongSum(zc_[c]); }
+                amrex::Print() << " zg_cause(rho/m/alpha/eint/eos)=" << zc_[0] << '/' << zc_[1] << '/'
+                               << zc_[2] << '/' << zc_[3] << '/' << zc_[4];
+            }
+            amrex::Print() << "\n";
             pc.reset_guards();
             // Face audit, gated on CAMR.ps_face_diag (0); the counters
             // themselves cost a few compares per face.  The health lines

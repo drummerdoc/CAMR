@@ -161,10 +161,10 @@ AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_reflux_clamp() noexcept {}
 //            fallback.
 // ---------------------------------------------------------------------
 #if !defined(AMREX_USE_GPU)
-inline void  count_nscbc_zg_slots() { ++ps_counters().nscbc_zg_slots; }
+inline void  count_nscbc_zg_slots(int cause) { ++ps_counters().nscbc_zg_slots; ++ps_counters().nscbc_zg_cause[cause]; }
 inline void  count_nscbc_flash()    { ++ps_counters().nscbc_flash; }
 #else
-AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_nscbc_zg_slots() noexcept {}
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_nscbc_zg_slots(int) noexcept {}
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_nscbc_flash()    noexcept {}
 #endif
 
