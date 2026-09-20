@@ -3,22 +3,20 @@
 
 Every test starts from a uniform CO2 state (20 bar / 280 K vapour, or the
 saturated mixture at 280 K) with one localised disturbance and measures what
-the characteristic outflow of PS_nscbc.H sends back.  Predictions were written
-before the first run (docs/DESIGN_DECISIONS.md B-4) and are printed beside
+an NSCBC face (the extrapolated ghost plus the relaxed boundary,
+docs/MODEL_AND_ALGORITHM.md §6) sends back.  The prediction is printed beside
 each measurement; a test PASSES when the measurement is within the stated
-margin of its prediction.
+margin of it.
 
   N1   1-D velocity pulse, vapour: reflection coefficient r = p'_refl / p'_inc.
-       Prediction r = sigma/2 + O(dx) (0.125 at sigma = 0.25, ~0 at 0).
-       Measured: 0.13 at sigma = 0.25 (256/512 cells, linear/nonlinear,
-       order 1/2 alike), 0.0005 at sigma = 0.
+       Prediction 0 + O(dx); measured 0.0005 (256 and 512 cells), 0.02 for a
+       50 m/s pulse (amplitude nonlinearity).
   N1b  the same pulse in the saturated mixture (mode 5, alpha_1 = 0.05): the
-       relaxed wave travels at the Wood speed (156 m/s measured) while the
-       frozen face impedance is 282 m/s; prediction (Z_f - Z_w)/(Z_f + Z_w)
-       = 0.29 at sigma = 0, measured 0.22; with the Wood impedance (retired,
-       X-33: it held the demo3 jet head at the outlet) 0.07-0.09.  Before [DECIDE-27c] the
-       face drove a 5.6 bar wave into a mixture at rest (the auto-detect
-       mixture pressure, 25 bar for phases at 41.6 bar).
+       relaxed wave travels at the Wood speed (158 m/s) while the frozen
+       speed is 282 m/s.  The relaxed boundary poses the far-field condition
+       on the relaxed state, prediction 0, measured -0.007; the control with
+       NSCBC off (the interior copy) reflects as a frozen-impedance face,
+       prediction (Z_f - Z_w)/(Z_f + Z_w) = 0.29, measured 0.225.
   N3   convected entropy spot / alpha blob leaving at u0 = 50 m/s through the
        x-hi NSCBC face (x-lo is a zero-gradient inflow: the NSCBC far field has
        no velocity, so an NSCBC inflow at u0 != 0 is a different test): the
@@ -66,6 +64,8 @@ def run(name, dim, args, stop, plot_per):
     budget = float(os.environ.get('NSCBC_BUDGET', '1e9'))
     if REUSE and plots():
         return 0, plots(), 0
+    if resume and chks() and plots() and t_of(plots()[-1]) >= stop * (1 - 1e-6):
+        print(f'NOTE {name}: finished output found and scored as is (NSCBC_RESUME); unset it to re-run', file=sys.stderr)
     if not (resume and chks()):
         for old in glob.glob(os.path.join(d, 'plt_*')) + glob.glob(os.path.join(d, 'chk_*')):
             subprocess.run(['mv', old, old + '.old'])
@@ -105,8 +105,7 @@ def test_N1(two_phase=False):
         # Psat(280 K) is read back from the run log.
         pass
     variants = []
-    # sigma and the impedance selector are retired (B-4, X-33): the rows they
-    # produced are in refs/nscbc_BASE.txt; sig is 0 and imp 0 (frozen) here.
+    # imp: 0 the NSCBC face, -1 the control with NSCBC off (interior copy).
     if two_phase:
         variants.append((256, 0.0, 1.0, 2, 0))
         variants.append((256, 0.0, 1.0, 2, -1))   # zero-gradient control (NSCBC off)
@@ -117,7 +116,7 @@ def test_N1(two_phase=False):
     stop, t_inc, t_ref = (4.0e-3, 1.0e-3, 3.5e-3) if not two_phase else (6.0e-3, 2.75e-3, 5.5e-3)
     for (n, sig, amp, order, imp) in variants:
         name = f"{'N1b' if two_phase else 'N1'}_n{n}_s{sig}_a{amp:g}_o{order}" + ('_wood' if imp == 1 else '_zg' if imp == -1 else '')
-        args = [f'amr.n_cell={n}', f'prob.amp={amp}', 'prob.ic=1']   # order: the o1 variant is retired with ps_bc_nscbc_order (item 5a)
+        args = [f'amr.n_cell={n}', f'prob.amp={amp}', 'prob.ic=1']
         if imp == -1: args.append('CAMR.ps_bc_use_nscbc=0')
         if two_phase: args += ['prob.two_phase=1', 'prob.a1_0=0.05']
         rc, fs, zg = run(name, 1, args, stop, 5.0e-4)
@@ -134,14 +133,12 @@ def test_N1(two_phase=False):
         x1 = np.abs(pick(ser, 0.5e-3) - P_base).argmax() / n; x2 = np.abs(pick(ser, t_inc) - P_base).argmax() / n
         c_meas = (x2 - x1) / (t_inc - 0.5e-3)
         r = ref / inc
-        pred = sig / 2
-        if two_phase and imp == 0:
-            pred += 0.29   # (Z_frozen - Z_wood)/(Z_frozen + Z_wood) at alpha_1 = 0.05, 280 K
-        # margin: half the prediction, or the measured floors -- 0.02 for a
-        # frozen-impedance face, 0.10 for the Wood face in the mixture, whose
-        # residual is the arrival transient of the face cell, not a plane
-        # reflection (refs/nscbc_BASE.txt).
-        ok = abs(r - pred) <= max(0.5 * pred, 0.10 if (two_phase and imp) else 0.02)
+        # NSCBC face: 0.  The copy control in the mixture reflects as a
+        # frozen-impedance face, (Z_frozen - Z_wood)/(Z_frozen + Z_wood) = 0.29
+        # at alpha_1 = 0.05, 280 K; in the vapour the copy is transparent too.
+        pred = 0.29 if (two_phase and imp == -1) else 0.0
+        # margin: half the prediction, or the measured floor 0.02.
+        ok = abs(r - pred) <= max(0.5 * pred, 0.02)
         rows.append((name, f"r={r:+.4f}  pred={pred:.3f}  {'PASS' if ok else 'FAIL'}   p'_inc={inc:.0f} Pa  c_wave={c_meas:.0f} m/s  zg={zg}"))
     return rows
 

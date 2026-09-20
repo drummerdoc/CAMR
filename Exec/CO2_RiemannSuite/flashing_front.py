@@ -10,23 +10,18 @@ reference in which the vent plane is an interior Riemann interface.
 Legs
   ref   boundary-free reference: domain 0..2, N=512, diaphragm at
         x=1, ambient CO2 vapour (300 K / 1 bar) beyond.  Completes at
-        bare defaults; pin 2.3428.  An abort on this leg is an alarm.
-  leg   HISTORICAL: the legacy boundary construction is retired (a set
-        ps_bc_nscbc_v2 key aborts); its 2.1022 (-7.6%) pin stays in the
-        table for provenance and is not run.
-  v2s   tube with the shipped NSCBC outflow (choked-fan ghost, HEM along
-        the fan): vents 2.2474.  The frozen-fan construction (1.4936) is
-        retired; a set ps_bc_nscbc_flash key aborts.
-  v2e   HISTORICAL: NSCBC with a deleted linearisation bound raised to
-        0.5 via a probe-only exe (FLASH_V2E_EXE); pin 1.4838, normally
-        skipped.
+        bare defaults.  An abort on this leg is an alarm.
+  vent  the tube with its x-hi face an NSCBC face of type vent (a plenum
+        at P_inf: the choked fan, HEM along the fan, is the entering wave
+        of an outflow cell; docs/MODEL_AND_ALGORITHM.md §6).  The pin.
+  nr    the same face as type nr (the far-field condition on the relaxed
+        state, no fan): under-vents a flashing outlet; kept as the
+        control that shows what the fan is for.
 
-The gate (deficit <= 7.6% against the reference, zero refusals, no
-RYP2E dome inversion) is met by the shipped construction; this harness
-guards it as a regression pin.  The pins are recorded outputs of this
-implementation (docs/VERIFICATION.md).
+The pins are recorded outputs of this implementation (docs/VERIFICATION.md
+§6.3); the harness guards them as a regression.
 
-Usage:  [EXE=...] [FLASH_V2E_EXE=...] [FLASH_OUT=...] python3 flashing_front.py
+Usage:  [EXE=...] [FLASH_OUT=...] python3 flashing_front.py
         EXE defaults to the 1-D executable discovered by full_suite.py
         (newest ./CAMR1d.*.ex, or CAMR_EXE).
 """
@@ -36,12 +31,11 @@ import ps_plotfile as R
 import full_suite as F           # main-guarded; provides the exe discovery
 
 EXE  = os.environ.get('EXE') or F.CAMR
-V2E  = os.environ.get('FLASH_V2E_EXE', '')
 OUT  = os.environ.get('FLASH_OUT', './flash_red_runs')
 os.makedirs(OUT, exist_ok=True)
 
 T_SCORE = 8.0e-5           # scoring time (the reference dies just past it)
-RED = {'ref': 2.3649, 'leg': 2.1022, 'v2e': 1.4838, 'v2s': 2.4689}   # re-pinned at R-16 (one saturation curve), sigma 0
+RED = {'ref': 2.3649, 'vent': 2.4728, 'nr': 1.7139}   # recorded at BASE2 (production binary, e3f1de8)
 
 COMMON = ['inputs', 'CAMR.cfl=0.25', 'prob.alpha_trace=1.0e-6',
           'prob.u_L=0', 'prob.u_R=0', 'stop_time=2.5e-4',
@@ -59,9 +53,8 @@ LEGS = {
                 'prob.phase_L=1', 'prob.T_L=320', 'prob.p_L=1.0e7', 'prob.x_qual_L=0.0',
                 'prob.phase_R=0', 'prob.T_R=300', 'prob.p_R=1.0e5', 'prob.x_qual_R=1.0',
                 'CAMR.lo_bc=SlipWall', 'CAMR.hi_bc=Inflow', 'prob.p_amb=1.0e5']),
-  'leg': (1.0, TUBE + ['CAMR.ps_bc_nscbc_v2=0']),   # historical; not run
-  'v2s': (1.0, TUBE),
-  'v2e': (1.0, TUBE),
+  'vent': (1.0, TUBE + ['CAMR.ps_bc_nscbc_type_xhi=vent']),
+  'nr':   (1.0, TUBE + ['CAMR.ps_bc_nscbc_type_xhi=nr']),
 }
 
 def t_of(p):
@@ -95,18 +88,8 @@ def main():
     print('flashing-front vent pin   (vented tube mass at t~80us)')
     print('%-5s %10s %12s %10s %9s   %s' % ('leg', 't', 'vented', 'red-pin', 'vs ref', 'note'))
     ref_v = None
-    for tag in ('ref', 'leg', 'v2s', 'v2e'):
+    for tag in ('ref', 'vent', 'nr'):
         exe = EXE
-        if tag == 'leg':
-            print('%-5s %10s %12s %10.4f %9s   HISTORICAL (legacy construction retired; key aborts)'
-                  % (tag, '-', '-', RED[tag], '-'))
-            continue
-        if tag == 'v2e':
-            if not V2E:
-                print('%-5s %10s %12s %10.4f %9s   HISTORICAL (probe-only exe not given)'
-                      % (tag, '-', '-', RED[tag], '-'))
-                continue
-            exe = V2E
         q, rc = run_leg(tag, exe)
         if q is None:
             print('%-5s  NO SNAPSHOTS (rc=%d) — see %s.log' % (tag, rc, tag)); continue
@@ -117,7 +100,7 @@ def main():
                     'ABORTED — ALARM: the reference completes at bare defaults')
         vs = ('%+8.1f%%' % (100.0 * (q['vented'] - ref_v) / ref_v)) if (ref_v and tag != 'ref') else '-'
         print('%-5s %10.3e %12.4f %10.4f %9s   %s' % (tag, q['t'], q['vented'], RED[tag], vs, note))
-    print('\nPin: v2s +4.4%% vs the boundary-free reference at R-16; zero nscbc_zg refusals.')
+    print('\nrefusals of the extrapolated fill: grep nscbc_zg_slots in %s/<leg>.log' % OUT)
 
 if __name__ == '__main__':
     main()
