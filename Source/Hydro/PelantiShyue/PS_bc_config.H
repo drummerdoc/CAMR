@@ -16,7 +16,6 @@
 
 struct PsNscbcCfg {
     int use;      // global NSCBC switch, after the no-USE_PS_HYDRO force-off
-    int order;    // R+ extrapolation order, 1 or 2
     amrex::GpuArray<amrex::Real, 2*AMREX_SPACEDIM> pamb;   // per face; <= 0 inherits prob.p_amb
     amrex::GpuArray<int,         2*AMREX_SPACEDIM> uface;  // per face 0/1, index 2*idir + (0 lo, 1 hi)
 };
@@ -86,8 +85,8 @@ inline bool ps_bc_state_ok(const amrex::Real U[NVAR], const PsPres& pr) noexcept
 //  CAMR.ps_bc_rx (1): the relaxed-state boundary on every face with NSCBC
 //  enabled.  1 = the boundary chooses the entering acoustic wave and
 //  writes it into hydro_source (the default: docs/PLAN_relaxed_boundary.md
-//  §13.7); 0 = the ghost-only characteristic outflow, the matched
-//  baseline until the ghost construction is retired; 2 = probe only
+//  §13.7); 0 = the extrapolated ghost alone (no entering wave written:
+//  the ghost-only control, retired at item 5b); 2 = probe only
 //  (evaluate and print, write nothing; bit-identical to 0).  Any other
 //  value aborts.  Host-only (the reaction chain is a std::function EOS
 //  path, as is the whole PS reaction chain): a GPU build aborts.
@@ -142,28 +141,6 @@ inline const amrex::GpuArray<int, 6>& ps_bc_rx_type()
         }
         return r; }();
     return t;
-}
-
-//  CAMR.ps_bc_rx_ghost (nscbc): the ghost fill on an NSCBC face.  nscbc =
-//  the characteristic-invariant ghost of PS_nscbc.H (outgoing waves and
-//  the reversed-flow contact at the face come from it); copy = every ghost
-//  layer is the boundary cell (no outgoing wave, no contact; the relaxed
-//  boundary's modelled wave is the only boundary signal; first order at
-//  the face on outgoing waves, PLAN_relaxed_boundary §13.9); extrap =
-//  the state continued past the face on its minmod slope (the outgoing
-//  waves keep their second-order correction; no invariants, no far
-//  field).  Independent of ps_bc_rx: copy at ps_bc_rx = 0 is the
-//  zero-gradient control.
-inline int ps_bc_rx_ghost()
-{
-    static const int v = []() -> int {
-        const std::string s = ps_dial_string("ps_bc_rx_ghost", "nscbc");
-        if (s == "nscbc")  return 0;
-        if (s == "copy")   return 1;
-        if (s == "extrap") return 2;
-        amrex::Abort("CAMR.ps_bc_rx_ghost must be nscbc, copy or extrap");
-        return 0; }();
-    return v;
 }
 
 //  CAMR.ps_bc_rx_probe (0): 0 off; 1 the [PS-BCRX] per-face line every

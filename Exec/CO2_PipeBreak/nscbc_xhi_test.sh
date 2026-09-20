@@ -11,12 +11,11 @@
 #     A   the deck as it ships: the relaxed boundary on xhi (vent) and ylo/yhi (nr), p_amb 20 bar
 #     Z   the ghost-only characteristic outflow (CAMR.ps_bc_rx=0), the matched baseline of the F/A-series
 #     B   xhi on the linearised-invariant path (CAMR.ps_bc_nscbc_xhi=0)  -> is the fan/branch the cause?
-#     E   NSCBC, R+ order 1 (CAMR.ps_bc_nscbc_order=1)                  -> is the extrapolation order involved?
 #     R   A with the probe line and the validator on (docs/PLAN_relaxed_boundary.md §13 gives the
 #         cheaper restart-from-F protocol used instead of a run from zero)
 #     G   as A on a 4 m domain (40 slot widths, same dx: 512x128 base)     -> does the recompression stay near 20 D (physics)
-#   (C, D, F — sigma 1.0 / 4.0 / 0 — and H — the Wood impedance — are recorded in
-#    docs/DESIGN_DECISIONS.md B-4 and X-33; both keys are retired and abort.)
+#   (C, D, F — sigma 1.0 / 4.0 / 0 — H — the Wood impedance — and E — the R+ order-1 ghost — are
+#    recorded in docs/DESIGN_DECISIONS.md B-4 and X-33; their keys are retired and abort.)
 #                                                                        or move to the new outlet (boundary-made)?  ~2x the F cost
 #
 #   afterwards:  python3 xhi_probe.py runs/nscbc_xhi/A/plt_*_05000 runs/nscbc_xhi/B/plt_*_05000 ...
@@ -26,7 +25,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 NR=${1:-6}; MS=${2:-6000}; shift $(( $# >= 2 ? 2 : $# )) || true
-VARS=${*:-A B E}
+VARS=${*:-A B}
 EXE=$(ls -t ./CAMR2d.*.MPI.PS.PR.ex 2>/dev/null | head -1) || { echo "build the 2-D MPI exe first (make -j8 DIM=2 USE_MPI=TRUE Eos_Model=PR)"; exit 1; }
 newest=$(find ../../Source -type f \( -name '*.H' -o -name '*.cpp' \) -newer "$EXE" | head -1)
 [ -n "$newest" ] && { echo "STALE BINARY: $EXE older than $newest"; exit 2; }
@@ -36,7 +35,6 @@ opt_for() {   # macOS ships bash 3.2 (no associative arrays)
   case "$1" in
     A) echo "" ;;
     B) echo "CAMR.ps_bc_nscbc_xhi=0" ;;
-    E) echo "CAMR.ps_bc_nscbc_order=1" ;;
     G) echo "geometry.prob_hi=4.0 1.0 amr.n_cell=512 128" ;;
     Z) echo "CAMR.ps_bc_rx=0" ;;
     R) echo "CAMR.ps_bc_rx_probe=1 CAMR.ps_validate=1" ;;

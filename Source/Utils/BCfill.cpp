@@ -6,9 +6,8 @@
 #include "CAMR.H"
 #include "prob.H"
 #include "PS_bc_config.H"
-
 #ifdef USE_PS_HYDRO
-#include "PS_nscbc.H"
+#include "PS_guards.H"     // count_nscbc_zg_slots
 #endif
 
 struct PCHypFillExtDir
@@ -22,32 +21,19 @@ struct PCHypFillExtDir
   // owns problem-specific faces (the pipe-break rupture plane) that a
   // global switch would replace wholesale.
   amrex::GpuArray<int, 2*AMREX_SPACEDIM> use_nscbc_face;
-  int         nscbc_order;    // 1 or 2: R+ extrapolation order.
-  int         nscbc_ghost;    // NSCBC-face ghost fill: 0 the characteristic
-                              // ghost, 1 a copy of N, 2 the minmod extrapolation
-                              // of the state (CAMR.ps_bc_rx_ghost; PS_bc_config.H)
-  // Per-face ambient pressure targets, indexed [2*idir + (0=lo,1=hi)];
-  // a value <= 0 inherits prob.p_amb at fill time.
-  amrex::GpuArray<amrex::Real, 2*AMREX_SPACEDIM> p_amb_face;
 #ifdef USE_PS_HYDRO
   PsPres      pres;           // presence params, captured host-side.
 #endif
 
   AMREX_GPU_HOST
   explicit PCHypFillExtDir(const ProbParmDevice* d_prob_parm,
-                           const amrex::GpuArray<int, 2*AMREX_SPACEDIM>& use_nscbc_face_,
-                           int         nscbc_order_,
-                           int         nscbc_ghost_,
-                           const amrex::GpuArray<amrex::Real, 2*AMREX_SPACEDIM>& p_amb_face_
+                           const amrex::GpuArray<int, 2*AMREX_SPACEDIM>& use_nscbc_face_
 #ifdef USE_PS_HYDRO
                            , const PsPres& pres_
 #endif
                            )
     : lprobparm(d_prob_parm)
     , use_nscbc_face(use_nscbc_face_)
-    , nscbc_order(nscbc_order_)
-    , nscbc_ghost(nscbc_ghost_)
-    , p_amb_face(p_amb_face_)
 #ifdef USE_PS_HYDRO
     , pres(pres_)
 #endif
@@ -102,7 +88,7 @@ struct PCHypFillExtDir
       if (use_nscbc_face[2*idir + ((sgn > 0) ? 0 : 1)] != 0
           && (sgn > 0 ? (domlo[idir] + 2 <= domhi[idir])
                       : (domhi[idir] - 2 >= domlo[idir]))) {
-        // ---- PS-NSCBC characteristic-invariant path -----------------
+        // ---- NSCBC face: the extrapolated ghost ----------------------
         // Tangential indices are clamped into domain and FAB, and the
         // normal stencil depth to what the FAB holds: a corner ghost's
         // tangential index lies outside the domain, so an unclamped column
@@ -139,18 +125,12 @@ struct PCHypFillExtDir
           s_Nm1[n] = dest(ivNm1, n);
           s_Nm2[n] = dest(ivNm2, n);
         }
-        if (nscbc_ghost == 1) {
-          // The copy ghost: the face carries no outgoing wave and no
-          // contact; the relaxed boundary supplies the entering wave.
-          for (int n = 0; n < NVAR; n++) dest(iv, n) = s_N[n];
-          return;
-        }
-        if (nscbc_ghost == 2) {
-          // The extrapolated ghost: each conserved slot continued past
-          // the face on its minmod slope over N-2, N-1, N (the slope the
-          // characteristic ghost forms for R+, applied to the state), so
-          // the outgoing waves keep their second-order correction at the
-          // face; the relaxed boundary supplies the entering wave.  Only
+        {
+          // The ghost on an NSCBC face: each conserved slot continued past
+          // the face on its minmod slope over N-2, N-1, N, so the outgoing
+          // waves keep their second-order correction at the face; the
+          // relaxed boundary (CAMR_bc_relaxed.cpp) supplies the entering
+          // wave and the far field, and no ghost state is constructed.  Only
           // where the flow leaves: on a cell whose normal velocity points
           // inward the contact wave enters and would carry a continued
           // composition in with it (a feedback through the ghost's
@@ -169,7 +149,7 @@ struct PCHypFillExtDir
           }
           //  The phase slots and the momenta are continued; the mixture
           //  is assembled from the phases (rho = m1 + m2, rho E = E1 + E2
-          //  exactly, as _pack_state does), so the six-equation identities
+          //  exactly), so the six-equation identities
           //  hold on the ghost to round-off, not to truncation.
           amrex::Real s_g[NVAR];
           for (int n = 0; n < NVAR; n++) {
@@ -211,20 +191,6 @@ struct PCHypFillExtDir
           for (int n = 0; n < NVAR; n++) dest(iv, n) = ok ? s_g[n] : s_N[n];
           return;
         }
-        PS_NSCBC::Params params;
-        params.pres = pres;
-        // An explicitly-set face target wins; the sentinel (<= 0)
-        // inherits the global prob.p_amb.
-        {
-          const amrex::Real pf = p_amb_face[2*idir + ((sgn > 0) ? 0 : 1)];
-          params.P_amb = (pf > amrex::Real(0.0)) ? pf : lprobparm->p_amb;
-        }
-        params.nscbc_order  = nscbc_order;
-        amrex::Real s_ghost[NVAR];
-        PS_NSCBC::outflow_face(s_N, s_Nm1, s_Nm2, dx[idir],
-                                idir, sgn, layer, params, s_ghost);
-        for (int n = 0; n < NVAR; n++) dest(iv, n) = s_ghost[n];
-        return;
       }
 #endif
       // ---- Problem-owned single-cell bcnormal path -----------------
@@ -273,21 +239,18 @@ const PsNscbcCfg&
 ps_nscbc_cfg()
 {
   //   CAMR.ps_bc_use_nscbc (0): global NSCBC outflow switch.
-  //   CAMR.ps_bc_nscbc_order (2): R+ extrapolation order, 1 or 2.
   //   CAMR.ps_bc_p_amb_{x,y,z}{lo,hi} (-1 = inherit prob.p_amb): per-face
   //     ambient pressure, for problems whose two ends see different far
   //     fields.
   //   CAMR.ps_bc_nscbc_{x,y,z}{lo,hi} (-1 = inherit ps_bc_use_nscbc):
   //     per-face NSCBC enable.
-  // The resolved values (after the no-USE_PS_HYDRO force-off and the
-  // order forcing) are added back to the table so job_info records the BC
+  // The resolved values (after the no-USE_PS_HYDRO force-off) are
+  // added back to the table so job_info records the BC
   // path that actually ran even when the deck was silent.
   static const PsNscbcCfg cfg = []() -> PsNscbcCfg {
     int u = 0;
-    int od = 2;
     amrex::ParmParse pp("CAMR");
     pp.query("ps_bc_use_nscbc",   u);
-    pp.query("ps_bc_nscbc_order", od);
     // Per-face ambient targets; -1 = inherit prob.p_amb at fill time.
     amrex::GpuArray<amrex::Real, 2*AMREX_SPACEDIM> pa;
     for (int f = 0; f < 2*AMREX_SPACEDIM; ++f) pa[f] = amrex::Real(-1.0);
@@ -330,13 +293,7 @@ ps_nscbc_cfg()
       uf[f] = 0;   // same safety as u above.
 #endif
     }
-    if (od != 1 && od != 2) {
-      amrex::Print() << "  CAMR bcfill: unknown ps_bc_nscbc_order="
-                     << od << ", forcing to 2.\n";
-      od = 2;
-    }
     pp.add("ps_bc_use_nscbc",   u);
-    pp.add("ps_bc_nscbc_order", od);
     // Resolved per-face NSCBC enables -> job_info (0/1, after inheritance).
     pp.add("ps_bc_nscbc_xlo", uf[0]);
     pp.add("ps_bc_nscbc_xhi", uf[1]);
@@ -359,7 +316,7 @@ ps_nscbc_cfg()
     pp.add("ps_bc_p_amb_zlo", pa[4]);
     pp.add("ps_bc_p_amb_zhi", pa[5]);
 #endif
-    return PsNscbcCfg{u, od, pa, uf};
+    return PsNscbcCfg{u, pa, uf};
   }();
   return cfg;
 }
@@ -379,7 +336,6 @@ CAMR_bcfill_hyp(
   const ProbParmDevice* lprobparm = CAMR::d_prob_parm;
 
   const PsNscbcCfg& nscbc_cfg = ps_nscbc_cfg();
-  const int         nscbc_order = nscbc_cfg.order;
 
   // One-time banner so run logs record which outflow BC path is in play.
   {
@@ -388,25 +344,18 @@ CAMR_bcfill_hyp(
       static const char* fnm[6] = {"xlo","xhi","ylo","yhi","zlo","zhi"};
       amrex::Print()
           << "  CAMR bcfill: outflow (Inflow-flagged) BC per face"
-             " (1 = PS-NSCBC characteristic-invariant, 0 = bcnormal"
+             " (1 = NSCBC, extrapolated ghost + relaxed boundary; 0 = bcnormal"
              " linearised Riemann invariant):";
       for (int f = 0; f < 2*AMREX_SPACEDIM; ++f) {
         amrex::Print() << ' ' << fnm[f] << '=' << nscbc_cfg.uface[f];
       }
-      amrex::Print()
-          << ",  R+ order = " << nscbc_order << "\n";
+      amrex::Print() << "\n";
       banner_shown = true;
     }
   }
 
   amrex::GpuBndryFuncFab<PCHypFillExtDir> hyp_bndry_func(
-    PCHypFillExtDir{lprobparm, nscbc_cfg.uface, nscbc_order,
-#ifdef USE_PS_HYDRO
-                    ps_bc_rx_ghost(),
-#else
-                    0,
-#endif
-                    nscbc_cfg.pamb
+    PCHypFillExtDir{lprobparm, nscbc_cfg.uface
 #ifdef USE_PS_HYDRO
                     , ps_presence_params()   // host-side read
 #endif

@@ -39,7 +39,7 @@
 #include "PS_util.H"
 #include "PS_presence.H"
 #include "PS_promote.H"
-#include "PS_nscbc.H"      // _fan_march, _pack_state: the vent outflow wave model
+#include "PS_bc_fan.H"     // _fan_march, _pack_state: the vent outflow wave model
 
 #include <AMReX_MultiFab.H>
 #include <AMReX_ParallelDescriptor.H>

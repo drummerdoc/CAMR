@@ -695,11 +695,10 @@ The invariant is capped at `prob.res_mach_max` (default 1.0) times the reservoir
 | `CAMR.ps_bc_use_nscbc` | 0 | global NSCBC enable (forced 0 without `USE_PS_HYDRO`) |
 | `CAMR.ps_bc_nscbc_{x,y,z}{lo,hi}` | −1 (inherit) | per-face enable, 0/1 |
 | `CAMR.ps_bc_p_amb_{x,y,z}{lo,hi}` | −1 (inherit `prob.p_amb`) | per-face far-field pressure [Pa] |
-| `CAMR.ps_bc_nscbc_order` | 2 | $R^+$ extrapolation: 1 copy, 2 minmod slope (other values forced to 2) |
 | `CAMR.ps_bc_copy_interior` | 1 (PS) / 0 | `bcnormal` ghost = interior copy; 0 = linear-acoustic fill |
 | `prob.res_char_inflow` | 0 | pipe-break: characteristic inflow velocity (needs `res_dome_taper=1`) |
 | `prob.res_mach_max` | 1.0 | pipe-break: cap $u_b \le$ `res_mach_max` $\cdot c_{\mathrm{frozen}}$; ≤ 0 disables |
-| `CAMR.ps_bc_nscbc_v2`, `ps_bc_nscbc_flash` | — | retired; a set key aborts (the choked fan with HEM re-closure is the only construction) |
+| `CAMR.ps_bc_nscbc_v2`, `ps_bc_nscbc_flash`, `ps_bc_nscbc_order`, `ps_bc_rx_ghost` | — | retired; a set key aborts (the ghost on an NSCBC face is the extrapolated state; §6.3 describes the retired characteristic construction only as history, rewritten at item 5e) |
 
 In-code constants: `PACK_ETA` $=0.05$ (per-substep $|\Delta\rho_k|/\rho_k$; one step reproduces the small-signal arithmetic bit-for-bit), `FAN_NMAX` $=256$, ghost pressure floor $\max(10^{-3}P_{\mathrm{amb}}, 1\ \text{Pa})$, `P_FLOOR_PA` $=1$ Pa on re-closed phase pressures, $c_k$ floored to 1 m/s on a non-finite EOS return.
 

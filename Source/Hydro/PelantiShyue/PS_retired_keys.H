@@ -78,6 +78,8 @@ inline void ps_abort_on_retired_keys()
         { "ps_bc_nscbc_impedance", "the NSCBC face impedance is the frozen (Wallis) one; the Wood impedance held the jet head at the outlet (X-33)" },
         { "ps_bc_rx_form",       "the relaxed boundary is the Hedstrom value condition I = P_inf; the rate form (L_in = 0) has no far field and plugged the outlet (PLAN_relaxed_boundary §13.1)" },
         { "ps_bc_rx_z",          "the relaxed boundary measures its impedance on the seed trials (Wood is the degenerate-pair fallback, counted as zfb)" },
+        { "ps_bc_rx_ghost",      "the ghost on an NSCBC face is the extrapolated state (continued where the flow leaves, copied where it enters); the characteristic construction of PS_nscbc.H and the copy ghost are deleted (PLAN_relaxed_boundary §13.17, item 5a)" },
+        { "ps_bc_nscbc_order",   "the characteristic ghost construction is deleted; the extrapolated ghost has one order (minmod over three cells)" },
         { "ps_p_mode",           "ps_state_from_cons forms the volume-weighted mixture pressure only" },
         { "ps_p_clip",           "ps_state_from_cons forms the volume-weighted mixture pressure only" },
         { "ps_c_mode",           "ps_state_from_cons forms the Wood mixture sound speed only" },

@@ -21,7 +21,7 @@ Compiled only when the Exec `GNUmakefile` sets `USE_PS_HYDRO = TRUE` (adds `-DUS
 | `hem_relax_x3.H` | Mechanical / thermal relaxation kernels and the coupled X3 operator `ps_x3_relax_cell`. |
 | `hem_mass_transfer.H` | The split (non-X3) Gibbs-equilibrium and finite-rate SRT mass transfer with its cause census. |
 | `hem_flash.H` | The flash nucleator `ps_flash_source_cell`, its refusal census, `co2_sat_state`, `ps_below_triple_point`. |
-| `PS_nscbc.H` | Characteristic (NSCBC) outflow ghost construction with the choked, flashing fan. |
+| `PS_bc_fan.H` | The vent face type's outflow wave model: the choked, flashing expansion fan and the state assembled from its end (the NSCBC ghost on a face is the extrapolated state, `Utils/BCfill.cpp`; the relaxed boundary is `CAMR_bc_relaxed.cpp`, its dials `PS_bc_config.H`). |
 | `PS_guards.H` | Single-source guards, floors and their counters. |
 | `PS_validate.H` | `CAMR.ps_validate=1` state-invariant tripwire (reports, never repairs). |
 | `PS_zerod_test.H` | 0-D self-tests (`CAMR.ps_ptg_selftest`, `ps_relax_sweep`, `ps_x3_test`). |

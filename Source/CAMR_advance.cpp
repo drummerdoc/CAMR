@@ -256,24 +256,15 @@ CAMR::CAMR_advance (Real time,
             amrex::Print() << " | flux_sanit = " << fs_
                            << "  reflux_cap = " << rc_
                            << "  reflux_clamp = " << rk_;
-            //  NSCBC ghost-fill zero-gradient fallbacks by cause
-            //  (PS_guards.H); all zero unless NSCBC is enabled on a face.
-            amrex::Long nc_ = pc.nscbc_zg_c;
-            amrex::Long ns_ = pc.nscbc_zg_sup;
+            //  NSCBC face counts (PS_guards.H); all zero unless NSCBC is
+            //  enabled on a face.
             amrex::Long nt_ = pc.nscbc_zg_slots;
-            amrex::Long np_ = pc.nscbc_zg_pack;
             amrex::Long nf_ = pc.nscbc_flash;
             amrex::Long nr_ = pc.nscbc_rx_fb;
             amrex::ParallelDescriptor::ReduceLongSum(nr_);
-            amrex::ParallelDescriptor::ReduceLongSum(nc_);
-            amrex::ParallelDescriptor::ReduceLongSum(ns_);
             amrex::ParallelDescriptor::ReduceLongSum(nt_);
-            amrex::ParallelDescriptor::ReduceLongSum(np_);
             amrex::ParallelDescriptor::ReduceLongSum(nf_);
-            amrex::Print() << " | nscbc_zg(c=" << nc_
-                           << ",sup=" << ns_
-                           << ",slots=" << nt_
-                           << ",pack=" << np_ << ")"
+            amrex::Print() << " | nscbc_zg_slots=" << nt_
                            << " nscbc_flash=" << nf_
                            << " nscbc_rx_fb=" << nr_ << "\n";
             pc.reset_guards();

@@ -114,11 +114,10 @@ def test_N1(two_phase=False):
         for n in (256, 512):
             for amp in ((1.0, 50.0) if n == 256 else (1.0,)):
                 variants.append((n, 0.0, amp, 2, 0))
-        variants.append((256, 0.0, 1.0, 1, 0))
     stop, t_inc, t_ref = (4.0e-3, 1.0e-3, 3.5e-3) if not two_phase else (6.0e-3, 2.75e-3, 5.5e-3)
     for (n, sig, amp, order, imp) in variants:
         name = f"{'N1b' if two_phase else 'N1'}_n{n}_s{sig}_a{amp:g}_o{order}" + ('_wood' if imp == 1 else '_zg' if imp == -1 else '')
-        args = [f'amr.n_cell={n}', f'prob.amp={amp}', f'CAMR.ps_bc_nscbc_order={order}', 'prob.ic=1']
+        args = [f'amr.n_cell={n}', f'prob.amp={amp}', 'prob.ic=1']   # order: the o1 variant is retired with ps_bc_nscbc_order (item 5a)
         if imp == -1: args.append('CAMR.ps_bc_use_nscbc=0')
         if two_phase: args += ['prob.two_phase=1', 'prob.a1_0=0.05']
         rc, fs, zg = run(name, 1, args, stop, 5.0e-4)

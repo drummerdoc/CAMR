@@ -189,10 +189,7 @@ struct PsCounters {
     long   flux_sanit        = 0;   // silent limiters
     long   reflux_cap        = 0;
     long   reflux_clamp      = 0;
-    long   nscbc_zg_c        = 0;   // NSCBC zero-gradient refusals by cause
-    long   nscbc_zg_sup      = 0;
-    long   nscbc_zg_slots    = 0;
-    long   nscbc_zg_pack     = 0;
+    long   nscbc_zg_slots    = 0;   // NSCBC extrapolated ghosts refused to the copy
     long   nscbc_flash       = 0;
     long   nscbc_rx_fb       = 0;   // relaxed-state pass: cells kept on the fan's wave
     // ---- clean_state mass repairs (PS_guards.H), [PS-FLOOR] ----------
@@ -251,7 +248,7 @@ struct PsCounters {
         guard_seen = guard_reject_low = rho_clamp_lo = 0;
         ctop_seen = ctop_sub = ctop_host_floor = 0;
         flux_sanit = reflux_cap = reflux_clamp = 0;
-        nscbc_zg_c = nscbc_zg_sup = nscbc_zg_slots = nscbc_zg_pack = 0;
+        nscbc_zg_slots = 0;
         nscbc_flash = 0;
         nscbc_rx_fb = 0;
     }
