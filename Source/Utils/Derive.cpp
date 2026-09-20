@@ -600,6 +600,51 @@ CAMR_dernull(
   // This routine does nothing.
 }
 
+//  The sound speed the derives report.  On a PS run it is the frozen
+//  Wallis c_mix (PS_wavespeed.H) that dt and the fluxes use; the
+//  single-fluid inversion EOS::REY2P/REY2Gam is not a speed the scheme
+//  propagates with and can abort on healthy two-phase states.  With
+//  ps_hydro=0 the slots are passive and the single-fluid c is the scheme's.
+struct CamrDeriveC {
+  int ps = 0;
+#ifdef USE_PS_HYDRO
+  PsPres pres;
+#endif
+};
+static CamrDeriveC camr_derive_c_route()
+{
+  CamrDeriveC r;
+#ifdef USE_PS_HYDRO
+  r.ps   = ps_derive_ps_hydro();
+  r.pres = ps_presence_params();
+#endif
+  return r;
+}
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+amrex::Real camr_derive_c(amrex::Array4<const amrex::Real> const& dat, int i, int j, int k,
+                          amrex::Real rho, const CamrDeriveC& r) noexcept
+{
+#ifdef USE_PS_HYDRO
+  if (r.ps != 0) {
+    amrex::Real Uloc[NVAR];
+    for (int n = 0; n < NVAR; ++n) Uloc[n] = dat(i, j, k, n);
+    return ps_frozen_cmix_from_state(Uloc, r.pres);
+  }
+#else
+  amrex::ignore_unused(r);
+#endif
+  const amrex::Real rhoInv = 1.0 / rho;
+  amrex::Real massfrac[NUM_SPECIES];
+  for (int n = 0; n < NUM_SPECIES; ++n) {
+    massfrac[n] = dat(i, j, k, UFS + n) * rhoInv;
+  }
+  amrex::Real gam, pres;
+  amrex::Real eint = dat(i, j, k, UEINT)/rho;
+  EOS::REY2P(rho,eint,massfrac,pres);
+  EOS::REY2Gam(rho,eint,massfrac,gam);
+  return std::sqrt(gam*pres/rho);
+}
+
 void
 CAMR_dersoundspeed(
   const amrex::Box& bx,
@@ -615,15 +660,7 @@ CAMR_dersoundspeed(
   auto const dat = datfab.const_array();
   auto cfab = derfab.array();
 
-#ifdef USE_PS_HYDRO
-  //  On a PS run the sound speed is the frozen Wallis c_mix
-  //  (PS_wavespeed.H) that dt and the fluxes use; the single-fluid
-  //  inversion EOS::REY2P/REY2Gam is not a speed the scheme propagates with
-  //  and can abort on healthy two-phase states.  With ps_hydro=0 the slots
-  //  are passive and the single-fluid c is the scheme's speed.
-  const int    l_ps   = ps_derive_ps_hydro();
-  const PsPres l_pres = ps_presence_params();   // one host read
-#endif
+  const CamrDeriveC croute = camr_derive_c_route();   // one host read
   amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
     const amrex::Real rho = dat(i, j, k, URHO);
 #ifdef AMREX_USE_EB
@@ -632,27 +669,7 @@ CAMR_dersoundspeed(
     } else
 #endif
     {
-    amrex::Real c;
-#ifdef USE_PS_HYDRO
-    if (l_ps != 0) {
-      amrex::Real Uloc[NVAR];
-      for (int n = 0; n < NVAR; ++n) Uloc[n] = dat(i, j, k, n);
-      c = ps_frozen_cmix_from_state(Uloc, l_pres);
-    } else
-#endif
-    {
-    const amrex::Real rhoInv = 1.0 / rho;
-    amrex::Real massfrac[NUM_SPECIES];
-    for (int n = 0; n < NUM_SPECIES; ++n) {
-      massfrac[n] = dat(i, j, k, UFS + n) * rhoInv;
-    }
-    amrex::Real gam,pres;
-    amrex::Real eint = dat(i, j, k, UEINT)/rho;
-    EOS::REY2P(rho,eint,massfrac,pres);
-    EOS::REY2Gam(rho,eint,massfrac,gam);
-    c = std::sqrt(gam*pres/rho);
-   // EOS::RTY2Cs(rho, T, massfrac, c);
-    }
+    const amrex::Real c = camr_derive_c(dat, i, j, k, rho, croute);
     cfab(i, j, k) = c;
     }
   });
@@ -673,11 +690,7 @@ CAMR_dermachnumber(
   auto const dat = datfab.const_array();
   auto mach = derfab.array();
 
-#ifdef USE_PS_HYDRO
-  //  Same routing as CAMR_dersoundspeed above.
-  const int    l_ps   = ps_derive_ps_hydro();
-  const PsPres l_pres = ps_presence_params();   // one host read
-#endif
+  const CamrDeriveC croute = camr_derive_c_route();   // one host read
   amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
     const amrex::Real rho = dat(i, j, k, URHO);
 #ifdef AMREX_USE_EB
@@ -686,27 +699,7 @@ CAMR_dermachnumber(
     } else
 #endif
     {
-    amrex::Real c;
-#ifdef USE_PS_HYDRO
-    if (l_ps != 0) {
-      amrex::Real Uloc[NVAR];
-      for (int n = 0; n < NVAR; ++n) Uloc[n] = dat(i, j, k, n);
-      c = ps_frozen_cmix_from_state(Uloc, l_pres);
-    } else
-#endif
-    {
-    const amrex::Real rhoInv = 1.0 / rho;
-    amrex::Real massfrac[NUM_SPECIES];
-    for (int n = 0; n < NUM_SPECIES; ++n) {
-      massfrac[n] = dat(i, j, k, UFS + n) * rhoInv;
-    }
-    amrex::Real gam,pres;
-    amrex::Real eint = dat(i, j, k, UEINT)/rho;
-    EOS::REY2P(rho,eint,massfrac,pres);
-    EOS::REY2Gam(rho,eint,massfrac,gam);
-    c = std::sqrt(gam*pres/rho);
-    //EOS::RTY2Cs(rho, T, massfrac, c);
-    }
+    const amrex::Real c = camr_derive_c(dat, i, j, k, rho, croute);
     AMREX_D_TERM(const amrex::Real datxsq = dat(i, j, k, UMX) * dat(i, j, k, UMX);,
                  const amrex::Real datysq = dat(i, j, k, UMY) * dat(i, j, k, UMY);,
                  const amrex::Real datzsq = dat(i, j, k, UMZ) * dat(i, j, k, UMZ););
