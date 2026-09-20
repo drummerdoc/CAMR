@@ -121,6 +121,10 @@ struct PsPhaseAPI {
     //  EOS::Y2WBAR.
     double M_kg_mol   = 0.0;
     double molar_mass() const { return M_kg_mol; }
+    //  Universal gas constant [J/(mol K)], the backend's own (one value
+    //  in the EOS and in the SRT prefactor).
+    double R_gas_J_molK = 0.0;
+    double r_gas() const { return R_gas_J_molK; }
 
     bool valid() const {
         return static_cast<bool>(state_from_rho_e_phase);

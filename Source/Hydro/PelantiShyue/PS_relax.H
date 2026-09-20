@@ -74,6 +74,7 @@ ps_make_camr_eos_api()
         amrex::Real wbar = amrex::Real(0.0);
         EOS::Y2WBAR(Yw, wbar);            // [kg/mol] in every CAMR backend
         api.M_kg_mol = double(wbar);
+        api.R_gas_J_molK = double(hem::R_gas);
     }
     api.state_from_rho_e_phase =
         [](int phase, double rho, double e, hem::PsPhase& ph)

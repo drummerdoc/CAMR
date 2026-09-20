@@ -687,7 +687,7 @@ inline bool ps_x3_relax_cell(V6& U, const PsPhaseAPI& eos, double dt,
     };
 
     constexpr double two_pi = 6.283185307179586;
-    constexpr double R_u    = 8.314462618;          // J/(mol K)
+    const double R_u = eos.r_gas();                 // J/(mol K)
     auto rates = [&](const V6& W, const X3SS& s,
                      double& rT, double& rM) -> bool {
         const double a1 = W[0], a2 = 1.0 - a1;
