@@ -438,31 +438,15 @@ const char* ps_flux_name()
 // ---------------------------------------------------------------------
 void
 PS_umeth(const Box& bx,
-         const int* /*bclo*/, const int* /*bchi*/,
          const int* domlo, const int* domhi,   // transverse-term domain guard
          Array4<const Real> const& uin_arr,
-         Array4<const Real> const& /*q*/,
-         Array4<const Real> const& /*qa*/,
          Array4<Real> const& dsdt_arr,
          AMREX_D_DECL(Array4<Real> const& flx1,
                       Array4<Real> const& flx2,
                       Array4<Real> const& flx3),
-         AMREX_D_DECL(Array4<Real> const& /*q1*/,
-                      Array4<Real> const& /*q2*/,
-                      Array4<Real> const& /*q3*/),
-         AMREX_D_DECL(Array4<const Real> const& /*a1*/,
-                      Array4<const Real> const& /*a2*/,
-                      Array4<const Real> const& /*a3*/),
          Array4<Real> const& pdivu,
-         Array4<const Real> const& /*vol*/,
          const GpuArray<Real, AMREX_SPACEDIM> dx,
-         const Real dt,
-         const Real /*small*/,
-         const Real /*small_dens*/,
-         const Real /*small_pres*/,
-         const Real /*smallu*/,
-         const int /*slope_order*/,
-         const PassMap* /*lpmap*/)
+         const Real dt)
 {
     BL_PROFILE("PS_umeth()");
 
@@ -924,39 +908,6 @@ PS_umeth(const Box& bx,
         //  coarse-fine fix-up is not done (gaps ~1e-4, resolution-dominated).
         //  docs §4.9.
     } // ===== end wave-propagation interior =====
-}
-
-#else  // !USE_PS_HYDRO
-
-void
-PS_umeth(const amrex::Box& /*bx*/,
-         const int* /*bclo*/, const int* /*bchi*/,
-         const int* /*domlo*/, const int* /*domhi*/,
-         amrex::Array4<const amrex::Real> const& /*uin_arr*/,
-         amrex::Array4<const amrex::Real> const& /*q*/,
-         amrex::Array4<const amrex::Real> const& /*qa*/,
-         amrex::Array4<amrex::Real> const& /*dsdt_arr*/,
-         AMREX_D_DECL(amrex::Array4<amrex::Real> const& /*flx1*/,
-                      amrex::Array4<amrex::Real> const& /*flx2*/,
-                      amrex::Array4<amrex::Real> const& /*flx3*/),
-         AMREX_D_DECL(amrex::Array4<amrex::Real> const& /*q1*/,
-                      amrex::Array4<amrex::Real> const& /*q2*/,
-                      amrex::Array4<amrex::Real> const& /*q3*/),
-         AMREX_D_DECL(amrex::Array4<const amrex::Real> const& /*a1*/,
-                      amrex::Array4<const amrex::Real> const& /*a2*/,
-                      amrex::Array4<const amrex::Real> const& /*a3*/),
-         amrex::Array4<amrex::Real> const& /*pdivu*/,
-         amrex::Array4<const amrex::Real> const& /*vol*/,
-         const amrex::GpuArray<amrex::Real, AMREX_SPACEDIM> /*dx*/,
-         const amrex::Real /*dt*/,
-         const amrex::Real /*small*/,
-         const amrex::Real /*small_dens*/,
-         const amrex::Real /*small_pres*/,
-         const amrex::Real /*smallu*/,
-         const int /*slope_order*/,
-         const PassMap* /*lpmap*/)
-{
-    amrex::Abort("PS_umeth called without USE_PS_HYDRO — bug in build system.");
 }
 
 #endif // USE_PS_HYDRO

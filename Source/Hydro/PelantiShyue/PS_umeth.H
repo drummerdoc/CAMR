@@ -20,35 +20,20 @@
 //  did not run.
 const char* ps_flux_name();              // "wp", the only interior flux; any other CAMR.ps_flux aborts
 
+//  The signature carries what the solver reads: the conserved state, the
+//  update and flux arrays it writes, pdivu (zeroed), the transverse-term
+//  domain guard, dx and dt.  The primitive arrays, edge states, areas and
+//  small_* floors of Godunov_umeth / MOL_umeth are not part of it.
 void PS_umeth(
     const amrex::Box& bx,
-    const int* bclo, const int* bchi,
     const int* domlo, const int* domhi,
     amrex::Array4<const amrex::Real> const& uin_arr,
-    amrex::Array4<const amrex::Real> const& q,
-    amrex::Array4<const amrex::Real> const& qa,
     amrex::Array4<amrex::Real> const& dsdt_arr,
     AMREX_D_DECL(
         amrex::Array4<amrex::Real> const& flx1,
         amrex::Array4<amrex::Real> const& flx2,
         amrex::Array4<amrex::Real> const& flx3),
-    AMREX_D_DECL(
-        amrex::Array4<amrex::Real> const& q1,
-        amrex::Array4<amrex::Real> const& q2,
-        amrex::Array4<amrex::Real> const& q3),
-    AMREX_D_DECL(
-        amrex::Array4<const amrex::Real> const& a1,
-        amrex::Array4<const amrex::Real> const& a2,
-        amrex::Array4<const amrex::Real> const& a3),
     amrex::Array4<amrex::Real> const& pdivu,
-    amrex::Array4<const amrex::Real> const& vol,
     const amrex::GpuArray<amrex::Real, AMREX_SPACEDIM> dx,
-    const amrex::Real dt,
-    const amrex::Real small,
-    const amrex::Real small_dens,
-    const amrex::Real small_pres,
-    const amrex::Real smallu,
-    const int slope_order,
-    const PassMap* lpmap);
-
+    const amrex::Real dt);
 #endif

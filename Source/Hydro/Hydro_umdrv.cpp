@@ -79,12 +79,8 @@ hydro_umdrv (bool do_mol,
     if (do_ps_hydro) {
         // Pelanti-Shyue six-equation wave-propagation solver
         // (Source/Hydro/PelantiShyue/, docs/MODEL_AND_ALGORITHM.md §1).
-        PS_umeth(bx, bclo, bchi, domlo, domhi, uin_arr, q_arr, qaux_arr, dsdt_arr,
-                 AMREX_D_DECL(flx[0], flx[1], flx[2]),
-                 AMREX_D_DECL(qec_arr[0], qec_arr[1], qec_arr[2]),
-                 AMREX_D_DECL(a[0], a[1], a[2]), pdivuarr, vol, dx, dt,
-                 small, small_dens, small_pres, smallu, plm_iorder, lpmap);
-
+        PS_umeth(bx, domlo, domhi, uin_arr, dsdt_arr,
+                 AMREX_D_DECL(flx[0], flx[1], flx[2]), pdivuarr, dx, dt);
     } else
 #endif
     if (do_mol) {
@@ -113,9 +109,15 @@ hydro_umdrv (bool do_mol,
     GpuArray<int,AMREX_SPACEDIM> ldomhi{AMREX_D_DECL(domhi[0],domhi[1],domhi[2])};
     GpuArray<int,AMREX_SPACEDIM> lbclo{AMREX_D_DECL(bclo[0],bclo[1],bclo[2])};
     GpuArray<int,AMREX_SPACEDIM> lbchi{AMREX_D_DECL(bchi[0],bchi[1],bchi[2])};
+    // Under PS the primitives are not filled (CAMR_construct_hydro_source.cpp)
+    // and difmag is 0 below, so divu is set to zero, not computed.
+    if (do_ps_hydro) {
+        divu.setVal<RunOn::Device>(0.0);
+    } else {
     ParallelFor(bxg2, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
         hydro_divu(i, j, k, q_arr, AMREX_D_DECL(dx0, dx1, dx2), divuarr, ldomlo, ldomhi, lbclo, lbchi);
     });
+    }
 
     // Adjust the fluxes with artificial viscosity and area-weight them.
     //
