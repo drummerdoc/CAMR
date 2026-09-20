@@ -150,3 +150,35 @@ B2 followed step by step (`Exec/CO2_RiemannSuite/sens_B2`, 64 cells, plotfile ev
 
 - **R8 `plt_04250` is byte-equal to R7e's on every field compared (ρ, α₁, P, u; level 0 = the whole domain)**: the batch D1–D11b, the strict predicate and the removal of the energy-sign test change nothing on demo3 through the arrival transient. D11b is invisible there because `inputs.satjet_demo3` runs `ps_relax_mode = 2` with `ps_mt_tau_model = 0` (constant τ; the SRT prefactor is not evaluated), so the 2-D demo2/demo3 records are **not** stale from D11b — only mode-5 two-phase records are. Validator as R7e's. The refusal causes were not read: the run was launched without `CAMR.ps_diag_mass=1` (my command's omission), so no `[PS-GUARD]` lines; rerun pending.
 - Production binary at HEAD, for `VERIFICATION` §6.4: N1 r = +0.0005 (256 and 512 cells), +0.0197 (50 m/s pulse); **N1b r = −0.0066** (relaxed boundary, `nr`), +0.2251 (interior copy, `ps_bc_use_nscbc=0`); N4 recovery 1.000 0.762 0.624 0.526 0.291 0.251 0.058 0.009 … 0.000 per ms. `nscbc_suite.py` still prints the old ghost's predictions (N1b `pred=0.290`, FAIL labels) and, with `NSCBC_RESUME`, scores a finished case's old output without saying so — both to fix at 5e. `flashing_front.py`'s `v2s` leg runs the face as `nr` (vented 1.7139, −27.5 %); with `ps_bc_nscbc_type_xhi=vent` it is 2.4728 against the reference 2.3649 (+4.6 %) — the pin to record at 5e is the `vent` one and the script's leg must set the type.
+
+## 10. The front sensitivity, localised: a relaxation oscillation of the flash nucleator (`[DECIDE-A6b]`)
+
+Tool: `Exec/CO2_RiemannSuite/sens_front.py TAG [k=v …]` — B2 (64 cells, defaults), two runs of one binary differing by 10⁻¹² relative in `p_L`, max relative difference per plotfile and the fitted growth factor per step. No code was instrumented; the operators were switched by their dials.
+
+| variant | growth / step | max ΔP/P |
+|---|---|---|
+| defaults | 1.41 | 0.23 |
+| `ps_wp_order=1` | 1.16 | 0.22 |
+| `ps_lw_skip_contact=1` | 1.59 | 0.43 |
+| `ps_strang=1` | 1.83 | 0.41 |
+| `cfl=0.125` | 1.48 (per step: twice per unit time) | 0.18 |
+| `ps_relax_mode=2` | 2.24 | 0.13 |
+| `ps_theta_tau=0` | 1.16 | 3·10⁻⁵ |
+| `ps_do_relax=0` (flash on) | 1.22 | 4·10⁻⁶ |
+| **`ps_flash_tau=0` (flash off)** | **none** | 1.3·10⁻¹² |
+| `ps_flash_tau=1e-5` | 1.41 (the 0.2 cap still binds) | 0.23 |
+| `ps_flash_tau=1e-4` | 1.075 | 8·10⁻¹⁰ |
+| `ps_flash_tau=1e-3` | none | 2·10⁻¹¹ |
+| `ps_flash_metastable_margin=0.3` | none | 1·10⁻¹¹ |
+
+The amplifier is the flash nucleator, and the hydro order, the splitting and the relaxation closure only modulate it. Followed step by step, the front cell's pressure is a sawtooth: it decays under the rarefaction to ≈ 21.5 bar, the nucleator fires, the pressure jumps by 3.5–9 bar in one step (25.3, 29.5 bar against neighbours at 20–21), the window closes, it decays again over 1–4 steps; each burst flips the sign of the perturbation and multiplies it by 3–4. It is a limit cycle of period 2–5 steps, not round-off: round-off only selects its phase.
+
+Why (derivation, B2 numbers). One nucleation step moves α₂ by Δα = β·w_T·w_meta(P)·w_α·(α_birth − α₂), β = min(1 − e^{−Δt/τ}, 0.2) = 0.2 at τ = 10⁻⁷ s. In a liquid cell the pressure answers with ΔP ≈ K·Δα, K = ρ_L c_L² ≈ 2·10⁸ Pa (measured: Δα₁ = −0.003 gave +4 to +8 bar). The window `w_meta` is a smoothstep of width b = margin·P_sat = 2.4 bar, maximum slope 1.5/b. The loop gain of pressure → nucleation → pressure is
+
+g = K · β · (α_birth − α₂) · 1.5 / b ≈ 2·10⁸ · 0.2 · 0.04 · 1.5 / 2.4·10⁵ ≈ 10,
+
+with negative sign (nucleation raises the pressure that drives it). |g| > 2 is a period-doubling instability of the per-step map; at g ≈ 10 the response is bang-bang. The dial runs agree with the formula: τ = 10⁻⁴ (β = 0.067, g ≈ 3) leaves a weak mode (1.075), τ = 10⁻³ (β = 0.007, g ≈ 0.3) and margin 0.3 (b three times wider, and a lower firing pressure) none. The gain does not depend on Δt as long as the 0.2 cap binds, which is why halving the CFL leaves the per-step growth unchanged. The metastable plateau ahead of the front also moves with it: 21.2 bar at defaults, 20.2 at τ = 10⁻⁴, 19.9 at 10⁻³ (P_sat(260 K) = 24.2 bar).
+
+What it costs today: a pressure spike of 15–40 % in the front cell on most steps of every flashing-front case (B2, B7, B9, B12, N1b's flashing mixture, the pipe-break front), a front position that is reproducible only to the burst phase, and byte-level witnesses that any 10⁻¹¹ change breaks on two-phase cases. The error norms of the battery do not see it.
+
+Options for Marc (no code written): **(a)** make the nucleation step implicit in its own feedback — choose Δα so that the *post-nucleation* pressure sits on the window, i.e. solve P + K_eff·Δα = the window's target with K_eff from the cell's own EOS (one scalar secant, the pattern of the relaxed boundary), capped by the present proposal; no new constant, the 0.2 cap becomes inactive where the cell is stiff. **(b)** scale the window width with the cell's stiffness, b = max(margin·P_sat, K·β·α_birth·1.5/g_target) — a derived width, but it widens the metastable band by physics-free numerics. **(c)** run τ_flash at a physical nucleation time (10⁻⁴–10⁻³ s) — a parameter choice, moves the plateau by 1 bar and every flashing reference. **(d)** leave it and record it as a known limit-cycle of the nucleator. Recommended: (a), derived and written up before code, tested first on `sens_front.py` (growth → 1, sawtooth gone) and the B2/B7/B9 error norms.
