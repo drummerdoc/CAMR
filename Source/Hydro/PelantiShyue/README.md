@@ -21,8 +21,15 @@ Compiled only when the Exec `GNUmakefile` sets `USE_PS_HYDRO = TRUE` (adds `-DUS
 | `hem_relax_x3.H` | Mechanical / thermal relaxation kernels and the coupled X3 operator `ps_x3_relax_cell`. |
 | `hem_mass_transfer.H` | The split (non-X3) Gibbs-equilibrium and finite-rate SRT mass transfer with its cause census. |
 | `hem_flash.H` | The flash nucleator `ps_flash_source_cell`, its refusal census, `co2_sat_state`, `ps_below_triple_point`. |
-| `PS_bc_fan.H` | The vent face type's outflow wave model: the choked, flashing expansion fan and the state assembled from its end (the NSCBC ghost on a face is the extrapolated state, `Utils/BCfill.cpp`; the relaxed boundary is `PS_nscbc.cpp`, its dials `PS_nscbc.H`). |
+| `PS_nscbc.cpp`, `PS_nscbc.H` | The relaxed boundary of an NSCBC face (`CAMR::ps_bc_relaxed`): the entering acoustic wave of the boundary cell re-posed on its relaxed state; the boundary dials, the face set (`ps_nscbc_cfg`, defined in `Utils/BCfill.cpp` with the extrapolated ghost fill) and the admissibility predicate `ps_bc_state_cause`. |
+| `PS_bc_fan.H` | The `vent` face type's outflow wave model: the choked, flashing expansion fan (`_fan_march`, `_hem_reclose`) and the state assembled from its end (`_pack_state`). |
 | `PS_guards.H` | Single-source guards, floors and their counters. |
+| `PS_corridor.H` | The Corridor saturation projection: a phase too thin to have dynamics of its own is carried on its saturation curve at the host's temperature. |
+| `PS_util.H` | Per-cell helpers: finite-or-fallback read, kinetic energy, `ps_pure_species`, the V6 pack/unpack (`ps_pack_v6`). |
+| `PS_constants.H` | The numeric floors the module repeats, each named once (`ps_const::`). |
+| `PS_dials.H` | The one way a dial is read: `CAMR.<key>` with its default, the resolved value added back to `job_info`. |
+| `PS_counters.H` | The single host-side store of every diagnostic counter (`PsCounters`, `PsX3Stats`, `PsPresDiag`). |
+| `PS_retired_keys.H` | The one table of retired `CAMR.ps_*` keys; a set key aborts at startup with its reason. |
 | `PS_validate.H` | `CAMR.ps_validate=1` state-invariant tripwire (reports, never repairs). |
 | `PS_zerod_test.H` | 0-D self-tests (`CAMR.ps_ptg_selftest`, `ps_relax_sweep`, `ps_x3_test`). |
 | `Make.package`, `SOURCE_STAMP` | Build list; provenance of the copied algorithm header. |

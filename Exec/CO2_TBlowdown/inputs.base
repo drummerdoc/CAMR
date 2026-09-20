@@ -43,7 +43,7 @@ CAMR.ppm_type = 1
 
 CAMR.ps_hydro = 1
 #  The flux is the compiled default (wp), written out so the deck
-#  records the scheme it runs; ps_wp_order stays at its default (1).
+#  records the scheme it runs; ps_wp_order stays at its default (2).
 CAMR.ps_flux  = wp
 #  NSCBC on the Inflow face (the switch reaches Inflow faces only; the
 #  slip walls are not NSCBC faces).  The ghost fill and the relaxed

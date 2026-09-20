@@ -714,39 +714,84 @@ $D\sim2.5\times10^{-4}$~m; changing it is an open (G-DEF-gated) decision,
 not yet taken.
 
 % =====================================================================
-\section{Characteristic outflow (NSCBC) with a flashing ghost}
+\section{Characteristic outflow (NSCBC): the condition posed on the relaxed state}
 \label{sec:nscbc}
 % =====================================================================
 
-Subsonic characteristic outflow (\code{CAMR.ps\_bc\_use\_nscbc}$=1$;
-construction in \code{PS\_nscbc.H}) builds the ghost state from the
-outgoing invariant $R^+$ (minmod-extrapolated) and an ambient-encoding
-target $R^-_{\mathrm{targ}}=-P_{\mathrm{amb}}/\rho c$ and an optional
-term $-\sigma(P_N-P_{\mathrm{amb}})/\rho c$ (\code{CAMR.ps\_bc\_nscbc\_sigma},
-default 0.25).  Measured on the pipe-break outlet, the $\sigma$ term is a
-\emph{partial reflection}, not the Poinsot--Lele restoring rate it is named
-after: the steady face obeys $u=(1-\sigma)(P-P_{\mathrm{amb}})/\rho c$, and
-$\sigma=0$ places the face exactly on the outgoing simple wave of a far
-field at rest.  Production decks run $\sigma=0$; the key is a retirement
-candidate (\code{DESIGN\_DECISIONS.md} B-4).  The ambient pressure is \code{prob.p\_amb}, overridable
-\emph{per face} via \code{CAMR.ps\_bc\_p\_amb\_\{x,y,z\}\{lo,hi\}}
-(sentinel $-1$ inherits).  The per-phase repack integrates the isentrope
-adaptively in pressure sub-steps capped at
-$\Delta P \le 0.05\,\rho_k c_k^2$ (one step reproduces the historical
-small-signal arithmetic bit-for-bit).  For large exterior jumps the ghost
-is a \textbf{choked fan}: the state marches toward $P_{\mathrm{amb}}$
-along the per-phase isentropes with HEM saturated re-closure inside the
-dome ($T_{\mathrm{sat}}$ by bisection on the EOS $P_{\mathrm{sat}}$;
-enthalpy-lever quality), $\mathrm{d}u = -\mathrm{d}P/(\rho c_{\mathrm{path}})$
-with $c_{\mathrm{path}}^2 = \mathrm{d}P/\mathrm{d}\rho_{\mathrm{mix}}$
-along the path, terminating at the critical-flow throat ($G=\rho u$
-maximum) or at $P_{\mathrm{amb}}$, whichever comes first.
-The in-dome re-closure is the only ghost construction
-(\code{ps\_bc\_nscbc\_flash} is retired).  Measured on the flashing-vent benchmark: vented-mass deficit
-$-4.1\,\%$ against a boundary-free reference (the retired legacy
-construction sat at $-7.6\,\%$, the frozen one at $-34\,\%$).  The legacy
-treatment and its \code{ps\_bc\_nscbc\_v2} key are retired (a set key
-aborts).
+A pressure-relaxed wave travels at a relaxed speed $c_{\mathrm{rel}}$
+below the frozen $c_f$ and carries $\Delta P/\Delta u=\rho c_{\mathrm{rel}}$,
+so on the \emph{frozen} incoming characteristic of the boundary cell it has
+a component $\Delta R^-=\Delta P\,(1/\rho c_{\mathrm{rel}}-1/\rho c_f)$.
+Any condition written on the frozen eigenstructure returns it, with
+reflection $(Z_f-Z_{\mathrm{rel}})/(Z_f+Z_{\mathrm{rel}})$ ($0.29$ predicted
+and $0.22$ measured at $\alpha_1=0.05$, 280\,K, for a characteristic ghost
+and for a plain copy alike).  An NSCBC face
+(\code{CAMR.ps\_bc\_use\_nscbc}, per face \code{ps\_bc\_nscbc\_\{x,y,z\}\{lo,hi\}};
+\code{Inflow} faces only) is therefore two pieces.
+
+\paragraph{The ghost} carries no boundary model: where the flow leaves,
+each phase slot and momentum of the conserved state is continued on its
+minmod slope over three cells and the mixture is assembled from the
+phases ($\rho=m_1+m_2$, $\rho E=\mathcal E_1+\mathcal E_2$ exactly), so
+the outgoing waves keep their second-order correction at the face; where
+the flow enters, the ghost is a copy, because the entering contact wave
+would carry a continued composition in.  A continuation outside the
+admissible set (non-positive $\rho$, negative partial mass,
+$\alpha_1\notin[0,1]$, no branch-locked EOS root; the sign of $e$ is not
+tested) is refused to the copy and counted.
+
+\paragraph{The relaxed boundary} acts after the fluxes are formed.  The
+predicted increment of the boundary cell $N$ is known except for one
+term, the acoustic wave the face fan sent in.  It is replaced by the HLLC
+star jump of $N$ for a pressure amplitude $a$,
+\begin{equation}
+S_M(a)=u_{n,N}-\frac{n_{\mathrm{sgn}}\,a}{\rho_N c_{\mathrm{eff}}},\qquad
+\hat{\mathcal W}(a)=U^\star_N\big(s_{\mathrm{ac}},S_M(a)\big)-q_N ,
+\end{equation}
+with $s_{\mathrm{ac}}$ the fan's outer speed on the domain side and
+$c_{\mathrm{eff}}=|s_{\mathrm{ac}}-u_{n,N}|$; the wave enters first order.
+With $\mathcal R$ the full reaction chain of \S\ref{sec:sources},
+\begin{equation}
+q^h(a)=q_N+\Delta q^{\mathrm{known}}-\frac{\Delta t}{\Delta x}s_{\mathrm{ac}}\hat{\mathcal W}(a),
+\qquad \tilde q(a)=\mathcal R\big(q^h(a);\Delta t_r\big),
+\end{equation}
+and $a$ is chosen so that the incoming \emph{relaxed} invariant sits at
+its far-field value (Hedstrom, on the relaxed step):
+\begin{equation}
+g(a)=\big[\tilde P-Z\,\tilde u_{\mathrm{out}}\big]-P_\infty=0,\qquad
+Z=\rho_N c_{\mathrm{eq}},\quad
+c_{\mathrm{eq}}^2=\frac{\Delta\tilde P}{\Delta\tilde\rho}\ \text{between the two seed trials},
+\end{equation}
+$\tilde P=\alpha_1P_1+\alpha_2P_2$.  The impedance is the slope the
+reaction chain itself imposes on the cell (a degenerate pair keeps the
+Wood impedance and is counted).  $g$ is solved by a secant from the seeds
+$a=0$ and the larger in magnitude of the fan's amplitude and the
+Hedstrom amplitude $\tfrac12(P_\infty-P_N+\rho_Nc_fu_{\mathrm{out},N})$,
+with a fixed number of updates (\code{ps\_bc\_nscbc\_nsec}, default 2); a
+refused trial leaves the fan's wave and is counted.  There is no Mach
+dispatch: the frozen fan decides whether an acoustic wave enters.  In a
+single-phase cell $\mathcal R$ is the identity and $g$ is the classical
+condition.  $P_\infty$ is \code{prob.p\_amb}, per face
+\code{CAMR.ps\_bc\_p\_amb\_\{x,y,z\}\{lo,hi\}}.
+
+\paragraph{Face types} (\code{ps\_bc\_nscbc\_type\_\{face\}}, a deck
+choice).  \code{nr} is the condition above.  \code{vent} is a plenum at
+$P_\infty$: an outflow cell takes as its entering wave the \textbf{choked
+fan} between $q_N$ and the fan-end state --- the state marched toward
+$P_\infty$ along the per-phase isentropes in sub-steps capped at
+$\Delta P\le0.05\,\rho_kc_k^2$, with HEM saturated re-closure inside the
+dome ($T_{\mathrm{sat}}$ by bisection on the EOS $P_{\mathrm{sat}}$,
+enthalpy-lever quality),
+$\mathrm du=-\mathrm dP/(\rho c_{\mathrm{path}})$ with
+$c_{\mathrm{path}}^2=\mathrm dP/\mathrm d\rho_{\mathrm{mix}}$ along the
+path, terminated at $P_\infty$ or at the critical-flow throat
+($G=\rho u$ maximum) --- with the amplitude fixed by the fan; an inflow
+cell takes the \code{nr} relation, which for flow entering from rest is
+the stagnation condition.  Measured: a relaxed pulse reflects $-0.007$
+(\code{nr}); on the flashing-vent benchmark the vented mass is $+4.6\,\%$
+against a boundary-free reference under \code{vent} and $-27.5\,\%$ under
+\code{nr}; \code{vent} is an open-end reflector for acoustics
+($|r|=0.92$).  The pass is host-only, as the reaction chain is.
 
 % =====================================================================
 \section*{Summary of runtime options referenced above}
@@ -778,7 +823,8 @@ parameter & default & selects \\
 \code{ps\_bc\_use\_nscbc}    & 0 & characteristic outflow on every \code{Inflow}-typed face, \S\ref{sec:nscbc} \\
 \code{ps\_bc\_nscbc\_\{x,y,z\}\{lo,hi\}} & $-1$ & per-face NSCBC enable (0/1; $-1$ inherits the global key) \\
 \code{ps\_bc\_p\_amb\_\{x,y,z\}\{lo,hi\}} & $-1$ & per-face ambient pressure [Pa] ($-1$ inherits \code{prob.p\_amb}) \\
-\code{ps\_bc\_nscbc\_sigma}  & 0.25 & the $\sigma$ term (a partial reflection; decks run 0) \\
+\code{ps\_bc\_nscbc\_type\_\{x,y,z\}\{lo,hi\}} & \code{nr} & face type of the relaxed boundary, \code{nr} or \code{vent}, \S\ref{sec:nscbc} \\
+\code{ps\_bc\_nscbc\_nsec}   & 2 & secant updates of the relaxed boundary (0--8) \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -793,7 +839,9 @@ star state of \S\ref{sec:star} is the only construction; $=0$ aborts),
 \code{ps\_rk\_model} (a per-phase mass partition that violated the forced
 per-phase mass jump \eqref{eq:rk}), \code{ps\_mt\_target},
 \code{ps\_src\_p\_reproject}, \code{ps\_relax\_hyst},
-\code{ps\_bc\_nscbc\_flash}, \code{ps\_mech\_kernel},
+\code{ps\_bc\_nscbc\_flash}, \code{ps\_bc\_nscbc\_sigma},
+\code{ps\_bc\_nscbc\_impedance}, \code{ps\_bc\_nscbc\_order},
+\code{ps\_bc\_rx} and the \code{ps\_bc\_rx\_*} names, \code{ps\_mech\_kernel},
 \code{ps\_mech\_close}, and \code{ps\_relax\_mode}$\in\{1,3,4\}$.  The
 full table is \code{Source/Hydro/PelantiShyue/PS\_retired\_keys.H}.  Retirement-by-abort rather than silent
 acceptance is deliberate: a stale deck fails loudly instead of running a
