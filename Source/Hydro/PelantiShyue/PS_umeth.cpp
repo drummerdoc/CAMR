@@ -357,6 +357,52 @@ ps_viscous_face(int d, int i, int j, int k,
 }
 
 // ---------------------------------------------------------------------
+//  ps_wp_deposit: one direction's contribution to the per-cell deposit of
+//  the non-conserved slots {alpha_1, E_1, E_2} (Pass 3): the first-order
+//  fluctuations A+ of the low face and A- of the high face, the limited
+//  correction's flux difference (o2) and the transverse term's (tv).
+//  (di,dj,dk) is the unit offset to the high face.
+// ---------------------------------------------------------------------
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+void ps_wp_deposit(amrex::Array4<const amrex::Real> const& fluct,
+                   amrex::Array4<const amrex::Real> const& ft,
+                   amrex::Array4<const amrex::Real> const& gtv,
+                   bool o2, bool tv, amrex::Real inv,
+                   int i, int j, int k, int di, int dj, int dk,
+                   amrex::Real& da, amrex::Real& de1, amrex::Real& de2) noexcept
+{
+    da  -= (fluct(i,j,k,1) + fluct(i+di,j+dj,k+dk,0)) * inv;
+    de1 -= (fluct(i,j,k,3) + fluct(i+di,j+dj,k+dk,2)) * inv;
+    de2 -= (fluct(i,j,k,5) + fluct(i+di,j+dj,k+dk,4)) * inv;
+    if (o2) {
+        da  -= (ft(i+di,j+dj,k+dk,0) - ft(i,j,k,0)) * inv;
+        de1 -= (ft(i+di,j+dj,k+dk,1) - ft(i,j,k,1)) * inv;
+        de2 -= (ft(i+di,j+dj,k+dk,2) - ft(i,j,k,2)) * inv;
+    }
+    if (tv) {
+        da  -= (gtv(i+di,j+dj,k+dk,0) - gtv(i,j,k,0)) * inv;
+        de1 -= (gtv(i+di,j+dj,k+dk,1) - gtv(i,j,k,1)) * inv;
+        de2 -= (gtv(i+di,j+dj,k+dk,2) - gtv(i,j,k,2)) * inv;
+    }
+}
+
+//  Store one face's transverse term g: the non-conserved slots go to the
+//  face's gtv array (deposited in Pass 3), the conserved ones into its flux.
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+void ps_wp_tv_store(const amrex::Real g[NVAR],
+                    amrex::Array4<amrex::Real> const& gtv,
+                    amrex::Array4<amrex::Real> const& flx,
+                    int i, int j, int k) noexcept
+{
+    for (int n = 0; n < NVAR; ++n) {
+        if      (n == UALPHA1) gtv(i,j,k,0) = ps_finite_or(g[n], amrex::Real(0.0));
+        else if (n == UE1)     gtv(i,j,k,1) = ps_finite_or(g[n], amrex::Real(0.0));
+        else if (n == UE2)     gtv(i,j,k,2) = ps_finite_or(g[n], amrex::Real(0.0));
+        else if (n != UTEMP)   flx(i,j,k,n) = ps_finite_or(flx(i,j,k,n) + g[n], amrex::Real(0.0));
+    }
+}
+
+// ---------------------------------------------------------------------
 //  Solver-selection dial accessors (declared in PS_umeth.H).  One
 //  ParmParse read per key, process-wide; the resolved value is force-added
 //  so job_info records what actually ran.
@@ -807,12 +853,7 @@ PS_umeth(const Box& bx,
 #if (AMREX_SPACEDIM == 3)
                 ps_wp_tvterm(0,2,i,j,k, uin_arr, wp_wave_z, domlo,domhi, dt_l, dx[2], g);
 #endif
-                for(int n=0;n<NVAR;++n){
-                    if      (n==UALPHA1) gtv_x(i,j,k,0)=ps_finite_or(g[n],Real(0.0));
-                    else if (n==UE1)     gtv_x(i,j,k,1)=ps_finite_or(g[n],Real(0.0));
-                    else if (n==UE2)     gtv_x(i,j,k,2)=ps_finite_or(g[n],Real(0.0));
-                    else if (n!=UTEMP)   flx1(i,j,k,n)=ps_finite_or(flx1(i,j,k,n)+g[n],Real(0.0));
-                }
+                ps_wp_tv_store(g, gtv_x, flx1, i,j,k);
             });
             // y-faces: transverse from x (+ z in 3D).
             amrex::ParallelFor(yfbx, [=] AMREX_GPU_DEVICE (int i,int j,int k) noexcept {
@@ -821,12 +862,7 @@ PS_umeth(const Box& bx,
 #if (AMREX_SPACEDIM == 3)
                 ps_wp_tvterm(1,2,i,j,k, uin_arr, wp_wave_z, domlo,domhi, dt_l, dx[2], g);
 #endif
-                for(int n=0;n<NVAR;++n){
-                    if      (n==UALPHA1) gtv_y(i,j,k,0)=ps_finite_or(g[n],Real(0.0));
-                    else if (n==UE1)     gtv_y(i,j,k,1)=ps_finite_or(g[n],Real(0.0));
-                    else if (n==UE2)     gtv_y(i,j,k,2)=ps_finite_or(g[n],Real(0.0));
-                    else if (n!=UTEMP)   flx2(i,j,k,n)=ps_finite_or(flx2(i,j,k,n)+g[n],Real(0.0));
-                }
+                ps_wp_tv_store(g, gtv_y, flx2, i,j,k);
             });
 #if (AMREX_SPACEDIM == 3)
             // z-faces: transverse from x + y.
@@ -834,12 +870,7 @@ PS_umeth(const Box& bx,
                 Real g[NVAR]; for(int n=0;n<NVAR;++n) g[n]=Real(0.0);
                 ps_wp_tvterm(2,0,i,j,k, uin_arr, wp_wave_x, domlo,domhi, dt_l, dx[0], g);
                 ps_wp_tvterm(2,1,i,j,k, uin_arr, wp_wave_y, domlo,domhi, dt_l, dx[1], g);
-                for(int n=0;n<NVAR;++n){
-                    if      (n==UALPHA1) gtv_z(i,j,k,0)=ps_finite_or(g[n],Real(0.0));
-                    else if (n==UE1)     gtv_z(i,j,k,1)=ps_finite_or(g[n],Real(0.0));
-                    else if (n==UE2)     gtv_z(i,j,k,2)=ps_finite_or(g[n],Real(0.0));
-                    else if (n!=UTEMP)   flx3(i,j,k,n)=ps_finite_or(flx3(i,j,k,n)+g[n],Real(0.0));
-                }
+                ps_wp_tv_store(g, gtv_z, flx3, i,j,k);
             });
 #endif
         }
@@ -868,57 +899,15 @@ PS_umeth(const Box& bx,
         amrex::ParallelFor(bx,
         [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
             Real da = Real(0.0), de1 = Real(0.0), de2 = Real(0.0);
-            {
-                const Real inv = Real(1.0) / dx[0];
-                da  -= (wp_fluct_x(i,j,k,1) + wp_fluct_x(i+1,j,k,0)) * inv;
-                de1 -= (wp_fluct_x(i,j,k,3) + wp_fluct_x(i+1,j,k,2)) * inv;
-                de2 -= (wp_fluct_x(i,j,k,5) + wp_fluct_x(i+1,j,k,4)) * inv;
-                if (o2) {
-                    da  -= (wp_ft_x(i+1,j,k,0) - wp_ft_x(i,j,k,0)) * inv;
-                    de1 -= (wp_ft_x(i+1,j,k,1) - wp_ft_x(i,j,k,1)) * inv;
-                    de2 -= (wp_ft_x(i+1,j,k,2) - wp_ft_x(i,j,k,2)) * inv;
-                }
-                if (tv) {
-                    da  -= (gtv_x(i+1,j,k,0) - gtv_x(i,j,k,0)) * inv;
-                    de1 -= (gtv_x(i+1,j,k,1) - gtv_x(i,j,k,1)) * inv;
-                    de2 -= (gtv_x(i+1,j,k,2) - gtv_x(i,j,k,2)) * inv;
-                }
-            }
+            ps_wp_deposit(wp_fluct_x, wp_ft_x, gtv_x, o2, tv, Real(1.0) / dx[0],
+                          i,j,k, 1,0,0, da, de1, de2);
 #if (AMREX_SPACEDIM >= 2)
-            {
-                const Real inv = Real(1.0) / dx[1];
-                da  -= (wp_fluct_y(i,j,k,1) + wp_fluct_y(i,j+1,k,0)) * inv;
-                de1 -= (wp_fluct_y(i,j,k,3) + wp_fluct_y(i,j+1,k,2)) * inv;
-                de2 -= (wp_fluct_y(i,j,k,5) + wp_fluct_y(i,j+1,k,4)) * inv;
-                if (o2) {
-                    da  -= (wp_ft_y(i,j+1,k,0) - wp_ft_y(i,j,k,0)) * inv;
-                    de1 -= (wp_ft_y(i,j+1,k,1) - wp_ft_y(i,j,k,1)) * inv;
-                    de2 -= (wp_ft_y(i,j+1,k,2) - wp_ft_y(i,j,k,2)) * inv;
-                }
-                if (tv) {
-                    da  -= (gtv_y(i,j+1,k,0) - gtv_y(i,j,k,0)) * inv;
-                    de1 -= (gtv_y(i,j+1,k,1) - gtv_y(i,j,k,1)) * inv;
-                    de2 -= (gtv_y(i,j+1,k,2) - gtv_y(i,j,k,2)) * inv;
-                }
-            }
+            ps_wp_deposit(wp_fluct_y, wp_ft_y, gtv_y, o2, tv, Real(1.0) / dx[1],
+                          i,j,k, 0,1,0, da, de1, de2);
 #endif
 #if (AMREX_SPACEDIM == 3)
-            {
-                const Real inv = Real(1.0) / dx[2];
-                da  -= (wp_fluct_z(i,j,k,1) + wp_fluct_z(i,j,k+1,0)) * inv;
-                de1 -= (wp_fluct_z(i,j,k,3) + wp_fluct_z(i,j,k+1,2)) * inv;
-                de2 -= (wp_fluct_z(i,j,k,5) + wp_fluct_z(i,j,k+1,4)) * inv;
-                if (o2) {
-                    da  -= (wp_ft_z(i,j,k+1,0) - wp_ft_z(i,j,k,0)) * inv;
-                    de1 -= (wp_ft_z(i,j,k+1,1) - wp_ft_z(i,j,k,1)) * inv;
-                    de2 -= (wp_ft_z(i,j,k+1,2) - wp_ft_z(i,j,k,2)) * inv;
-                }
-                if (tv) {
-                    da  -= (gtv_z(i,j,k+1,0) - gtv_z(i,j,k,0)) * inv;
-                    de1 -= (gtv_z(i,j,k+1,1) - gtv_z(i,j,k,1)) * inv;
-                    de2 -= (gtv_z(i,j,k+1,2) - gtv_z(i,j,k,2)) * inv;
-                }
-            }
+            ps_wp_deposit(wp_fluct_z, wp_ft_z, gtv_z, o2, tv, Real(1.0) / dx[2],
+                          i,j,k, 0,0,1, da, de1, de2);
 #endif
             dsdt_arr(i,j,k, UALPHA1) = ps_finite_or(da,  Real(0.0));
             dsdt_arr(i,j,k, UE1)     = ps_finite_or(de1, Real(0.0));
