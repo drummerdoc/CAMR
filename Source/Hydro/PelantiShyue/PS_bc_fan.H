@@ -105,7 +105,7 @@ _hem_reclose(amrex::Real P,
 //  type is its only caller.  docs §6.3.
 // ---------------------------------------------------------------------
 struct FanEnd {
-    amrex::Real P, u_out, m1, m2, e1, e2, alpha1;
+    amrex::Real u_out, m1, m2, e1, e2, alpha1;
     bool ok;
 };
 
@@ -229,7 +229,7 @@ _fan_march(const PsPhaseSpeeds& ph, amrex::Real P_N, amrex::Real un_out_N,
         if (steps >= FAN_NMAX) { fan_ok = false; break; }
     }
     if (!fan_ok) return out;
-    out.P = P_cur; out.u_out = u_out;
+    out.u_out = u_out;
     out.m1 = fm1; out.m2 = fm2; out.e1 = ee1; out.e2 = ee2; out.alpha1 = fal1;
     out.ok = true;
     return out;

@@ -91,6 +91,7 @@ inline void ps_abort_on_retired_keys()
         { "ps_bc_rx_probe",      "renamed ps_bc_nscbc_probe" },
         { "ps_bc_rx_probe_cell", "renamed ps_bc_nscbc_probe_cell" },
         { "ps_llf_diag",         "the per-face LLF-fallback print is deleted; [PS-FLCAUSE] counts the refusals by cause" },
+        { "ps_flash_h_mode",     "the newborn phase always carries its saturation enthalpy (the projection); the avg/dom/auto carrier rules were unreachable" },
         { "ps_p_mode",           "ps_state_from_cons forms the volume-weighted mixture pressure only" },
         { "ps_p_clip",           "ps_state_from_cons forms the volume-weighted mixture pressure only" },
         { "ps_c_mode",           "ps_state_from_cons forms the Wood mixture sound speed only" },

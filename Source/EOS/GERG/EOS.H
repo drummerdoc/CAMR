@@ -548,15 +548,7 @@ namespace EOS {
   { gerg::State s = co2_state_from_rho_e_cached(R, E, gdiag::S_REY2GAM);
     gam1 = (s.rho*s.c*s.c)/s.P; }
 
-  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-  void REY2dpde(amrex::Real R, amrex::Real E, amrex::Real*, amrex::Real& dpde)
-  { gerg::State s = co2_state_from_rho_e_cached(R, E, gdiag::S_REY2DPDE);
-    const amrex::Real gam1 = (s.rho*s.c*s.c)/s.P;
-    dpde = (gam1 - amrex::Real(1.0))*R; }
 
-  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-  void REY2dpdr_e(amrex::Real R, amrex::Real E, amrex::Real*, amrex::Real& dpdr_e)
-  { gerg::State s = co2_state_from_rho_e_cached(R, E, gdiag::S_REY2DPDRE); dpdr_e = s.P/s.rho; }
 
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void REY2_prim(amrex::Real R, amrex::Real E, amrex::Real*,
@@ -577,10 +569,6 @@ namespace EOS {
   // ================================================================
   //  Branch-locked per-phase entries (docs/MODEL_AND_ALGORITHM.md §7.2).
   // ================================================================
-  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-  void RTY2E_phase(amrex::Real R, amrex::Real T, amrex::Real*,
-                   hem::Phase3 phase, amrex::Real& E)
-  { E = gerg::state_TR_phase(double(T), double(R), g_phase(phase)).e; }
 
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void REY2P_phase(amrex::Real R, amrex::Real E, amrex::Real*,
@@ -648,10 +636,6 @@ namespace EOS {
   // ================================================================
   //  Inversion / initial-condition entry points
   // ================================================================
-  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-  void EY2T(amrex::Real E, amrex::Real* Y, amrex::Real& T)
-  { const amrex::Real rho_ref = gerg::P_c*gerg::M/(gerg::T_c*amrex::Real(8.314));
-    REY2T(rho_ref, E, Y, T); }
 
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void PYT2RE(amrex::Real P, amrex::Real*, amrex::Real T, amrex::Real& R, amrex::Real& E)
@@ -669,9 +653,6 @@ namespace EOS {
   void PYT2RE_vapor(amrex::Real P, amrex::Real*, amrex::Real T, amrex::Real& R, amrex::Real& E)
   { PYT2RE(P, nullptr, T, R, E); }
 
-  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-  void PYT2R(amrex::Real P, amrex::Real*, amrex::Real T, amrex::Real& R)
-  { R = g_rho_from_T_P(double(T), double(P), gerg::Phase::Vapor); }
 
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void RYP2E(amrex::Real R, amrex::Real*, amrex::Real P, amrex::Real& E)
@@ -693,13 +674,7 @@ namespace EOS {
   void RYP2T(amrex::Real R, amrex::Real*, amrex::Real P, amrex::Real& T)
   { T = g_T_from_P_rho(double(R), double(P)); }
 
-  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-  void RTY2P(amrex::Real R, amrex::Real T, amrex::Real*, amrex::Real& P)
-  { P = gerg::state_TR_phase(double(T), double(R), gerg::Phase::Vapor).P; }
 
-  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-  void RPY2Cs(amrex::Real R, amrex::Real P, amrex::Real*, amrex::Real& Cs)
-  { Cs = gerg::state_TR_auto(g_T_from_P_rho(double(R), double(P)), double(R)).c; }
 
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void RTY2Cs(amrex::Real R, amrex::Real T, amrex::Real*, amrex::Real& Cs)
@@ -719,49 +694,14 @@ namespace EOS {
     return gerg::Rgas*T*a0t/gerg::M; }
 
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-  void TY2Cv(amrex::Real T, amrex::Real*, amrex::Real& Cv) { Cv = g_cv0(double(T)); }
-  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void TY2Cp(amrex::Real T, amrex::Real*, amrex::Real& Cp)
   { Cp = g_cv0(double(T)) + gerg::Rgas/gerg::M; }
 
-  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-  void T2Cpi(amrex::Real T, amrex::Real Cpi[])
-  { amrex::Real Cp; TY2Cp(T, nullptr, Cp);
-    for (int n = 0; n < NUM_SPECIES; n++) Cpi[n] = Cp; }
 
-  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-  void T2Ei(amrex::Real T, amrex::Real Ei[])
-  { const double e = g_e0(double(T)) - g_e0(298.15);
-    for (int n = 0; n < NUM_SPECIES; n++) Ei[n] = e; }
 
-  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-  void T2Hi(amrex::Real T, amrex::Real Hi[])
-  { const double h = (g_e0(double(T)) + gerg::Rgas*double(T)/gerg::M)
-                   - (g_e0(298.15)    + gerg::Rgas*298.15/gerg::M);
-    for (int n = 0; n < NUM_SPECIES; n++) Hi[n] = h; }
 
-  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-  void HY2T(amrex::Real H, amrex::Real*, amrex::Real& T)
-  { T = amrex::Real(300.0);
-    for (int it = 0; it < 20; ++it) {
-        amrex::Real hi[NUM_SPECIES]; T2Hi(T, hi);
-        const double cp = g_cv0(double(T)) + gerg::Rgas/gerg::M;
-        const amrex::Real dT = (H - hi[0]) / amrex::Real(cp);
-        T += dT;
-        if (std::abs(dT) < amrex::Real(1.0e-6)) break;
-        if (T < amrex::Real(50.0))   T = amrex::Real(50.0);
-        if (T > amrex::Real(3000.0)) T = amrex::Real(3000.0);
-    } }
 
-  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-  void TY2G(amrex::Real, amrex::Real*, amrex::Real& G) { G = amrex::Real(1.29); }
 
-  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-  void RTY2dpde_dpdre(amrex::Real R, amrex::Real T, amrex::Real*,
-                      amrex::Real& dpde, amrex::Real& dpdr_e)
-  { gerg::State s = gerg::state_TR_phase(double(T), double(R), gerg::Phase::Vapor);
-    const amrex::Real gam1 = (s.rho*s.c*s.c)/s.P;
-    dpde = (gam1 - amrex::Real(1.0))*R; dpdr_e = s.P/s.rho; }
 
   // Backend-independent tail: the _liquid/_vapor branch wrappers, the
   // ideal-gas forwarders (RTY2Cv/Cp/Ei/Hi, TY2E/H, RHY2T, RTY2G, RYET2P),

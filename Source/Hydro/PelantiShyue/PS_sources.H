@@ -198,7 +198,7 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                 static const char* fn[hem::PS_FLR_NCAUSE] = {
                     "FIRED", "tau", "eos", "a_nan", "not_dom", "m_guard",
                     "rhomix", "pdom", "w_T", "w_meta", "w_alpha", "da2",
-                    "da1", "a_floor", "noproj", "h_nan", "sstar",
+                    "da1", "a_floor", "h_nan", "sstar",
                     "s1_mass", "s1_afloor", "s1_ph1", "s1_ph2" };
                 long tot = 0;
                 for (int c = 1; c < hem::PS_FLR_NCAUSE; ++c)

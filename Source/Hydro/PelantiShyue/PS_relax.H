@@ -37,10 +37,6 @@
 // ---------------------------------------------------------------------
 inline PsPresDiag&  ps_pres_diag_data() { return ps_counters().pres; }
 
-// CAMR.ps_pres_diag: see hem::ps_diag_pres (the single read site).
-inline int ps_pres_diag() {
-    return hem::ps_diag_pres();
-}
 
 // -----------------------------------------------------------------
 //  ps_make_camr_eos_api — the PsPhaseAPI callback every hem kernel here
@@ -308,11 +304,11 @@ ps_x3_grid_relax_cell(int i, int j, int k,
     //  [PS-DT] census from the kernel's own entry/exit states; -1 = the
     //  thermal leg did not run.
     double dt_pre = -1.0, dt_post = -1.0;
-    if (ps_pres_diag() != 0) { xp.dT_pre = &dt_pre; xp.dT_post = &dt_post; }
+    if (hem::ps_diag_pres() != 0) { xp.dT_pre = &dt_pre; xp.dT_post = &dt_post; }
 
     hem::ps_x3_relax_cell(Uv, eos, double(dt), xp);
 
-    if (ps_pres_diag() != 0 && dt_pre >= 0.0 && dt_post >= 0.0) {
+    if (hem::ps_diag_pres() != 0 && dt_pre >= 0.0 && dt_post >= 0.0) {
         PsPresDiag& pdt = ps_pres_diag_data();
         ++pdt.n_dt;
         pdt.dtpre_sum  += dt_pre;
@@ -478,7 +474,7 @@ ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
     // [PS-WORK] (ps_pres_diag): this rank's relaxation cost unit for the
     //  work estimate, all modes and both Strang sweeps: EOS solves and
     //  cells swept.
-    const bool report = do_print && ps_pres_diag() != 0;
+    const bool report = do_print && hem::ps_diag_pres() != 0;
     if (report) {
         amrex::AllPrint() << "[PS-WORK] eos_solve=" << (n_solve - n_solve_sweep0)
                           << " cells=" << n_cells_sweep << "\n";

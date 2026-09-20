@@ -138,10 +138,6 @@ inline bool ps_T_in_band(double T, const PsPhaseAPI& eos)
 {
     return T > eos.t_triple() && T < eos.t_crit();
 }
-inline bool ps_in_coexistence_band(double T1, double T2, const PsPhaseAPI& eos)
-{
-    return ps_T_in_band(T1, eos) && ps_T_in_band(T2, eos);
-}
 
 
 // ---------------------------------------------------------------------

@@ -146,8 +146,7 @@
       }
 #ifdef USE_PRTAB_EOS
       if (prtab_diag_enabled()) {                       // read-only diagnostic
-          const hem::State pr = hem::state_from_rho_e_phase(
-              co2_fluid(), rho, e, phase, amrex::Real(-1.0));
+          const hem::State pr = hem::state_from_rho_e_phase(co2_fluid(), rho, e, phase);
           prtab_diag::record(site, (p == 0) ? 1 : 2 /*branchL/V*/, rho, e, st, pr);
       }
 #else
@@ -158,8 +157,7 @@
   }
 
   // ----------------------------------------------------------------
-  //  Composition: molar mass of the pure fluid (Y2X / X2Y are in
-  //  EOS_contract.H).
+  //  Composition: molar mass of the pure fluid.
   // ----------------------------------------------------------------
   AMREX_GPU_HOST_DEVICE
   AMREX_FORCE_INLINE
@@ -200,28 +198,7 @@
       gam1 = (s.rho * s.c * s.c) / s.P;
   }
 
-  //  dP/de|_rho and dP/drho|_e in the ideal-gas-like decomposition
-  //      (dP/de)_rho = rho (gamma_1 - 1),   (dP/drho)_e = P / rho,
-  //  which is what ctoprim's source linearisation uses and matches
-  //  GammaLaw's (gamma-1) rho.  The exact PR partials are not needed
-  //  here: the pressure itself comes from REY2P, and the PS module
-  //  computes its own real-fluid derivatives.
-  AMREX_GPU_HOST_DEVICE
-  AMREX_FORCE_INLINE
-  void REY2dpde(amrex::Real R, amrex::Real E, amrex::Real* /*Y*/, amrex::Real& dpde)
-  {
-      hem::State s = co2_state_from_rho_e_cached(R, E, prtab_diag::S_REY2DPDE);
-      const amrex::Real gam1 = (s.rho * s.c * s.c) / s.P;
-      dpde = (gam1 - amrex::Real(1.0)) * R;
-  }
 
-  AMREX_GPU_HOST_DEVICE
-  AMREX_FORCE_INLINE
-  void REY2dpdr_e(amrex::Real R, amrex::Real E, amrex::Real* /*Y*/, amrex::Real& dpdr_e)
-  {
-      hem::State s = co2_state_from_rho_e_cached(R, E, prtab_diag::S_REY2DPDRE);
-      dpdr_e = s.P / s.rho;
-  }
 
   //  rho, e -> all ctoprim primitives from one state solve.  Per-field
   //  formulas are identical to the individual entries above, so the
@@ -252,18 +229,6 @@
       E = s.e;
   }
 
-  //  rho, T -> e, branch-locked: a dilute phase set to thermal
-  //  equilibrium with its host stays on its own branch.
-  AMREX_GPU_HOST_DEVICE
-  AMREX_FORCE_INLINE
-  void RTY2E_phase(amrex::Real R, amrex::Real T, amrex::Real* /*Y*/,
-                   hem::Phase3 phase, amrex::Real& E)
-  {
-      const hem::PRFluid f = co2_fluid();
-      const amrex::Real v_m = hem::v_PR_from_rho(f, R);
-      hem::State s = hem::state_from_T_v(f, T, v_m, phase);
-      E = s.e;
-  }
 
   //  (rho, T) -> {P, e} on the auto (dome-aware) surface: the direct
   //  inverse of REY2T / REY2P at fixed rho, so a temperature floor gets
@@ -302,17 +267,6 @@
   //  entries GammaLaw itself stubs.
   // ================================================================
 
-  //  e -> T without a density.  No exact inversion exists; the critical
-  //  density is used as a proxy (GammaLaw's EY2T has the same limitation).
-  //  Callers that hold rho use REY2T.
-  AMREX_GPU_HOST_DEVICE
-  AMREX_FORCE_INLINE
-  void EY2T(amrex::Real E, amrex::Real* Y, amrex::Real& T)
-  {
-      const hem::PRFluid f = co2_fluid();
-      const amrex::Real rho_ref = f.pr.Pc * f.M / (f.pr.Tc * amrex::Real(8.314));
-      REY2T(rho_ref, E, Y, T);
-  }
 
   //  P, Y, T -> rho, e for single-phase initial data.  The Vapor hint
   //  covers supercritical and superheated states; the cubic root
@@ -404,13 +358,6 @@
       R = s.rho; E = s.e; C = s.c;
   }
 
-  AMREX_GPU_HOST_DEVICE
-  AMREX_FORCE_INLINE
-  void PYT2R(amrex::Real P, amrex::Real* /*Y*/, amrex::Real T, amrex::Real& R)
-  {
-      hem::State s = hem::state_from_T_P(co2_fluid(), T, P, hem::Phase3::Vapor);
-      R = s.rho;
-  }
 
   //  rho, P -> e on the auto surface.  In-dome this is a saturation-
   //  mixture lever-rule energy, not a branch state: never write it into
@@ -554,24 +501,7 @@
       T = s.T;
   }
 
-  AMREX_GPU_HOST_DEVICE
-  AMREX_FORCE_INLINE
-  void RTY2P(amrex::Real R, amrex::Real T, amrex::Real* /*Y*/, amrex::Real& P)
-  {
-      const hem::PRFluid f = co2_fluid();
-      const amrex::Real v_m = hem::v_PR_from_rho(f, R);
-      hem::State s = hem::state_from_T_v(f, T, v_m, hem::Phase3::Vapor);
-      P = s.P;
-  }
 
-  //  Auto-surface sound speed from (rho, P) or (rho, T).
-  AMREX_GPU_HOST_DEVICE
-  AMREX_FORCE_INLINE
-  void RPY2Cs(amrex::Real R, amrex::Real P, amrex::Real* /*Y*/, amrex::Real& Cs)
-  {
-      hem::State s = hem::state_from_P_rho(co2_fluid(), P, R);
-      Cs = s.c;
-  }
 
   AMREX_GPU_HOST_DEVICE
   AMREX_FORCE_INLINE
@@ -583,121 +513,20 @@
       Cs = s.c;
   }
 
-  //  Specific heats from the ideal-gas polynomial.  The departure
-  //  correction is omitted: these entries serve plotfile derives, not
-  //  the solver, and the real-fluid c_v lives in the PS module.
-  AMREX_GPU_HOST_DEVICE
-  AMREX_FORCE_INLINE
-  void TY2Cv(amrex::Real T, amrex::Real* /*Y*/, amrex::Real& Cv)
-  {
-      const hem::PRFluid f = co2_fluid();
-      const amrex::Real R_univ = amrex::Real(8.314);   // J/(mol K)
-      // c_v_ig = c_p_ig - R; per mass divides by molar mass.
-      const amrex::Real cp_ig_R = hem::cp_ig_over_R(f, T);
-      const amrex::Real cv_ig_R = cp_ig_R - amrex::Real(1.0);
-      Cv = cv_ig_R * R_univ / f.M;
-  }
 
   AMREX_GPU_HOST_DEVICE
   AMREX_FORCE_INLINE
   void TY2Cp(amrex::Real T, amrex::Real* /*Y*/, amrex::Real& Cp)
   {
       const hem::PRFluid f = co2_fluid();
-      const amrex::Real R_univ = amrex::Real(8.314);
-      Cp = hem::cp_ig_over_R(f, T) * R_univ / f.M;
+      Cp = hem::cp_ig_over_R(f, T) * hem::R_gas / f.M;
   }
 
-  AMREX_GPU_HOST_DEVICE
-  AMREX_FORCE_INLINE
-  void T2Cpi(amrex::Real T, amrex::Real Cpi[])
-  {
-      amrex::Real Cp;
-      amrex::Real Y_dummy[NUM_SPECIES] = {amrex::Real(1.0), amrex::Real(0.0), amrex::Real(0.0)};
-      TY2Cp(T, Y_dummy, Cp);
-      for (int n = 0; n < NUM_SPECIES; n++)
-          Cpi[n] = Cp;
-  }
 
-  //  Ideal-gas internal energy from T, referenced to T_ref = 298.15 K,
-  //  as a per-species array so TY2E forms sum Y_k e_k; every entry is
-  //  identical for pure CO2.
-  AMREX_GPU_HOST_DEVICE
-  AMREX_FORCE_INLINE
-  void T2Ei(amrex::Real T, amrex::Real Ei[])
-  {
-      const hem::PRFluid f = co2_fluid();
-      const amrex::Real R_univ = amrex::Real(8.314);
-      const amrex::Real Tref = amrex::Real(298.15);
-      const amrex::Real e_ig_per_mol =
-          hem::e_ig_per_mole(f, T) - hem::e_ig_per_mole(f, Tref);
-      const amrex::Real e_ig = e_ig_per_mol / f.M;
-      for (int n = 0; n < NUM_SPECIES; n++)
-          Ei[n] = e_ig;
-      (void)R_univ;
-  }
 
-  //  Ideal-gas enthalpy helpers (plotfile derives).  The real-fluid
-  //  enthalpy is h = e + P/rho via RYET2P.
-  AMREX_GPU_HOST_DEVICE
-  AMREX_FORCE_INLINE
-  void T2Hi(amrex::Real T, amrex::Real Hi[])
-  {
-      const hem::PRFluid f = co2_fluid();
-      const amrex::Real R_univ = amrex::Real(8.314);
-      const amrex::Real Tref = amrex::Real(298.15);
-      const amrex::Real h_ig_per_mol =
-          hem::h_ig_per_mole(f, T) - hem::h_ig_per_mole(f, Tref);
-      const amrex::Real h_ig = h_ig_per_mol / f.M;
-      for (int n = 0; n < NUM_SPECIES; n++)
-          Hi[n] = h_ig;
-      (void)R_univ;
-  }
 
-  //  H -> T by Newton on the ideal-gas enthalpy (accurate to within the
-  //  departure function).
-  AMREX_GPU_HOST_DEVICE
-  AMREX_FORCE_INLINE
-  void HY2T(amrex::Real H, amrex::Real* /*Y*/, amrex::Real& T)
-  {
-      const hem::PRFluid f = co2_fluid();
-      const amrex::Real R_univ = amrex::Real(8.314);
-      // T_next = T + (H - h_ig(T)) / cp_ig(T)
-      T = amrex::Real(300.0);
-      for (int it = 0; it < 20; ++it) {
-          const amrex::Real h_here =
-              (hem::h_ig_per_mole(f, T) - hem::h_ig_per_mole(f, amrex::Real(298.15))) / f.M;
-          const amrex::Real cp = hem::cp_ig_over_R(f, T) * R_univ / f.M;
-          const amrex::Real dT = (H - h_here) / cp;
-          T += dT;
-          if (std::abs(dT) < amrex::Real(1.0e-6)) break;
-          if (T < amrex::Real(50.0))  T = amrex::Real(50.0);
-          if (T > amrex::Real(3000.0)) T = amrex::Real(3000.0);
-      }
-  }
 
-  //  Effective gamma for diagnostic derives: the ideal-gas c_p/c_v of
-  //  CO2 at 300 K, ~1.29, is adequate there.
-  AMREX_GPU_HOST_DEVICE
-  AMREX_FORCE_INLINE
-  void TY2G(amrex::Real /*T*/, amrex::Real* /*Y*/, amrex::Real& G)
-  {
-      G = amrex::Real(1.29);
-  }
 
-  //  (rho, T) -> the same linearised derivatives as REY2dpde /
-  //  REY2dpdr_e, for hydro_srctoprim.
-  AMREX_GPU_HOST_DEVICE
-  AMREX_FORCE_INLINE
-  void RTY2dpde_dpdre(amrex::Real R, amrex::Real T, amrex::Real* /*Y*/,
-                     amrex::Real& dpde, amrex::Real& dpdr_e)
-  {
-      const hem::PRFluid f = co2_fluid();
-      const amrex::Real v_m = hem::v_PR_from_rho(f, R);
-      hem::State s = hem::state_from_T_v(f, T, v_m, hem::Phase3::Vapor);
-      const amrex::Real gam1 = (s.rho * s.c * s.c) / s.P;
-      dpde   = (gam1 - amrex::Real(1.0)) * R;
-      dpdr_e = s.P / s.rho;
-  }
 
   // Backend-independent tail: branch wrappers, ideal-gas forwarders,
   // composition maps, constant-gamma derivative signatures, S.

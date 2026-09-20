@@ -28,10 +28,6 @@
 #include <AMReX_Print.H>
 #include <AMReX_BLProfiler.H>
 #include <cmath>
-#include <cstdint>
-#include <string>
-#include <fstream>
-#include <unordered_map>
 
 // -----------------------------------------------------------------
 //  Fold-mass audit (PsFoldAudit, PS_counters.H): every fold event and

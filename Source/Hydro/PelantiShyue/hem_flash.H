@@ -118,11 +118,11 @@ enum PsFlashRefuse {
     PS_FLR_A_NAN = 3,  PS_FLR_NOT_DOM = 4,  PS_FLR_M_GUARD = 5,
     PS_FLR_RHOMIX = 6, PS_FLR_PDOM = 7,     PS_FLR_W_T = 8,
     PS_FLR_W_META = 9, PS_FLR_W_ALPHA = 10, PS_FLR_DA2 = 11,
-    PS_FLR_DA1 = 12,   PS_FLR_A_FLOOR = 13, PS_FLR_NOPROJ = 14,
-    PS_FLR_H_NAN = 15, PS_FLR_SSTAR = 16,
+    PS_FLR_DA1 = 12,   PS_FLR_A_FLOOR = 13, PS_FLR_H_NAN = 14,
+    PS_FLR_SSTAR = 15,
     //  sub-attribution of the s=1 (full-step) trial when SSTAR fires:
-    PS_FLR_S1_MASS = 17, PS_FLR_S1_AFLOOR = 18,
-    PS_FLR_S1_PH1 = 19,  PS_FLR_S1_PH2 = 20,  PS_FLR_NCAUSE = 21
+    PS_FLR_S1_MASS = 16, PS_FLR_S1_AFLOOR = 17,
+    PS_FLR_S1_PH1 = 18,  PS_FLR_S1_PH2 = 19,  PS_FLR_NCAUSE = 20
 };
 static_assert(PS_FLR_NCAUSE == PS_COUNTERS_FLR_NCAUSE,
               "PsCounters::flash_refuse extent must match PsFlashRefuse");
@@ -219,7 +219,6 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
     static const double meta_margin =
         ps_dial_real("ps_flash_metastable_margin", 0.10);
     const bool flash_liq = liq_dominant;
-    const bool flash_vap = vap_dominant;
     const double bw_P = meta_margin * P_sat_here;   // pressure ramp band
     double w_meta;
     if (flash_liq) {
@@ -243,14 +242,12 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
 
     // Coupled alpha + m step with the saturation projection: dm =
     // rho_sat(T_dom) dalpha so the newborn phase lies on the saturation
-    // locus by construction.  When the saturation query fails the step
-    // falls back to dm = rho_trace dalpha (rho_L_sat = 0 signals it).
+    // locus by construction.  co2_sat_state clamps to its table and w_T
+    // has already refused T outside (T_triple, T_crit), so the saturation
+    // densities always exist here.
     double alpha_1_new, dm;
     double rho_L_sat = 0.0, rho_V_sat = 0.0;   // saturation targets at T_dom
     co2_sat_state(p_dom.T, rho_L_sat, rho_V_sat);
-    if (!(rho_L_sat > 0.0 && rho_V_sat > 0.0 && rho_L_sat > rho_V_sat)) {
-        rho_L_sat = 0.0;   // signal fallback
-    }
 
     if (flash_liq) {
         // Grow alpha_2 (vapour).
@@ -258,8 +255,7 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
         const double alpha_2_new = alpha_2 + blend * (alpha_2_target - alpha_2);
         if (alpha_2_new <= alpha_2) PS_FLASH_REFUSE(PS_FLR_DA2);
         const double d_alpha_2 = alpha_2_new - alpha_2;
-        const double rho_2_target = (rho_L_sat > 0.0) ? rho_V_sat : rho_2;
-        dm = rho_2_target * d_alpha_2;
+        dm = rho_V_sat * d_alpha_2;
         if (dm >= 0.5 * m_1) dm = 0.5 * m_1;
         alpha_1_new = 1.0 - alpha_2_new;
     } else {
@@ -269,73 +265,23 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
         alpha_1_new = alpha_1_curr + blend * (alpha_1_target - alpha_1_curr);
         if (alpha_1_new <= alpha_1_curr) PS_FLASH_REFUSE(PS_FLR_DA1);
         const double d_alpha_1 = alpha_1_new - alpha_1_curr;
-        const double rho_1_target = (rho_L_sat > 0.0) ? rho_L_sat : rho_1;
-        dm = rho_1_target * d_alpha_1;
+        dm = rho_L_sat * d_alpha_1;
         if (dm >= 0.5 * m_2) dm = 0.5 * m_2;
     }
     if (alpha_1_new < alpha_floor || alpha_1_new > 1.0 - alpha_floor)
         PS_FLASH_REFUSE(PS_FLR_A_FLOOR);
 
-    const bool   using_projection = (rho_L_sat > 0.0);
-    // From Absent there is nothing to extend: the newborn must be
-    // constructed, so that path requires the projection and refuses
-    // rather than inventing a state when the saturation query failed.
-    if (abs_trace && !using_projection) PS_FLASH_REFUSE(PS_FLR_NOPROJ);
-
-    // Trace-phase state for the carrier enthalpy; falls back to h_dom.
-    PsPhase p_other{};
-    p_other.alpha = (liq_dominant ? alpha_2 : alpha_1);
-    if (!abs_trace) {
-        if (liq_dominant) eos.state_from_rho_e_phase(2, rho_2, e_2, p_other);
-        else              eos.state_from_rho_e_phase(1, rho_1, e_1, p_other);
-    }
-    // CAMR.ps_flash_h_mode ("auto"): energy carried when a trace phase
-    // already exists (the projection path below overrides it).
-    //   "avg" : h = (h_dom + h_trace)/2, the interface enthalpy -- right
-    //           subcritical where latent heat is real, but pushes a low-rho
-    //           supercritical trace phase to absurd T;
-    //   "dom" : h = h_dom, mass carries its own enthalpy (Joule-Thomson) --
-    //           right supercritical, under-couples subcritical;
-    //   "auto": avg below T_c - 30 K, dom above T_c + 30 K, linear between.
-    static const int h_mode = []{
-        const std::string v = ps_dial_string("ps_flash_h_mode", "auto");
-        if (v == "avg") return 1;
-        if (v == "dom") return 0;
-        return 2;   // "auto" default
-    }();
-    const bool other_ok = p_other.valid && std::isfinite(p_other.h)
-                          && p_other.T > 100.0;
-    const double h_dom   = p_dom.h;
-    const double h_trace = other_ok ? p_other.h : h_dom;
-    double h_transfer;
-    if (using_projection) {
-        // The transferred mass carries the seeded phase's EOS-consistent
-        // saturation enthalpy at the seed density.  Handing a from-Absent
-        // seed the donor's enthalpy would put its whole phase below its
-        // branch window and the limiter would collapse every flash to
-        // zero; with the seed's own enthalpy the latent heat appears as
-        // the donor's energy drop, where the physics puts it.
-        const int    ph_new  = flash_liq ? 2 : 1;
-        const double rho_new = flash_liq ? rho_V_sat : rho_L_sat;
-        const double e_new   = ps_flash_e_of_rhoT(eos, ph_new, rho_new,
-                                                  p_dom.T);
-        if (!std::isfinite(e_new)) PS_FLASH_REFUSE(PS_FLR_H_NAN);
-        h_transfer = e_new + P_sat_here / rho_new;
-    } else if (h_mode == 1) {
-        h_transfer = 0.5 * (h_dom + h_trace);
-    } else if (h_mode == 0) {
-        h_transfer = h_dom;
-    } else {
-        const double T_c = eos.t_crit();
-        const double T_lo = T_c - 30.0;   // pure h_avg below
-        const double T_hi = T_c + 30.0;   // pure h_dom above
-        double f_dom;
-        if      (p_dom.T >= T_hi) f_dom = 1.0;
-        else if (p_dom.T <= T_lo) f_dom = 0.0;
-        else                       f_dom = (p_dom.T - T_lo) / (T_hi - T_lo);
-        const double h_avg = 0.5 * (h_dom + h_trace);
-        h_transfer = f_dom * h_dom + (1.0 - f_dom) * h_avg;
-    }
+    // The transferred mass carries the seeded phase's EOS-consistent
+    // saturation enthalpy at the seed density.  Handing a from-Absent
+    // seed the donor's enthalpy would put its whole phase below its
+    // branch window and the limiter would collapse every flash to zero;
+    // with the seed's own enthalpy the latent heat appears as the donor's
+    // energy drop, where the physics puts it.
+    const int    ph_new  = flash_liq ? 2 : 1;
+    const double rho_new = flash_liq ? rho_V_sat : rho_L_sat;
+    const double e_new   = ps_flash_e_of_rhoT(eos, ph_new, rho_new, p_dom.T);
+    if (!std::isfinite(e_new)) PS_FLASH_REFUSE(PS_FLR_H_NAN);
+    const double h_transfer = e_new + P_sat_here / rho_new;
     if (!std::isfinite(h_transfer)) PS_FLASH_REFUSE(PS_FLR_H_NAN);
     const double H_I = h_transfer + 0.5 * u_mix * u_mix;
 

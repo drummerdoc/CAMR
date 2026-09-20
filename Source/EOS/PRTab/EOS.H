@@ -314,7 +314,7 @@ namespace EOS {
       // Dome gate.  A vapour-branch reconstruction is wrong below Tc: in
       // the dome the auto surface is Psat/lever/equilibrium-c, and a
       // liquid-density query on the vapour branch lands in the spinodal
-      // extension.  Classify as hem::classify_T_rho does.
+      // extension.  Classify against the saturation volumes.
       const hem::State satL = hem::satStateL(f, amrex::Real(T_pred));
       const hem::State satV = hem::satStateV(f, amrex::Real(T_pred), satL.P);
       if (!(std::isfinite(double(satL.rho)) && std::isfinite(double(satV.rho))
@@ -357,16 +357,16 @@ namespace EOS {
       const hem::PRFluid f = co2_fluid();
 #if !defined(__CUDA_ARCH__) && !defined(__HIP_DEVICE_COMPILE__) && !defined(__SYCL_DEVICE_ONLY__)
       if (!prtab_enabled())
-          return hem::state_from_rho_e_phase(f, rho, e, phase, amrex::Real(-1.0));
+          return hem::state_from_rho_e_phase(f, rho, e, phase);
 #endif
       const double xr = (double(rho) - prtab::RHO_M) / prtab::RHO_S;
       const double xu = (double(e)   - prtab::U_M)   / prtab::U_S;
       if (std::abs(xr) > 4.0 || std::abs(xu) > 4.0)
-          return hem::state_from_rho_e_phase(f, rho, e, phase, amrex::Real(-1.0));
+          return hem::state_from_rho_e_phase(f, rho, e, phase);
       //  Low-rho in-domain check (see the auto entry).
       if (!(double(rho) > 0.0) ||
           std::log10(double(rho)) < double(prtab::LR0))
-          return hem::state_from_rho_e_phase(f, rho, e, phase, amrex::Real(-1.0));
+          return hem::state_from_rho_e_phase(f, rho, e, phase);
       const int ph_lv = (phase == hem::Phase3::Liquid) ? 1 : 2;
 #if !defined(__CUDA_ARCH__) && !defined(__HIP_DEVICE_COMPILE__) && !defined(__SYCL_DEVICE_ONLY__)
       const int ph = prtab_table_branch() ? ph_lv : 0;  // 0 -> auto table
@@ -376,7 +376,7 @@ namespace EOS {
       double T_pred, s_pred;
       prtab_fwd_phase(double(rho), double(e), ph, T_pred, s_pred);
       if (!std::isfinite(T_pred) || T_pred < 150.0 || T_pred > 1200.0)
-          return hem::state_from_rho_e_phase(f, rho, e, phase, amrex::Real(-1.0));
+          return hem::state_from_rho_e_phase(f, rho, e, phase);
       const amrex::Real v_m = hem::v_PR_from_rho(f, rho);
       return hem::state_from_T_v(f, amrex::Real(T_pred), v_m, phase);
   }

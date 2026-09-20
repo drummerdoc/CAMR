@@ -457,8 +457,7 @@ CAMR::CAMR_advance (Real time,
                 amrex::Print() << "[PS-FLOOR] step " << parent->levelSteps(level)
                     << "  eos_calls=" << hem::floor_census::n_calls()
                     << "  T_clamp_1K=" << hem::floor_census::n_T_clamp()
-                    << "  nonconv_LOCKED=" << hem::floor_census::n_T_nonconv()
-                    << "  nonconv_detect=" << hem::floor_census::n_T_nonconv_det()
+                    << "  nonconv=" << hem::floor_census::n_T_nonconv()
                     << "  P_floor_inuse=" << hem::floor_census::n_P_floor()
                     << "  P_floor_probe=" << hem::floor_census::n_P_floor_probe()
                     << "  mass_neg=" << ps_counters().mass_neg

@@ -136,9 +136,7 @@ ps_cell_state(const amrex::Real U[NVAR], const PsPres& pr) noexcept
     if (s.host_is_1) {
         s.queried1 = true;
         EOS::REY2P_liquid(s.rho1, s.e1, Y, s.P1);
-        // phase_pressure_ok ignores its second argument; 0 asks only
-        // "is this above P_FLOOR_PA?" without restating the constant.
-        s.host_floored = !ps_guard::phase_pressure_ok(s.P1, Real(0.0));
+        s.host_floored = !ps_guard::phase_pressure_ok(s.P1);
         s.P1 = ps_guard::sanitize_stock_pressure(s.P1);      // host: floor only
         s.queried2 = q2.exists
                   && ps_regime_reach(s.rg2, s.rho2, s.e2, /*liquid=*/false, pr) == PsRegime::Independent;
@@ -149,7 +147,7 @@ ps_cell_state(const amrex::Real U[NVAR], const PsPres& pr) noexcept
     } else {
         s.queried2 = true;
         EOS::REY2P_vapor(s.rho2, s.e2, Y, s.P2);
-        s.host_floored = !ps_guard::phase_pressure_ok(s.P2, Real(0.0));
+        s.host_floored = !ps_guard::phase_pressure_ok(s.P2);
         s.P2 = ps_guard::sanitize_stock_pressure(s.P2);
         s.queried1 = q1.exists
                   && ps_regime_reach(s.rg1, s.rho1, s.e1, /*liquid=*/true, pr) == PsRegime::Independent;

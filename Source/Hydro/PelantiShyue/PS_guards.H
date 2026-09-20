@@ -58,11 +58,10 @@ constexpr amrex::Real P_FLOOR_PA  = amrex::Real(1.0);
 
 // ---------------------------------------------------------------------
 //  Is this per-phase pressure usable?  A positive test, so NaN propagates
-//  to "not ok" without a separate isfinite() call.  The reference argument
-//  is unused: the decision depends on P alone.
+//  to "not ok" without a separate isfinite() call.
 // ---------------------------------------------------------------------
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-bool phase_pressure_ok(amrex::Real P, amrex::Real /*P_stock*/) noexcept
+bool phase_pressure_ok(amrex::Real P) noexcept
 {
     return (P >= P_FLOOR_PA);
 }
@@ -78,7 +77,7 @@ AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
 bool sanitize_phase_pressure(amrex::Real& P, amrex::Real P_stock) noexcept
 {
     count_seen();
-    if (phase_pressure_ok(P, P_stock)) return false;
+    if (phase_pressure_ok(P)) return false;
     count_reject_low();
     P = P_stock;
     return true;

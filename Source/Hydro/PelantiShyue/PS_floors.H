@@ -28,10 +28,6 @@
 #include <AMReX_BLProfiler.H>
 #include <cmath>
 #include <algorithm>   // std::max / std::min
-#include <cstdint>
-#include <string>
-#include <fstream>
-#include <unordered_map>
 
 // CAMR.ps_pres_floor (0 Pa = off): ps_apply_floor raises each Independent
 // phase's internal energy so its EOS pressure is at least this — the

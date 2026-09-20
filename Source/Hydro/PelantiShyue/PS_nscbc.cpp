@@ -70,8 +70,6 @@ enum RxAux {
     RX_GMODE,              // condition: 0 nr, 3 vent inflow (Hedstrom value relation), 4 vent outflow (the fan's wave)
     RX_SFAN,               // speed of the fan's entering wave (gm 4)
     RX_FLAG,       // 0 skip (no entering wave / no fan), 1 active, 2 refused; 5 parks a vent outflow cell (gm 4) during the secant
-    RX_RELAXED,    // trial state changed through relaxation (0/1)
-    RX_FLASHED,    // trial state changed through the sources (0/1)
     RX_MW,         // relaxed Mach of the last trial
     RX_PT,         // relaxed pressure of the last trial
     RX_NAUX
@@ -282,8 +280,7 @@ CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt)
                         const Real c_eff = ax(i,j,k,RX_CEFF);
                         const PS_HLLC::Face fN = PS_HLLC::face_from_state(idir, UN, l_pres);
                         const Real S_M = fN.u_n - n_sgn * a / (fN.rho_mix * c_eff);
-                        int cause = 0;
-                        if (!PS_HLLC::ps_star_state(idir, fN, UN, s, S_M, Us, &cause)) {
+                        if (!PS_HLLC::ps_star_state(idir, fN, UN, s, S_M, Us)) {
                             ax(i,j,k,RX_FLAG) = Real(2.0);
                             return;
                         }
@@ -526,8 +523,8 @@ CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt)
                     for (int n = 0; n < NVAR; ++n) UN[n] = qn(i,j,k,n);
                     const PS_HLLC::Face fN = PS_HLLC::face_from_state(idir, UN, l_pres);
                     const Real S_M = fN.u_n - n_sgn * a / (fN.rho_mix * ax(i,j,k,RX_CEFF));
-                    Real Us[NVAR]; int cause = 0;
-                    if (!PS_HLLC::ps_star_state(idir, fN, UN, ax(i,j,k,RX_S), S_M, Us, &cause)) {
+                    Real Us[NVAR];
+                    if (!PS_HLLC::ps_star_state(idir, fN, UN, ax(i,j,k,RX_S), S_M, Us)) {
                         ++n_fb; ++ps_counters().nscbc_rx_fb; return;
                     }
                     for (int n = 0; n < NVAR; ++n) {

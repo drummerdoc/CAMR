@@ -334,7 +334,7 @@ ps_nscbc_cfg()
     pp.add("ps_bc_p_amb_zlo", pa[4]);
     pp.add("ps_bc_p_amb_zhi", pa[5]);
 #endif
-    return PsNscbcCfg{u, pa, uf};
+    return PsNscbcCfg{pa, uf};
   }();
   return cfg;
 }
