@@ -653,6 +653,35 @@ namespace EOS {
   void PYT2RE_vapor(amrex::Real P, amrex::Real*, amrex::Real T, amrex::Real& R, amrex::Real& E)
   { PYT2RE(P, nullptr, T, R, E); }
 
+  //  Checked phase-selected (T, P) -> (rho, e, c) with a has_root flag:
+  //  the GERG twin of the PR entry (pr_contract.H), asked by the Corridor
+  //  projection.  The requested branch has a root at (T, P) when the
+  //  density that carries P on that branch lies on the raw surface, i.e.
+  //  on the stable/metastable side of the precomputed branch edge; a
+  //  density in the C1 extension beyond the edge is a constructed state,
+  //  not a root, and reports has_root = false, as does a bisection that
+  //  ran into the validity box (P not attained).  At and above SAT_T_HI
+  //  the two branches are one.
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void PYT2REc_phase_checked(amrex::Real P, amrex::Real T, bool want_liquid,
+                             amrex::Real& R, amrex::Real& E, amrex::Real& C,
+                             bool& has_root)
+  { has_root = false; R = E = C = amrex::Real(0.0);
+    const double Td = double(T), Pd = double(P);
+    const gerg::Phase ph = want_liquid ? gerg::Phase::Liquid : gerg::Phase::Vapor;
+    const double r = g_rho_from_T_P(Td, Pd, ph);
+    if (Td < gerg::SAT_T_HI) {
+        const double re = want_liquid ? gerg::rhoL_edge(Td) : gerg::rhoV_edge(Td);
+        if (want_liquid ? (r < re) : (r > re)) return;          // past the branch edge
+    }
+    const gerg::State s = gerg::state_TR_phase(Td, r, ph);
+    //  The bisection's own convergence: 64 halvings of the box resolve P
+    //  to round-off unless the target lies outside the branch's range.
+    if (!(std::abs(s.P - Pd) <= 1.0e-9 * std::abs(Pd))) return;
+    if (!(s.c > 0.0) || !std::isfinite(s.rho) || !(s.rho > 0.0) || !std::isfinite(s.e)) return;
+    has_root = true;
+    R = amrex::Real(s.rho); E = amrex::Real(s.e); C = amrex::Real(s.c); }
+
 
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void RYP2E(amrex::Real R, amrex::Real*, amrex::Real P, amrex::Real& E)
