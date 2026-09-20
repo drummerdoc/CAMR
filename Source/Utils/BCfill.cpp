@@ -136,8 +136,7 @@ struct PCHypFillExtDir
           // where the flow leaves: on a cell whose normal velocity points
           // inward the contact wave enters and would carry a continued
           // composition in with it (a feedback through the ghost's
-          // alpha, docs/PLAN_relaxed_boundary.md §13.15), so an inflow
-          // cell takes the copy.  The predicate is the sign of u_n, the
+          // alpha), so an inflow cell takes the copy.  The predicate is the sign of u_n, the
           // one the contact wave itself carries.  A continuation that
           // leaves the admissible set (a negative partial mass or mixture
           // density, alpha outside [0, 1], or a phase state with no EOS
@@ -230,10 +229,11 @@ struct PCHypFillExtDir
   }
 };
 
-// NSCBC dispatch settings, read once per run (the ParmParse table is
-// fixed after startup).  This is the single accessor for the boundary
-// dials (docs/MODEL_AND_ALGORITHM.md §6.5), shared by the ghost fill
-// below and the relaxed-state pass (PS_nscbc.cpp):
+// NSCBC face set and far-field pressures, read once per run (the
+// ParmParse table is fixed after startup) and shared by the ghost fill
+// below, the relaxed boundary (PS_nscbc.cpp) and the Pass-2 skip
+// (PS_umeth.cpp); the relaxed boundary's own dials are in PS_nscbc.H.
+// docs/MODEL_AND_ALGORITHM.md §6.5.
 const PsNscbcCfg&
 ps_nscbc_cfg()
 {
@@ -362,8 +362,8 @@ CAMR_bcfill_hyp(
       static const char* fnm[6] = {"xlo","xhi","ylo","yhi","zlo","zhi"};
       amrex::Print()
           << "  CAMR bcfill: outflow (Inflow-flagged) BC per face"
-             " (1 = NSCBC, extrapolated ghost + relaxed boundary; 0 = bcnormal"
-             " linearised Riemann invariant):";
+             " (1 = NSCBC, extrapolated ghost + relaxed boundary; 0 = the"
+             " problem's bcnormal):";
       for (int f = 0; f < 2*AMREX_SPACEDIM; ++f) {
         amrex::Print() << ' ' << fnm[f] << '=' << nscbc_cfg.uface[f];
       }

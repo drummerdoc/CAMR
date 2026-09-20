@@ -4,7 +4,8 @@
 //  CO2_NSCBC: initial data for the NSCBC verification set — a uniform
 //  CO2 state with one localised disturbance (prob_parm.H lists the
 //  types) and a zero-gradient bcnormal, so an Inflow face runs either
-//  the PS_nscbc.H characteristic outflow (CAMR.ps_bc_use_nscbc = 1) or
+//  the NSCBC outflow (extrapolated ghost + relaxed boundary,
+//  CAMR.ps_bc_use_nscbc = 1) or
 //  a plain copy (= 0, the control).  docs/VERIFICATION.md §6.4.
 // =====================================================================
 

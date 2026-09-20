@@ -249,47 +249,47 @@ AMREX_GPU_HOST_DEVICE
 AMREX_FORCE_INLINE
 bool
 _pack_state(const PsPhaseSpeeds& ph, int idir, amrex::Real n_sgn,
-            amrex::Real un_out_g, amrex::Real m1_g, amrex::Real m2_g,
-            amrex::Real e1_g, amrex::Real e2_g, amrex::Real alpha1_g,
+            amrex::Real un_out_f, amrex::Real m1_f, amrex::Real m2_f,
+            amrex::Real e1_f, amrex::Real e2_f, amrex::Real alpha1_f,
             const amrex::Real Y_N[NUM_SPECIES], const amrex::Real s_N[NVAR],
-            amrex::Real s_ghost[NVAR]) noexcept
+            amrex::Real s_f[NVAR]) noexcept
 {
     using amrex::Real;
-    const Real rho_g = m1_g + m2_g;
-    if (!(rho_g > ps_const::RHO_MIX_MIN) || !std::isfinite(rho_g)) return false;
-    const Real un_int_g = n_sgn * un_out_g;
+    const Real rho_f = m1_f + m2_f;
+    if (!(rho_f > ps_const::RHO_MIX_MIN) || !std::isfinite(rho_f)) return false;
+    const Real un_int_f = n_sgn * un_out_f;
 
-    Real ux_g = ph.ux, uy_g = ph.uy, uz_g = ph.uz;
-    if      (idir == 0) ux_g = un_int_g;
-    else if (idir == 1) uy_g = un_int_g;
-    else                uz_g = un_int_g;
-    const Real ke_spec_g = ps_kinetic_energy(ux_g, uy_g, uz_g);
+    Real ux_f = ph.ux, uy_f = ph.uy, uz_f = ph.uz;
+    if      (idir == 0) ux_f = un_int_f;
+    else if (idir == 1) uy_f = un_int_f;
+    else                uz_f = un_int_f;
+    const Real ke_spec_f = ps_kinetic_energy(ux_f, uy_f, uz_f);
 
-    // ---- 6. Pack conservative ghost state -------------------------
-    const Real rhoe_g = m1_g * e1_g + m2_g * e2_g;
-    s_ghost[URHO ] = rho_g;
-    s_ghost[UMX  ] = rho_g * ux_g;
+    // ---- Pack the conserved fan-end state -----------------------
+    const Real rhoe_f = m1_f * e1_f + m2_f * e2_f;
+    s_f[URHO ] = rho_f;
+    s_f[UMX  ] = rho_f * ux_f;
 #if (AMREX_SPACEDIM >= 2)
-    s_ghost[UMY  ] = rho_g * uy_g;
+    s_f[UMY  ] = rho_f * uy_f;
 #endif
 #if (AMREX_SPACEDIM == 3)
-    s_ghost[UMZ  ] = rho_g * uz_g;
+    s_f[UMZ  ] = rho_f * uz_f;
 #endif
-    s_ghost[UEINT] = rhoe_g;
-    s_ghost[UEDEN] = rhoe_g + rho_g * ke_spec_g;
-    s_ghost[UTEMP] = s_N[UTEMP];   // diagnostic slot: zero-gradient
+    s_f[UEINT] = rhoe_f;
+    s_f[UEDEN] = rhoe_f + rho_f * ke_spec_f;
+    s_f[UTEMP] = s_N[UTEMP];   // diagnostic slot: zero-gradient
     for (int n = 0; n < NUM_SPECIES; ++n)
-        s_ghost[UFS + n] = Y_N[n] * rho_g;
+        s_f[UFS + n] = Y_N[n] * rho_f;
 
-    s_ghost[UALPHA1] = alpha1_g;
-    s_ghost[UM1RHO1] = m1_g;
-    s_ghost[UM2RHO2] = m2_g;
-    s_ghost[UE1    ] = m1_g * (e1_g + ke_spec_g);
-    s_ghost[UE2    ] = m2_g * (e2_g + ke_spec_g);
+    s_f[UALPHA1] = alpha1_f;
+    s_f[UM1RHO1] = m1_f;
+    s_f[UM2RHO2] = m2_f;
+    s_f[UE1    ] = m1_f * (e1_f + ke_spec_f);
+    s_f[UE2    ] = m2_f * (e2_f + ke_spec_f);
 
     // Final sanitisation: any non-finite slot reverts to N.
     for (int n = 0; n < NVAR; ++n)
-        if (!std::isfinite(s_ghost[n])) s_ghost[n] = s_N[n];
+        if (!std::isfinite(s_f[n])) s_f[n] = s_N[n];
     return true;
 }
 

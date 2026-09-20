@@ -1,7 +1,7 @@
 // =====================================================================
 //  PS_nscbc.cpp — the characteristic outflow posed on the relaxed
 //  state (CAMR::ps_bc_relaxed), a post-processor on the boundary cell's
-//  predicted increment.  docs/PLAN_relaxed_boundary.md (derivation).
+//  predicted increment.  docs/MODEL_AND_ALGORITHM.md §6.
 //
 //  Algorithm: at a domain face with NSCBC enabled, the fan between the
 //  boundary cell N and its ghost sends one acoustic wave into N.  Its
@@ -13,8 +13,8 @@
 //  N at its far-field value P_inf (Hedstrom on the relaxed step; nr faces
 //  and vent inflow cells), Z = rho_N c_eq measured on the two seed trials
 //  (the Wood impedance where that pair is degenerate, counted as zfb).
-//  Secant on a, seeds {0, a_fan}, fixed count.  A
-//  vent outflow cell takes the choked fan (_fan_march) as its entering
+//  Secant on a from the seeds {0, the larger of a_fan and the Hedstrom
+//  amplitude}, fixed count.  A vent outflow cell takes the choked fan (_fan_march) as its entering
 //  wave instead, amplitude fixed by the fan.  A refusal keeps the fan's
 //  wave and is counted (nscbc_rx_fb).  The trial evaluations run the
 //  production operators on a strip MultiFab of the boundary cells with
@@ -69,7 +69,7 @@ enum RxAux {
     RX_PC, RX_UC, RX_RC,   // ... at the current secant amplitude
     RX_GMODE,              // condition: 0 nr, 3 vent inflow (Hedstrom value relation), 4 vent outflow (the fan's wave)
     RX_SFAN,               // speed of the fan's entering wave (gm 4)
-    RX_FLAG,       // 0 skip (no entering wave / no fan), 1 active, 2 refused
+    RX_FLAG,       // 0 skip (no entering wave / no fan), 1 active, 2 refused; 5 parks a vent outflow cell (gm 4) during the secant
     RX_RELAXED,    // trial state changed through relaxation (0/1)
     RX_FLASHED,    // trial state changed through the sources (0/1)
     RX_MW,         // relaxed Mach of the last trial
@@ -248,8 +248,7 @@ CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt)
                 //  the Hedstrom amplitude 1/2 (P_inf - P_N + rho c_f u_out)
                 //  has the larger magnitude, so the pair is spaced whenever
                 //  either carries signal (a ghost that continues the cell
-                //  sends a round-off wave; an exact-zero test on it left the
-                //  secant with coincident seeds, docs §13.14).
+                //  sends a round-off wave, so a_fan alone can be ~0).
                 const Real a_fan = ax(i,j,k,RX_AFAN);
                 const Real a_H   = Real(0.5) * (P_inf - fN.P_mix + fN.rho_mix * fN.c_frozen * (n_sgn * fN.u_n));
                 ax(i,j,k,RX_A0) = Real(0.0);
@@ -258,8 +257,8 @@ CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt)
         }
 
         // ---- 2. One trial evaluation at the amplitude in RX_ACUR --------
-        //  Returns nothing; writes g into `gslot` and the relaxed state's
-        //  P and Mach into RX_PT / RX_MW.  A refused star state marks the
+        //  Writes the relaxed (P, u_out, rho) of the trial into the given
+        //  slots and its P and Mach into RX_PT / RX_MW.  A refused star state marks the
         //  cell refused (flag 2).
         auto evaluate = [&](int aslot, int pslot, int uslot, int rslot, long& nrel, long& nfl) {
             for (MFIter mfi(T); mfi.isValid(); ++mfi) {
@@ -344,16 +343,15 @@ CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt)
         // ---- 3. Secant: seeds, the impedance, then a fixed number of updates
         //  g(a) = [P~ - Z u~_out] - P_inf from the stored relaxed (P~, u~) of
         //  each trial: the Hedstrom condition on the relaxed step (the
-        //  incoming invariant at its far-field value; the rate form
-        //  I(q~) = I(q_N) carries no far field and plugged the demo3 plane,
-        //  docs/PLAN_relaxed_boundary.md §13.1).  Z = rho_N c_eq with
+        //  incoming invariant at its far-field value; a rate form
+        //  I(q~) = I(q_N) carries no far field).  Z = rho_N c_eq with
         //  c_eq^2 = dP~/drho~ measured between the two seed trials, the
         //  equilibrium slope the reaction chain itself imposes on the cell;
         //  a degenerate pair keeps the Wood impedance and is counted (zfb).
         //  On a vent cell in reversed flow (gm 3) the same relation is the
         //  plenum's inflow condition: fed from rest at P_inf, the static
         //  pressure sits below P_inf by the dynamic head (a static-pressure
-        //  Dirichlet there over-drives it, R3: Mach -2 inflow patches).
+        //  Dirichlet there over-drives the inflow).
         auto gof = [&](Array4<Real> const& ax, int i, int j, int k, int ps, int us) noexcept -> Real {
             const Real Z = ax(i,j,k,RX_Z);
             return (ax(i,j,k,ps) - Z * ax(i,j,k,us)) - P_inf;

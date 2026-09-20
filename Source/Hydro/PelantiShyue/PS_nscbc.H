@@ -6,7 +6,7 @@
 //  keys are documented), the dials of the relaxed boundary
 //  (CAMR::ps_bc_relaxed, PS_nscbc.cpp), and the EOS admissibility test
 //  shared by the extrapolated ghost and the boundary's trials.
-//  Host-only.  docs/PLAN_relaxed_boundary.md.
+//  Host-only.  docs/MODEL_AND_ALGORITHM.md §6.
 // =====================================================================
 
 #include <AMReX_REAL.H>
@@ -87,8 +87,9 @@ inline int ps_bc_state_cause(const amrex::Real U[NVAR], const PsPres& pr) noexce
 inline bool ps_bc_state_ok(const amrex::Real U[NVAR], const PsPres& pr) noexcept { return ps_bc_state_cause(U, pr) < 0; }
 
 
-//  CAMR.ps_bc_nscbc_nsec (2): secant updates after the two seeds {0, a_fan},
-//  a fixed count (no tolerance); the final residual is reported by the probe.
+//  CAMR.ps_bc_nscbc_nsec (2): secant updates after the two seeds (0 and
+//  the larger of a_fan, a_H), a fixed count (no tolerance); the final
+//  residual is reported by the probe.
 inline int ps_bc_nscbc_nsec()
 {
     static const int v = []() -> int {
@@ -123,8 +124,8 @@ inline const amrex::GpuArray<int, 6>& ps_bc_nscbc_type()
     return t;
 }
 
-//  CAMR.ps_bc_nscbc_probe (0): 0 off; 1 the [PS-BCRX] per-face line every
-//  step; 2 at the ps_diag_mass cadence is not implemented (every step).
+//  CAMR.ps_bc_nscbc_probe (0): 0 off; nonzero prints the [PS-BCRX]
+//  per-face line every step.
 inline int ps_bc_nscbc_probe()
 {
     static const int v = ps_dial_int("ps_bc_nscbc_probe", 0);

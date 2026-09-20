@@ -41,8 +41,8 @@
 using amrex::Real;
 
 //  Per-phase decomposition underneath the frozen mixture sound speed,
-//  returned as a struct so the NSCBC ghost pack can perturb each phase
-//  along its own branch with the same dispatch and floors.
+//  returned as a struct so the vent's fan (PS_bc_fan.H) can march each
+//  phase along its own branch with the same dispatch and floors.
 struct PsPhaseSpeeds {
     Real rho;                     // floored mixture density
     Real ux, uy, uz;              // mixture velocity
