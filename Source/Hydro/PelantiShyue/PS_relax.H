@@ -161,7 +161,7 @@ bool ps_presence_relax_gate(amrex::Real a1, amrex::Real m1, amrex::Real m2,
 //  ALPHA_ROUNDOFF], both partial masses positive, and the presence gate
 //  (docs §4.7), whose refusal is counted.  Returns true when the cell may
 //  be relaxed, with alpha1_in, m1, m2 read out; false leaves the cell
-//  untouched.  Mode 0 keeps its own copy: it counts every early return.
+//  untouched.
 // -----------------------------------------------------------------
 inline bool
 ps_relax_entry_gate(int i, int j, int k,
@@ -203,32 +203,10 @@ ps_mechanical_relax_cell(int i, int j, int k,
 {
     using amrex::Real;
 
-    // Entry classification: non-finite, near-pure (either side), and a
-    // non-positive phase mass all return without touching the cell.
-    constexpr Real alpha_floor = ps_const::ALPHA_ROUNDOFF;
-    const Real alpha1_in = U(i,j,k, UALPHA1);
-
-    if (!std::isfinite(alpha1_in)) {
-        return;
-    }
-    if (alpha1_in < alpha_floor) {
-        return;
-    }
-    if (alpha1_in > Real(1.0) - alpha_floor) {
-        return;
-    }
-
-    const Real m1 = U(i,j,k, UM1RHO1);
-    const Real m2 = U(i,j,k, UM2RHO2);
-    if (m1 <= Real(0.0) || m2 <= Real(0.0)) {
-        return;
-    }
-    // Presence gate (docs §4.7); refusal counted.
-    const PsPres& prS4 = ps_presence_params();
-    if (!ps_presence_relax_gate(alpha1_in, m1, m2, prS4)) {
-        ++ps_counters().n_gate_presence;
-        return;
-    }
+    // Entry gate shared by every relax kernel; a refusal leaves the cell
+    // untouched.
+    Real alpha1_in, m1, m2;
+    if (!ps_relax_entry_gate(i, j, k, U, alpha1_in, m1, m2)) return;
 
     // V6[3] = rho_mix |u|: the kernel forms ½(V6[3]/rho_mix)² = ½|u|²,
     // which is direction-free, so the momentum magnitude is exact.
