@@ -320,8 +320,8 @@ ps_wp_tvterm(int d, int t, int i, int j, int k,
 #endif
     // d-velocity at the t-face whose high-side cell is (a,b,c):
     auto ud = [&](int a,int b,int c) noexcept -> Real {
-        Real r0=uin(a-ti,b-tj,c-tk,URHO); r0=(std::isfinite(r0)&&r0>Real(1e-30))?r0:Real(1e-30);
-        Real r1=uin(a,   b,   c,   URHO); r1=(std::isfinite(r1)&&r1>Real(1e-30))?r1:Real(1e-30);
+        Real r0=uin(a-ti,b-tj,c-tk,URHO); r0=(std::isfinite(r0)&&r0>ps_const::RHO_MIX_MIN)?r0:ps_const::RHO_MIX_MIN;
+        Real r1=uin(a,   b,   c,   URHO); r1=(std::isfinite(r1)&&r1>ps_const::RHO_MIX_MIN)?r1:ps_const::RHO_MIX_MIN;
         return Real(0.5)*(ps_finite_or(uin(a-ti,b-tj,c-tk,UM_d),Real(0.0))/r0
                         + ps_finite_or(uin(a,   b,   c,   UM_d),Real(0.0))/r1); };
     // contact-wave (l=1) A± of the t-fluctuation at t-face (a,b,c):
@@ -374,7 +374,7 @@ ps_viscous_face(int d, int i, int j, int k,
 #endif
     const int di=off[d][0], dj=off[d][1], dk=off[d][2];
     auto vel=[&](int a,int b,int c,int comp) noexcept -> Real {
-        Real r=uin(a,b,c,URHO); r=(std::isfinite(r)&&r>Real(1e-30))?r:Real(1e-30);
+        Real r=uin(a,b,c,URHO); r=(std::isfinite(r)&&r>ps_const::RHO_MIX_MIN)?r:ps_const::RHO_MIX_MIN;
         return ps_finite_or(uin(a,b,c,comp),Real(0.0))/r; };
     // normal-direction gradient of each velocity component at the face
     Real dvdn[3] = {Real(0.0),Real(0.0),Real(0.0)};
