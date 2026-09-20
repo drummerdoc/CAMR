@@ -29,6 +29,7 @@
 
 #include "PS_presence.H"
 #include "PS_counters.H"
+#include "PS_util.H"
 #include "EOS.H"
 #include <AMReX_GpuQualifiers.H>
 
@@ -49,7 +50,7 @@ PsRegime ps_regime_reach(PsRegime rg, amrex::Real rho, amrex::Real e,
                          bool want_liquid, const PsPres& pr) noexcept
 {
     if (rg != PsRegime::Independent || pr.promote_checked == 0) return rg;
-    amrex::Real Yq[1] = { amrex::Real(1.0) };   // ignored by the PR shim
+    amrex::Real Yq[NUM_SPECIES]; ps_pure_species(Yq);
     amrex::Real Pq, Tq, Sq;
     const hem::Phase3 br = want_liquid ? hem::Phase3::Liquid
                                        : hem::Phase3::Vapor;

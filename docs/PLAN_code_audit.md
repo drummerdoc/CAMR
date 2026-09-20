@@ -85,6 +85,7 @@ The order is: things that change a number or a build (decide, then fix, each wit
    **D5:** mode 0 calls `ps_relax_entry_gate`. N1b at `ps_relax_mode=0`, 300 steps, plotfiles and full log (with `ps_pres_diag=1`) identical `nc_D3` → `nc_D5`; the four mode-5 witnesses byte-identical.
    **D6:** `ps_mt_update_alpha ∉ {−1, 0, 1}` aborts at the dial, the kernel aborts on anything but a resolved 0/1, the `alpha_floor` clamp branch is deleted. N1b at `ps_relax_mode=2`, 200 steps (44 MT cells), byte-identical `nc_D5` → `nc_D6`; the four witnesses byte-identical; `=2` aborts.
    **D7 (build-independent form):** the hysteresis band decides on every build; only the `pres_f3_hyst` increment is host-guarded. Token-identical on the host; four witnesses byte-identical `nc_D6` → `nc_D7`.
+   **D8:** `ps_regime_reach` passes `Y[NUM_SPECIES]` from `ps_pure_species`. Four witnesses byte-identical `nc_D7` → `nc_D8`.
 2. **Defects D1–D11**, one commit per row, witnesses as above; D2 and D7 also need the compile-only GPU check (§7).
 3. **Item 5e** as prescribed in `PLAN_relaxed_boundary` §15, extended by §5 above; the boundary comment residue of §4 (`PS_nscbc.*`, `PS_bc_fan.H`, `BCfill.cpp`, `PS_wavespeed.H:43`, the harness scripts) is done in the same commit, and the `PLAN_relaxed_boundary.md` citations in code are replaced by `MODEL` §6 / `DESIGN_DECISIONS` before the file goes.
 4. **Dead code K1–K12** in three commits: hydro core (K1–K6), relaxation/EOS (K7–K11), retired-value table (K12). ~550 lines.
