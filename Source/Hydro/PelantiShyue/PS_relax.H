@@ -336,17 +336,11 @@ ps_x3_grid_relax_cell(int i, int j, int k,
 // configuration.  This is the single read site, and an unrecognised value
 // aborts here rather than falling through to mode-0 physics while the
 // split transfer source (gated on != 5) silently re-opens.  The former
-// modes 1 (P+T equilibrium) and 4 (sequential chain) and 3 (finite-rate
-// mechanical leg) abort with their replacement named.
+// modes 1, 3, 4 are retired values (PS_retired_keys.H).
 inline int ps_relax_mode()
 {
     static const int m = []() -> int {
         const int v = ps_dial_int("ps_relax_mode", 5);
-        if (v == 1 || v == 3 || v == 4) {
-            amrex::Abort("CAMR.ps_relax_mode = " + std::to_string(v) +
-                         " is retired: use 5 (coupled X3), 2 (finite-rate "
-                         "thermal + split transfer) or 0 (mechanical only)");
-        }
         if (v != 0 && v != 2 && v != 5) {
             amrex::Abort("CAMR.ps_relax_mode = " + std::to_string(v) +
                          " is not a mode (valid: 0,2,5)");
@@ -372,11 +366,6 @@ inline int ps_coexist_action()
 {
     static const int a = []() -> int {
         const int v = ps_dial_int("ps_coexist_action", 0);
-        if (v == 2 || v == 3 || v == 4) {
-            amrex::Abort("CAMR.ps_coexist_action=" + std::to_string(v)
-                + " is retired: the thermal leg stands on a band exit "
-                  "(the runaway clause is always active); use 0 or 1");
-        }
         if (v != 0 && v != 1) {
             amrex::Abort("CAMR.ps_coexist_action must be 0 or 1");
         }

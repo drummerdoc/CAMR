@@ -248,12 +248,12 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
         const double l_mt_h_w = hem::ps_dial_mt_h_weight();
         // CAMR.ps_mt_tau_model (0): 0 = the constant CAMR.ps_mt_tau; 2 = tau
         // derived from the state as |dm_eq|/Gamma_SRT (Lund & Aursand eq. 25,
-        // geometry via CAMR.ps_mt_srt_d / ps_mt_srt_delta).  1 (the HRM
-        // correlation) is retired; any value other than 0 or 2 aborts.
+        // geometry via CAMR.ps_mt_srt_d / ps_mt_srt_delta).  Any other value
+        // aborts (1 is a retired value, PS_retired_keys.H).
         static const int mt_tau_model = []() -> int {
             const int v = ps_dial_int("ps_mt_tau_model", 0);
             if (v != 0 && v != 2) {
-                amrex::Abort("CAMR.ps_mt_tau_model must be 0 or 2 (1 is retired)");
+                amrex::Abort("CAMR.ps_mt_tau_model must be 0 or 2");
             }
             return v; }();
         const int l_mt_tau_model = mt_tau_model;

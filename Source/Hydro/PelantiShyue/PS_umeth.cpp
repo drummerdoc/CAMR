@@ -511,10 +511,6 @@ PS_umeth(const Box& bx,
     {
         static const int cached = []() -> int {
             const int v = ps_dial_int("ps_wp_transverse", 0);
-            if (v == 2) {
-                amrex::Abort("CAMR.ps_wp_transverse=2 is retired: the acoustic "
-                    "transverse coupling is deleted; use 1 (contact-only)");
-            }
             if (v != 0 && v != 1) {
                 amrex::Abort("CAMR.ps_wp_transverse must be 0 or 1");
             }

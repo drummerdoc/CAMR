@@ -8,8 +8,9 @@
 //  retired key is listed here with the reason (or the replacement), and
 //  ps_abort_on_retired_keys() is called once at startup from
 //  CAMR::read_params.  The EOS backends read their dials from the same
-//  CAMR prefix, so their retired keys (eos_*) live here too.  Retired *values* of live keys (CAMR.ps_flux other
-//  than wp, CAMR.ps_relax_mode=3) are refused at their accessors.
+//  CAMR prefix, so their retired keys (eos_*) live here too.  Retired
+//  integer *values* of live keys are in the second table; the accessors
+//  only state the valid set.
 //  Docs/DESIGN_DECISIONS.md §6.
 // =====================================================================
 #ifdef USE_PS_HYDRO
@@ -97,10 +98,27 @@ inline void ps_abort_on_retired_keys()
         { "ps_c_mode",           "ps_state_from_cons forms the Wood mixture sound speed only" },
         { "ps_y_floor",          "ps_state_from_cons forms the Wood mixture sound speed only" },
     };
+    struct RetiredValue { const char* key; int value; const char* reason; };
+    static const RetiredValue values[] = {
+        { "ps_relax_mode", 1, "use 5 (coupled X3), 2 (finite-rate thermal + split transfer) or 0 (mechanical only)" },
+        { "ps_relax_mode", 3, "use 5 (coupled X3), 2 (finite-rate thermal + split transfer) or 0 (mechanical only)" },
+        { "ps_relax_mode", 4, "use 5 (coupled X3), 2 (finite-rate thermal + split transfer) or 0 (mechanical only)" },
+        { "ps_coexist_action", 2, "the thermal leg stands on a band exit (the runaway clause is always active); use 0 or 1" },
+        { "ps_coexist_action", 3, "the thermal leg stands on a band exit (the runaway clause is always active); use 0 or 1" },
+        { "ps_coexist_action", 4, "the thermal leg stands on a band exit (the runaway clause is always active); use 0 or 1" },
+        { "ps_wp_transverse", 2, "the acoustic transverse coupling is deleted; use 1 (contact-only)" },
+        { "ps_mt_tau_model", 1, "the HRM correlation is not available; use 0 (constant tau) or 2 (SRT-derived)" },
+    };
     amrex::ParmParse pp("CAMR");
     for (const RetiredKey& rk : table) {
         if (pp.contains(rk.key)) {
             amrex::Abort(std::string("CAMR.") + rk.key + " is retired: " + rk.reason);
+        }
+    }
+    for (const RetiredValue& rv : values) {
+        int v = 0;
+        if (pp.query(rv.key, v) && v == rv.value) {
+            amrex::Abort(std::string("CAMR.") + rv.key + " = " + std::to_string(v) + " is retired: " + rv.reason);
         }
     }
 }
