@@ -12,7 +12,6 @@ The documents describe the current tree; git history holds the past.
 | `RUNNING.md` | Build lines per case, table generation, deck inventory, the complete dial table (one row per `CAMR.*` key), diagnostics and validator output, restart recipes, the two relaxation configurations. |
 | `FUTURE_WORK.md` | Parked work with its scoping: interfacial-area transport as a seventh scalar, 3-D jet, solid phase, the morphology length, and the smaller carried-over items. |
 | `PLAN_cleanup_for_sharing.md` | The plan this tree was cleaned against and its `[DECIDE]` register. |
-| `PLAN_relaxed_boundary.md` | Working note of the relaxed NSCBC boundary (derivation, runs R1–R7e, decisions R1–R24, the retirement plan §15); folded into the documents above at item 5e and then deleted. |
 | `PLAN_code_audit.md` | Code audit after the NSCBC retirement: defects, dead code, duplication, stale comments, document repetition, prioritised edit list and the missing tests. |
 
 ## Read in this order

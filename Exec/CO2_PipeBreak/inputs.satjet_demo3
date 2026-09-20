@@ -10,7 +10,7 @@
 #   (1) per-face characteristic (NSCBC) outflow on x-hi, y-lo and y-hi
 #       (ps_bc_nscbc_{xhi,ylo,yhi} = 1), posed on the relaxed state
 #       with x-hi a vent and the lateral faces nr
-#       (docs/PLAN_relaxed_boundary.md §13.7); the x-lo inlet face stays on
+#       (docs/MODEL_AND_ALGORITHM.md §6.3); the x-lo inlet face stays on
 #       bcnormal (global ps_bc_use_nscbc = 0);
 #   (2) alpha-gradient refinement tag 0.01 instead of 0.1;
 #   (3) amr.n_error_buf 4 instead of 2, keeping coarse-fine faces off the

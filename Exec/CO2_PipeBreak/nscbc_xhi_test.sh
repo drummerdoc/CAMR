@@ -10,12 +10,12 @@
 #   variants (default: all):
 #     A   the deck as it ships: the relaxed boundary on xhi (vent) and ylo/yhi (nr), p_amb 20 bar
 #     B   xhi on the linearised-invariant path (CAMR.ps_bc_nscbc_xhi=0)  -> is the fan/branch the cause?
-#     R   A with the probe line and the validator on (docs/PLAN_relaxed_boundary.md §13 gives the
-#         cheaper restart-from-F protocol used instead of a run from zero)
+#     R   A with the probe line and the validator on (the cheaper protocol is a restart from a
+#         kept checkpoint, amr.restart=runs/nscbc_xhi/F/chk_F_03000, instead of a run from zero)
 #     G   as A on a 4 m domain (40 slot widths, same dx: 512x128 base)     -> does the recompression stay near 20 D (physics)
 #   (C, D, F — sigma 1.0 / 4.0 / 0 — H — the Wood impedance — E — the R+ order-1 ghost — and Z —
-#    the ghost-only outflow, ps_bc_rx=0 — are recorded in docs/DESIGN_DECISIONS.md B-4 and X-33 and
-#    docs/PLAN_relaxed_boundary.md §13; their keys are retired and abort.)
+#    the ghost-only outflow, ps_bc_rx=0 — are recorded in docs/DESIGN_DECISIONS.md B-4, X-32–X-39;
+#    their keys are retired and abort.)
 #                                                                        or move to the new outlet (boundary-made)?  ~2x the F cost
 #
 #   afterwards:  python3 xhi_probe.py runs/nscbc_xhi/A/plt_*_05000 runs/nscbc_xhi/B/plt_*_05000 ...
