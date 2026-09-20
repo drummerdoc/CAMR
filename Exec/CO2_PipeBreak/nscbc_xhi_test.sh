@@ -36,7 +36,7 @@ opt_for() {   # macOS ships bash 3.2 (no associative arrays)
     A) echo "" ;;
     B) echo "CAMR.ps_bc_nscbc_xhi=0" ;;
     G) echo "geometry.prob_hi=4.0 1.0 amr.n_cell=512 128" ;;
-    R) echo "CAMR.ps_bc_rx_probe=1 CAMR.ps_validate=1" ;;
+    R) echo "CAMR.ps_bc_nscbc_probe=1 CAMR.ps_validate=1" ;;
     *) echo "unknown variant $1" >&2; exit 3 ;;
   esac
 }

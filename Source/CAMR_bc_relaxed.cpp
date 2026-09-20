@@ -22,7 +22,7 @@
 //
 //  Contract: reads Sborder (ghosts filled) and hydro_source; rewrites
 //  hydro_source on the boundary cells of every NSCBC face, every slot;
-//  ps_bc_rx_probe prints the per-face line.  The flux register is
+//  ps_bc_nscbc_probe prints the per-face line.  The flux register is
 //  untouched (a domain face never refluxes).  Host-only (the reaction
 //  chain is a std::function EOS path): a GPU build with an NSCBC face
 //  aborts.  Dials: PS_bc_config.H.
@@ -158,9 +158,9 @@ CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt)
     const PsNscbcCfg& cfg = ps_nscbc_cfg();
     const PsPres l_pres = ps_presence_params();
     const Real dt_r = (ps_strang() != 0) ? Real(0.5) * dt : dt;
-    const int nsec = ps_bc_rx_nsec();
-    const int probe = ps_bc_rx_probe();
-    int pc_iv[3]; const bool has_pc = ps_bc_rx_probe_cell(pc_iv);
+    const int nsec = ps_bc_nscbc_nsec();
+    const int probe = ps_bc_nscbc_probe();
+    int pc_iv[3]; const bool has_pc = ps_bc_nscbc_probe_cell(pc_iv);
     const Box& domain = geom.Domain();
     const int step = parent->levelSteps(level);
     static const char* fnm[6] = {"xlo", "xhi", "ylo", "yhi", "zlo", "zhi"};
@@ -178,7 +178,7 @@ CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt)
         const int  g_off = (side == 1) ? +1 : -1;                 // ghost layer 1
         const Real dx    = geom.CellSize(idir);
         const Real P_inf = (cfg.pamb[fidx] > Real(0.0)) ? cfg.pamb[fidx] : h_prob_parm->p_amb;
-        const int  ftype = ps_bc_rx_type()[fidx];   // 0 nr, 1 vent
+        const int  ftype = ps_bc_nscbc_type()[fidx];   // 0 nr, 1 vent
 
         // ---- the strip of boundary cells on this level -----------------
         Box strip = domain;

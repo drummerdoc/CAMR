@@ -82,18 +82,18 @@ inline bool ps_bc_state_ok(const amrex::Real U[NVAR], const PsPres& pr) noexcept
 }
 
 
-//  CAMR.ps_bc_rx_nsec (2): secant updates after the two seeds {0, a_fan},
+//  CAMR.ps_bc_nscbc_nsec (2): secant updates after the two seeds {0, a_fan},
 //  a fixed count (no tolerance); the final residual is reported by the probe.
-inline int ps_bc_rx_nsec()
+inline int ps_bc_nscbc_nsec()
 {
     static const int v = []() -> int {
-        const int n = ps_dial_int("ps_bc_rx_nsec", 2);
-        if (n < 0 || n > 8) amrex::Abort("CAMR.ps_bc_rx_nsec must be in [0, 8]");
+        const int n = ps_dial_int("ps_bc_nscbc_nsec", 2);
+        if (n < 0 || n > 8) amrex::Abort("CAMR.ps_bc_nscbc_nsec must be in [0, 8]");
         return n; }();
     return v;
 }
 
-//  CAMR.ps_bc_rx_type_{x,y,z}{lo,hi} (nr): the face type of the relaxed
+//  CAMR.ps_bc_nscbc_type_{x,y,z}{lo,hi} (nr): the face type of the relaxed
 //  boundary on that face.  nr = the characteristic outflow (the incoming
 //  relaxed invariant at its far-field value); vent = a plenum at P_inf:
 //  outflow cells take the choked fan to P_inf or the throat (_fan_march,
@@ -101,13 +101,13 @@ inline int ps_bc_rx_nsec()
 //  enter from rest at P_inf on the Hedstrom value relation (static
 //  pressure below P_inf by the dynamic head).  A deck choice per face, never a runtime predicate on
 //  the state.  Unknown strings abort.
-inline const amrex::GpuArray<int, 6>& ps_bc_rx_type()
+inline const amrex::GpuArray<int, 6>& ps_bc_nscbc_type()
 {
     static const amrex::GpuArray<int, 6> t = []() -> amrex::GpuArray<int, 6> {
         amrex::GpuArray<int, 6> r{{0, 0, 0, 0, 0, 0}};
-        static const char* keys[6] = {"ps_bc_rx_type_xlo", "ps_bc_rx_type_xhi",
-                                      "ps_bc_rx_type_ylo", "ps_bc_rx_type_yhi",
-                                      "ps_bc_rx_type_zlo", "ps_bc_rx_type_zhi"};
+        static const char* keys[6] = {"ps_bc_nscbc_type_xlo", "ps_bc_nscbc_type_xhi",
+                                      "ps_bc_nscbc_type_ylo", "ps_bc_nscbc_type_yhi",
+                                      "ps_bc_nscbc_type_zlo", "ps_bc_nscbc_type_zhi"};
         for (int f = 0; f < 2*AMREX_SPACEDIM; ++f) {
             const std::string s = ps_dial_string(keys[f], "nr");
             if (s == "nr")        r[f] = 0;
@@ -118,25 +118,25 @@ inline const amrex::GpuArray<int, 6>& ps_bc_rx_type()
     return t;
 }
 
-//  CAMR.ps_bc_rx_probe (0): 0 off; 1 the [PS-BCRX] per-face line every
+//  CAMR.ps_bc_nscbc_probe (0): 0 off; 1 the [PS-BCRX] per-face line every
 //  step; 2 at the ps_diag_mass cadence is not implemented (every step).
-inline int ps_bc_rx_probe()
+inline int ps_bc_nscbc_probe()
 {
-    static const int v = ps_dial_int("ps_bc_rx_probe", 0);
+    static const int v = ps_dial_int("ps_bc_nscbc_probe", 0);
     return v;
 }
 
-//  CAMR.ps_bc_rx_probe_cell (unset): "i j k" of one boundary cell whose
+//  CAMR.ps_bc_nscbc_probe_cell (unset): "i j k" of one boundary cell whose
 //  secant trace is printed in full.  Returns false when unset.
-inline bool ps_bc_rx_probe_cell(int iv[3])
+inline bool ps_bc_nscbc_probe_cell(int iv[3])
 {
     static const std::array<int, 4> c = []() -> std::array<int, 4> {
         std::array<int, 4> r{{0, 0, 0, 0}};
         amrex::ParmParse pp("CAMR");
         std::vector<int> v;
-        if (pp.queryarr("ps_bc_rx_probe_cell", v)) {
+        if (pp.queryarr("ps_bc_nscbc_probe_cell", v)) {
             if (v.size() != std::size_t(AMREX_SPACEDIM)) {
-                amrex::Abort("CAMR.ps_bc_rx_probe_cell needs AMREX_SPACEDIM integers");
+                amrex::Abort("CAMR.ps_bc_nscbc_probe_cell needs AMREX_SPACEDIM integers");
             }
             for (int d = 0; d < AMREX_SPACEDIM; ++d) r[d] = v[d];
             r[3] = 1;

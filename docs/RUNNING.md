@@ -96,7 +96,7 @@ The table below is built from the read sites in `Source/` (`pp.query`, `pp.conta
 | `ps_presence_e_deg_lo` / `_hi` | −2e6 / 2e7 J/kg | Energy-degeneracy band for the fold's energy reap (physical CO₂ spans about −1.5e5 to 4e6 on this EOS's scale). | production |
 | `ps_promote_checked` | 1 | Checked promotion Corridor → Independent; 0 = unchecked (A/B, disables an abort-prevention fix). | production; 0 retire-candidate [DECIDE-2] |
 | `ps_floor_indep` | 1 | `ps_apply_floor`'s per-phase leg only on Independent phases; 0 floors corridor phases too. | production; 0 retire-candidate [DECIDE-2] |
-| `ps_bc_use_nscbc` | 0 | Global NSCBC outflow on `Inflow`-typed faces: the extrapolated ghost (the state continued past the face on its minmod slope where the flow leaves, copied where it enters) plus the relaxed boundary (`CAMR_bc_relaxed.cpp`; face types `ps_bc_rx_type_{face}`); 0 = `bcnormal` interior-copy/reservoir path. Force-added. | production |
+| `ps_bc_use_nscbc` | 0 | Global NSCBC outflow on `Inflow`-typed faces: the extrapolated ghost (the state continued past the face on its minmod slope where the flow leaves, copied where it enters) plus the relaxed boundary (`CAMR_bc_relaxed.cpp`; face types `ps_bc_nscbc_type_{face}`); 0 = `bcnormal` interior-copy/reservoir path. Force-added. | production |
 | `ps_bc_nscbc_{x,y,z}{lo,hi}` | −1 | Per-face NSCBC enable: 0, 1, or unset (inherits `ps_bc_use_nscbc`). Resolved values force-added. | production |
 | `ps_bc_p_amb_{x,y,z}{lo,hi}` | −1 | Per-face far-field pressure [Pa]; unset inherits `prob.p_amb`. Force-added. | production |
 | `ps_validate` | 0 | Reference-free invariant sweep V1–V7 at every diagnostic point: 1 count and report, 2 abort on the first bulk violation. | diagnostic (kept) |
