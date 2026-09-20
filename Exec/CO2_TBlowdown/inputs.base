@@ -45,9 +45,10 @@ CAMR.ps_hydro = 1
 #  The flux is the compiled default (wp), written out so the deck
 #  records the scheme it runs; ps_wp_order stays at its default (1).
 CAMR.ps_flux  = wp
-#  Characteristic (NSCBC) outflow on the Inflow face; the dispatch in
-#  PS_nscbc.H (PS_NSCBC::outflow_face) serves any face, which is what
-#  the orientation suite tests.
+#  NSCBC on the Inflow face (the switch reaches Inflow faces only; the
+#  slip walls are not NSCBC faces).  The ghost fill and the relaxed
+#  boundary serve any face, which is what the orientation suite tests.
+#  Face type at its default nr.
 CAMR.ps_bc_use_nscbc = 1
 
 CAMR.v = 1
