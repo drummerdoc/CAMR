@@ -64,6 +64,22 @@ overrides shown on a failure line.
             pipe-break floors) and asserts the same for ps_floor_indep.
   dials_off_B12  the battery leg on B12 (two-phase wall reflection, the case
             built for the promotion defect; 40 s per run, hence separate).
+  front     B2 (evaporation wave) and the nucleator's own feedback
+            (docs/PLAN_flash_implicit.md).  Two runs differing by 1e-12 in
+            p_L, a plotfile every 4 steps, at ps_flash_implicit = 1 and 0.
+            Asserts at 1: the largest relative pressure difference over the
+            run stays below 1e-8 (a contraction: the perturbation is not
+            amplified); the plateau ahead of the front (median over the
+            cells with 1e-9 < 1 - alpha_1 < 1e-2 at the end) lies inside the
+            metastability window's band [(1 - 1.5 m), (1 - 0.5 m)] P_sat(T)
+            at the plateau's own temperature, m = 0.1.  Asserts at 0, while
+            the selector exists: the same difference exceeds 1e-4 (the
+            explicit step amplifies; the dial is live).  Printed, not
+            asserted: the largest step-to-step pressure RISE in a nucleating
+            cell (the rarefaction only lowers it).  Instrument history: the
+            prediction was "no rise above 0.5 bar"; measured 15 bar explicit,
+            3.4 bar implicit -- one pulse per cell as its trace fraction
+            passes 5e-3..6e-3, not a cycle; its cause is not localised.
   selftest  CAMR.ps_ptg_selftest, ps_relax_sweep, ps_x3_test = 1 at
             max_step = 0.  Asserts rc = 0, a PASS verdict line, and no line
             of the log flagging a case FAIL or BAD.
@@ -133,6 +149,8 @@ def same_bytes(a, b):
     return all(open(x, 'rb').read() == open(y, 'rb').read() for x, y in zip(ca, cb))
 def maxrel(a, b, var):
     x = R.rd1d(a, var); y = R.rd1d(b, var); return float(np.abs(x - y).max() / max(np.abs(x).max(), 1e-300))
+def maxrel_cell(a, b, var):
+    x = R.rd1d(a, var); y = R.rd1d(b, var); return float((np.abs(x - y) / np.maximum(np.abs(x), 1e-300)).max())
 def fields_diff(a, b):
     return '  '.join('%s %.1e' % (v, maxrel(a, b, v)) for v in ('density', 'pressure', 'alpha_1', 'xmom'))
 
@@ -309,6 +327,36 @@ def t_dials_off(T='dials_off', cases=('B2', 'B5', 'B9'), legs=('battery', 'floor
     return ok
 
 # ----------------------------------------------------------------- selftest
+def t_front(T='front'):
+    ok = True; m = 0.1
+    def pair(k):
+        out = []
+        for nm, pl in (('a', 8.0e6), ('b', 8.0e6 * (1 + 1e-12))):
+            rc, log, fs, cmd = run('%s%d%s' % (T, k, nm), 'B2', ['prob.p_L=%.17g' % pl, 'amr.plot_int=%d' % (1 if nm == 'a' else 4),
+                                   'CAMR.ps_flash_implicit=%d' % k], final_only=False)
+            out.append((rc, fs, cmd))
+        return out
+    for k in (1, 0):
+        (rca, fa, cmda), (rcb, fb, cmdb) = pair(k)
+        if not check(T, rca == 0 and rcb == 0 and fa and fb, 'implicit=%d: B2 did not complete (rc %d, %d)' % (k, rca, rcb), cmda): ok = False; continue
+        byname = {os.path.basename(p): p for p in fa}
+        dp = max(maxrel_cell(byname[os.path.basename(q)], q, 'pressure') for q in fb if os.path.basename(q) in byname)
+        P = np.array([R.rd1d(p, 'pressure') for p in fa]); A = np.array([R.rd1d(p, 'alpha_1') for p in fa])
+        nuc = (A > 0.9) & (A < 1 - 1e-9); both = nuc[1:] | nuc[:-1]
+        rise = np.where(both, P[1:] - P[:-1], 0.0).max() / 1e5
+        pl = (1 - A[-1] > 1e-9) & (1 - A[-1] < 1e-2)
+        Pp = float(np.median(P[-1][pl])) if pl.any() else float('nan')
+        Tp = float(np.median(R.rd1d(fa[-1], 'Temp')[pl])) if pl.any() else float('nan')
+        Ps = pr_psat(Tp) if pl.any() else float('nan')
+        print('      implicit=%d  max dP/P %.1e   max rise %.2f bar   plateau %.2f bar at %.2f K (band %.2f..%.2f, %d cells)'
+              % (k, dp, rise, Pp / 1e5, Tp, (1 - 1.5 * m) * Ps / 1e5, (1 - 0.5 * m) * Ps / 1e5, pl.sum()))
+        if k == 1:
+            ok &= check(T, dp < 1e-8, 'implicit=1: a 1e-12 perturbation of p_L grows to dP/P = %.1e (expected < 1e-8)' % dp, cmdb)
+            ok &= check(T, pl.any() and (1 - 1.5 * m) * Ps <= Pp <= (1 - 0.5 * m) * Ps,
+                        'implicit=1: plateau %.3f bar outside the window band at %.2f K' % (Pp / 1e5, Tp), cmda)
+        else:
+            ok &= check(T, dp > 1e-4, 'implicit=0: dP/P = %.1e, expected > 1e-4 (the explicit step amplifies)' % dp, cmdb)
+    return ok
 def t_selftest():
     T = 'selftest'; ok = True
     for k in ('ps_ptg_selftest', 'ps_relax_sweep', 'ps_x3_test'):
@@ -325,7 +373,7 @@ def t_selftest():
 def t_dials_off_B12(): return t_dials_off('dials_off_B12', ('B12',), ('battery',))
 
 TESTS = [('order', t_order), ('limiter', t_limiter), ('badkeys', t_badkeys), ('skipc', t_skipc), ('strang', t_strang),
-         ('derives', t_derives), ('restart', t_restart), ('dials_off', t_dials_off), ('dials_off_B12', t_dials_off_B12), ('selftest', t_selftest)]
+         ('derives', t_derives), ('restart', t_restart), ('dials_off', t_dials_off), ('dials_off_B12', t_dials_off_B12), ('selftest', t_selftest), ('front', t_front)]
 if __name__ == '__main__':
     sel = sys.argv[1:] or [n for n, _ in TESTS]
     unknown = [s for s in sel if s not in dict(TESTS)]

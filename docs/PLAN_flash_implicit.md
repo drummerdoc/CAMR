@@ -1,6 +1,6 @@
 # The flash nucleator made implicit in its own feedback — derivation, decisions, gates
 
-Status: derivation only; no code. This is the working note for `DESIGN_DECISIONS.md` O-27 (`[DECIDE-A6b]` = (a)). When the work lands the derivation moves to `MODEL_AND_ALGORITHM.md` §5.5, the decisions to `DESIGN_DECISIONS.md`, the measurements to `VERIFICATION.md`, and this file is deleted. Every `[DECIDE-F*]` below is the maintainer's.
+Status: implemented behind `CAMR.ps_flash_implicit` (default 0, inert); gates measured (§7); the default flip waits for the maintainer's read. This is the working note for `DESIGN_DECISIONS.md` O-27 (`[DECIDE-A6b]` = (a)). When the work lands the derivation moves to `MODEL_AND_ALGORITHM.md` §5.5, the decisions to `DESIGN_DECISIONS.md`, the measurements to `VERIFICATION.md`, and this file is deleted. Every `[DECIDE-F*]` below is the maintainer's.
 
 ## 1. What the nucleator does today
 
@@ -78,3 +78,20 @@ With `ps_flash_implicit = 1`, against today's step:
 2. `flash: ps_flash_implicit (0)` — the solve behind the selector; witness: inert at 0 by `cmp` and battery fingerprint.
 3. `test: sens_front.py gates` — predictions 1–3 as assertions in `ps_cover.py`.
 4. After the maintainer reads the gate results: default flip and re-record (`BASE3`), then the retirement commit, then the documents.
+
+## 7. Gate results (21 Sept, binary `nc_FI`, contraction-free, 1-D)
+
+Inert at 0: N1, N1b, N4 `vent`, `flashing_front` `vent` with its probe lines, and the 21-case battery, byte-identical to the build before.
+
+| # | prediction | measured at `ps_flash_implicit = 1` | verdict |
+|---|---|---|---|
+| 1 | growth ≤ 1.05 per step, max ΔP/P < 10⁻⁸ | no growth to fit; max ΔP/P = 5.3·10⁻¹² over 103 steps (explicit: 1.41 per step, 0.23) | **holds** |
+| 2 | no step-to-step rise above 0.5 bar in a nucleating cell; none above $P_{\mathrm{sat}}(T)$ | largest rise 3.4 bar (explicit 15.1); after step 20, 2.7 bar. The history of a front cell is smooth (19.9 → 19.86 bar over 20 steps) with **one** pulse, 19.86 → 22.5 → 20.9 → 20.3 bar, as its trace fraction passes 5·10⁻³ to 6·10⁻³; every cell shows it once. Not a cycle, and it does not amplify a perturbation (row 1). Its cause is not localised | **fails as written** |
+| 3 | plateau inside the window band | 20.21 bar over 10 cells at 255.95 K; the band at that temperature is 18.10–20.23 bar. The numbers in the prediction (20.6–23.0) took $P_{\mathrm{sat}}$ at 260 K; the expanded liquid is 4 K colder. The plateau sits at the top of the band, where $W$ is small: the steady nucleation rate that balances the rarefaction is a small one | **holds** at the local temperature; the quoted numbers were wrong |
+| 4 | B rows within 5 %, A and C identical, `verify_canonical` all PASS | A, C, B1, B3–B6, B8, B10–B12 unchanged to the printed digits; B2 ρ −2.9 %, u +1.3 %, P −0.8 %; B7 ≤ 0.2 %; B9 ≤ 0.8 %. `verify_canonical` 32 PASS (B12 asymmetry 1.2·10⁻⁸ → 7.5·10⁻⁹) | **holds** |
+| 5 | more fires of smaller size, no `sstar` refusals | B2: 69 → 506 fires, `sstar` 0 in both | **holds** |
+| 6 | B7, B9 move < 10⁻³; B12 and N1b lose their sensitivity | B7 moves 1–2·10⁻³ and B9 6–8·10⁻³ in rel-L2 (relative). **N1b is byte-identical at 0 and 1: the nucleator never fires there**, and a 10⁻¹² perturbation of `prob.a1_0` still reaches 7·10⁻⁶ in pressure and 1.5·10⁻⁵ in α by step 363 with either setting. N1b's amplifier is therefore not the nucleator. B12 not re-measured | **fails**: B9 moves more than predicted, and N1b's sensitivity has another cause |
+| 7 | `flashing_front` `vent` pin within 1 % of 2.4728 | 2.4730 (ref 2.3652, nr 1.7141) | **holds** |
+
+Two things for the maintainer before the flip: the single 2.7-bar pulse per cell near a trace fraction of 5·10⁻³ (row 2), and N1b's amplifier (row 6), which the documents attribute to the nucleator (`VERIFICATION.md` §6.4, audit §10) and which is something else. The gates of rows 1 and 3 are assertions in `ps_cover.py front`; `front_hist.py` prints the front-cell history; `flashing_front.py` takes `FLASH_OV`.
+

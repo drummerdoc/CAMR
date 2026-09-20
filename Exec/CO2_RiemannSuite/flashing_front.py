@@ -71,7 +71,7 @@ def run_leg(tag, exe):
     pref = os.path.join(OUT, tag + '_')
     for d in glob.glob(pref + '*'):
         subprocess.run(['rm', '-rf', d])
-    cmd = [exe] + COMMON + ov + ['amr.plot_file=' + pref]
+    cmd = [exe] + COMMON + ov + ['amr.plot_file=' + pref] + os.environ.get('FLASH_OV', '').split()   # FLASH_OV="k=v k=v": one-off overrides, applied last
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
     open(os.path.join(OUT, tag + '.log'), 'w').write(
         '#### ' + ' '.join(cmd) + '\n' + r.stdout + r.stderr)
