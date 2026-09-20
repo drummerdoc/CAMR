@@ -197,6 +197,7 @@ CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt)
 
         // Counters: the trials are not part of the solution's accounting.
         const PsCounters snap = ps_counters();
+        const hem::PsX3Stats snap_x3 = hem::ps_x3_stats();
 
         // ---- 1. Fan at the face, known part, invariant of q_N -----------
         for (MFIter mfi(T); mfi.isValid(); ++mfi) {
@@ -490,6 +491,7 @@ CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt)
 
         // Restore the solution's counters, then count this pass's refusals.
         ps_counters() = snap;
+        hem::ps_x3_stats() = snap_x3;
 
         // ---- 4. Write-back ----------------------------------------------
         long n_ent = 0, n_fb = 0, n_rev = 0;

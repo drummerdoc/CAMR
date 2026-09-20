@@ -440,8 +440,9 @@ inline amrex::Real ps_work_kappa()
 //  once, resets the per-sweep counters, dispatches every cell to the
 //  kernel for ps_relax_mode, then prints the gated reports ([PS-PRES],
 //  [PS-GATE], [PS-DT], [PS-X3]).  Called from apply_ps_reaction under
-//  CAMR.ps_do_relax; do_print is accepted for the Strang pre-half step,
-//  which prints nothing else.  Host-only: the kernels take a
+//  CAMR.ps_do_relax; do_print = false (the Strang pre-half step, a trial
+//  of the relaxed boundary) prints nothing and leaves the [PS-X3]
+//  statistics running.  Host-only: the kernels take a
 //  std::function callback.  work, when given (valid cells of S_new's
 //  grids, one component), accumulates kappa * (EOS solves this cell).
 // -----------------------------------------------------------------
@@ -498,12 +499,13 @@ ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
     // [PS-WORK] (ps_pres_diag): this rank's relaxation cost unit for the
     //  work estimate, all modes and both Strang sweeps: EOS solves and
     //  cells swept.
-    if (ps_pres_diag() != 0) {
+    const bool report = do_print && ps_pres_diag() != 0;
+    if (report) {
         amrex::AllPrint() << "[PS-WORK] eos_solve=" << (n_solve - n_solve_sweep0)
                           << " cells=" << n_cells_sweep << "\n";
     }
     // [PS-PRES] (ps_pres_diag): the post-thermal P1 != P2 residual by cause.
-    if (ps_pres_diag() != 0) {
+    if (report) {
         const PsPresDiag& pd = ps_pres_diag_data();
         auto mean = [](double s, long n) { return n > 0 ? s/double(n) : 0.0; };
         amrex::AllPrint()
@@ -554,7 +556,7 @@ ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
     //  and a sweep in which every cell is dead is banner-flagged.
     if (ps_relax_mode() == 5) {
         hem::PsX3Stats& xs = hem::ps_x3_stats();
-        if (ps_pres_diag() != 0 && xs.n_calls > 0) {
+        if (report && xs.n_calls > 0) {
             amrex::AllPrint()
                 << "[PS-X3] calls=" << xs.n_calls
                 << " ok=" << xs.n_ok
@@ -582,9 +584,8 @@ ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
             }
             amrex::AllPrint() << "\n";
         }
-        xs.reset();
+        if (do_print) xs.reset();
     }
-    amrex::ignore_unused(do_print);
 }
 
 #endif // USE_PS_HYDRO
