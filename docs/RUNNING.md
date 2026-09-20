@@ -76,6 +76,7 @@ The table below is built from the read sites in `Source/` (`pp.query`, `pp.conta
 | `ps_triple_point_action` | 0 | Response to a dominant phase below the triple point in the source stage: 0 off, 1 count and report, 2 raise its energy to $T_{\mathrm{triple}}$ (non-conservative by design), 3 abort on the first such cell. | alternative |
 | `ps_flash_metastable_margin` | 0.10 | Required relative undershoot of $P_{\mathrm{sat}}$ before flash fires, so saturated contacts (B3) do not false-trigger on dissipation. | production |
 | `ps_flash_alpha_thr` | 0.10 | Flash fires only in nominally single-phase cells, α > 0.9 or α < 0.1. | production |
+| `ps_flash_implicit` | 0 | Temporary selector (`PLAN_flash_implicit.md`). 0 = the nucleator's windows are those of the entering state; 1 = the committed fraction solves $s = W(s)$ with the windows on the state the step produces (Illinois, eight evaluations). Other values abort. | temporary |
 | `ps_mt_h_weight` | 0.5 | Enthalpy weighting of transferred mass; negative = upwind by direction. | alternative |
 | `ps_mt_srt_d` | 0.1 m | Morphology length D of the SRT rate $\Sigma = (16/\pi)\,a_{\mathrm{geom}}/D$ (placeholder; DT7 gives $\theta_{\mathrm{eff}} \approx 0.08\,D$). | production (X3) |
 | `ps_mt_srt_delta` | 0.01 | Regularisation of the geometric factor at α → 0. | production (X3) |

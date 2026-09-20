@@ -236,9 +236,21 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
 
     // Rate factor: 1 - exp(-dt/tau), capped at 20 % of the remaining
     // distance per step, times the three windows.
+    //
+    // CAMR.ps_flash_implicit (0), temporary selector (docs/
+    // PLAN_flash_implicit.md): 0 = the windows of the entering state
+    // multiply the proposal (forward Euler in the window); 1 = the proposal
+    // is built with the windows at one and the committed fraction s solves
+    // s = W(s), the windows evaluated on the state the step produces
+    // (backward Euler in the window; a perturbation of the entering
+    // pressure leaves multiplied by 1/(1+g), g the loop gain).
+    static const int flash_implicit = ps_dial_int("ps_flash_implicit", 0);
+    if (flash_implicit != 0 && flash_implicit != 1)
+        amrex::Abort("CAMR.ps_flash_implicit must be 0 or 1");
+    const double W_0 = w_T * w_meta * w_alpha;
     double blend = 1.0 - std::exp(-dt / tau_flash);
     if (blend > 0.2) blend = 0.2;
-    blend *= w_T * w_meta * w_alpha;
+    if (flash_implicit == 0) blend *= w_T * w_meta * w_alpha;
 
     // Coupled alpha + m step with the saturation projection: dm =
     // rho_sat(T_dom) dalpha so the newborn phase lies on the saturation
@@ -355,6 +367,56 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
             if (valid_at(sm)) s_lo = sm; else s_hi = sm;
         }
         s_star = s_lo;
+    }
+    if (flash_implicit == 1 && s_star > 0.0) {
+        // W(s): the three windows on the dominant phase of trial(s), queried
+        // on its own branch as p_dom was.  A dominant phase without a finite
+        // state closes the window (W = 0), which keeps the root below it.
+        auto W_at = [&](double s) -> double {
+            double a1, U1, U2, U4, U5;
+            trial(s, a1, U1, U2, U4, U5);
+            PsPhase c{};
+            if (flash_liq) {
+                c.alpha = a1;
+                eos.state_from_rho_e_phase(1, U1 / a1, U4 / U1 - ke_cell, c);
+            } else {
+                c.alpha = 1.0 - a1;
+                eos.state_from_rho_e_phase(2, U2 / (1.0 - a1), U5 / U2 - ke_cell, c);
+            }
+            if (!std::isfinite(c.T) || !std::isfinite(c.P) || c.T <= 0.0) return 0.0;
+            const double wT = ss01((c.T - T_trip_g) / bw_T)
+                            * ss01((T_crit_g - c.T) / bw_T);
+            if (wT <= 0.0) return 0.0;
+            const double Ps = eos.Psat_of_T(c.T);
+            const double bP = meta_margin * Ps;
+            const double wM = flash_liq
+                ? ss01(0.5 + ((1.0 - meta_margin) * Ps - c.P) / bP)
+                : ss01(0.5 + (c.P - (1.0 + meta_margin) * Ps) / bP);
+            const double wA = flash_liq
+                ? ss01((a1 - (1.0 - flash_alpha_thr)) / (0.5 * flash_alpha_thr))
+                : ss01((flash_alpha_thr - a1)         / (0.5 * flash_alpha_thr));
+            return wT * wM * wA;
+        };
+        // F(s) = s - W(s) on [0, s_rep]: F(0) = -W_0 < 0 (the cell is
+        // eligible).  F(s_rep) <= 0: the representability bound is the step.
+        // Otherwise Illinois, eight evaluations, no tolerance; the bracket
+        // holds throughout, so s never leaves [0, s_rep].
+        double sa = 0.0,    Fa = -W_0;
+        double sb = s_star, Fb = s_star - W_at(s_star);
+        if (Fb > 0.0) {
+            int side = 0;
+            for (int it = 0; it < 7; ++it) {
+                const double sc = (sa * Fb - sb * Fa) / (Fb - Fa);
+                const double Fc = sc - W_at(sc);
+                if (Fc == 0.0) { sa = sb = sc; break; }
+                if (Fc > 0.0) { sb = sc; Fb = Fc; if (side == -1) Fa *= 0.5; side = -1; }
+                else          { sa = sc; Fa = Fc; if (side == +1) Fb *= 0.5; side = +1; }
+            }
+            double sr = (sa == sb) ? sa : (sa * Fb - sb * Fa) / (Fb - Fa);
+            if (sr < sa) sr = sa;
+            if (sr > sb) sr = sb;
+            s_star = sr;
+        }
     }
     if (s_star <= 0.0) PS_FLASH_REFUSE(PS_FLR_SSTAR);        // no admissible flash this step
 
