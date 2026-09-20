@@ -16,11 +16,6 @@
 
 namespace hem {
 
-// ---- iso-pressure-relaxation instrumentation -----------------------------
-//  PsPrStats (PS_counters.H): does the Newton converge, or fall through to
-//  the validity-guarded bracketing scan?  Counted, not reported.
-inline PsPrStats& ps_pr_stats() { return ps_counters().pr_stats; }
-
 // =====================================================================
 //  Relaxation kernels.
 // =====================================================================
@@ -140,7 +135,6 @@ inline bool ps_pressure_relax_cell(V6& U, const PsPhaseAPI& eos,
             // alpha*rho_k*E_k: E_k = e_k + 0.5*u^2 (u unchanged).
             U[4] = m1 * (e_1 + 0.5 * u * u);
             U[5] = m2 * (e_2 + 0.5 * u * u);
-            ++ps_pressure_relax_count();
             return true;
         }
 
@@ -240,12 +234,11 @@ inline bool ps_iso_pressure_relax_cell(V6& U, const PsPhaseAPI& eos,
                                             ps_single_phase_threshold_default())
 {
     if (!eos.valid()) return false;
-    ++ps_pr_stats().seen;
     double alpha1 = U[0];
-    if (!std::isfinite(alpha1)) { ++ps_pr_stats().trivial; return false; }
+    if (!std::isfinite(alpha1)) { return false; }
     // Skip trivially-single-phase cells (no minority phase to relax).
     if (alpha1 < single_phase_thr || alpha1 > 1.0 - single_phase_thr) {
-        ++ps_pr_stats().trivial; return true; }
+        return true; }
 
     const double m1 = U[1];
     const double m2 = U[2];
@@ -321,7 +314,6 @@ inline bool ps_iso_pressure_relax_cell(V6& U, const PsPhaseAPI& eos,
         const double e2 = e2_of_e1(e1v);
         U[4] = m1 * (e1v + 0.5 * u * u);
         U[5] = m2 * (e2 + 0.5 * u * u);
-        ++ps_pressure_relax_count();
     };
 
     double e1 = e1_init;
@@ -331,12 +323,11 @@ inline bool ps_iso_pressure_relax_cell(V6& U, const PsPhaseAPI& eos,
     // Newton with FD derivative and step cap; on breakdown (non-finite,
     // singular slope) break to the bracketing fallback rather than fail.
     for (int iter = 0; iter < max_iter; ++iter) {
-        ++ps_pr_stats().nt_iters;
         double r, P1, P2, P_ref;
         const bool fv = eval_rv(e1, r, P1, P2, P_ref);   // fused: 2 inversions
         if (!std::isfinite(r)) break;
         if (fv && std::abs(r) < tol_rel * P_ref) {
-            ++ps_pr_stats().nt_ok; commit(e1); return true; }
+            commit(e1); return true; }
         const double de = 1.0e-4 * std::max(1.0e3, std::abs(e1));
         // CAMR.ps_pr_fd1 (0): central FD (4 inversions); 1 = one-sided
         // difference reusing r (2 inversions), which changes the Newton
@@ -369,32 +360,28 @@ inline bool ps_iso_pressure_relax_cell(V6& U, const PsPhaseAPI& eos,
     {
         const double Escale = std::max({std::abs(e1_init), std::abs(e2_init), 1.0e5});
         const int NS = 64;
-        ++ps_pr_stats().fb;
         bool have_prev = false; double e_prev = 0.0, r_prev = 0.0;
         for (int s = 0; s <= NS; ++s) {
-            ++ps_pr_stats().fb_samples;
             const double es = e1_init + (2.0 * (double(s) / NS) - 1.0) * Escale;
             double P1, P2, Pref;
             if (!fully_valid(es, P1, P2, Pref)) { have_prev = false; continue; }
             const double rs = P1 - P2;
             if (std::abs(rs) < tol_rel * Pref) {
-                ++ps_pr_stats().fb_ok; commit(es); return true; }
+                commit(es); return true; }
             if (have_prev && ((r_prev < 0.0) != (rs < 0.0))) {
                 double a = e_prev, b = es, ra = r_prev;
                 for (int it = 0; it < 60; ++it) {
-                    ++ps_pr_stats().fb_bisect;
                     const double mid = 0.5 * (a + b);
                     double Pa, Pb, Pr;
                     if (!fully_valid(mid, Pa, Pb, Pr)) break;   // validity broke inside bracket
                     const double rmid = Pa - Pb;
                     if (std::abs(rmid) < tol_rel * Pr) {
-                        ++ps_pr_stats().fb_ok; commit(mid); return true; }
+                        commit(mid); return true; }
                     if ((ra < 0.0) != (rmid < 0.0)) b = mid; else { a = mid; ra = rmid; }
                 }
             }
             e_prev = es; r_prev = rs; have_prev = true;
         }
-        ++ps_pr_stats().refused;
         return false;   // no stable P1=P2 at this alpha -> leave unchanged (safe)
     }
 }

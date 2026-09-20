@@ -56,7 +56,6 @@ struct Face {
     amrex::Real c_frozen;        // Wallis frozen mixture c
     amrex::Real c_1, c_2;        // per-phase c (floored); read only by the
                                  // relaxed-alpha star closure
-    bool        valid;
 };
 
 // -------------------------------------------------------------------
@@ -70,7 +69,8 @@ struct Face {
 //  queried for P_k (REY2Cs_*, a cache hit on the host), the host's c for
 //  a phase the core did not query, and the host's rho, e, E for an
 //  Absent phase (placeholders multiplied by m_k = 0 downstream).
-//  valid = rho_mix and c_frozen finite and positive.  docs §2.1.
+//  ps_cell_state floors rho_mix and the phase speeds, so the face state is
+//  always usable; docs §2.1.
 // -------------------------------------------------------------------
 AMREX_GPU_HOST_DEVICE
 AMREX_FORCE_INLINE
@@ -79,7 +79,6 @@ Face face_from_state(int idir, const amrex::Real U[NVAR],
 {
     using amrex::Real;
     Face f;
-    f.valid = false;
 
     const PsCellState s = ps_cell_state(U, pr);
     f.alpha_1 = s.alpha1;
@@ -146,9 +145,6 @@ Face face_from_state(int idir, const amrex::Real U[NVAR],
     const Real c2_frozen = ps_cmix2(Y1, Y2, c1, c2);
     f.c_frozen = (c2_frozen > Real(0.0)) ? std::sqrt(c2_frozen)
                                           : amrex::max(c1, c2);
-
-    f.valid = std::isfinite(f.rho_mix) && f.rho_mix > Real(0.0)
-           && std::isfinite(f.c_frozen) && f.c_frozen > Real(0.0);
     return f;
 }
 
@@ -161,18 +157,11 @@ Face face_from_state(int idir, const amrex::Real U[NVAR],
 // -------------------------------------------------------------------
 enum PsFlCause {
     PS_FL_OK         = 0,
-    PS_FL_FACE       = 1,   // face_from_state invalid (rho_mix <= 0 or c <= 0)
-    PS_FL_WS_DENOM   = 2,   // mixture mass-flux denominator degenerate
-    PS_FL_WS_SM      = 3,   // contact speed non-finite
-    PS_FL_WS_PSTAR   = 4,   // unused slot; never set.
-                            // Retire-candidate: see docs/DESIGN_DECISIONS.md §7 (O-8).
-
-    PS_FL_ST_DENOM   = 5,   // star: S_K - S_M degenerate
-    PS_FL_ST_MASSNEG = 6,   // star: a partial mass came out negative
-    PS_FL_ST_RHO     = 7,   // star: mixture density <= 0
-    PS_FL_ST_Q       = 8,   // star: a per-phase mass-flux denominator vanished
-    PS_FL_ST_ESTAR   = 9,   // star: a phase energy came out non-finite
-    PS_FL_NCAUSE     = 10
+    PS_FL_ST_DENOM   = 1,   // star: S_K - S_M degenerate or non-finite
+    PS_FL_ST_MASSNEG = 2,   // star: a partial mass came out negative
+    PS_FL_ST_RHO     = 3,   // star: mixture density <= 0
+    PS_FL_ST_ESTAR   = 4,   // star: a phase energy came out non-finite
+    PS_FL_NCAUSE     = 5
 };
 static_assert(PS_FL_NCAUSE == PS_COUNTERS_FL_NCAUSE,
               "PsCounters::fl_cause extent must match PsFlCause");
@@ -182,13 +171,12 @@ static_assert(PS_FL_NCAUSE == PS_COUNTERS_FL_NCAUSE,
 //  Each side uses its own frozen c, so the fan is at least as wide as
 //  the local sound speed whatever the composition asymmetry; the fan
 //  only has to bound the waves (docs §2.2).  S_M from the mixture mass
-//  and momentum balance (Toro §10.4) using P_mix.  cause names the
-//  refusing test (PS_FL_OK on success) on every return.
+//  and momentum balance (Toro §10.4) using P_mix.  The denominator is
+//  at most -(rho_L c_L + rho_R c_R) < 0; a non-finite input reaches the
+//  star state's S_K - S_M test and is refused there.
 // -------------------------------------------------------------------
 struct WaveSpeeds {
     amrex::Real S_L, S_M, S_R;
-    bool        valid;
-    int         cause;
 };
 
 AMREX_GPU_HOST_DEVICE
@@ -197,24 +185,14 @@ WaveSpeeds wave_speeds(const Face& fL, const Face& fR) noexcept
 {
     using amrex::Real;
     WaveSpeeds w;
-    w.valid = false;
-    w.cause = PS_FL_FACE;
-    if (!fL.valid || !fR.valid) return w;
-
     const Real S_L = amrex::min(fL.u_n - fL.c_frozen, fR.u_n - fR.c_frozen);
     const Real S_R = amrex::max(fL.u_n + fL.c_frozen, fR.u_n + fR.c_frozen);
 
     const Real denom = fL.rho_mix * (S_L - fL.u_n)
                      - fR.rho_mix * (S_R - fR.u_n);
-    w.cause = PS_FL_WS_DENOM;
-    if (!std::isfinite(denom) || std::abs(denom) < Real(1.0e-30)) return w;
-
     const Real S_M = (fR.P_mix - fL.P_mix
                     + fL.rho_mix * fL.u_n * (S_L - fL.u_n)
                     - fR.rho_mix * fR.u_n * (S_R - fR.u_n)) / denom;
-    w.cause = PS_FL_WS_SM;
-    if (!std::isfinite(S_M)) return w;
-
     //  No contact-pressure positivity test here by decision: the PVRS
     //  estimate fails on strong double rarefactions and its value is read
     //  nowhere; ps_star_state's tests inspect the quantities actually used.
@@ -222,8 +200,6 @@ WaveSpeeds wave_speeds(const Face& fL, const Face& fR) noexcept
     w.S_L    = S_L;
     w.S_M    = S_M;
     w.S_R    = S_R;
-    w.valid  = true;
-    w.cause  = PS_FL_OK;
     return w;
 }
 
@@ -253,7 +229,7 @@ void ps_star_masses(const Face& fK, amrex::Real r_K,
 //  ps_star_state: the HLLC star vector U_star (NVAR layout) on side K
 //  behind the wave at S_K, from that side's Face and conserved array.
 //  Returns false with *cause set on every refusal (degenerate S_K − S_M,
-//  negative star partial mass, rho* <= 0, vanishing q_k, non-finite
+//  negative star partial mass, rho* <= 0, non-finite
 //  E_k*); nothing is clamped.  Conserved-slot components follow the
 //  standard mixture HLLC algebra; alpha and the phase energies come from
 //  the relaxed-alpha construction below.  docs §2.3, §2.6.
@@ -278,8 +254,6 @@ bool ps_star_state(int idir, const Face& fK, const amrex::Real UK[NVAR],
     if (rhos <= Real(0.0)) PS_ST_REFUSE(PS_FL_ST_RHO);
     const Real q1 = fK.rho_1 * (S_K - fK.u_n);
     const Real q2 = fK.rho_2 * (S_K - fK.u_n);
-    if (std::abs(q1) < Real(1.0e-30) || std::abs(q2) < Real(1.0e-30))
-        PS_ST_REFUSE(PS_FL_ST_Q);
     const Real Pe1 = fK.P_mix;   // mixture P in the phase energies (H-3)
     const Real Pe2 = fK.P_mix;
 
@@ -446,8 +420,7 @@ struct Fluctuations {
 //  arrays.  W1 = U_L* − U_L (S_L), W2 = U_R* − U_L* (S_M), W3 = U_R − U_R*
 //  (S_R); s·W sums into Am for s < 0 and Ap for s > 0 (a zero-speed wave
 //  contributes to neither).  Returns false, with the cause and side
-//  counted on host builds, when the face state, the wave speeds or
-//  either star state is refused.  For a non-conserved slot Ap ≠ −Am and
+//  counted on host builds, when either star state is refused.  For a non-conserved slot Ap ≠ −Am and
 //  the non-conservative product is embedded at the face; for a conserved
 //  slot Am + Ap = ΔF.  fi/fj/fk locate the face for the audit only.
 // -------------------------------------------------------------------
@@ -477,9 +450,7 @@ bool fluctuations(int idir, const amrex::Real UL[NVAR], const amrex::Real UR[NVA
 
     const Face fL = face_from_state(idir, UL, pr);
     const Face fR = face_from_state(idir, UR, pr);
-    if (!fL.valid || !fR.valid) { PS_W0_FL_FAIL(PS_FL_FACE); return false; }
     const WaveSpeeds w = wave_speeds(fL, fR);
-    if (!w.valid) { PS_W0_FL_FAIL(w.cause); return false; }
 
     Real UsL[NVAR], UsR[NVAR];
     int stc = PS_FL_OK;

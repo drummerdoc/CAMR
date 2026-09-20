@@ -18,8 +18,7 @@
 //  Single host-side readers of the flux selector; every banner prints
 //  the resolved value these return, so the log never names a flux that
 //  did not run.
-int         ps_flux_selector();          // 2 = wp, the only interior flux; other names abort
-const char* ps_flux_name();              // resolved name for banners
+const char* ps_flux_name();              // "wp", the only interior flux; any other CAMR.ps_flux aborts
 
 void PS_umeth(
     const amrex::Box& bx,

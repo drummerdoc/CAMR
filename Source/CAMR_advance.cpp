@@ -227,13 +227,10 @@ CAMR::CAMR_advance (Real time,
             amrex::Long gl = pc.guard_reject_low;
             amrex::ParallelDescriptor::ReduceLongSum(gs);
             amrex::ParallelDescriptor::ReduceLongSum(gl);
-            amrex::Long rl = pc.rho_clamp_lo;
-            amrex::ParallelDescriptor::ReduceLongSum(rl);
             amrex::Print() << "[PS-GUARD] L" << level << " step "
                            << parent->levelSteps(level) << " " << label
                            << ": phase-P seen = " << gs
-                           << "  rej_low = " << gl
-                           << " | rho_clamp_lo = " << rl;
+                           << "  rej_low = " << gl;
             //  Ctoprim reference audit (PS_guards.H); ctop_sub = 0 over a
             //  run means no cell reached the host-phase reference.
             amrex::Long ck_ = pc.ctop_seen;
@@ -355,9 +352,7 @@ CAMR::CAMR_advance (Real time,
                 //  printed only when something refused.
                 {
                     static const char* cz[PS_HLLC::PS_FL_NCAUSE] = {
-                        "ok", "face", "ws_denom", "ws_SM", "ws_Pstar",
-                        "st_denom", "st_massneg", "st_rho", "st_q",
-                        "st_Estar" };
+                        "ok", "st_denom", "st_massneg", "st_rho", "st_Estar" };
                     amrex::Long tot = 0;
                     amrex::Long cv[PS_HLLC::PS_FL_NCAUSE];
                     for (int c = 0; c < PS_HLLC::PS_FL_NCAUSE; ++c) {

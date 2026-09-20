@@ -19,7 +19,6 @@
 //    reset_mt_cause, mt_coexist.reset, reset_flash_refuse
 //                     : per PS_sources report
 //    the four *_count fields are cumulative and never reset.
-//  reset() clears everything and is not on the time-step path.
 //
 //  Nothing here touches the numerics: every field is written after the
 //  decision it records has been taken.
@@ -28,7 +27,7 @@
 
 //  Array extents; the enums that index them (PS_HLLC::PsFlCause,
 //  hem::PsMtCause, hem::PsFlashRefuse) static_assert against these.
-constexpr int PS_COUNTERS_FL_NCAUSE  = 10;
+constexpr int PS_COUNTERS_FL_NCAUSE  = 5;
 constexpr int PS_COUNTERS_MT_NCAUSE  = 14;
 constexpr int PS_COUNTERS_FLR_NCAUSE = 21;
 
@@ -42,16 +41,6 @@ constexpr int PS_COUNTERS_FLR_NCAUSE = 21;
 //  Docs/MODEL_AND_ALGORITHM.md §8.6.
 // ---------------------------------------------------------------------
 struct PsPresDiag {
-    // thermal leg ran and moved a T by > 1 K
-    long   n_run_moved = 0;
-    double dp_moved_max = 0.0, dp_moved_sum = 0.0;
-    // thermal leg ran, no T moved by > 1 K
-    long   n_run_still = 0;
-    double dp_still_max = 0.0, dp_still_sum = 0.0;
-    // gate-skipped: residual is post-mechanical, read off q1/q2 (no extra solves)
-    long   n_skipped = 0;
-    double dp_skip_max = 0.0, dp_skip_sum = 0.0;
-    long   n_postinval = 0;   // post-thermal state invalid: residual unmeasurable
     // [PS-DT] |T1-T2| at thermal-leg entry and exit, cells whose leg ran
     long   n_dt = 0;
     double dtpre_max = 0.0,  dtpre_sum = 0.0;
@@ -132,17 +121,6 @@ struct PsMtCoexist {
                    n_pr1 = 0; }
 };
 
-// ---- iso-pressure-relaxation instrumentation ----------------------------
-//  Same question as PsMtStats, for ps_iso_pressure_relax_cell (modes 1
-//  and 2): does the Newton converge, or fall through to the
-//  validity-guarded bracketing scan?  Counted, not reported.
-struct PsPrStats {
-    long seen = 0, trivial = 0, nt_iters = 0, nt_ok = 0;
-    long fb = 0, fb_samples = 0, fb_bisect = 0, fb_ok = 0, refused = 0;
-    void reset() { seen = trivial = nt_iters = nt_ok = 0;
-                   fb = fb_samples = fb_bisect = fb_ok = refused = 0; }
-};
-
 //  [PS-X3]: the coupled operator's outcome, cause-split, including the
 //  P1 = P2 constraint's failures split into entry (structural: the cell
 //  cannot be put on the manifold, with the projector's PSR_* cause) and
@@ -182,7 +160,6 @@ struct PsCounters {
     // ---- guards (PS_guards.H), [PS-GUARD] ----------------------------
     long   guard_seen        = 0;   // phase-pressure guard: calls
     long   guard_reject_low  = 0;   //   substitutions (there is no upper cap)
-    long   rho_clamp_lo      = 0;   // G1 density clamp engaged
     long   ctop_seen         = 0;   // ctoprim reference audit
     long   ctop_sub          = 0;
     long   ctop_host_floor   = 0;
@@ -233,7 +210,6 @@ struct PsCounters {
     PsFoldAudit fold;
 
     // ---- hem kernels (hem_pelanti_shyue.H) ---------------------------
-    long   pressure_relax_count = 0;   // cumulative, never reset
     long   mass_transfer_count  = 0;
     long   flash_source_count   = 0;
     long   triple_point_count   = 0;
@@ -241,12 +217,11 @@ struct PsCounters {
     long   flash_refuse[PS_COUNTERS_FLR_NCAUSE] = {0};   // [PS-FLASH-REF]
     hem::PsMtStats   mt_stats;
     hem::PsMtCoexist mt_coexist;
-    hem::PsPrStats   pr_stats;
     hem::PsX3Stats   x3_stats;
 
     // ---- per-section resets (cadence in the header comment) ----------
     void reset_guards() {
-        guard_seen = guard_reject_low = rho_clamp_lo = 0;
+        guard_seen = guard_reject_low = 0;
         ctop_seen = ctop_sub = ctop_host_floor = 0;
         flux_sanit = reflux_cap = reflux_clamp = 0;
         nscbc_zg_slots = 0;
@@ -269,7 +244,6 @@ struct PsCounters {
     void reset_mt_cause() { for (int c = 0; c < PS_COUNTERS_MT_NCAUSE; ++c) mt_cause[c] = 0; }
     void reset_flash_refuse() { for (int c = 0; c < PS_COUNTERS_FLR_NCAUSE; ++c) flash_refuse[c] = 0; }
     //  Everything, the cumulative counters included.
-    void reset() { *this = PsCounters{}; }
 };
 
 //  The one instance (function-local static, so the header stays

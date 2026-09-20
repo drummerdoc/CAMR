@@ -7,7 +7,7 @@ A 1 m closed pipe of supercritical CO₂ at 100 bar, 320 K (16 K above $T_c$; th
 
 | Deck | Purpose |
 |---|---|
-| `inputs.base` | Shared physics (not run directly): CFL 0.25, wp, `ps_bc_use_nscbc = 1` (σ at its default 0), `max_step = 300`, `stop_time = 1.65e-3`, single level; included by `FILE = inputs.base`. |
+| `inputs.base` | Shared physics (not run directly): CFL 0.25, wp, `ps_bc_use_nscbc = 1` (each deck sets its outlet face to type `vent`), `max_step = 300`, `stop_time = 1.65e-3`, single level; included by `FILE = inputs.base`. |
 | `inputs-sym-{x,y}-{lo,hi}` | Orientation variants: 256 × 32 tube along the named axis, vent on the named face, plot prefix `plt_sym_*_`. |
 | `inputs-x` | Stand-alone deck along $x$ (256 × 32, `stop_time = 5e-3`, `max_step = 300`) for the wall-pressure-history run. |
 | `inputs-x-amr` | 128 × 16 base with one refinement level on the pressure jump (`ptag`, 0.5 bar per cell): exercises regrid interpolation and reflux of the extended slots. |

@@ -220,43 +220,6 @@ ps_wp_face(int idir, int i, int j, int k, int iL, int jL, int kL,
             Am[UALPHA1] = Real(0.5) * ubar * da - halfa;
             Ap[UALPHA1] = Real(0.5) * ubar * da + halfa;
         }
-#if !defined(AMREX_USE_GPU) && defined(CAMR_PS_DIAG)
-        //  CAMR.ps_llf_diag (0): print each face where the LLF fallback
-        //  fired, with lam decomposed on the left state that sets it.
-        {
-            static const int lld = ps_dial_int("ps_llf_diag", 0);
-            if (lld != 0 && in_valid) {
-                const Real a1d = UL[UALPHA1];
-                const Real m1d = UL[UM1RHO1], m2d = UL[UM2RHO2];
-                const Real rhod = UL[URHO];
-                const Real uxd = (rhod != Real(0.0)) ? UL[UMX]/rhod : Real(0.0);
-                const Real ked = Real(0.5)*uxd*uxd;
-                const Real r1_raw = m1d / amrex::max(a1d, Real(ps_const::DENOM_TINY));
-                const Real r1_cl = ps_guard::clamp_phase_density(r1_raw, EOS::rho_min(), EOS::rho_max());
-                const Real r2_cl = ps_guard::clamp_phase_density(
-                        m2d / amrex::max(Real(1.0)-a1d, Real(ps_const::DENOM_TINY)),
-                        EOS::rho_min(), EOS::rho_max());
-                const Real e1d = (m1d > ps_const::M_TINY) ? UL[UE1]/m1d - ked : UL[UEINT]/rhod;
-                const Real e2d = (m2d > ps_const::M_TINY) ? UL[UE2]/m2d - ked : UL[UEINT]/rhod;
-                Real Yd[NUM_SPECIES];
-                ps_pure_species(Yd);
-                Real P1d, c1d, P2d, c2d;
-                EOS::REY2PCs_liquid(r1_cl, e1d, Yd, P1d, c1d);
-                EOS::REY2PCs_vapor (r2_cl, e2d, Yd, P2d, c2d);
-                const Real Y1d = m1d/rhod;
-                amrex::Print() << "[LLF-FALLBACK] i=" << i << " lam=" << lam
-                   << " lamL=" << lamL << " lamR=" << lamR
-                   << " rhoL=" << UL[URHO] << " rhoR=" << UR[URHO]
-                   << " drho=" << (UR[URHO]-UL[URHO]) << "\n"
-                   << "[LAM-DECOMP]  a1=" << a1d << " m1=" << m1d << " m2=" << m2d
-                   << " rho1_raw=" << r1_raw << " rho1_clamped=" << r1_cl
-                   << " rho_max=" << EOS::rho_max()
-                   << " e1=" << e1d << " P1=" << P1d << " c1=" << c1d
-                   << " rho2=" << r2_cl << " e2=" << e2d << " P2=" << P2d
-                   << " c2=" << c2d << " Y1=" << Y1d << "\n";
-            }
-        }
-#endif
     }
 
     // flx/wpf live on the valid face box only; ghost faces of the grown
@@ -423,9 +386,9 @@ ps_viscous_face(int d, int i, int j, int k,
 //  (docs/DESIGN_DECISIONS.md H-2); any other name aborts so a deck
 //  that names a flux that does not exist fails loudly.  The key survives
 //  so decks can state the flux explicitly and job_info records it.
-int ps_flux_selector()
+const char* ps_flux_name()
 {
-    static const int v = []() -> int {
+    static const bool checked = []() -> bool {
         std::string s = "wp";
         amrex::ParmParse pp("CAMR");
         pp.query("ps_flux", s);
@@ -433,14 +396,10 @@ int ps_flux_selector()
             amrex::Abort("CAMR.ps_flux must be 'wp'");
         }
         pp.add("ps_flux", std::string("wp"));
-        return 2;   // wp's selector value
+        return true;
     }();
-    return v;
-}
-
-const char* ps_flux_name()
-{
-    return (ps_flux_selector() == 2) ? "wp" : "invalid";
+    amrex::ignore_unused(checked);
+    return "wp";
 }
 
 
@@ -485,7 +444,7 @@ PS_umeth(const Box& bx,
     // Flux selector: always wp or an abort; read here so the value gate
     // runs and job_info records the flux.  (Retired keys abort at startup:
     // PS_retired_keys.H.)
-    ps_flux_selector();
+    ps_flux_name();   // validates CAMR.ps_flux once
 
     // Presence parameters: one host-side read, captured by value into every
     // kernel (see ps_presence_params, PS_presence.H).
@@ -642,7 +601,7 @@ PS_umeth(const Box& bx,
 #endif
 
     // ========== wave-propagation interior ===============================
-    //  wp is the only interior; ps_flux_selector() admits nothing else.
+    //  wp is the only interior; ps_flux_name() admits nothing else.
     {
         const bool o2 = (wp_order == 2);            // correction fluxes
         const bool tv = (wp_transverse != 0);       // transverse term

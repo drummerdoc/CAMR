@@ -43,7 +43,6 @@ using V6 = std::array<double, 6>;
 //  here are the kernels' one-line handles on its hem section.  The four
 //  *_count fields are cumulative over the run.
 // ---------------------------------------------------------------------
-inline long& ps_pressure_relax_count()    { return ps_counters().pressure_relax_count; }
 inline long& ps_mass_transfer_count()     { return ps_counters().mass_transfer_count; }
 inline PsMtStats& ps_mt_stats()           { return ps_counters().mt_stats; }
 

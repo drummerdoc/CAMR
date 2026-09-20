@@ -95,16 +95,6 @@ amrex::Real sanitize_stock_pressure(amrex::Real P_stock) noexcept
 }
 
 // ---------------------------------------------------------------------
-//  G1: per-phase density, lower bound only.  The bound is the backend's
-//  declared EOS::rho_min() (Category A metadata), so nothing here is tuned
-//  or CO2-specific; rho_max() stays metadata for the validator's V6 check.
-//  An upper clamp at rho_max before an EOS call would replace an
-//  off-domain evaluation, whose garbage the pressure test discards, with
-//  an on-domain evaluation whose garbage passes as trustworthy, and the
-//  clamped/unclamped decision flips cell-to-cell (the pepper mechanism).
-//  The clamp acts at evaluation time: the stored (alpha_k, m_k) pair is
-//  left alone.
-// ---------------------------------------------------------------------
 #if !defined(AMREX_USE_GPU)
 //  clean_state repairs: a negative or non-finite partial mass is set to
 //  zero, which makes that phase Absent (a representable state) rather than
@@ -113,19 +103,8 @@ amrex::Real sanitize_stock_pressure(amrex::Real P_stock) noexcept
 inline void  count_mass_neg()       { ++ps_counters().mass_neg; }
 inline void  add_mass_neg(double dm) { ps_counters().mass_neg_kg += dm; }
 inline void  count_mass_nonfinite() { ++ps_counters().mass_nonfinite; }
-inline void  count_rho_lo()   { ++ps_counters().rho_clamp_lo; }
-#else
-AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_rho_lo() noexcept {}
 #endif
 
-AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-amrex::Real clamp_phase_density(amrex::Real rho,
-                               amrex::Real rho_min, amrex::Real rho_max) noexcept
-{
-    amrex::ignore_unused(rho_max);
-    if (!(rho >= rho_min)) { count_rho_lo(); return rho_min; }  // also catches NaN
-    return rho;
-}
 
 // ---------------------------------------------------------------------
 //  Silent-limiter counters:

@@ -487,18 +487,6 @@ ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
     if (report) {
         const PsPresDiag& pd = ps_pres_diag_data();
         auto mean = [](double s, long n) { return n > 0 ? s/double(n) : 0.0; };
-        amrex::AllPrint()
-            << "[PS-PRES] thermal RAN+moved(>1K): n=" << pd.n_run_moved
-            << " max=" << pd.dp_moved_max
-            << " mean=" << mean(pd.dp_moved_sum, pd.n_run_moved)
-            << " | RAN+still: n=" << pd.n_run_still
-            << " max=" << pd.dp_still_max
-            << " mean=" << mean(pd.dp_still_sum, pd.n_run_still)
-            << " | gate-SKIPPED: n=" << pd.n_skipped
-            << " max=" << pd.dp_skip_max
-            << " mean=" << mean(pd.dp_skip_sum, pd.n_skipped)
-            << " | post-invalid=" << pd.n_postinval
-            << "   (|P1-P2|/max(P1,P2) at chain exit)\n";
         //  [PS-GATE]: presence-gate refusals this sweep, all modes (cells
         //  [PS-X3] never sees).  Not an anomaly — the gate doing its job —
         //  but a stall routed through it must be visible.

@@ -226,7 +226,6 @@ CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt)
                 const bool entering = (side == 1) ? (s < Real(0.0)) : (s > Real(0.0));
                 if (!entering) return;
                 const PS_HLLC::Face fN = PS_HLLC::face_from_state(idir, UN, l_pres);
-                if (!fN.valid) return;
                 const Real c_eff = std::abs(s - fN.u_n);
                 if (!(c_eff > Real(0.0)) || !std::isfinite(c_eff)) return;
                 for (int n = 0; n < NVAR; ++n) {
