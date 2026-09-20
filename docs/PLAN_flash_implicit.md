@@ -58,6 +58,8 @@ What it is not. It does not make the nucleator a finite-rate physical model (tha
 
 `[DECIDE-F5]` **Relation to `[DECIDE-32]` (O-21).** O-21's complaint is the other side of the same closure: a nearly pure liquid stretched past its spinodal evaporates only at the SRT seed rate $(\alpha_2 + \delta)\alpha_1$, because between birth and `alpha_cond` no operator owns the transfer. The implicit nucleator makes the birth stage well-posed but does not give the corridor phase a rate; that is the Σ equation or a spinodal-triggered nucleation. Not part of this change — recorded so the two are not conflated.
 
+**Taken (21 Sept): F1 (a), F2 (a), F3 (a), F4 yes.**
+
 ## 5. Predictions, written before any run
 
 With `ps_flash_implicit = 1`, against today's step:

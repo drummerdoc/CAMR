@@ -188,17 +188,8 @@ ps_apply_floor(amrex::MultiFab& S_new, int nghost = 0)
             if (m1 <= Real(0.0) || m2 <= Real(0.0)) return;
             const Real rho_mix = m1 + m2;
 
-            const Real px = U(i,j,k, UMX);
-#if (AMREX_SPACEDIM >= 2)
-            const Real py = U(i,j,k, UMY);
-#else
-            const Real py = Real(0.0);
-#endif
-#if (AMREX_SPACEDIM == 3)
-            const Real pz = U(i,j,k, UMZ);
-#else
-            const Real pz = Real(0.0);
-#endif
+            Real px, py, pz;
+            ps_momentum(U, i, j, k, px, py, pz);
             const Real p2   = px*px + py*py + pz*pz;
             const Real kesp = Real(0.5) * p2 / (rho_mix * rho_mix);   // ½u²
 

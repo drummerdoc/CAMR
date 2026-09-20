@@ -112,18 +112,9 @@ ps_phase_temp_from_cons(const amrex::Real U[NVAR], int phase, amrex::Real T_mix)
     const Real rho_mix = U[URHO];
     if (!(rho_mix > Real(0.0))) return T_mix;
     const Real inv_r = Real(1.0) / rho_mix;
-    const Real ux = U[UMX] * inv_r;
-#if (AMREX_SPACEDIM >= 2)
-    const Real uy = U[UMY] * inv_r;
-#else
-    const Real uy = Real(0.0);
-#endif
-#if (AMREX_SPACEDIM == 3)
-    const Real uz = U[UMZ] * inv_r;
-#else
-    const Real uz = Real(0.0);
-#endif
-    const Real ke  = ps_kinetic_energy(ux, uy, uz);
+    Real px, py, pz;
+    ps_momentum(U, px, py, pz);
+    const Real ke  = ps_kinetic_energy(px * inv_r, py * inv_r, pz * inv_r);
     const Real rho_k = mk / ak;
     const Real e_k   = ((phase == 1) ? U[UE1] : U[UE2]) / mk - ke;
 

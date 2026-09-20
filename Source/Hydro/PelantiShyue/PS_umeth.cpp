@@ -201,16 +201,7 @@ ps_wp_face(int idir, int i, int j, int k, int iL, int jL, int kL,
                 Am[n] = Real(0.5) * dF - half;
                 Ap[n] = Real(0.5) * dF + half;
             }
-            const int mcomp = (idir == 0) ? UMX
-#if (AMREX_SPACEDIM >= 2)
-                            : (idir == 1) ? UMY
-#endif
-#if (AMREX_SPACEDIM == 3)
-                            : UMZ
-#else
-                            : UMX
-#endif
-                            ;
+            const int mcomp = ps_momentum_index(idir);
             const Real rL  = UL[URHO], rR = UR[URHO];
             const Real unL = (rL > Real(0.0)) ? UL[mcomp] / rL : Real(0.0);
             const Real unR = (rR > Real(0.0)) ? UR[mcomp] / rR : Real(0.0);
@@ -274,13 +265,7 @@ ps_wp_tvterm(int d, int t, int i, int j, int k,
     using amrex::Real;
     const int di=(d==0), dj=(d==1), dk=(d==2);
     const int ti=(t==0), tj=(t==1), tk=(t==2);
-#if (AMREX_SPACEDIM == 3)
-    const int UM_d = (d==0)?UMX : (d==1)?UMY : UMZ;
-#elif (AMREX_SPACEDIM == 2)
-    const int UM_d = (d==0)?UMX : UMY;
-#else
-    const int UM_d = UMX;   // 1D: transverse term is never invoked
-#endif
+    const int UM_d = ps_momentum_index(d);   // 1-D: the transverse term is never invoked
     // d-velocity at the t-face whose high-side cell is (a,b,c):
     auto ud = [&](int a,int b,int c) noexcept -> Real {
         Real r0=uin(a-ti,b-tj,c-tk,URHO); r0=(std::isfinite(r0)&&r0>ps_const::RHO_MIX_MIN)?r0:ps_const::RHO_MIX_MIN;
@@ -328,13 +313,7 @@ ps_viscous_face(int d, int i, int j, int k,
     using amrex::Real;
     if (mu <= Real(0.0)) return;
     const int off[3][3] = { {1,0,0}, {0,1,0}, {0,0,1} };
-#if (AMREX_SPACEDIM == 3)
-    const int UM[3] = { UMX, UMY, UMZ };
-#elif (AMREX_SPACEDIM == 2)
-    const int UM[3] = { UMX, UMY, UMX };
-#else
-    const int UM[3] = { UMX, UMX, UMX };
-#endif
+    const int UM[3] = { ps_momentum_index(0), ps_momentum_index(1), ps_momentum_index(2) };
     const int di=off[d][0], dj=off[d][1], dk=off[d][2];
     auto vel=[&](int a,int b,int c,int comp) noexcept -> Real {
         Real r=uin(a,b,c,URHO); r=(std::isfinite(r)&&r>ps_const::RHO_MIX_MIN)?r:ps_const::RHO_MIX_MIN;

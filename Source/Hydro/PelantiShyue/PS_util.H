@@ -43,7 +43,53 @@ ps_pure_species(amrex::Real Y[NUM_SPECIES]) noexcept
     for (int n = 1; n < NUM_SPECIES; ++n) Y[n] = amrex::Real(0.0);
 }
 
-//  ½|u|² from the velocity components (the ladder the caller formed).
+//  The conserved momentum of a cell as three components; a component
+//  the build does not carry (AMREX_SPACEDIM < 3) is an exact zero.  The
+//  one place the dimension ladder is written.
+AMREX_GPU_HOST_DEVICE
+AMREX_FORCE_INLINE
+void
+ps_momentum(amrex::Array4<const amrex::Real> const& U, int i, int j, int k,
+            amrex::Real& px, amrex::Real& py, amrex::Real& pz) noexcept
+{
+    px = U(i,j,k, UMX);
+#if (AMREX_SPACEDIM >= 2)
+    py = U(i,j,k, UMY);
+#else
+    py = amrex::Real(0.0);
+#endif
+#if (AMREX_SPACEDIM == 3)
+    pz = U(i,j,k, UMZ);
+#else
+    pz = amrex::Real(0.0);
+#endif
+}
+AMREX_GPU_HOST_DEVICE
+AMREX_FORCE_INLINE
+void
+ps_momentum(const amrex::Real U[NVAR],
+            amrex::Real& px, amrex::Real& py, amrex::Real& pz) noexcept
+{
+    px = U[UMX];
+#if (AMREX_SPACEDIM >= 2)
+    py = U[UMY];
+#else
+    py = amrex::Real(0.0);
+#endif
+#if (AMREX_SPACEDIM == 3)
+    pz = U[UMZ];
+#else
+    pz = amrex::Real(0.0);
+#endif
+}
+
+//  Index of the momentum component along direction d; a direction the
+//  build does not carry maps to UMX and is never read.
+AMREX_GPU_HOST_DEVICE
+AMREX_FORCE_INLINE
+int ps_momentum_index(int d) noexcept { return (d < AMREX_SPACEDIM) ? UMX + d : UMX; }
+
+//  ½|u|² from the velocity components.
 AMREX_GPU_HOST_DEVICE
 AMREX_FORCE_INLINE
 amrex::Real
@@ -62,17 +108,8 @@ ps_kinetic_energy(amrex::Array4<const amrex::Real> const& U,
                   int i, int j, int k, amrex::Real rho_mix) noexcept
 {
     using amrex::Real;
-    const Real px = U(i,j,k, UMX);
-#if (AMREX_SPACEDIM >= 2)
-    const Real py = U(i,j,k, UMY);
-#else
-    const Real py = Real(0.0);
-#endif
-#if (AMREX_SPACEDIM == 3)
-    const Real pz = U(i,j,k, UMZ);
-#else
-    const Real pz = Real(0.0);
-#endif
+    Real px, py, pz;
+    ps_momentum(U, i, j, k, px, py, pz);
     return Real(0.5)*(px*px+py*py+pz*pz)/(rho_mix*rho_mix);
 }
 
@@ -86,17 +123,8 @@ ps_pack_v6(amrex::Array4<const amrex::Real> const& U, int i, int j, int k,
            amrex::Real alpha1, amrex::Real m1, amrex::Real m2) noexcept
 {
     using amrex::Real;
-    const Real px = U(i,j,k, UMX);
-#if (AMREX_SPACEDIM >= 2)
-    const Real py = U(i,j,k, UMY);
-#else
-    const Real py = Real(0.0);
-#endif
-#if (AMREX_SPACEDIM == 3)
-    const Real pz = U(i,j,k, UMZ);
-#else
-    const Real pz = Real(0.0);
-#endif
+    Real px, py, pz;
+    ps_momentum(U, i, j, k, px, py, pz);
     std::array<double, 6> Uv;
     Uv[0] = alpha1;
     Uv[1] = m1;

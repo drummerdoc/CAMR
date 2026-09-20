@@ -165,14 +165,9 @@ struct PCHypFillExtDir
           s_g[URHO] = s_g[UM1RHO1] + s_g[UM2RHO2];
           {
             const amrex::Real inv = (s_g[URHO] > amrex::Real(0.0)) ? amrex::Real(1.0) / s_g[URHO] : amrex::Real(0.0);
-            const amrex::Real ke = amrex::Real(0.5) * inv * (s_g[UMX] * s_g[UMX]
-#if (AMREX_SPACEDIM >= 2)
-                                                          + s_g[UMY] * s_g[UMY]
-#endif
-#if (AMREX_SPACEDIM == 3)
-                                                          + s_g[UMZ] * s_g[UMZ]
-#endif
-                                                          );   // rho ke
+            amrex::Real gx, gy, gz;
+            ps_momentum(s_g, gx, gy, gz);
+            const amrex::Real ke = amrex::Real(0.5) * inv * (gx * gx + gy * gy + gz * gz);   // rho ke
             s_g[UEDEN] = s_g[UE1] + s_g[UE2];
             s_g[UEINT] = s_g[UEDEN] - ke;
             const amrex::Real invN = amrex::Real(1.0) / s_N[URHO];
