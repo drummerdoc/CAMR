@@ -296,16 +296,7 @@ Rejected: a Jameson-sensor-gated dissipation of the transverse momentum (`ps_she
 
 ### 3.7 Dials
 
-| key (`CAMR.`) | default | meaning |
-|:--|:--|:--|
-| `ps_wp_order` | 2 | 2 = fluctuations plus the limited correction (the acceptance order); 1 = fluctuations only |
-| `ps_wp_limiter` | `vanleer` | `none`/`unlimited` sets $\phi=1$ (verification only, not monotone) |
-| `ps_lw_skip_contact` | 2 | contact-wave correction weight: 0 = full, 1 = blanket skip, 2 = smoothstep taper in $\vert \Delta\alpha\vert /\alpha_{\text{cond}}$ |
-| `ps_wp_transverse` | 0 | 0 = split; 1 = contact-only transverse term; 2 (the deleted acoustic term) aborts |
-| `ps_mu` | 0 | Newtonian dynamic viscosity [Pa s] (2-D/3-D) |
-| `ps_bl_reflux` | 1 | nonzero = $\alpha$ coarse–fine co-move with its refluxed mass (decks historically set 2, still accepted); 0 = off |
-
-Retired keys of this chapter, which abort when set: `ps_recon`, `ps_alpha_limiter`, `ps_ctu`, `ps_pk_energy_flux`, `ps_llf_identity`, `ps_wp_proj_scale`, `ps_shear_diss`; the value `ps_wp_transverse = 2`.
+The keys of this chapter are `CAMR.ps_wp_order`, `ps_wp_limiter`, `ps_lw_skip_contact`, `ps_wp_transverse`, `ps_mu` and `ps_bl_reflux`; their defaults, accepted values and status are rows of the dial table in `RUNNING.md` §3, which is the only such table. What this chapter adds is why: order 2 is the acceptance order; `ps_wp_limiter = none`/`unlimited` sets $\phi=1$ and is for verification only, because it is not monotone (§3.3); the taper value 2 of `ps_lw_skip_contact` is argued in §3.4, the split default of `ps_wp_transverse` in §3.5, `ps_mu` in §3.6, and the $\alpha$ co-move behind `ps_bl_reflux` in §4.9. The retired keys and values of this chapter abort when set: the mechanism is in `RUNNING.md` §3, the reason and replacement for each key in `DESIGN_DECISIONS.md` §6.
 
 
 ## 4. Presence-discrete phase state
@@ -451,19 +442,7 @@ Rejected: regularising the vanishing-phase limit continuously in the model (a fo
 
 ### 4.11 Dials
 
-| key | default | meaning |
-|:--|:--|:--|
-| `CAMR.ps_alpha_cond` | 2e-2 | conditioning bound (§4.3) |
-| `CAMR.ps_alpha_birth` | 4e-2 | flash seed level |
-| `CAMR.ps_presence_vanish` | 1e-8 | death edge and vanish-fold threshold (the older `ps_alpha_vanish` key aborts) |
-| `CAMR.ps_presence_rho_deg` | 0.5 kg/m³ | promotion / corridor-reap density floor |
-| `CAMR.ps_presence_e_deg_lo`, `_hi` | −2e6, 2e7 J/kg | energy-reap band |
-| `CAMR.ps_promote_checked` | 1 | energy-reachability check at promotion; 0 = A/B opt-out |
-| `CAMR.ps_floor_indep` | 1 | per-phase floor leg only for Independent phases; 0 = A/B opt-out |
-| `CAMR.ps_tfloor_fold` | 0 (off) | temperature-triggered fold, own key |
-| `CAMR.ps_bl_reflux` | 1 | nonzero: the $\alpha$ co-move at reflux (2 in older decks, still accepted); 0 off |
-
-Retired keys of this chapter, which abort when set: `ps_presence` (the legacy floor-and-copy path is deleted and presence semantics are the only semantics), `ps_alpha_vanish`, `ps_star_relaxed`, `ps_rk_model`, `ps_relax_hyst` (hysteresis always on in host builds), `ps_floor_budget`, `ps_dilute_closure`, `ps_dilute_alpha0`.
+The keys of this chapter are `CAMR.ps_alpha_cond`, `ps_alpha_birth`, `ps_presence_vanish`, `ps_presence_rho_deg`, `ps_presence_e_deg_lo`/`_hi`, `ps_promote_checked`, `ps_floor_indep`, `ps_tfloor_fold` (the temperature-triggered fold, deliberately its own key) and `ps_bl_reflux` (§4.9); defaults and meanings are rows of the dial table in `RUNNING.md` §3. The provenance of each constant's default is §4.3; `ps_promote_checked = 0` and `ps_floor_indep = 0` are A/B opt-outs, not configurations. The retired keys and values of this chapter abort when set: the mechanism is in `RUNNING.md` §3, the reason and replacement for each key in `DESIGN_DECISIONS.md` §6.
 
 ## 5. Sources: mechanical, thermal, mass transfer, flash, extinction
 
@@ -577,7 +556,7 @@ $$\theta = \theta_0\,\alpha_v^{-0.54}\,\psi^{-1.76}, \quad \theta_0 = 3.84\times
 
 `CAMR.ps_relax_mode=0` is mechanical only (instantaneous $P_1 = P_2$, no thermal leg, no transfer) and is what the frozen-limit tests use. Mode 2 (isochoric pressure equilibrium plus finite-rate thermal relaxation at $\theta$, with the split Gibbs-driven mass-transfer source of §5.4 when `ps_mt_tau` > 0) is retained as the finite-rate control closure: it is the closure the production results to date were made with, and the only independent one to measure X3's open closure questions against (the spinodal crossing of the 3650→3700 window, the condensation shell at the jet head; `DESIGN_DECISIONS.md` F-5). Modes 1 (isochoric $P$ and $T$ equilibrium, refuted), 3 (a finite-rate mechanical leg, refuted) and 4 (the sequential chain X3 replaced, with its `ps_mech_kernel`/`ps_mech_close` sub-dials) are deleted and abort with their replacement named. An unrecognised mode aborts at the single read site rather than falling through to a different physics.
 
-Two configurations exist and are stated once here. The 1-D acceptance battery runs bare defaults: mode 5, $\theta = 10^{-7}$ s, flash on at $\tau_f = 10^{-7}$ s (nucleating from absent phases), SRT transfer at $D = 0.1$ m. The 2-D pipe-break production decks (`Exec/CO2_PipeBreak/inputs.satjet_demo2`, `_demo3`) pin mode 2 with $\theta = \tau_{\mathrm{MT}} = 10^{-3}$ s and the flash off (saturated reservoir, no nucleation), together with the pressure and temperature floors of §4.5. Whether the 2-D decks move to mode 5 during the next production run, so that modes 1/2 can be retired, is an open decision.
+Two configurations exist. `RUNNING.md` §2 gives both in one table, with the reasons they differ. In outline: the 1-D acceptance battery runs bare defaults (mode 5, $\theta = 10^{-7}$ s, flash on at $\tau_f = 10^{-7}$ s nucleating from absent phases, SRT transfer at $D = 0.1$ m); the 2-D pipe-break production decks (`Exec/CO2_PipeBreak/inputs.satjet_demo2`, `_demo3`) pin mode 2 with $\theta = \tau_{\mathrm{MT}} = 10^{-3}$ s and the flash off (saturated reservoir, no nucleation), together with the pressure and temperature floors of §4.5. Whether the 2-D decks move to mode 5, so that mode 2 can be retired, is an open decision (`DESIGN_DECISIONS.md` O-12).
 
 ### 5.8 What the two-pressure form buys
 
@@ -585,23 +564,7 @@ The mechanical closure lets the two phases disagree about pressure for one step 
 
 ### 5.9 Dials
 
-| key | default | meaning |
-|:--|:--|:--|
-| `CAMR.ps_relax_mode` | 5 | X3 coupled operator; 0 mechanical only; 2 finite-rate control closure; 1, 3, 4 retired (abort) |
-| `CAMR.ps_theta_tau` | 1e-7 s | thermal rate; $\le 0$ = instantaneous $T_1 = T_2$ constraint |
-| `CAMR.ps_coexist_action` | 0 | band-exit policy: 0 count, 1 abort (runaway clause always active); 2/3/4 retired, abort |
-| `CAMR.ps_mt_srt_d` | 0.1 m | morphology length $D$ in $\Sigma$ (§5.6, open) |
-| `CAMR.ps_mt_srt_delta` | 0.01 | receiving-phase seed $\delta$ in $\Sigma$ |
-| `CAMR.ps_mt_h_weight` | 0.5 | carrier weight $w$; negative = upwind |
-| `CAMR.ps_mt_update_alpha` | −1 (auto → on) | the (E.1) rule in the split source |
-| `CAMR.ps_mt_tau` | 1e-7 s | split-source rate, modes ≠ 5 only |
-| `CAMR.ps_mt_tau_model`, `ps_mt_form` | 0, 0 | split-source variants, modes ≠ 5 only (`ps_mt_tau_model = 1` retired, aborts) |
-| `CAMR.ps_flash_tau` | 1e-7 s | flash rate; $\le 0$ = off |
-| `CAMR.ps_flash_alpha_thr` | 0.10 | dominance threshold |
-| `CAMR.ps_flash_metastable_margin` | 0.10 | saturation undershoot required |
-| `CAMR.ps_x3_test` | 0 | 0-D fixed-point acceptance harness |
-
-Retired keys of this chapter, which abort when set: `ps_theta_model`, `ps_hrm_theta`, `ps_mt_target` (the consistent target is the only target), `ps_src_p_reproject` (the reproject always runs), `ps_flash_from_absent`, `ps_flash_project_sat` (nucleation from an absent phase at the saturation density is the only birth), `ps_diag_morph`, `ps_coexit_diag`, `ps_prdiag`, `ps_relax_diag`, `ps_relax_verbose`, `ps_dm_census`, `ps_flash_ev_diag`, `ps_dilute_probe`, `ps_m2_test`, `ps_asy1_probe`; the values `ps_relax_mode=3`, `ps_coexist_action=2/3/4`, `ps_mt_tau_model=1`.
+The keys of this chapter are `CAMR.ps_relax_mode`, `ps_theta_tau` and `ps_coexist_action` (§5.1–5.3, §5.7); `ps_mt_srt_d` and `ps_mt_srt_delta`, the morphology length $D$ and the receiving-phase seed $\delta$ in $\Sigma$ ($D$ is the open closure number, §5.6); `ps_mt_h_weight`, the carrier weight $w$ of §5.4; `ps_mt_update_alpha`, the (E.1) rule in the split source; `ps_mt_tau`, `ps_mt_tau_model` and `ps_mt_form`, the split source of modes other than 5; `ps_flash_tau`, `ps_flash_alpha_thr` and `ps_flash_metastable_margin` (§5.5); and the 0-D acceptance harness `ps_x3_test`. Defaults, accepted values and the remaining split-source sub-dials are rows of the dial table in `RUNNING.md` §3. The retired keys and values of this chapter abort when set: the mechanism is in `RUNNING.md` §3, the reason and replacement for each key in `DESIGN_DECISIONS.md` §6.
 
 ### 5.10 References
 
@@ -677,24 +640,13 @@ $$u_b = u_{\mathrm{int}} + \frac{P_{\mathrm{sat}} - P_{\mathrm{int}}}{\rho c},\q
 
 so the leaving acoustic characteristic passes instead of reflecting (a full-state Dirichlet inlet over-specifies a subsonic inflow and produces intermittent inlet pressure flares). $P_{\mathrm{int}}$ and $\rho c$ are taken from the same two-phase reconstruction the solver uses — $P_{\mathrm{mix}}=\alpha_1 P_1+\alpha_2 P_2$ and the Wood impedance $1/(\rho c^2) = \alpha_1/(\rho_1 c_1^2)+\alpha_2/(\rho_2 c_2^2)$ via `REY2PCs_liquid/_vapor` — with the single-fluid equilibrium surface only as fallback on a degenerate phase pair. Rejected: `REY2P`/`REY2Gam` on the mixture $(\rho, e)$. Why: it is a different thermodynamic surface from the one the fluxes see, reading ~20 % low in $c$ (154 against 185 m/s at the reservoir state) and up to 30 % off in $P$, which biases the invariant every step.
 
-The invariant is capped at `prob.res_mach_max` (default 1.0) times the reservoir mixture Wood speed `res_cfrozen`, precomputed in `probinit` and printed at start-up. The cap exists because the $u-c$ relation is only outgoing while $M<1$, and because the boundary pins the static pressure at $P_{\mathrm{sat}}$ while the jet expands downstream, so $P_{\mathrm{sat}}-P_{\mathrm{int}}$ stays persistently positive and the relation is a one-way integrator: measured +0.15–0.22 m/s of inflow velocity every step with no sign reversal, ratcheting the inlet from $M=1.01$ to $1.27$ over 150 steps and injecting a stagnation pressure of ~84 bar against a 41.6 bar reservoir. Physically the reservoir vents through a gap, so the inlet plane is the throat and at most sonic. `res_mach_max` $\le 0$ disables the cap for A/B. The proper replacement, a genuine stagnation inlet (impose $h_0, s_0$, take one outgoing invariant, let the static $P$ fall as $u$ rises), is recorded as future work; the cap is the well-posed stand-in.
+The invariant is capped at `prob.res_mach_max` (default 1.0) times the reservoir mixture Wood speed `res_cfrozen`, precomputed in `probinit` and printed at start-up. The cap exists because the $u-c$ relation is only outgoing while $M<1$, and because the boundary pins the static pressure at $P_{\mathrm{sat}}$ while the jet expands downstream, so $P_{\mathrm{sat}}-P_{\mathrm{int}}$ stays persistently positive and the relation is a one-way integrator: measured +0.15–0.22 m/s of inflow velocity every step with no sign reversal, ratcheting the inlet from $M=1.01$ to $1.27$ over 150 steps and injecting a stagnation pressure of ~84 bar against a 41.6 bar reservoir. Physically the reservoir vents through a gap, so the inlet plane is the throat and at most sonic. `res_mach_max` $\le 0$ disables the cap for A/B. The proper replacement, a genuine stagnation inlet (impose $h_0, s_0$, take one outgoing invariant, let the static $P$ fall as $u$ rises), is recorded as future work; the cap is the well-posed stand-in. The parameter values the production decks set for this boundary (gap, taper, ramp, reservoir and ambient states) are listed once, in `RUNNING.md` §4 (`Exec/CO2_PipeBreak`).
 
 ### 6.5 Boundary dials
 
-| key | default | meaning |
-|:--|:--|:--|
-| `CAMR.ps_bc_use_nscbc` | 0 | global NSCBC enable (forced 0 without `USE_PS_HYDRO`) |
-| `CAMR.ps_bc_nscbc_{x,y,z}{lo,hi}` | −1 (inherit) | per-face enable, 0/1 |
-| `CAMR.ps_bc_p_amb_{x,y,z}{lo,hi}` | −1 (inherit `prob.p_amb`) | per-face far-field pressure [Pa] |
-| `CAMR.ps_bc_copy_interior` | 1 (PS) / 0 | `bcnormal` ghost = interior copy; 0 = linear-acoustic fill |
-| `prob.res_char_inflow` | 0 | pipe-break: characteristic inflow velocity (needs `res_dome_taper=1`) |
-| `prob.res_mach_max` | 1.0 | pipe-break: cap $u_b \le$ `res_mach_max` $\cdot c_{\mathrm{frozen}}$; ≤ 0 disables |
-| `CAMR.ps_bc_nscbc_type_{x,y,z}{lo,hi}` | `nr` | face type of the relaxed boundary: `nr` or `vent`; anything else aborts |
-| `CAMR.ps_bc_nscbc_nsec` | 2 | secant updates after the two seeds, 0–8 |
-| `CAMR.ps_bc_nscbc_probe` | 0 | nonzero: the `[PS-BCRX]` per-face line every step |
-| `CAMR.ps_bc_nscbc_probe_cell` | unset | `i j k` of one boundary cell whose secant trace is printed |
+The keys of this chapter are `CAMR.ps_bc_use_nscbc` (the global enable, forced 0 without `USE_PS_HYDRO`), the per-face `ps_bc_nscbc_{x,y,z}{lo,hi}`, `ps_bc_p_amb_{x,y,z}{lo,hi}` and `ps_bc_nscbc_type_{x,y,z}{lo,hi}`, `ps_bc_nscbc_nsec`, the probe pair `ps_bc_nscbc_probe` and `ps_bc_nscbc_probe_cell`, and `ps_bc_copy_interior` (§6.2); defaults and meanings are rows of the dial table in `RUNNING.md` §3. The two pipe-break keys of §6.4 are problem keys, not `CAMR.` dials: `prob.res_char_inflow` (default 0; the characteristic inflow velocity, which needs `res_dome_taper=1`) and `prob.res_mach_max` (default 1.0; the cap $u_b \le$ `res_mach_max` $\cdot c_{\mathrm{frozen}}$, ≤ 0 disables); the deck values are in `RUNNING.md` §4.
 
-The retired boundary keys are rows of `PS_retired_keys.H` (a set key aborts with its reason); `RUNNING.md` lists them.
+The retired boundary keys are rows of `PS_retired_keys.H` (a set key aborts with its reason); the reason and replacement for each are in `DESIGN_DECISIONS.md` §6.
 
 In-code constants (`PS_bc_fan.H`): `PACK_ETA` $=0.05$ (per-substep $|\Delta\rho_k|/\rho_k$ of the fan), `FAN_NMAX` $=256$ (a 100 bar-to-choke march needs ~100), `P_FLOOR_PA` $=1$ Pa on re-closed phase pressures, $c_k$ floored to 1 m/s on a non-finite EOS return.
 
@@ -768,16 +720,9 @@ Front speed agrees to 0.13 % (PR pair) and 0.30 % (GERG pair); inlet velocity to
 
 ### 7.5 Build, dials and known deviations
 
-Tables are generated files and are git-ignored; the build `$(error)`s with the instruction if they are absent. `make tables` (PRTab; compiles `tools/gen_table.cpp` as an AMReX-free `HEM_NO_AMREX` build of the PR solve and runs `tools/build_table.py`, needing g++ and python3 with numpy and scipy) and `make gergtab-tables` (GERGTab; `tools/gen_gergtab.cpp`, 256-point grids, host g++). `make clean-tables` / `make clean-gergtab-tables` remove them. The temporary build directory is shared across `Eos_Model` values and `make` does not track `-D` changes, so switching backends without `make clean` can leave stale objects; verify by output.
+Tables are generated files and are git-ignored; the build `$(error)`s with the instruction if they are absent. `make tables` (PRTab; compiles `tools/gen_table.cpp` as an AMReX-free `HEM_NO_AMREX` build of the PR solve and runs `tools/build_table.py`, needing g++ and python3 with numpy and scipy) and `make gergtab-tables` (GERGTab; `tools/gen_gergtab.cpp`, 256-point grids, host g++). `make clean-tables` / `make clean-gergtab-tables` remove them. The backend name is part of the executable suffix and therefore of the object directory (`Exec/Make.CAMR`), so switching `Eos_Model` does not reuse another backend's objects (`RUNNING.md` §1).
 
-| key | default | backend | meaning |
-|:--|:--|:--|:--|
-| `CAMR.eos_table` | 1 | PRTab, GERGTab | use the table for the forward solve; 0 = analytic (a single Tab build reproduces its analytic parent) |
-| `CAMR.eos_table_auto` | 1 | PRTab, GERGTab | table on the auto (mixture) path too; 0 = analytic there, table on the per-phase path |
-| `CAMR.eos_table_branch` | 1 | PRTab | branch-locked calls use the liquid/vapour tables; 0 = the auto table (single-phase only) |
-| `CAMR.eos_diag` | 0 | tables | table-vs-analytic error census, dumped at exit |
-| `CAMR.eos_mlp`, `eos_mlp_auto`, `eos_warmstart`, `eos_warmstart_fixed` | — | all | retired; a set key aborts |
-| `CAMR.gerg_ext_c` | 1 | GERG, GERGTab | continuous extension sound speed; 0 = legacy 50 m/s (reproduction and bisection only; not a tuning knob) |
+The EOS keys are `CAMR.eos_table`, `eos_table_auto` (PRTab and GERGTab), `eos_table_branch` (PRTab only), `eos_diag` (the table backends) and `gerg_ext_c` (GERG and GERGTab); defaults and meanings are rows of the dial table in `RUNNING.md` §3. Two of them exist for a reason worth stating here: `eos_table = 0` makes a single Tab build reproduce its analytic parent, so one binary gives both arms of an A/B, and `eos_table_branch = 0` (the auto table on branch-locked calls) is valid for single-phase cases only; `gerg_ext_c = 0`, the legacy 50 m/s value, is for reproduction and bisection only and is not a tuning knob. The former `eos_mlp`, `eos_mlp_auto`, `eos_warmstart` and `eos_warmstart_fixed` are retired and abort when set (`DESIGN_DECISIONS.md` §6).
 
 Known deviations, recorded so they are not rediscovered. `Source/Hydro/PelantiShyue/hem_pelanti_shyue.H` still carries CO$_2$ constants of its own — `co2_P_sat_wagner` with $T_c = 304.13$ K, $P_c = 7.3773\times10^{6}$ Pa and a hard-coded 216.6 K triple point, a 20-point `co2_sat_state` saturation-density table, a literal `T_triple = 216.592` K in the sub-triple diagnostic, and `PsPhaseAPI` accessor defaults (`t_crit()` 304.13, `p_crit()` $7.3773\times10^{6}$, `t_triple()` 216.6) used only when the backend leaves the field unset — all duplicates of `EOS::` accessors and slated for removal. The four `EOS.H` files duplicate the whole entry set with no shared header; a shared-header question is open. PRTab's `hem_pr_state.H` and `hem_saturation_amrex.H` are eight-line forwarders to `PR/`, not copies (its README's "own copies" wording is wrong), and its README records a seam defect in the dome patch (the patch index clamp discards the last Hermite cell on the high edges). PR's `RYP2E` in-dome returns a saturation-mixture lever-rule energy; it is not a branch state and must not be written into a phase slot (the NSCBC pack lesson).
 
@@ -860,7 +805,7 @@ After each hydro advance (and coarse–fine correction) the reaction sequence `a
 
 ### 8.6 Diagnostics and validation instruments
 
-Nothing is on by default: a default build with every diagnostic off is bit-identical to one without them, and the counting that is always on (host builds only, compiled out under `AMREX_USE_GPU`) costs a few compares. The rule behind the split-by-cause tallies is that a guard which is never reached and a guard which is reached but never trips look identical from outside and need different fixes; `seen` is counted alongside `reject` for that reason.
+The keys, their defaults and how to switch them on are in `RUNNING.md` §3 and §6; this section records what each instrument reports and why it exists. Nothing is on by default: a default build with every diagnostic off is bit-identical to one without them, and the counting that is always on (host builds only, compiled out under `AMREX_USE_GPU`) costs a few compares. The rule behind the split-by-cause tallies is that a guard which is never reached and a guard which is reached but never trips look identical from outside and need different fixes; `seen` is counted alongside `reject` for that reason.
 
 | flag / line | what it reports |
 |:--|:--|
@@ -874,7 +819,7 @@ Nothing is on by default: a default build with every diagnostic off is bit-ident
 | `CAMR.ps_ptg_selftest`, `ps_relax_sweep`, `ps_x3_test` | 0-D self-tests run after initialisation, then exit (`main.cpp`): the P–T–Gibbs relaxation fixed point; a corner sweep of the relaxation; and the X3 acceptance harness — six reference states, fixed point route-independent and basin-independent at the projector's tolerance floor, and equal to the HEM flash of the cell invariants to $\vert P - P_{\mathrm{HEM}}\vert /P_{\mathrm{HEM}} \le 3.4\times10^{-5}$ |
 | `make USE_PS_DIAG=TRUE` (`-DCAMR_PS_DIAG`; wired in the `CO2_RiemannSuite` GNUmakefile only) | compile-gated so a default build is byte-identical (the B9 stiff leg is chaotically sensitive to unexecuted added code): `[PS-FLOOR]` under `CAMR.ps_floor_diag` (EOS calls, 1 K clamps, non-convergences locked and detected, pressure floors in use and probe-only, mass repairs with mass moved), `[DT-DIAG]` under `ps_dt_diag` (which cell sets the timestep), `[CELL i]` under `ps_cell_diag`, and the census machinery |
 
-Also kept, default off: `ps_face_diag` `[PS-FACE]`, `ps_diag_alpha` `[PS-DIAG]`, `ps_cell_diag`, `ps_dt_diag`. The investigation-only diagnostics are removed, listed once so their names are not re-invented: `ps_prehydro_diag`, `ps_psat_diag` `[PS-PSAT]`, `ps_t2_diag` `[PS-T2]`, `ps_diag_morph` `[PS-MORPH]`, `ps_eovs_diag` `[ps_eovs]`, `ps_coexit_diag` `[PS-COEXIT-TH]`, `ps_prdiag` `[ps_prdiag]`, `ps_relax_diag`, `ps_relax_verbose`, `ps_floor_budget` `[PS-FLOORBUDGET]` (its verdict is recorded in §8.3), `ps_dm_census` `[PS-DM]`, `ps_flash_ev_diag`, the `[PS-W21]` correction-residual report, the `[PS-FLASH-ABS]` report, the `[PS-PRES]` C1 split, the 0-D probes `ps_dilute_probe`/`ps_m2_test`/`ps_asy1_probe`, the state harvester `ps_harvest*`, and the `eos_mlp` aliases; every key aborts when set.
+Also kept, default off: `ps_face_diag` `[PS-FACE]`, `ps_diag_alpha` `[PS-DIAG]`, `ps_cell_diag`, `ps_dt_diag`. The investigation-only diagnostics are removed, and their keys abort when set (the keys, with the 0-D probes, the state harvester `ps_harvest*` and the `eos_mlp` aliases, are rows of `DESIGN_DECISIONS.md` §6). Their report tags are listed once here so the names are not re-invented: `[PS-PSAT]`, `[PS-T2]`, `[PS-MORPH]`, `[ps_eovs]`, `[PS-COEXIT-TH]`, `[ps_prdiag]`, `[PS-FLOORBUDGET]` (its verdict is recorded in §8.3), `[PS-DM]`, the `[PS-W21]` correction-residual report, the `[PS-FLASH-ABS]` report and the `[PS-PRES]` C1 split.
 
 The health line. On a healthy run at the shipped defaults these read zero: `[PS-VALIDATE]` `nonfinite`, `alpha_oob`, `m_neg`, `rho_domain bulk`, `reachable bulk` (trace buckets may be non-zero at fronts; `massid`/`energyid` non-zero only at stage A); `[PS-GUARD]` `flux_sanit`; `[PS-PROMOTE] promote_refuse`; `[PS-RELAXFB]` on the 1-D suite; `mass_neg_kg` at round-off ($\lesssim10^{-12}$ kg/m$^3$); every non-convergence counter in `[PS-FLOOR]`; `[PS-X3] dead` with `ok > 0`. `[PS-FOLD]` is expected to fire and is read for what it moved, not whether. The acceptance basis behind all of it: no stored CAMR output has authority; what counts are independently computed exact solutions, the conservation identities V4/V5, and the floor/no-root census with a target of zero.
 

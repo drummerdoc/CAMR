@@ -286,7 +286,7 @@ F-8  `hem::ps_state_from_cons` dial switch (`ps_p_mode`, `ps_p_clip`, `ps_c_mode
 
 ## 6. Retired keys
 
-A set key aborts at startup with a retirement note. The traps live in one table, `Source/Hydro/PelantiShyue/PS_retired_keys.H`, checked once at startup, so a stale deck fails before the first step. Retired values of live keys are trapped at the key's accessor.
+A set key aborts at startup with a retirement note. The traps live in one table, `Source/Hydro/PelantiShyue/PS_retired_keys.H`, checked once at startup, so a stale deck fails before the first step. Retired values of live keys are the second table of the same file; the accessors only state the valid set. The mechanism is described in `RUNNING.md` §3; this table is the one place that carries the reason and the replacement per key, and no other document re-lists the keys.
 
 | key | reason | replacement |
 |:--|:--|:--|
@@ -326,10 +326,13 @@ A set key aborts at startup with a retirement note. The traps live in one table,
 | `ps_bc_rx_form` | the rate form has no far field (X-34) | the value condition, hard-coded |
 | `ps_bc_rx_z` | the impedance is measured on the seed trials; Wood is the counted fallback (B-5) | none |
 | `ps_bc_rx_type_{x,y,z}{lo,hi}`, `ps_bc_rx_nsec`, `ps_bc_rx_probe`, `ps_bc_rx_probe_cell` | renamed | `ps_bc_nscbc_type_{face}`, `ps_bc_nscbc_nsec`, `ps_bc_nscbc_probe`, `ps_bc_nscbc_probe_cell` |
+| `ps_flash_h_mode` | the newborn phase always carries its saturation enthalpy (the projection); the avg/dom/auto carrier rules were unreachable | none |
+| `ps_llf_diag` | the per-face LLF-fallback print is deleted | `[PS-FLCAUSE]`, which counts the refusals by cause |
 | `ps_p_mode`, `ps_p_clip`, `ps_c_mode`, `ps_y_floor` | `ps_state_from_cons` keeps one branch: volume-weighted $P_{\mathrm{mix}}$, Wood frozen $c$ (F-8) | none |
 | `ps_wp_transverse=2` | BL-3b acoustic transverse term deleted (F-2); 0 and 1 remain | `ps_wp_transverse=0` or `1` |
 | `ps_coexist_action=2/3/4` | hard side tests refuted (X-5); 0 and 1 remain | `ps_coexist_action=0` |
 | `ps_relax_mode=3` | Picard alternation refuted (X-25); its joint target lives in X3 | `ps_relax_mode=5` with `ps_theta_tau<=0` for the joint constraint |
+| `ps_relax_mode=1`, `ps_relax_mode=4` | mode 1 refuted (X-25), mode 4 the sequential chain X3 replaced; both deleted (F-5) | `ps_relax_mode=5`, `2` or `0` |
 | `ps_mt_tau_model=1` | HRM correlation as a mass-transfer time refuted (X-10); 0 and 2 remain | `ps_mt_tau_model=0` |
 | `ps_wp_pair_limit` | min-φ pair limiting refuted (X-12); never committed, so not in the code table | none |
 

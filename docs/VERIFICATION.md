@@ -102,7 +102,7 @@ Why B12 exists. Every strong-compression case is single-phase (A, C3), saturated
 | 5b B2 front stability | mode 5 at defaults, zero trace | max\|u\| < 120 m/s | 31.7 | live |
 | 6 B12 two-phase wall reflection | frozen config on B12 | far field undisturbed, mirror symmetry, R ≤ 0.25 | R = 0.0097 | live |
 
-Check 8 in detail. B12 is a plotfile check that needs no sound speed. With $\rho_k = m_k/\alpha_k$ per phase, the far-field cell $e$ (undisturbed at $t_{\mathrm{end}}$) and the shocked-plateau cell $k = \arg\max P$, the per-phase relative compressions are $c_1 = \rho_1[k]/\rho_1[e] - 1$ and $c_2 = \rho_2[k]/\rho_2[e] - 1$ and the metric is
+Check 6 in detail. B12 is a plotfile check that needs no sound speed. With $\rho_k = m_k/\alpha_k$ per phase, the far-field cell $e$ (undisturbed at $t_{\mathrm{end}}$) and the shocked-plateau cell $k = \arg\max P$, the per-phase relative compressions are $c_1 = \rho_1[k]/\rho_1[e] - 1$ and $c_2 = \rho_2[k]/\rho_2[e] - 1$ and the metric is
 
 $$R = \frac{c_1}{c_2}.$$
 
