@@ -47,7 +47,7 @@
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   amrex::Real T_crit()   { return co2_fluid().pr.Tc; }        // critical T [K]
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-  amrex::Real T_triple() { return amrex::Real(216.592); }     // triple-point T [K]
+  amrex::Real T_triple() { return hem::T_triple_CO2; }        // triple-point T [K]
 
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   amrex::Real P_crit()   { return co2_fluid().pr.Pc; }        // critical P [Pa]

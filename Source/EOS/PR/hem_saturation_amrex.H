@@ -53,6 +53,10 @@ enum class Phase { Liquid, Vapor };
 // Universal gas constant [J/(mol.K)]
 constexpr amrex::Real R_gas = amrex::Real(8.31446261815324);
 
+// CO2 triple-point temperature [K]: the lower bound of the saturation
+// locus (EOS::T_triple() returns it).
+constexpr amrex::Real T_triple_CO2 = amrex::Real(216.592);
+
 // ---------------------------------------------------------------------
 //  Peng-Robinson constants (std::sqrt is not constexpr in C++17, so the
 //  irrationals are stored as exact double-precision literals).

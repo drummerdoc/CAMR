@@ -214,7 +214,7 @@ namespace EOS {
         const double dc = std::abs(double(m.c) - double(p.c))
                           / std::max(std::abs(double(p.c)), 1.0);
         int reg;
-        if      (double(p.T) >= 304.13)          reg = 3;   // supercritical
+        if      (double(p.T) >= double(T_crit())) reg = 3;  // supercritical
         else if (p.x > 0.0 && p.x < 1.0)         reg = 2;   // two-phase (dome)
         else if (p.x <= 0.0)                     reg = 1;   // 1ph liquid
         else                                     reg = 0;   // 1ph vapor

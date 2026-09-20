@@ -895,7 +895,7 @@ AMREX_GPU_HOST_DEVICE
 inline State state_from_rho_e(const PRFluid& f, amrex::Real rho, amrex::Real e_target,
                               amrex::Real /*T_init*/ = amrex::Real(-1.0))
 {
-    constexpr amrex::Real T_TRIPLE = amrex::Real(216.592);   // == EOS::T_triple()
+    constexpr amrex::Real T_TRIPLE = T_triple_CO2;
     constexpr amrex::Real T_MIN    = amrex::Real(1.0);
     constexpr amrex::Real T_MAX    = amrex::Real(5000.0);
     const amrex::Real Tc  = f.pr.Tc;
