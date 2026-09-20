@@ -76,16 +76,10 @@ ps_apply_tfloor_fold(amrex::MultiFab& S_new, int nghost = 0)
         amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
         amrex::LoopOnCpu(bx, [=] (int i, int j, int k) noexcept
         {
-            hem::V6 Uv;
-            Uv[0] = double(U(i, j, k, UALPHA1));
-            Uv[1] = double(U(i, j, k, UM1RHO1));
-            Uv[2] = double(U(i, j, k, UM2RHO2));
-            // Unlike the vanish fold this helper reads V6[3] (u_mix =
-            // U[3]/rho_mix strips the kinetic energy before the EOS query),
-            // so the real normal momentum is passed.
-            Uv[3] = double(U(i, j, k, UMX));
-            Uv[4] = double(U(i, j, k, UE1));
-            Uv[5] = double(U(i, j, k, UE2));
+            // V6[3] = |momentum| (ps_pack_v6): the helper strips ½|u|² before
+            // the EOS query.
+            hem::V6 Uv = ps_pack_v6(U, i, j, k, U(i, j, k, UALPHA1),
+                                    U(i, j, k, UM1RHO1), U(i, j, k, UM2RHO2));
             const double m1_pre = Uv[1], m2_pre = Uv[2];
             amrex::ignore_unused(m1_pre, m2_pre);
             if (hem::ps_apply_tfloor_fold(Uv, eos, T_floor)) {
@@ -133,15 +127,8 @@ ps_apply_vanish_fold(amrex::MultiFab& S_new, int nghost = 0)
         amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
         amrex::LoopOnCpu(bx, [=] (int i, int j, int k) noexcept
         {
-            // Pack the cell into the V6 layout the fold helper expects.
-            hem::V6 Uv;
-            Uv[0] = double(U(i, j, k, UALPHA1));
-            Uv[1] = double(U(i, j, k, UM1RHO1));
-            Uv[2] = double(U(i, j, k, UM2RHO2));
-            // The vanish helper never reads V6[3]; pass 0.
-            Uv[3] = 0.0;
-            Uv[4] = double(U(i, j, k, UE1));
-            Uv[5] = double(U(i, j, k, UE2));
+            hem::V6 Uv = ps_pack_v6(U, i, j, k, U(i, j, k, UALPHA1),
+                                    U(i, j, k, UM1RHO1), U(i, j, k, UM2RHO2));
             const double m1_pre = Uv[1], m2_pre = Uv[2];
             amrex::ignore_unused(m1_pre, m2_pre);
             bool wrote = false;
