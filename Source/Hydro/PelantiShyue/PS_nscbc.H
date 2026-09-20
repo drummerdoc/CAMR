@@ -16,7 +16,7 @@
 struct PsNscbcCfg {
     int use;      // global NSCBC switch, after the no-USE_PS_HYDRO force-off
     amrex::GpuArray<amrex::Real, 2*AMREX_SPACEDIM> pamb;   // per face; <= 0 inherits prob.p_amb
-    amrex::GpuArray<int,         2*AMREX_SPACEDIM> uface;  // per face 0/1, index 2*idir + (0 lo, 1 hi)
+    amrex::GpuArray<int,         2*AMREX_SPACEDIM> uface;  // per face 0/1 (1 on Inflow faces only), index 2*idir + (0 lo, 1 hi)
 };
 const PsNscbcCfg& ps_nscbc_cfg();
 

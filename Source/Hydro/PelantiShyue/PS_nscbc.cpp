@@ -168,11 +168,7 @@ CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt)
     for (int idir = 0; idir < AMREX_SPACEDIM; ++idir) {
     for (int side = 0; side < 2; ++side) {
         const int fidx = 2*idir + side;
-        if (cfg.uface[fidx] == 0) continue;
-        // Only a face the ghost fill treats as characteristic outflow
-        // (CAMR.lo_bc / hi_bc = Inflow, ext_dir); a wall or symmetry face
-        // with the global switch on is not a boundary of this pass.
-        if (((side == 0) ? phys_bc.lo(idir) : phys_bc.hi(idir)) != Inflow) continue;
+        if (cfg.uface[fidx] == 0) continue;   // uface is set on Inflow faces only (ps_nscbc_cfg)
         const Real n_sgn = (side == 1) ? Real(1.0) : Real(-1.0);   // outward sign of u_n
         const int  N_pos = (side == 1) ? domain.bigEnd(idir) : domain.smallEnd(idir);
         const int  g_off = (side == 1) ? +1 : -1;                 // ghost layer 1

@@ -287,8 +287,19 @@ ps_nscbc_cfg()
 #ifndef USE_PS_HYDRO
     u = 0;   // NSCBC is a no-op without USE_PS_HYDRO.
 #endif
+    // An NSCBC face is an Inflow (ext_dir) face: the inherited global
+    // switch does not reach a wall or symmetry face; asking for one by
+    // its own key aborts.
+    amrex::Vector<std::string> lo_bc(AMREX_SPACEDIM), hi_bc(AMREX_SPACEDIM);
+    pp.getarr("lo_bc", lo_bc, 0, AMREX_SPACEDIM);
+    pp.getarr("hi_bc", hi_bc, 0, AMREX_SPACEDIM);
     for (int f = 0; f < 2*AMREX_SPACEDIM; ++f) {
-      if (uf[f] == -1) { uf[f] = u; }
+      const bool inflow = ((f % 2 == 0) ? lo_bc[f/2] : hi_bc[f/2]) == "Inflow";
+      if (uf[f] == 1 && !inflow) {
+        amrex::Abort("CAMR.ps_bc_nscbc_{x,y,z}{lo,hi} = 1 on a face whose "
+                     "CAMR.lo_bc/hi_bc is not Inflow.");
+      }
+      if (uf[f] == -1) { uf[f] = inflow ? u : 0; }
 #ifndef USE_PS_HYDRO
       uf[f] = 0;   // same safety as u above.
 #endif
