@@ -137,7 +137,6 @@ bool ps_presence_relax_gate(amrex::Real a1, amrex::Real m1, amrex::Real m2,
     const bool i1 = ps_regime(a1, m1, pr) == PsRegime::Independent;
     const bool i2 = ps_regime(a2, m2, pr) == PsRegime::Independent;
     if (i1 && i2) return true;
-#if !defined(AMREX_USE_GPU)
     {
         //  Hysteresis band: both phases must qualify (Independent or band).
         auto band = [&pr](amrex::Real a, amrex::Real m) noexcept {
@@ -147,11 +146,12 @@ bool ps_presence_relax_gate(amrex::Real a1, amrex::Real m1, amrex::Real m2,
         const bool q1 = i1 || band(a1, m1);
         const bool q2 = i2 || band(a2, m2);
         if (q1 && q2 && (band(a1, m1) || band(a2, m2))) {
-            ++ps_counters().pres_f3_hyst;
+#if !defined(AMREX_USE_GPU)
+            ++ps_counters().pres_f3_hyst;   // host counter; the decision is build-independent
+#endif
             return true;
         }
     }
-#endif
     return false;
 }
 
