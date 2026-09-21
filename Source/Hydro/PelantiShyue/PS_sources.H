@@ -173,7 +173,11 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                 hem::V6 Uv = ps_pack_v6(U, i, j, k, a1, m1, m2);   // V6[3] = |ρu|
                 // The flash is the single-phase nucleator only: a both-
                 // Independent cell is mass-transfer territory (docs §4.7).
-                if (ps_regime(a1, m1, l_pr) == PsRegime::Independent &&
+                //  (The HRM-source probe, CAMR.ps_flash_hrm = 1, takes every
+                //  two-phase cell: there the kernel is the transfer.)
+                static const int l_hrm = ps_dial_int("ps_flash_hrm", 0);
+                if (l_hrm == 0 &&
+                    ps_regime(a1, m1, l_pr) == PsRegime::Independent &&
                     ps_regime(amrex::Real(1.0) - a1, m2, l_pr) == PsRegime::Independent) {
                     return;
                 }

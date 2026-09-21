@@ -160,8 +160,17 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
     // mass transfer.
     static const double flash_alpha_thr =
         ps_dial_real("ps_flash_alpha_thr", 0.10);
+    // CAMR.ps_flash_hrm (0): PROBE (docs/PLAN_pipe_depress.md §7), not a
+    // design.  1 = the kernel is the reference's HRM source instead of the
+    // nucleator: liquid -> vapour only, eligible wherever the liquid is below
+    // its saturation pressure (no window, no cap), dm = rho (x_sat - x_g)
+    // (1 - exp(-dt/theta)) with theta = ps_flash_tau and x_sat the equilibrium
+    // quality at the cell's (rho, e), which the transfer leaves unchanged.
+    static const int flash_hrm = ps_dial_int("ps_flash_hrm", 0);
+    if (flash_hrm != 0 && flash_hrm != 1) amrex::Abort("CAMR.ps_flash_hrm must be 0 or 1");
+    if (flash_hrm == 1 && !eos.xsat_of_rho_e) PS_FLASH_REFUSE(PS_FLR_EOS);
     const bool liq_dominant = (alpha_1 > 1.0 - flash_alpha_thr);
-    const bool vap_dominant = (alpha_1 <       flash_alpha_thr);
+    const bool vap_dominant = (flash_hrm == 0) && (alpha_1 < flash_alpha_thr);
     if (!liq_dominant && !vap_dominant) PS_FLASH_REFUSE(PS_FLR_NOT_DOM);
 
     const double m_1 = U[1];
@@ -222,7 +231,9 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
     const bool flash_liq = liq_dominant;
     const double bw_P = meta_margin * P_sat_here;   // pressure ramp band
     double w_meta;
-    if (flash_liq) {
+    if (flash_hrm == 1) {
+        w_meta = (p_dom.P < P_sat_here) ? 1.0 : 0.0;
+    } else if (flash_liq) {
         w_meta = ss01(0.5 + ((1.0 - meta_margin) * P_sat_here - p_dom.P) / bw_P);
     } else {
         w_meta = ss01(0.5 + (p_dom.P - (1.0 + meta_margin) * P_sat_here) / bw_P);
@@ -230,7 +241,7 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
     if (w_meta <= 0.0) PS_FLASH_REFUSE(PS_FLR_W_META);
     // (c) Dominance window: ramps to zero at the alpha threshold so a cell
     //     drifting toward the mid-range hands over to mass transfer smoothly.
-    const double w_alpha = flash_liq
+    const double w_alpha = (flash_hrm == 1) ? 1.0 : flash_liq
         ? ss01((alpha_1 - (1.0 - flash_alpha_thr)) / (0.5 * flash_alpha_thr))
         : ss01((flash_alpha_thr - alpha_1)         / (0.5 * flash_alpha_thr));
     if (w_alpha <= 0.0) PS_FLASH_REFUSE(PS_FLR_W_ALPHA);
@@ -246,7 +257,7 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
     // multiplied it by 1-g and cycled.  docs/MODEL_AND_ALGORITHM.md §5.5.
     const double W_0 = w_T * w_meta * w_alpha;
     double blend = 1.0 - std::exp(-dt / tau_flash);
-    if (blend > 0.2) blend = 0.2;
+    if (blend > 0.2 && flash_hrm == 0) blend = 0.2;
 
     // Coupled alpha + m step with the saturation projection: dm =
     // rho_sat(T_dom) dalpha so the newborn phase lies on the saturation
@@ -260,7 +271,15 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
     if (flash_liq) {
         // Grow alpha_2 (vapour).
         const double alpha_2_target = alpha_seed_target;
-        const double alpha_2_new = alpha_2 + blend * (alpha_2_target - alpha_2);
+        double alpha_2_new = alpha_2 + blend * (alpha_2_target - alpha_2);
+        if (flash_hrm == 1) {
+            const double x_g   = m_2 / rho_mix;
+            const double e_mix = (U[4] + U[5]) / rho_mix - 0.5 * u_mix * u_mix;
+            const double x_sat = eos.xsat_of_rho_e(rho_mix, e_mix);
+            if (!std::isfinite(x_sat) || x_sat <= x_g) PS_FLASH_REFUSE(PS_FLR_DA2);
+            alpha_2_new = alpha_2 + rho_mix * (x_sat - x_g) * blend / rho_V_sat;
+            if (alpha_2_new > 0.95) alpha_2_new = 0.95;
+        }
         if (alpha_2_new <= alpha_2) PS_FLASH_REFUSE(PS_FLR_DA2);
         const double d_alpha_2 = alpha_2_new - alpha_2;
         dm = rho_V_sat * d_alpha_2;
@@ -364,7 +383,7 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
         }
         s_star = s_lo;
     }
-    if (s_star > 0.0) {
+    if (flash_hrm == 0 && s_star > 0.0) {
         // W(s): the three windows on the dominant phase of trial(s), queried
         // on its own branch as p_dom was.  A dominant phase without a finite
         // state closes the window (W = 0), which keeps the root below it.

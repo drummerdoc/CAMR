@@ -98,6 +98,12 @@ struct PsPhaseAPI {
     // flash (ps_flash_source_cell) requires it and refuses when unset.
     std::function<double(double T)> Psat_of_T;
 
+    // Equilibrium vapour mass fraction of the mixture state (rho, e) on the
+    // backend's own dome; NaN when (rho, e) is not inside it.  Optional:
+    // only the HRM-source probe of the flash kernel (CAMR.ps_flash_hrm = 1)
+    // asks for it.
+    std::function<double(double rho, double e)> xsat_of_rho_e;
+
     // Fluid critical and triple-point data, set from the EOS so the
     // two-phase gates stay fluid-agnostic (ps_make_camr_eos_api sets all).
     double T_crit_K   = 0.0;

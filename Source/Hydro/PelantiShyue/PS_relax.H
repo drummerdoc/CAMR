@@ -13,6 +13,8 @@
 
 #ifdef USE_PS_HYDRO
 
+#include <vector>
+#include <limits>
 #include "IndexDefines.H"
 #include "EOS.H"
 #include "hem_pelanti_shyue.H"
@@ -63,6 +65,36 @@ ps_make_camr_eos_api()
     api.rho_dom_hi = double(EOS::rho_max());
     // Saturation pressure for the flash metastability window.
     api.Psat_of_T  = [](double T) { return double(EOS::Psat(amrex::Real(T))); };
+    // Equilibrium quality at (rho, e) for the HRM-source probe: a saturation
+    // table built once from EOS::co2_sat_LV (0.25 K), then the T at which the
+    // lever-rule quality from the volume equals the one from the energy.
+    api.xsat_of_rho_e = [](double rho, double e) -> double {
+        struct Tab { std::vector<double> T, vL, eL, vV, eV; };
+        static const Tab tab = []() {
+            Tab t; const double T0 = double(EOS::T_triple()) + 0.05, T1 = double(EOS::T_crit()) - 0.25;
+            for (double T = T0; T < T1; T += 0.25) {
+                amrex::Real rl, el, rv, ev; EOS::co2_sat_LV(amrex::Real(T), rl, el, rv, ev);
+                if (!(rl > rv && rv > 0.0)) continue;
+                t.T.push_back(T); t.vL.push_back(1.0/double(rl)); t.eL.push_back(double(el));
+                t.vV.push_back(1.0/double(rv)); t.eV.push_back(double(ev));
+            }
+            return t; }();
+        const double qnan = std::numeric_limits<double>::quiet_NaN();
+        if (!(rho > 0.0) || tab.T.size() < 2) return qnan;
+        const double v = 1.0 / rho;
+        auto F = [&](std::size_t k, double& x) {     // x_v - x_e at table node k
+            x = (v - tab.vL[k]) / (tab.vV[k] - tab.vL[k]);
+            return x - (e - tab.eL[k]) / (tab.eV[k] - tab.eL[k]);
+        };
+        double xa, xb; std::size_t a = 0, b = tab.T.size() - 1;
+        double Fa = F(a, xa), Fb = F(b, xb);
+        if (!(Fa * Fb < 0.0)) return qnan;
+        while (b - a > 1) { const std::size_t m = (a + b) / 2; double xm; const double Fm = F(m, xm);
+                            if (Fa * Fm <= 0.0) { b = m; Fb = Fm; xb = xm; } else { a = m; Fa = Fm; xa = xm; } }
+        const double w = Fa / (Fa - Fb);             // linear between the two nodes
+        const double x = xa + w * (xb - xa);
+        return (x > 0.0 && x < 1.0) ? x : qnan;
+    };
     // Molar mass for the SRT kinetic prefactor.
     {
         amrex::Real Yw[NUM_SPECIES];

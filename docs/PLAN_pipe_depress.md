@@ -234,3 +234,28 @@ K3. Test 19 at 0.08 m: minimum within 4 bar of the measured 18.5.
 K4. If K1 fails with the source demonstrably producing vapour (`[ps_flash]` count rising, $x_g$ growing behind the wave), the obstacle is structural, and the next probe is the same run with the presence gate's hold on corridor phases examined.
 K5. The runs complete. Low confidence: a source acting on every two-phase cell next to X3 is new territory for the limiter.
 
+### 7.4 Results (PR; `ps_flash_hrm = 1`, `ps_flash_alpha_thr = 0.5`, `ps_mt_srt_d = 1e3`)
+
+K0 holds: at `ps_flash_hrm = 0` the four witnesses and the 21-case battery are byte-identical (`nc_FAN` → `nc_HRM`).
+
+Test 19, dip → maximum within 2.5 ms (recovery), bar:
+
+| | 0.8 m | 1.599 m | 0.28 m at +1, +2, +3, +5 ms | 0.08 m at +1, +2, +3, +5 ms |
+|---|---|---|---|---|
+| measured | 32.5 → 34.6 (2.2), dip at +0.33 ms | 29.5 → 33.4 (3.9), at +0.79 ms | 27.2, 24.0, 23.1, 23.9 | 22.8, 18.6, 19.1, 21.8 |
+| window nucleator (default) | 33.8, flat | 33.8, flat | 32.3, 28.9, 29.8, 30.4 | 20.9, 23.1, 23.9, 24.5 |
+| HRM source, θ = 2.5 ms (the paper's fit) | 12.7 → 30.3 (17.6), at +0.40 ms | 20.3 → 31.9 (11.6), at +0.82 ms | 22.1, 20.8, 22.1, 24.0 | 12.8, 14.7, 16.4, 18.4 |
+| HRM source, θ = 0.5 ms (added after the first run) | 31.8 → 34.8 (3.1), at +0.25 ms | 35.2 → 35.5 (0.2) | 30.4, 31.5, 32.0, 32.2 | 24.7, 26.5, 26.6, 24.8 |
+
+Test 24, θ = 0.14 ms: first level 62.0 bar at 0.8 m, flat, no recovery (measured 61.9–63.9, flat; the window gave 57.1); 0.28 m: 61.8, 61.9, 61.6, 56.9, 52.7 at +0.5…+5 ms (measured 60.9, 59.3, 57.0, 57.4, 57.5); 0.08 m: 57.0, 54.2, 38.5, 33.5, 30.0 (measured 57.7, 57.2, 57.0, 49.8, 40.4 — the $D$ = 2e-3 run of §5.3 is better there).
+
+- **K1 holds, emphatically.** With the reference's source form CAMR produces the undershoot and the recovery, at the measured times after the wave (0.40 and 0.82 ms against 0.33 and 0.79). The two-pressure structure and the presence logic are not the obstacle; the source law is. At the paper's θ the dip is far too deep (12.7 bar against 32.5); at θ = 0.5 ms the 0.8 m hump is reproduced within 1 bar in depth, recovery and final level.
+- **K2 holds**: the warm test has no hump and its first level is at saturation, within 1 bar of the measurement with PR (the window was 5–7 bar low).
+- **K3 holds** at the paper's θ only in the loose sense (minimum 7.5 bar at +0.5 ms against a measured 18.5 later on; the late values 15–18 against 19–22).
+- **K5 holds**: all runs complete; 3.8·10⁵ source events in the Test 19 run with no limiter refusal pattern of note.
+- **What does not work with one constant:** in Test 19, θ = 0.5 ms fits the sensors at 0.8 m and is 5–8 bar high at 0.08–0.28 m; θ = 2.5 ms fits 0.28 m to 2 bar and is 20 bar too deep at 0.8 m. In Test 24, θ = 0.14 ms fits the first level everywhere and then lets the outlet fall too fast. The paper reaches the same verdict on its own model (a constant θ per test fitted at 8 cm; "the relaxation time is likely not constant"). Why CAMR's dip at the paper's θ is so much deeper than theirs at the same θ is not established: their first-order scheme smooths the wave that does the pulling, and their $x_{g,\mathrm{sat}}$ may not be defined as the equilibrium quality at $(\rho, e)$.
+
+### 7.5 What the probe settles
+
+The undershoot-and-recovery is produced by a source that (i) starts at the saturation line, (ii) is at full strength with no vapour present, and (iii) keeps producing while the pressure recovers — the three things the window nucleator followed by the $(\alpha_2+\delta)\alpha_1$ rate does not do. CAMR's hydrodynamics, its instantaneous mechanical and thermal relaxation and its presence design carry such a source without trouble. What remains open is the magnitude and the state dependence of the rate, which neither the paper's constant θ nor CAMR's constant $D$ supplies. This is input to `PLAN_nucleation_onset.md` (candidate B, with a concrete form), not a change of default: the probe key stays a probe.
+
