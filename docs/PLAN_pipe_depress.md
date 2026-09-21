@@ -215,3 +215,22 @@ H6. All runs complete.
 
 CAMR's first level is a prescribed fraction of saturation, $\approx (1 - m/2)\,P_{\mathrm{sat}}(T)$ with $m$ the margin — a property of the smooth pressure window, independent of the nucleation rate, of the transfer rate behind it, and of the initial state. The measurement is none of these things: its undershoot varies with the initial temperature (about 2 % at 35.8 °C, 9–20 % at 10.2 °C depending on the sensor) and recovers by 2–4 bar within 1–2.5 ms in the cold test. An undershoot with a recovery needs an onset that lags the pressure — production weak at first and strong a moment later — and a window that tracks the pressure cannot lag it. No setting of the existing dials produces the feature. This is a design question on the nucleator, taken up in `PLAN_nucleation_onset.md`.
 
+## 7. The paper's source form inside CAMR: a probe (22 Sept)
+
+### 7.1 Why
+
+The reference's HRM* produces the undershoot and recovery with $\Gamma = \rho\,(x_{g,\mathrm{sat}} - x_g)/\theta$: active from the saturation line, at full strength with no vapour present, no threshold. CAMR has a pressure window (a controller, §6.4) followed by a rate that starts at $\delta$ = 1 % strength and has no owner below $\alpha_2$ = 0.02. The probe asks one thing: **with their source form in place of ours, does CAMR's two-pressure model with instantaneous mechanical and thermal relaxation produce the dip and the recovery?** If yes, the difference is the source law; if no, it is the model structure or the presence logic.
+
+### 7.2 What is built (this branch only; not a design)
+
+`CAMR.ps_flash_hrm` (0 default = today's nucleator, to be proven inert). At 1 the flash kernel becomes the HRM source: eligible when the liquid is present with $\alpha_1 > 1 -$ `ps_flash_alpha_thr`, inside the dome, and $P_{\mathrm{dom}} < P_{\mathrm{sat}}(T_{\mathrm{dom}})$; no window, no 20 % cap; $\delta m = \rho\,(x_{\mathrm{sat}} - x_g)(1 - e^{-\Delta t/\theta})$ with $\theta$ = `ps_flash_tau` and $x_{\mathrm{sat}}$ the equilibrium quality at the cell's $(\rho, e)$ (invariant under the transfer, so the exponential is exact and there is no pressure-feedback instability of the §10 kind); the newborn mass enters at the saturation state of $T_{\mathrm{dom}}$ as today, the representability limiter stays, and the mechanical re-projection follows. The driver routes every two-phase cell to it, not only cells with a non-Independent trace. $x_{\mathrm{sat}}$ comes through a new optional `PsPhaseAPI` callback from a saturation table built once from `EOS::co2_sat_LV` (0.25 K), so it is the backend's own dome. Runs set `ps_flash_alpha_thr = 0.5` (the source acts for $\alpha_1 > 0.5$) and `ps_mt_srt_d = 1e3` (X3's own transfer negligible; its mechanical and thermal relaxation stay, which is the $pT$-relaxed model of the reference).
+
+### 7.3 Predictions (before any run; PR, the 3 m domain for Test 19, 4 m for Test 24)
+
+K0. At `ps_flash_hrm = 0`: N1, N1b, N4, `flashing_front` and the battery byte-identical.
+K1. Test 19, $\theta$ = 2.5 ms (the paper's fit): at 0.8 m and 1.599 m the pressure dips below 0.90 $P_{\mathrm{sat}}$ (below 32 bar with PR) and recovers by at least 1.5 bar within 2.5 ms (measured 2.2 and 3.9 bar). Falsifier: a flat level or a recovery below 0.5 bar.
+K2. Test 24, $\theta$ = 0.14 ms: no recovery above 0.5 bar at 0.28–1.6 m (none measured); the first level is above the window's 57.1 bar, at 58–61 bar (PR's $P_{\mathrm{sat}}$ there is 61.7).
+K3. Test 19 at 0.08 m: minimum within 4 bar of the measured 18.5.
+K4. If K1 fails with the source demonstrably producing vapour (`[ps_flash]` count rising, $x_g$ growing behind the wave), the obstacle is structural, and the next probe is the same run with the presence gate's hold on corridor phases examined.
+K5. The runs complete. Low confidence: a source acting on every two-phase cell next to X3 is new territory for the limiter.
+
