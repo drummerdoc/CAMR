@@ -3,7 +3,9 @@
 # reference artefact, recording provenance.  See docs/PLAN_cleanup_for_sharing.md §6.
 #
 #   ./regen_refs.sh 1d   [TAG]   build the 1-D PR exe, run the gate, record fingerprints
-#   ./regen_refs.sh 2d   [TAG]   build the 2-D PR MPI exe (needs mpicxx; run on the Mac)
+#   ./regen_refs.sh 2d   [TAG]   BUILD ONLY: the 2-D PR MPI exe (needs mpicxx; run on the Mac).  Runs and
+#                                compares nothing; the 2-D checks are 'windows' below and a before/after
+#                                pair on CO2_XC2D (docs/FUTURE_WORK.md §9.3)
 #   ./regen_refs.sh windows TAG  the two demo2 restart windows (3550->3605, 3650->3700)
 #                                on NRANKS ranks; ~65 min; writes Exec/CO2_PipeBreak/runs/<TAG>/
 #

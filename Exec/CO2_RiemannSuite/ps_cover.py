@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""ps_cover.py -- the non-boundary 1-D rows of docs/PLAN_code_audit.md §7
-that the PR executable and its dials can decide.
+"""ps_cover.py -- the non-boundary 1-D coverage tests (docs/FUTURE_WORK.md §9.5 lists what
+is not covered) that the PR executable and its dials can decide.
 
 Each test states its expectation here, before the run; the script only
 measures.  One line per failed assertion, a PASS/FAIL line per test, a

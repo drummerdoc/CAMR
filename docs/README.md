@@ -10,9 +10,8 @@ The documents describe the current tree; git history holds the past.
 | `DESIGN_DECISIONS.md` | Decision register: landed choices with their argument, refuted ideas as "Rejected: … Why: …" (do not re-derive), open `[DECIDE]` items, dormant features, and the retired-key table (reason and replacement per key). |
 | `VERIFICATION.md` | Validation philosophy and every test with its numbers: the 1-D battery gate, HEM limit, DT7 shock tube, flashing front, convergence, 0-D self-tests, the 2-D cases. |
 | `RUNNING.md` | Build lines per case, table generation, deck inventory, the complete dial table (one row per `CAMR.*` key; the only one — the other documents cite its rows by key), the retired-key mechanism, diagnostics and validator output, restart recipes, the two relaxation configurations. |
-| `FUTURE_WORK.md` | Parked work with its scoping: interfacial-area transport as a seventh scalar, 3-D jet, solid phase, the morphology length, and the smaller carried-over items. |
+| `FUTURE_WORK.md` | Parked work with its scoping: interfacial-area transport as a seventh scalar, 3-D jet, solid phase, the morphology length, the smaller carried-over items, and §9: the known issues and open questions at the September 2026 hand-over. |
 | `PLAN_cleanup_for_sharing.md` | The plan this tree was cleaned against and its `[DECIDE]` register. |
-| `PLAN_code_audit.md` | Code audit after the NSCBC retirement: defects, dead code, duplication, stale comments, document repetition, prioritised edit list and the missing tests. |
 
 ## Read in this order
 

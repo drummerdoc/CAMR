@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""nscbc_cover.py -- the 1-D NSCBC rows of docs/PLAN_code_audit.md §7.
+"""nscbc_cover.py -- the 1-D NSCBC coverage tests (docs/FUTURE_WORK.md §9.5 lists
+what is not covered).
 
 Each test states its expectation here, before the run; the script only
 measures.  One line per failed assertion, a PASS/FAIL line per test, a

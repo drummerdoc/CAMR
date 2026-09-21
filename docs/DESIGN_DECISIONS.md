@@ -174,6 +174,28 @@ D-2  One accessor per dial; resolved values force-added to `job_info`. LANDED (p
 
 D-3  Retired keys abort. LANDED (§6): one table, `Source/Hydro/PelantiShyue/PS_retired_keys.H`, checked once at startup. Argument: a stale deck must fail loudly rather than run a configuration that no longer exists; a harness that swallows stderr hides the abort, so the gate checks the executable timestamp and the link line, not the exit code.
 
+### 2.11 Decisions of the September 2026 code audit
+
+The audit's working note is in the history (`docs/PLAN_code_audit.md`, removed at the hand-over); what it decided that is not recorded elsewhere in this register:
+
+A-1  The NSCBC face set is resolved once. LANDED. `ps_nscbc_cfg()` resolves `uface` = (per-face key, else the global switch) and the face is `Inflow`; the fill, the relaxed boundary and the Pass-2 skip read `uface` and nothing else. The inherited global switch is dropped silently on a non-Inflow face; an explicit per-face 1 there aborts. The dials resolve in `read_params`, so a bad value aborts at `max_step=0`. Why: Pass 2 was being skipped on a wall face that had no boundary treatment behind it.
+
+A-2  One V6 packer (`ps_pack_v6`) for both folds. LANDED. The temperature fold had passed $u_x$ where the packer passes the momentum magnitude; `ps_tfloor_fold` is off in every deck, so no recorded number moved.
+
+A-3  One gas constant, `hem::R_gas` = 8.31446261815324, everywhere, reached in the kernels through `PsPhaseAPI::r_gas()`. LANDED. The SRT prefactor is live in mode 5, so unifying a $1.8\times10^{-11}$ relative difference moved N1b at $5\times10^{-6}$ (`FUTURE_WORK.md` §9.1) and the references were re-recorded once (BASE2). `hem::T_triple_CO2` likewise; the API's silent fallbacks are deleted.
+
+A-4  EOS entries are deleted only when a whole-tree grep proves them unreached (28 went; `TY2Cp` stays).
+
+A-5  Ghost-state admissibility is one strict predicate, `ps_bc_state_cause` ($\rho$, $m_k \ge 0$, $\alpha \in [0,1]$, an EOS state), with **no test on the sign of the internal energy**: the NASA polynomials of the ideal-gas part and liquid CO$_2$ on the PR scale give physically correct negative $e$. The refusals are counted by cause (`zg_cause`).
+
+A-7  demo3's extrapolated-fill refusals (6831 of 6838 slots a negative partial mass of a trace phase) are left as they are: the refusal falls back to the copy, which is the right ghost for a trace phase.
+
+A-8  The GERG twin of `PYT2REc_phase_checked` reports no root when the density lies past the precomputed branch edge or when the bisection's own residual exceeds $10^{-9}\,|P|$ (it ran into the validity box).
+
+K-3  Under `ps_hydro = 1` the primitive sweep is not computed. LANDED. Proof that nothing read it: a NaN fill of `q`, `qaux`, `src_q` left every witness byte-identical. The `ctop_*` counters went with it; a PS build with `USE_EB` is a make error.
+
+V-1  `ps_validate = 2` counts, and does not abort on, an $\alpha_1$ outside [0, 1] and a negative partial mass at the stages before the floor/fold/clean repair (H, A, A2): the hydro update leaves both at round-off at a pure|pure contact and `clean_state` repairs them. From stage B on they abort.
+
 ## 3. Rejected and refuted — do not re-derive
 
 Each entry: Rejected: the idea. Why: the argument and the measurement.

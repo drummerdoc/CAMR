@@ -108,3 +108,38 @@ With R-14 (α-only saturation projection of a Corridor phase that has no state o
 The physical promotion test. `ps_regime_reach` promotes on reachability, which admits a liquid at 43 K and the pressure floor; the physical test (T ≥ T_triple, P above the EOS positive-pressure floor) had zero "valid parent → invalid child" stencils in 1.85 million. Changing it moves every trace phase in the battery; the diff is decided with the table in hand.
 
 The bound-limited coarse–fine fill. A `CellConservativeProtected` analogue that limits the MC slopes so every child satisfies the physical bound, with piecewise-constant fallback, is a complete backstop for the fill offline and would remove the up-to-5 % energy-identity defects the fill still produces at coarse–fine faces (G-5). `harvest.py` reproduces AMReX's `cell_cons_interp` in numpy, so a candidate limiter is scored on the stored stencils before any run. If a scheme survives offline and fails live, the next step is a live harvest hook, not a redesign.
+
+## 9. Known issues and open questions at the hand-over (September 2026)
+
+The state the code was frozen in after the post-NSCBC code audit. Every change of that audit was proven byte-identical on the contraction-free 1-D witnesses (N1, N1b, N4 `vent`, `flashing_front` `vent`) and the 21-case battery, and on `CO2_XC2D` in 2-D (6 ranks, AMR, with and without `ps_wp_transverse=1`) against the last commit that changed numbers; the one deliberate change of numbers since is the implicit nucleator (`DESIGN_DECISIONS.md` O-27; references BASE3). Nothing below is a known wrong answer in a recorded run. Each item is parked, not scheduled.
+
+### 9.1 Unexplained behaviour, with how to reproduce it
+
+N1b amplifies round-off. A $10^{-12}$ relative perturbation of `prob.a1_0` on N1b (`Exec/CO2_NSCBC`, `inputs.base` with `prob.ic=1 prob.two_phase=1 prob.a1_0=0.05 amr.n_cell=256 stop_time=6e-3`) reaches $7\times10^{-6}$ in pressure and $1.5\times10^{-5}$ in $\alpha_1$ by step 363 and stays there. It is not the nucleator: the flash never fires in N1b and the result was byte-identical with the explicit and the implicit nucleator. The likely relative is the mode-5 amplifier of §6.3 (the SRT birth rate); not checked. Consequence today: any change that perturbs mode-5 arithmetic at round-off moves N1b's plotfiles at $10^{-6}$, so N1b is a byte-level witness only for changes that do not touch that arithmetic. B12 showed the same kind of sensitivity ($4\times10^{-3}$) before the implicit nucleator and was byte-identical across it, so it is presumably the same mechanism; not re-measured.
+
+One pressure pulse per front cell. With the implicit nucleator the evaporation-front cells of B2 have a smooth pressure history except for one pulse each, e.g. 19.86 → 22.5 → 20.9 → 20.3 bar over three steps, as the cell's trace fraction passes $5\times10^{-3}$ to $6\times10^{-3}$. It is not a cycle and does not amplify a perturbation (`VERIFICATION.md` §6.7). No dial sits at that value; the handover between the nucleator and the corridor treatment is the place to look. Reproduce: `python3 front_hist.py TAG` in `Exec/CO2_RiemannSuite`; `ps_cover.py front` prints the largest rise.
+
+### 9.2 The closure past the spinodal
+
+`DESIGN_DECISIONS.md` O-21 (`[DECIDE-32]`) and §6.1–6.2 above. While it is open, mode 2 stays in the code as the finite-rate control closure and the 2-D production decks pin it. The mode-2-only sub-dials with no deck and no test — `ps_mt_form=1`, `ps_mt_explicit`, `g_ref > 0`, `ps_pr_fd1` (`hem_mass_transfer.H`, `hem_relax_x3.H`; about 160 lines) — go when mode 2 goes, not before.
+
+### 9.3 Small defects found and not fixed
+
+- `ps_validate=2` never aborts on V4/V5 (the mass and energy identities); they are counted only.
+- `ps_presence_vanish ≤ 0` silently disables the vanish fold instead of aborting.
+- `PS_relax.H` contains the self-assignment `ph.alpha = ph.alpha;`.
+- Some abort messages cite a `./probe_pr` tool that does not exist.
+- N3's entropy spot never leaves the domain in the recorded configuration, so N3 does not test what its name says.
+- `Exec/triage_run_data.sh` keeps a demo3 run when its `job_info` records `ps_lw_skip_contact = 2`; the key is retired and new runs no longer record it.
+- `regen_refs.sh` has no compile-only line per EOS backend; GERG and GERGTab stopped compiling on the PS path once without anyone noticing (fixed, `GERG/EOS.H` `PYT2REc_phase_checked`). `regen_refs.sh 2d` builds only; the 2-D byte-level check is a before/after pair on `CO2_XC2D`, and the fingerprinted check is `regen_refs.sh windows`.
+- The CUDA compile of the PS path is unchecked (a GPU build with an NSCBC face aborts by design).
+- A PS build with `USE_EB=TRUE` is a make error: `hydro_umdrv_eb` has no PS branch.
+
+### 9.4 Cleanup that nobody needs in order to use the code
+
+Duplication: the per-phase sound-speed dispatch and frozen mixture speed (`PS_hllc.H` vs `PS_wavespeed.H`; they differ in `Y1` and in the Absent-phase copy — the one item here with a correctness edge, the same as `DESIGN_DECISIONS.md` O-16); the "V6 → (α, m_k, ρ_k, e_k, u)" preamble, eight copies across `hem_eos_api.H`, `hem_relax_x3.H`, `hem_mass_transfer.H`, `hem_flash.H`, which differ in clamp versus reject; the SRT rate Γ (three copies), the carrier-enthalpy rule (four) and the inline coexistence gate (three); the EOS backends' shared machinery (ring cache, bisections, Illinois and Newton loops, Catmull–Rom and Hermite kernels); `hem::Phase3`/`State` forcing GERG to include `hem_pr_state.H` for an enum and a struct, and `PhysicsConstants.H` included by three backends and used by one. Dead data: the PRTab entropy tables (`s_pred`/`s_br`, half of the 6 MB table translation unit) are computed and never read. Comments: the pass that brought comments to the code covered 22 files; `PS_umeth.cpp`, `PS_floors.H`, `PS_folds.H`, `PS_state.H`, `PS_ctoprim.H`, `PS_sources.H`, `BCfill.cpp`, `Derive.cpp` and the `CAMR_*.cpp` files were not reached.
+
+### 9.5 Tests that do not exist
+
+`cover_retired.py`, `nscbc_cover.py` and `ps_cover.py` cover what a 1-D executable and its dials can decide; each script's docstring lists what it leaves out. Not written, because each needs a 0-D C++ harness or a bad state no deck produces: the per-wave identities of the fluctuations and the relaxed-α star on constructed faces; folds, floors and the corridor projection on a one-cell MultiFab; saturation and EOS round-trips; the flash kernel and X3/mass-transfer limits in 0-D; the seeded-bad-state aborts of the validator and of `ps_coexist_action=1`; the battery once per EOS backend (every script runs the PR executable); 2-D rows (`ps_mu`, a fold with $u_y \ne 0$, a lateral `nr` face on a 1-D solution); and a script that diffs the `ps_dial_*` key set in `Source/` against the dial table of `RUNNING.md` §3.
+
