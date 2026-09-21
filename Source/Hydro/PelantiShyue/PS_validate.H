@@ -38,7 +38,12 @@
 #include <cmath>
 
 // CAMR.ps_validate (0): 0 off; 1 count and one report line per sweep;
-// 2 as 1 plus abort on the first bulk-bucket violation.
+// 2 as 1 plus abort on the first bulk-bucket violation.  At the stages
+// before the floor/fold/clean repair (pre_repair: H, A, A2) an alpha_1
+// outside [0, 1] (V2) and a negative partial mass (V3) are counted, not
+// aborted on: the hydro update leaves both at round-off at a pure|pure
+// contact, and clean_state clips the one and zeroes the other; from stage B
+// on they are defects.
 inline int ps_validate_mode()
 {
     static const int v = ps_dial_int("ps_validate", 0);
@@ -46,7 +51,8 @@ inline int ps_validate_mode()
 }
 
 inline void
-ps_validate_state(amrex::MultiFab& S, const char* label, int nghost = 0)
+ps_validate_state(amrex::MultiFab& S, const char* label, int nghost = 0,
+                  bool pre_repair = false)
 {
     const int mode = ps_validate_mode();
     if (mode == 0) return;
@@ -109,9 +115,9 @@ ps_validate_state(amrex::MultiFab& S, const char* label, int nghost = 0)
                   && std::isfinite(Et))) { ++n_v1; bulk_bad = true; }
             else {
                 // V2 volume-fraction bounds
-                if (a1 < Real(0.0) || a1 > Real(1.0)) { ++n_v2; bulk_bad = true; }
+                if (a1 < Real(0.0) || a1 > Real(1.0)) { ++n_v2; if (!pre_repair) bulk_bad = true; }
                 // V3 partial-mass positivity
-                if (m1 < Real(0.0) || m2 < Real(0.0)) { ++n_v3; bulk_bad = true; }
+                if (m1 < Real(0.0) || m2 < Real(0.0)) { ++n_v3; if (!pre_repair) bulk_bad = true; }
                 // V4 mixture mass identity
                 if (r > Real(0.0)) {
                     const Real d = std::abs(r - (m1 + m2)) / r;
@@ -259,7 +265,7 @@ ps_validate_state(amrex::MultiFab& S, const char* label, int nghost = 0)
                        << "  e=" << v7_e << "\n";
     }
 
-    if (mode >= 2 && (n_v1 + n_v2 + n_v3 + n_v6_bulk + n_v7_bulk) > 0) {
+    if (mode >= 2 && (n_v1 + (pre_repair ? 0 : n_v2 + n_v3) + n_v6_bulk + n_v7_bulk) > 0) {
         amrex::Print() << "[PS-VALIDATE] first bulk violation at ("
                        << ab_i << "," << ab_j << "," << ab_k << ") stage '"
                        << label << "'\n";

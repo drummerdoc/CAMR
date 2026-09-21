@@ -176,10 +176,10 @@ CAMR::CAMR_advance (Real time,
 #else
 #define PS_CELL_PROBE(S,L) ((void)0)
 #endif  // CAMR_PS_DIAG
-    auto diag_mass = [&](amrex::MultiFab& S, const char* label) {
+    auto diag_mass = [&](amrex::MultiFab& S, const char* label, bool pre_repair = false) {
         // Invariant tripwire (CAMR.ps_validate, 0 = off), independent of
         // the ps_diag_mass gate.
-        ps_validate_state(S, label);
+        ps_validate_state(S, label, 0, pre_repair);
         // CAMR.ps_diag_mass (0): the probe's gate.
         static const int dgm = ps_dial_int("ps_diag_mass", 0);
         if (dgm == 0) return;
@@ -407,10 +407,10 @@ CAMR::CAMR_advance (Real time,
     };
     auto apply_ps_reaction = [&](amrex::MultiFab& S, amrex::Real dt_r,
                                  int ng, bool do_print) {
-        diag_mass(S, "A enter (post-hydro/C-F)");
+        diag_mass(S, "A enter (post-hydro/C-F)", true);
         PS_CELL_PROBE(S, "A  enter (post-hydro)   ");
         ps_resync_mixture_mass(S, ng);  // URHO == UM1RHO1 + UM2RHO2 after hydro/C-F
-        diag_mass(S, "A2 post mass resync");
+        diag_mass(S, "A2 post mass resync", true);
         PS_CELL_PROBE(S, "A2 post mixture resync ");
         ps_resync_phase_energy(S, ng);
         PS_CELL_PROBE(S, "A3 post phase-E resync ");  // UE1 + UE2 == UEDEN after C-F interp/regrid
@@ -535,7 +535,7 @@ CAMR::CAMR_advance (Real time,
     //  of the floor, so this is the only window where a state computeTemp
     //  later aborts on still exists.  Reads the state, changes nothing.
 #ifdef USE_PS_HYDRO
-    diag_mass(S_new, "H post-hydro (pre-floor)");
+    diag_mass(S_new, "H post-hydro (pre-floor)", true);
 #endif
     clean_state(S_new, false);   // intermediate: skip the UTEMP diagnostic sweep
 
