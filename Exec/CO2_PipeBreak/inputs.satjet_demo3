@@ -15,8 +15,7 @@
 #   (2) alpha-gradient refinement tag 0.01 instead of 0.1;
 #   (3) amr.n_error_buf 4 instead of 2, keeping coarse-fine faces off the
 #       tagged features.
-#  ps_lw_skip_contact is written out at its default (2) so the deck records
-#  the scheme it runs.  Output prefixes plt_sj3_ / chk_sj3_.
+#  Output prefixes plt_sj3_ / chk_sj3_.
 #  stop_time 2.5 ms; max_step is a cap that never governs.
 # =====================================================================
 amrex.fpe_trap_invalid = 0
@@ -49,7 +48,6 @@ CAMR.ps_bc_nscbc_type_xhi = vent   # the outlet is a plenum at p_amb: outflow ce
                                 # choked fan's wave, inflow cells the stagnation relation
 CAMR.ps_bc_nscbc_type_ylo = nr     # lateral edges: characteristic outflow, waves leave
 CAMR.ps_bc_nscbc_type_yhi = nr
-CAMR.ps_lw_skip_contact = 2 # the default, pinned: the deck cannot silently run mode 0 on a stale executable
 CAMR.ps_wp_transverse = 0   # directionally split (no transverse term); the shear
                             # layer is resolved by ps_mu instead.  1 = contact-only
                             # transverse term.

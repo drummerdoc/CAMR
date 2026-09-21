@@ -20,7 +20,7 @@
 //  with no new control flow.  Refusals are counted ([PS-PROMOTE]); where
 //  every promoted phase has a root the check is inert.
 //
-//  Dial: CAMR.ps_promote_checked (default 1), read in PS_presence.H.
+//  Dials: none.
 //  This header isolates the EOS dependency: PS_presence.H has no EOS
 //  include and EOS.H has no presence include.
 // =====================================================================
@@ -37,18 +37,18 @@
 //    promote_refuse : would-be-Independent phases demoted to Corridor
 //                     for energy-unreachability ([PS-PROMOTE]).
 //    floor_skip     : per-phase floor legs skipped on a non-Independent
-//                     phase (CAMR.ps_floor_indep).
+//                     phase (PS_floors.H).
 
 //  Demote an Independent classification to Corridor iff (rho, e) has no
 //  root on the requested branch; pass-through when the phase is not
-//  Independent or the gate is off.  rho, e are the values the site is
+//  Independent.  rho, e are the values the site is
 //  about to hand the branch-locked EOS, so the test is exactly the query
 //  that would fire.
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
 PsRegime ps_regime_reach(PsRegime rg, amrex::Real rho, amrex::Real e,
                          bool want_liquid, const PsPres& pr) noexcept
 {
-    if (rg != PsRegime::Independent || pr.promote_checked == 0) return rg;
+    if (rg != PsRegime::Independent) return rg;
     amrex::Real Yq[NUM_SPECIES]; ps_pure_species(Yq);
     amrex::Real Pq, Tq, Sq;
     const hem::Phase3 br = want_liquid ? hem::Phase3::Liquid

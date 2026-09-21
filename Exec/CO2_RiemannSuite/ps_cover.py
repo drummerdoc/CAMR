@@ -28,18 +28,13 @@ overrides shown on a failure line.
             norm measures shock smearing, and the smeared rarefaction tail
             sits above p* without any ringing.
   badkeys   Out-of-range values of live dials abort by name (max_step = 1):
-            ps_wp_order=3, ps_lw_skip_contact=5, ps_flux=hllc,
+            ps_wp_order=3, ps_flux=hllc,
             ps_relax_mode=7, and ps_do_relax=0 at mode 5 with ps_mt_tau > 0
             (the values RUNNING.md §3 says abort).
             Asserts rc != 0 and the key's name in the message.  And the
             validator itself: clean A1, B3, B4 with ps_validate=2 complete (rc 0)
             -- the seeded-bad-IC abort of the plan's row needs a C++ seed and
             is not covered.
-  skipc     B3 (saturated L|V contact at rest, an exact alpha jump of 1) with
-            ps_lw_skip_contact = 1 and 2.  The taper of 2 is
-            w = 1 - smoothstep(|d alpha|/alpha_cond) = 0 at |d alpha| = 1, the
-            blanket skip of 1.  Asserts: final plotfiles byte-identical.
-            ps_lw_skip_contact = 0 is run too and its difference printed.
   strang    B4 (the plan's case) and B5 (two-phase on both sides, where the
             reaction stage does work) with ps_strang = 0 (Lie) and 1.  Asserts: both complete; the
             dial is live (plotfiles differ); the two pressure fields agree to
@@ -56,14 +51,6 @@ overrides shown on a failure line.
             chk00050 to step 100 in another directory.  Asserts plt00100
             byte-identical (every Level_0/Cell_D_*) and equal time.  B2 (the
             case §10 shows amplifying 1e-12 perturbations) likewise.
-  dials_off ps_promote_checked = 0 and ps_floor_indep = 0, one at a time, on
-            B2, B5, B9: the claim of PS_promote.H that they change nothing on
-            the battery.  Asserts final plotfiles byte-identical to the
-            default run.  ps_floor_indep can only matter with a floor set, so
-            a second leg sets ps_pres_floor = 1e5, ps_temp_floor = 216.6 (the
-            pipe-break floors) and asserts the same for ps_floor_indep.
-  dials_off_B12  the battery leg on B12 (two-phase wall reflection, the case
-            built for the promotion defect; 40 s per run, hence separate).
   front     B2 (evaporation wave) and the nucleator's own feedback
             (docs/PLAN_flash_implicit.md).  Two runs differing by 1e-12 in
             p_L, a plotfile every 4 steps, at ps_flash_implicit = 1 and 0.
@@ -92,8 +79,7 @@ ps_coexist_action=1 (need a bad state no deck produces); the GPU compile;
 the dial-table diff (a source grep, not a run).
 
 Usage:  [EXE=...] [COVER_KEEP=dir] python3 -u ps_cover.py [test ...]
-        (all tests: about 4 min, of which dials_off_B12 is 2; run it in a
-        separate invocation under a wall cap)
+        (all tests: about 2 min)
 """
 import os, re, sys, glob, time, math, shutil, tempfile, subprocess
 import numpy as np
@@ -204,7 +190,7 @@ def t_limiter():
 # ------------------------------------------------------------------ badkeys
 def t_badkeys():
     T = 'badkeys'; ok = True
-    for args, name in ((['CAMR.ps_wp_order=3'], 'ps_wp_order'), (['CAMR.ps_lw_skip_contact=5'], 'ps_lw_skip_contact'),
+    for args, name in ((['CAMR.ps_wp_order=3'], 'ps_wp_order'),
                        (['CAMR.ps_flux=hllc'], 'ps_flux'), (['CAMR.ps_relax_mode=7'], 'ps_relax_mode'),
                        (['CAMR.ps_do_relax=0'], 'ps_do_relax')):
         rc, log, fs, cmd = run(T, 'B3', args + ['max_step=1', 'amr.plot_files_output=0'])
@@ -217,18 +203,6 @@ def t_badkeys():
         print('      clean %s with ps_validate=2: rc=%d  %s' % (case, rc, ' || '.join(w[:230] for w in why) if rc else ''))
         ok &= check(T, rc == 0, 'a clean %s aborts under ps_validate=2 (rc=%d)' % (case, rc), cmd)
     return ok
-
-# -------------------------------------------------------------------- skipc
-def t_skipc():
-    T = 'skipc'; f = {}
-    for v in (2, 1, 0):
-        rc, log, fs, cmd = run('%s_%d' % (T, v), 'B3', ['CAMR.ps_lw_skip_contact=%d' % v])
-        if not check(T, rc == 0 and fs, 'ps_lw_skip_contact=%d: rc=%d' % (v, rc), cmd): return False
-        f[v] = (fs[-1], cmd)
-    same = same_bytes(f[1][0], f[2][0])
-    print('      1 vs 2: %s   (max rel diff: %s)' % ('byte-identical' if same else 'DIFFERENT', fields_diff(f[1][0], f[2][0])))
-    print('      0 vs 2: %s   (max rel diff: %s)' % ('byte-identical' if same_bytes(f[0][0], f[2][0]) else 'different', fields_diff(f[0][0], f[2][0])))
-    return check(T, same, 'B3 differs between ps_lw_skip_contact=1 and 2: ' + fields_diff(f[1][0], f[2][0]), f[1][1])
 
 # ------------------------------------------------------------------- strang
 def t_strang():
@@ -309,23 +283,6 @@ def t_restart():
         ok &= check(T, same and tA == tB, '%s: restart is not bit-reproducible: %s' % (case, fields_diff(pA, pB[0])), cmdB)
     return ok
 
-# ---------------------------------------------------------------- dials_off
-def t_dials_off(T='dials_off', cases=('B2', 'B5', 'B9'), legs=('battery', 'floors')):
-    ok = True
-    FLOORS = ['CAMR.ps_pres_floor=1.0e5', 'CAMR.ps_temp_floor=216.6']
-    for case in cases:
-        for leg, base, dials in (('battery', [], ('ps_promote_checked', 'ps_floor_indep')), ('floors', FLOORS, ('ps_floor_indep',))):
-            if leg not in legs: continue
-            rc, log, fs, cmd = run('%s_%s_%s_def' % (T, case, leg), case, base)
-            if not check(T, rc == 0 and fs, '%s %s default: rc=%d' % (case, leg, rc), cmd): ok = False; continue
-            for k in dials:
-                rc1, log1, f1, cmd1 = run('%s_%s_%s_%s' % (T, case, leg, k), case, base + ['CAMR.%s=0' % k])
-                if not check(T, rc1 == 0 and f1, '%s %s %s=0: rc=%d' % (case, leg, k, rc1), cmd1): ok = False; continue
-                same = same_bytes(fs[-1], f1[-1])
-                print('      %-4s %-8s %-20s=0 vs 1: %s' % (case, leg, k, 'byte-identical' if same else 'DIFFERENT  max rel diff ' + fields_diff(fs[-1], f1[-1])))
-                ok &= check(T, same, '%s (%s): %s=0 changes the solution: %s' % (case, leg, k, fields_diff(fs[-1], f1[-1])), cmd1)
-    return ok
-
 # ----------------------------------------------------------------- selftest
 def t_front(T='front'):
     ok = True; m = 0.1
@@ -370,10 +327,9 @@ def t_selftest():
         ok &= check(T, not flagged, '%s: %d line(s) flag a case FAIL/BAD although the verdict is PASS' % (k, len(flagged)), cmd)
     return ok
 
-def t_dials_off_B12(): return t_dials_off('dials_off_B12', ('B12',), ('battery',))
 
-TESTS = [('order', t_order), ('limiter', t_limiter), ('badkeys', t_badkeys), ('skipc', t_skipc), ('strang', t_strang),
-         ('derives', t_derives), ('restart', t_restart), ('dials_off', t_dials_off), ('dials_off_B12', t_dials_off_B12), ('selftest', t_selftest), ('front', t_front)]
+TESTS = [('order', t_order), ('limiter', t_limiter), ('badkeys', t_badkeys), ('strang', t_strang),
+         ('derives', t_derives), ('restart', t_restart), ('selftest', t_selftest), ('front', t_front)]
 if __name__ == '__main__':
     sel = sys.argv[1:] or [n for n, _ in TESTS]
     unknown = [s for s in sel if s not in dict(TESTS)]

@@ -18,7 +18,7 @@
 //  an identity-consistent local Lax-Friedrichs flux; no state is repaired.
 //
 //  Dials (CAMR.*, each read once at its accessor below): ps_flux (wp),
-//  ps_wp_order (2), ps_wp_limiter (vanleer), ps_lw_skip_contact (2),
+//  ps_wp_order (2), ps_wp_limiter (vanleer), 
 //  ps_wp_transverse (0), ps_mu (0).
 // =====================================================================
 
@@ -491,27 +491,13 @@ PS_umeth(const Box& bx,
     };
     const int wp_unlimited = ps_wp_unlimited_cached();
 
-    // CAMR.ps_lw_skip_contact (2): weight of the correction on the contact
-    // wave, which carries the non-conservative alpha jump; correcting it at
-    // a material interface smears alpha into the phase densities/energies,
-    // while skipping it everywhere costs single-phase contact sharpening.
-    //   0 = full correction; 1 = blanket skip; 2 = smoothstep taper in
-    //   |Δα|/α_cond (weight 1 in uniform regions, 0 across a jump ≥ α_cond,
-    //   no new threshold).  Modes 0/1 are kept for A/B (docs/
-    //   DESIGN_DECISIONS.md H-5, O-1).  Applied to the whole wave only.
-    auto ps_lw_skip_contact_cached = []() -> int
-    {
-        static const int cached = []() {
-            const int v = ps_dial_int("ps_lw_skip_contact", 2);
-            if (v != 0 && v != 1 && v != 2) {
-                amrex::Abort("CAMR.ps_lw_skip_contact accepts 0 (off), 1 "
-                    "(blanket contact-wave skip), or 2 (regime-gated: skip "
-                    "only at a genuine two-phase material interface).");
-            }
-            return v; }();
-        return cached;
-    };
-    const int wp_lw_skip = ps_lw_skip_contact_cached();
+    // Weight of the correction on the contact wave, which carries the
+    // non-conservative alpha jump: correcting it at a material interface
+    // smears alpha into the phase densities/energies, while skipping it
+    // everywhere costs single-phase contact sharpening.  The weight is a
+    // smoothstep taper in |Δα|/α_cond (1 in uniform regions, 0 across a jump
+    // ≥ α_cond, no new threshold), applied to the whole wave
+    // (docs/DESIGN_DECISIONS.md H-5).
 
     // CAMR.ps_wp_transverse (0): 0 = directionally split; 1 = contact-only
     // transverse correction (ps_wp_tvterm; the validated 2-D setting).
@@ -692,14 +678,12 @@ PS_umeth(const Box& bx,
                 const Real dtdx = dt_l / dxd;
                 //  Contact-wave keep-weight wc_keep, one scalar on the whole
                 //  wave l=1 (a scalar multiple keeps the linear identities).
-                //  Mode 0: 1.  Mode 1: 0.  Mode 2: 1 − smoothstep(|Δα|/α_cond):
+                //  wc_keep = 1 − smoothstep(|Δα|/α_cond):
                 //  a uniform region at any level (including a uniform trace)
                 //  keeps the full correction, a jump ≥ α_cond drops it, and
                 //  there is no on/off contour to imprint a kink.  docs §3.4.
                 Real wc_keep = Real(1.0);
-                if (wp_lw_skip == 1) {
-                    wc_keep = Real(0.0);
-                } else if (wp_lw_skip == 2) {
+                {
                     const int li = i - ((idir==0)?1:0);
                     const int lj = j - ((idir==1)?1:0);
                     const int lk = k - ((idir==2)?1:0);

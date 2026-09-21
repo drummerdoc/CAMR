@@ -97,6 +97,9 @@ inline void ps_abort_on_retired_keys()
         { "ps_p_clip",           "ps_state_from_cons forms the volume-weighted mixture pressure only" },
         { "ps_c_mode",           "ps_state_from_cons forms the Wood mixture sound speed only" },
         { "ps_y_floor",          "ps_state_from_cons forms the Wood mixture sound speed only" },
+        { "ps_lw_skip_contact",  "the contact-wave correction is always the smoothstep taper in |d alpha|/alpha_cond" },
+        { "ps_promote_checked",  "promotion to Independent is always energy-checked" },
+        { "ps_floor_indep",      "the per-phase floor acts on Independent phases only" },
     };
     struct RetiredValue { const char* key; int value; const char* reason; };
     static const RetiredValue values[] = {
