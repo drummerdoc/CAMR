@@ -129,3 +129,41 @@ S3. Therefore no single $D$ fits both tests within 3 bar at 0.28 m: the ratio of
 S4. The first level at 0.8 m moves by less than 1 bar for $D \ge$ 2e-3.
 S5. All runs complete; X3 failures stay 0.
 
+### 5.3 Scan results (PR, mode 5, VM; pressures in bar at delays after the 40-bar drop)
+
+Test 24:
+
+| sensor | $D$ [m] | +0.5 ms | +1 | +2 | +3 | +5 |
+|---|---|---|---|---|---|---|
+| 0.08 m | measured | 57.7 | 57.2 | 57.0 | 49.8 | 40.4 |
+| | 0.1 (default) | 24.8 | 27.0 | 31.1 | 33.0 | 34.9 |
+| | 1e-2 | 49.3 | 51.0 | 49.6 | 47.2 | 42.7 |
+| | 2e-3 | 57.3 | 56.2 | 52.1 | 46.6 | 41.2 |
+| | 2.5e-4 | 56.8 | 56.8 | 55.4 | 46.4 | 40.8 |
+| 0.28 m | measured | 60.9 | 59.3 | 57.0 | 57.4 | 57.5 |
+| | 0.1 | 40.1 | 36.1 | 39.5 | 41.9 | 44.1 |
+| | 1e-2 | 56.5 | 56.2 | 56.8 | 56.6 | 55.1 |
+| | 2e-3 and 2.5e-4 | 57.0 | 57.0 | 57.0 | 57.0–57.2 | 57.0 |
+
+Test 19 ($D$ = 0.3 added after 2e-3 came out on the wrong side; 3e-2 and 1e-2 dropped for the same reason):
+
+| sensor | $D$ [m] | +0.5 ms | +1 | +2 | +3 | +5 |
+|---|---|---|---|---|---|---|
+| 0.08 m | measured | 28.9 | 22.8 | 18.6 | 19.1 | 21.8 |
+| | 0.3 | 14.8 | 13.7 | 15.2 | 16.4 | 18.0 |
+| | 0.1 (default) | 19.5 | 20.9 | 23.1 | 23.9 | 24.5 |
+| | 2e-3 | 33.8 | 33.7 | 33.7 | 34.4 | 32.5 |
+| 0.28 m | measured | 29.7 | 27.2 | 24.0 | 23.1 | 23.9 |
+| | 0.3 | 33.8 | 22.4 | 21.4 | 22.6 | 24.2 |
+| | 0.1 | 33.8 | 32.3 | 28.9 | 29.8 | 30.4 |
+| | 2e-3 | 33.8 | 33.8 | 33.8 | 33.8 | 33.8 |
+
+- **S1 holds** in its main claim and better than stated: with $D \le$ 2e-3 the warm test's outlet trace is reproduced to 1–5 bar over 5 ms including the late fall to 41 bar (default: 20–33 bar low). Its last clause is wrong: the first level does not rise toward $P_{\mathrm{sat}}$ even at 2.5e-4; the nucleator's window still sets it.
+- **S2 fails in its numbers, holds in its sense.** The cold test wants a *slower* rate than the default, not a faster one: the measurement lies between $D$ = 0.1 and 0.3 m (about 0.2). At 2e-3 CAMR is 10–15 bar high, as predicted.
+- **S3 holds, more strongly than predicted:** the best values are about 0.2 m cold and ≤ 2e-3 m warm, a ratio of 100 or more (the paper's θ ratio between these two tests is 18). The area factor $(\alpha_2 + \delta)\alpha_1$ does not supply the temperature dependence.
+- **S4 holds** (the first level moves by 0.1 bar over the whole scan). **S5 holds.**
+
+### 5.4 What follows
+
+The morphology length is the missing physics, as §5.6 of the model document already said; the ECCSEL pair now brackets it at both ends of the liquid range: $D \approx 0.2$ m at 10 °C and $D \lesssim 2\times10^{-3}$ m at 36 °C, against the single placeholder 0.1 m. A constant cannot serve; candidates for a state-dependent closure, none chosen: the paper's own correlation of θ with the scaled initial entropy (a property of the initial state, not local — awkward in a field code); a local form in the reduced temperature or in the surface tension (the nucleation barrier vanishes at the critical point, which is the paper's physical argument); the Downar-Zapolski form already examined in the model document; or the transported interfacial area of `FUTURE_WORK.md` §1. To do before choosing: GERG confirmation of the two bracketing values (Mac), and Tests 22 and 23 to see whether $D$ varies smoothly between the ends.
+
