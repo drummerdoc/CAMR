@@ -111,3 +111,21 @@ Not done: the PR control at `p_amb = 6e5` against `1e5` (choked, so expected ide
 
 With GERG the code's wave physics is right to about 1 % and its first metastable level to about 5 % on both ends of the dataset, with no tuning. What is wrong is the rate of bulk flashing behind that level near the critical point, where the experiment stays near saturation and CAMR's mode 5 falls 25–40 % below it for several milliseconds; constant-τ mode 2 at the production value is far worse. The two things to decide from this are whether the GERG abort in the vent fan is fixed (small, mechanical), and whether the transfer rate at small vapour fraction is taken up with Test 24's 0.28 m trace as the target (the O-21 question, not small).
 
+## 5. The transfer rate behind the first level: diagnosis and a dial scan (21 Sept)
+
+### 5.1 Diagnosis (PR, Test 24, 2 ms; `CAMR.ps_pres_diag=1`)
+
+Behind the front the cells are two-phase with $\alpha_2$ = 0.04–0.35, at 30–40 bar, mixture temperature 288–290 K where $P_{\mathrm{sat}}$ is 51–53 bar. X3 acts on all of them every sweep (68 calls per sweep, none refused, none failed) and closes the phase temperatures (`[PS-DT]` before/after: max 4.6 → 0.36 K). So the state is in pressure and thermal equilibrium and **not in chemical equilibrium**: liquid superheated by about 15 K at the common pressure, persisting for milliseconds. It is not the presence gate (18 in-band cells refused per sweep, at the front only) and not the nucleator (the first level is right). It is the rate of X3's own mass transfer, the SRT rate with the morphology length `ps_mt_srt_d` = 0.1 m — which `MODEL_AND_ALGORITHM.md` §5.6 already records as a placeholder, calibrated on DT7 as $\theta_{\mathrm{eff}} \approx 0.08\,D$ = 8 ms, and as "roughly 2.5 decades too slow" by the Downar-Zapolski correlation, with the change "an open decision".
+
+The paper's fitted HRM* times are 0.14 ms (Test 24) and 2.5 ms (Test 19). Under $\theta_{\mathrm{eff}} \approx 0.08\,D$ they correspond to $D \approx 1.75\times10^{-3}$ m and $D \approx 3.1\times10^{-2}$ m.
+
+### 5.2 The scan, and its predictions (before the runs)
+
+No code: `CAMR.ps_mt_srt_d` = 0.1 (default), 3e-2, 1e-2, 2e-3, 2.5e-4 on both tests; PR in the VM for the shape, then GERG on the Mac for the two best values per test. Score: pressure at 0.28 m and 0.8 m at +1, +2, +3, +5 ms after the 40-bar drop, against the measurement (§4.2's table).
+
+S1. Test 24: the post-level drop shrinks monotonically with $D$; at $D$ = 2e-3 the 0.28 m trace stays within 5 bar of the first level for 5 ms (measured: 57–59 bar against a level of 61); at 2.5e-4 it is within 2 bar (HEM-like), and the first level itself rises toward $P_{\mathrm{sat}}$ because transfer now competes with the nucleator's window.
+S2. Test 19: best agreement at the largest of the scanned values below the default, $D$ = 3e-2 to 1e-2; at 2e-3 and below CAMR sits *above* the measured 23–25 bar at 0.28 m by more than 6 bar (too close to equilibrium for the cold test).
+S3. Therefore no single $D$ fits both tests within 3 bar at 0.28 m: the ratio of the best values is of the order of the paper's 18:1 in θ. If one $D$ does fit both, the $(\alpha_2 + \delta)\alpha_1$ area factor is doing the temperature dependence and the finding is better than expected.
+S4. The first level at 0.8 m moves by less than 1 bar for $D \ge$ 2e-3.
+S5. All runs complete; X3 failures stay 0.
+
