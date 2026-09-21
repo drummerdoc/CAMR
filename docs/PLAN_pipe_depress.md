@@ -71,3 +71,43 @@ Against the predictions, as far as the runs go:
 - P3, P5, P6: not evaluated yet.
 
 Also learnt: the VM suspends background processes between calls, so long runs are sliced with `WALL`/`RESUME` checkpoints (`pipe_depress.py`).
+
+### 4.2 The full set, 21 Sept (GERG mode 5 on the Mac, llvm; PR mode 2 in the VM)
+
+GERG, mode 5, `prob.p_amb = 6e5`:
+
+| | Test 19 (cold) | Test 24 (warm) |
+|---|---|---|
+| head-of-wave speed 0.8 → 3.198 m, measured / CAMR | 585 / 592 m/s | 370 / 366 m/s |
+| liquid temperature at the level (the isentrope's end) | 276.09 K, $P_{\mathrm{sat}}$ = 37.6 bar | 298.52 K, $P_{\mathrm{sat}}$ = 64.9 bar |
+| first level at 0.8 m, measured / CAMR | 34.2 / 35.6 bar | 63.8 / 60.0 bar |
+| CAMR level / $P_{\mathrm{sat}}$, measured level / $P_{\mathrm{sat}}$ | 0.945, 0.91 | 0.925, 0.98 |
+
+Pressure at fixed delays after the 40-bar drop at each sensor (measured / CAMR, bar):
+
+| sensor | test | +0.5 ms | +1 | +2 | +3 | +5 | minimum in 3 ms |
+|---|---|---|---|---|---|---|---|
+| 0.8 m | 19 | 34 / 36 | 34 / 36 | 34 / 36 | 33 / 36 | 31 / 35 | 31.4 / 35.6 |
+| 0.28 m | 19 | 30 / 36 | 27 / 34 | 24 / 30 | 23 / 31 | 24 / 32 | 23.1 / 29.0 |
+| 0.08 m | 19 | 29 / 21 | 23 / 22 | 19 / 24 | 19 / 25 | 22 / 25 | 18.5 / 20.6 |
+| 0.8 m | 24 | 64 / 63 | 62 / 60 | 62 / 48 | 62 / 47 | 62 / 51 | 61.6 / 45.6 |
+| 0.28 m | 24 | 61 / 59 | 59 / 37 | 57 / 40 | 57 / 43 | 57 / 46 | 57.0 / 36.6 |
+| 0.08 m | 24 | 58 / 26 | 57 / 28 | 57 / 32 | 50 / 34 | 40 / 36 | 49.8 / 25.6 |
+
+The predictions:
+
+- **P1 holds** in all runs (0.92–0.95 $P_{\mathrm{sat}}$, pure metastable liquid at the level).
+- **P2 fails, and its premise with it.** CAMR's fractional undershoot is indeed nearly the same in both tests (5.5 % and 7.5 %), but the hand estimate of the real crossing was wrong for the cold test (GERG gives $P_{\mathrm{sat}}$ = 37.6 bar, not 40), so the measured first undershoot is about 9 % cold and about 2 % warm, not 22 % and 10 %. CAMR is 1.4 bar (4 %) above the measurement cold and 3.8 bar (6 %) below it warm. The trend the paper reports is there — less undershoot when warm — and a fixed fractional margin cannot follow it, but the error it causes in the first level is ±5 %.
+- **P3 holds**: no undershoot-and-recovery in CAMR; it is small in the data too at these sensors (31.4 → 34.7 bar at 0.8 m, Test 19).
+- **P4 holds**: GERG within 1.2 % of both measured wave speeds (PR −15 % cold).
+- **P5 holds for Test 24 at late times** (0.08 m at 10 ms: 36.9 against 37.2 bar) and the cold outlet is 3–5 bar high as predicted (25 against 19–22). **But the prediction missed the main discrepancy of the whole exercise**, which is not at the outlet's final level:
+- **Finding: behind the first level CAMR's warm case falls far below the measurement.** In Test 24 the measured pressure stays at 57–62 bar for 5 ms and more after the wave passes (bulk flashing close to saturation); CAMR holds the first level for 1–1.5 ms and then drops to 37–48 bar as its evaporation front arrives, 25–40 % low, recovering slowly. The cells behind the front are two-phase ($\alpha_1 \approx 0.94$–0.96) at 0.52–0.63 of $P_{\mathrm{sat}}(T)$: strongly superheated liquid that mode 5 is not relaxing at the rate the experiment shows, although its nominal times are $10^{-7}$ s. The cold test shows the same shape at a third of the size (0.28 m: 30–32 against 23–25 bar, CAMR *high* there). This is the closure question of `DESIGN_DECISIONS.md` O-21 / `FUTURE_WORK.md` §9.2 seen from the other side — the transfer rate at small vapour fraction, where the SRT rate goes as $(\alpha_2 + \delta)\alpha_1$ — now with a measurement to aim at. Not investigated on this branch.
+- **P6: first half holds, second half is wrong by an order of magnitude.** Mode 2 at θ = τ = 1 ms (PR; GERG aborts, below) gives the same first level (57.1 and 33.9 bar, as mode 5 with PR), and then collapses: 3–14 bar at the three outlet sensors in both tests where the measurement is 20–60. The production decks' 1 ms is 7 times the paper's fitted θ for Test 24 and of the order of Test 19's 2.5 ms, yet fails both: a constant-τ mode 2 is not a usable control closure for this flow. Mode 5 is the better of the two everywhere.
+- **P7: two aborts, one defect.** GERG aborts in the vent face's outflow fan (`PS_bc_fan.H:178`, called from `PS_nscbc.cpp:443`) when the fan asks for a vapour state below the branch's energy range: at `p_amb = 1e5` in mode 5 (the fan's end state is below the triple point) and at `p_amb = 6e5` in mode 2 (ρ = 41–50, e 12–14 kJ/kg below the range, at the first steps). PR extrapolates and runs. The fan should ask through the non-aborting query and refuse (the boundary already counts refusals); not done here.
+
+Not done: the PR control at `p_amb = 6e5` against `1e5` (choked, so expected identical upstream); Tests 22 and 23; a grid check (the paper used the same 6 mm).
+
+### 4.3 What this says, in three sentences
+
+With GERG the code's wave physics is right to about 1 % and its first metastable level to about 5 % on both ends of the dataset, with no tuning. What is wrong is the rate of bulk flashing behind that level near the critical point, where the experiment stays near saturation and CAMR's mode 5 falls 25–40 % below it for several milliseconds; constant-τ mode 2 at the production value is far worse. The two things to decide from this are whether the GERG abort in the vent fan is fixed (small, mechanical), and whether the transfer rate at small vapour fraction is taken up with Test 24's 0.28 m trace as the target (the O-21 question, not small).
+
