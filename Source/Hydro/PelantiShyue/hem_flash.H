@@ -237,14 +237,14 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
     // Rate factor: 1 - exp(-dt/tau), capped at 20 % of the remaining
     // distance per step, times the three windows.
     //
-    // CAMR.ps_flash_implicit (0), temporary selector (docs/
+    // CAMR.ps_flash_implicit (1), temporary selector (docs/
     // PLAN_flash_implicit.md): 0 = the windows of the entering state
     // multiply the proposal (forward Euler in the window); 1 = the proposal
     // is built with the windows at one and the committed fraction s solves
     // s = W(s), the windows evaluated on the state the step produces
     // (backward Euler in the window; a perturbation of the entering
     // pressure leaves multiplied by 1/(1+g), g the loop gain).
-    static const int flash_implicit = ps_dial_int("ps_flash_implicit", 0);
+    static const int flash_implicit = ps_dial_int("ps_flash_implicit", 1);
     if (flash_implicit != 0 && flash_implicit != 1)
         amrex::Abort("CAMR.ps_flash_implicit must be 0 or 1");
     const double W_0 = w_T * w_meta * w_alpha;
