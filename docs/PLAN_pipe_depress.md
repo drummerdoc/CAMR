@@ -46,4 +46,28 @@ P7. The runs complete with no abort and no `sstar` refusals; `nscbc_rx_fb = 0` o
 
 ## 4. Results
 
-(to be filled)
+### 4.1 Interim, 21 Sept (VM runs; the GERG runs are incomplete — a GERG run of 10 ms needs about 20 minutes of VM wall time in 165 s slices, so the full set is for the Mac)
+
+Level = the first level after the fast drop, where $|\mathrm{d}p/\mathrm{d}t|$ falls below 5 bar/ms; $T$ is the mixture temperature in that cell at that time; $P_{\mathrm{sat}}$ from the Span–Wagner auxiliary equation.
+
+| run | sensor | measured arrival / level | CAMR arrival / level | CAMR $\alpha_1$, $T$, level/$P_{\mathrm{sat}}(T)$ |
+|---|---|---|---|---|
+| Test 24, **GERG**, mode 5 (to 5.3 ms) | 0.28 m | 0.770 ms / 60.9 bar | 0.750 ms / 59.6 bar | 1.000000, 298.49 K, 0.918 |
+| | 0.484 m | 1.310 / 62.7 | 1.301 / 59.8 | 1.000000, 298.51 K, 0.922 |
+| | 0.8 m | 2.150 / 63.8 | 2.176 / 60.0 | 1.000000, 298.52 K, 0.925 |
+| | 1.599 m | 4.280 / 65.8 | 4.350 / — (run not there yet) | |
+| Test 24, PR, mode 5 (6 ms) | 0.8 m | 2.150 / 63.8 | 2.229 / 57.1 | 1.000000, 296.36 K, 0.925 |
+| Test 19, PR, mode 5 (7.5 ms) | 0.8 m | 1.420 / 34.2 | 1.601 / 33.8 | 1.000000, 274.29 K, 0.943 |
+| | 1.599 m | 2.790 / 29.5 | 3.203 / 33.9 | 1.000000, 274.29 K, 0.943 |
+
+Head-of-wave speed 0.8 → 3.198 m, Test 19: measured 585 m/s, PR 497 m/s (−15 %). Test 24 with GERG: arrivals within 3 % of the measurement at every sensor reached.
+
+Against the predictions, as far as the runs go:
+
+- **P1 holds.** The level is 0.92–0.94 $P_{\mathrm{sat}}(T)$ in every run, inside the band, and the fluid there is pure metastable liquid ($\alpha_1 = 1$ to six digits): the level is the pressure at which the evaporation front behind it can consume the liquid, held by the window.
+- **P2, first half (Test 24 within 5 %): fails narrowly, and in the unexpected direction.** With GERG, CAMR's level is 60.0 bar against the measured 63.8 (−6 %). The measurement sits at about 0.98 of $P_{\mathrm{sat}}$ at the crossing temperature the code computes (64.9 bar at 298.5 K): the warm test is nearly in equilibrium, as the paper says (θ = 0.14 ms), and CAMR's fixed 5–15 % window holds the liquid too far below saturation there. The second half (Test 19 too high by 10–20 %) cannot be judged on PR: PR cools the liquid by 9 K on the isentrope and lands at 33.8 bar, next to the measured 30–34, for the wrong reason (its $P_{\mathrm{sat}}$ at the crossing is 36 bar where the hand estimate for the real fluid was 40). GERG decides it.
+- **P4 holds** for GERG on Test 24 (within 3 %) and for PR as "5–15 % off" (−15 %).
+- **P7: one abort, a finding.** GERG with `prob.p_amb = 1e5` aborts at step 7 in the vent's outflow fan (`PS_bc_fan.H:178` → `GERG-EOS: (rho,e) has no root`, vapour at ρ = 15.08, e = −114826 J/kg, 111 J/kg below the branch's range at the triple-point temperature): the fan expands to 1 bar, which for CO₂ lies below the triple point, PR extrapolates there and GERG refuses by design. Not fixed on this branch. The GERG runs use `prob.p_amb = 6e5` (above the triple-point pressure); the outflow is choked at 20–45 bar, so the ambient value cannot act upstream — to be confirmed by one PR run at 6e5 against the PR run at 1e5.
+- P3, P5, P6: not evaluated yet.
+
+Also learnt: the VM suspends background processes between calls, so long runs are sliced with `WALL`/`RESUME` checkpoints (`pipe_depress.py`).

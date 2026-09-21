@@ -52,6 +52,7 @@ if os.environ.get('RERUN', '1') != '0':
         print('rc', r.returncode)
     except subprocess.TimeoutExpired:
         sys.exit('wall cap reached: rerun with RESUME=1 to continue from the last checkpoint')
+if os.path.exists(os.path.join(d, 'cmd.txt')): EXE = open(os.path.join(d, 'cmd.txt')).read().split('\n')[-2].split()[0]   # the binary that made the run
 fs = sorted(p for p in glob.glob(d + '/plt[0-9]*') if '.old' not in p)
 def t_of(p):
     ls = open(p + '/Header').read().split('\n'); return float(ls[int(ls[1]) + 3])
