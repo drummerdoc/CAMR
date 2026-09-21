@@ -18,11 +18,7 @@ hydro_ctoprim(
   PassMap const& pmap,
   amrex::Real l_small_num,
   amrex::Real l_dual_energy_eta1,
-  const int l_allow_negative_energy,
-  //  Non-zero when the Pelanti-Shyue six-equation integrator owns this
-  //  advance.  A runtime int, not a compile-time switch: the same binary
-  //  also serves Godunov_umeth / MOL_umeth, which need every slot below.
-  const int l_ps_hydro)
+  const int l_allow_negative_energy)
 {
     const amrex::Real rho = u(i, j, k, URHO);
 
@@ -80,23 +76,6 @@ hydro_ctoprim(
         //  written on both paths below.
         q(i, j, k, QREINT) = e * rho;
 
-        if (l_ps_hydro) {
-            //  Pelanti-Shyue path: the single-fluid inversion EOS(rho_mix,
-            //  e_mix) is ill-posed on a two-phase cell and can have no root,
-            //  and every slot it would fill is unread by PS_umeth (q[QPRES]
-            //  is overwritten by ps_augment_primitives; qa is unnamed there).
-            //  Defined placeholders are written so nothing downstream can
-            //  read an indeterminate float.
-            q(i, j, k, QTEMP) = T;              // == u(UTEMP), as stored
-            q(i, j, k, QPRES) = amrex::Real(0.0);
-            q(i, j, k, QGAME) = amrex::Real(0.0);
-            qa(i, j, k, QDPDR) = amrex::Real(0.0);
-            qa(i, j, k, QDPDE) = amrex::Real(0.0);
-            qa(i, j, k, QGAMC) = amrex::Real(0.0);
-            qa(i, j, k, QC)    = amrex::Real(0.0);
-            qa(i, j, k, QCSML) = amrex::Real(0.0);
-        } else {
-
         amrex::Real dpdr_e, dpde, gam1, cs,  p;
 
         // One EOS state solve fills all five primitives (T, p, gam1, dpde,
@@ -121,7 +100,6 @@ hydro_ctoprim(
                ? std::sqrt(cs2) : amrex::Real(0.0);
         qa(i, j, k, QC) = cs;
         qa(i, j, k, QCSML) = std::max(l_small_num, l_small_num * cs);
-        }
     }
 }
 

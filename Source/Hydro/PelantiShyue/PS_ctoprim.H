@@ -50,13 +50,6 @@ ps_augment_primitives(int i, int j, int k,
     for (int n = 0; n < NVAR; ++n) U[n] = u(i,j,k, n);
     const PsCellState s = ps_cell_state(U, pr);
 
-    // G3 outcome counters (PS_guards.H): the host phase is the reference,
-    // so it can only be floored (ctop_host_floor); a queried minority
-    // phase below the floor is substituted by the host's P (ctop_sub).
-    ps_guard::count_ctop_seen();
-    if (s.host_floored) ps_guard::count_ctop_host_floor();
-    if (s.p1_substituted || s.p2_substituted) ps_guard::count_ctop_sub();
-
     q(i,j,k, QALPHA1) = s.alpha1;
     q(i,j,k, QRHO1  ) = s.rho1;
     q(i,j,k, QRHO2  ) = s.rho2;

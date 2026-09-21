@@ -120,58 +120,37 @@ CAMR::construct_hydro_source (const MultiFab& S,
             const Real small_num        = CAMRConstants::small_num;
             Real dual_energy_eta        = CAMR::dual_energy_eta1;
             int l_allow_negative_energy = CAMR::allow_negative_energy;
-            // Under PS, allow_negative_energy is forced to 1 and
-            // dual_energy_eta1 to 0 at ctoprim (docs/MODEL_AND_ALGORITHM.md
-            // §8.4): liquid CO2 has physical e < 0, which the positive-e
-            // assert would reject, and eta1 = 0 takes e = (UEDEN - ke)/rho
-            // without the UEINT fallback that would amplify round-off
-            // between the two.  Warn once, GPU-safe.
-#ifdef USE_PS_HYDRO
-            if (ps_hydro != 0) {
-                if (l_allow_negative_energy == 0 ||
-                    dual_energy_eta != Real(0.0)) {
-                    static std::atomic<bool> warned_ps_ctoprim{false};
-                    bool expected = false;
-                    if (warned_ps_ctoprim.compare_exchange_strong(expected, true)) {
-                        amrex::Warning(
-                          "CAMR::PS: forcing allow_negative_energy=1 and "
-                          "dual_energy_eta1=0 inside hydro_ctoprim for the "
-                          "Pelanti-Shyue integrator.  PS uses (UEDEN − ke)/ρ "
-                          "unconditionally as the mixture specific internal "
-                          "energy; the dual-energy fallback to UEINT would "
-                          "amplify FP noise between UEINT and UEDEN.  Also, "
-                          "physical liquid CO2 has e ≈ -130 kJ/kg — the "
-                          "positive-e assert must be disabled.  See task #210.");
-                    }
-                }
-                l_allow_negative_energy = 1;
-                dual_energy_eta         = Real(0.0);
-            }
-#endif
 #ifdef USE_PS_HYDRO
             const PsPres l_pres = ps_presence_params();   // one host read
-            //  Captured by value; tells hydro_ctoprim to skip the single-fluid
-            //  mixture EOS inversion, ill-posed on a two-phase cell and unread
-            //  on the PS path.
-            const int l_ps_hydro_ctop = ps_hydro;
+            //  The Pelanti-Shyue integrator reads the conserved state only
+            //  (PS_umeth's signature): under ps_hydro = 1 the primitive sweep
+            //  and the primitive source terms are not computed, and q, qaux
+            //  and src_q are passed on unfilled.  (Proof that nothing reads
+            //  them: a NaN fill left every witness byte-identical.)
+            //  An EB build keeps the sweep: hydro_umdrv_eb has no PS branch
+            //  and reads the primitives on cut boxes.
+#ifdef AMREX_USE_EB
+            const bool l_ps_skip_prim = false;
 #else
-            const int l_ps_hydro_ctop = 0;
+            const bool l_ps_skip_prim = (ps_hydro != 0);
 #endif
+#else
+            const bool l_ps_skip_prim = false;
+#endif
+            if (!l_ps_skip_prim) {
             ParallelFor(
               qbx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
 #ifdef AMREX_USE_EB
                 if (!flag_arr(i,j,k).isCovered()) {
 #endif
                     hydro_ctoprim(i, j, k, sarr, qarr, qauxar, *lpmap,
-                                  small_num, dual_energy_eta, l_allow_negative_energy,
-                                  l_ps_hydro_ctop);
+                                  small_num, dual_energy_eta, l_allow_negative_energy);
 #ifdef USE_PS_HYDRO
                     // Fill the six-equation primitive slots (QALPHA1,
                     // QRHO1, QRHO2, QP1, QP2) and override QPRES with the
-                    // volume-fraction mixture rule (PS_ctoprim.H).  Runs
-                    // whenever USE_PS_HYDRO is compiled in, even with
-                    // CAMR.ps_hydro=0: cheap, and Godunov / MOL then see
-                    // the per-phase state.
+                    // volume-fraction mixture rule (PS_ctoprim.H).  Reached
+                    // only with CAMR.ps_hydro=0 on a PS build: Godunov /
+                    // MOL then see the per-phase state.
                     ps_augment_primitives(i, j, k, sarr, qarr, l_pres);
 #endif
 #ifdef AMREX_USE_EB
@@ -180,6 +159,7 @@ CAMR::construct_hydro_source (const MultiFab& S,
                 }
 #endif
             });
+            }
             BL_PROFILE_VAR_STOP(ctop);
 
             const GpuArray<const Array4<      Real>, AMREX_SPACEDIM>
@@ -188,7 +168,7 @@ CAMR::construct_hydro_source (const MultiFab& S,
               a{{AMREX_D_DECL(area[0].array(mfi), area[1].array(mfi), area[2].array(mfi))}};
 
         // Create source terms for primitive variables
-        if (!do_mol) {
+        if (!do_mol && !l_ps_skip_prim) {
             const auto& src_in = sources_for_hydro.array(mfi);
             ParallelFor(
               qbx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {

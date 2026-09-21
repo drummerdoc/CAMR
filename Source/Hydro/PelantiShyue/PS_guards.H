@@ -147,28 +147,6 @@ AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_nscbc_zg_slots(int) noexcept
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_nscbc_flash()    noexcept {}
 #endif
 
-// ---------------------------------------------------------------------
-//  ctoprim pressure-reference counters (ps_augment_primitives).  The
-//  reference for an Independent minority phase is the host phase's
-//  pressure, not the single-fluid mixture query: for a two-phase cell
-//  (rho_mix, e_mix) pairs one phase's volume with the other's mass and the
-//  inversion can have no root, and a reference that can refuse cannot
-//  serve as a fallback.
-//    ctop_seen       : every visit to the reference.
-//    ctop_sub        : a minority phase's pressure rejected and replaced.
-//    ctop_host_floor : the host's own pressure (it is the reference, so
-//                      it cannot be substituted) floored to P_FLOOR_PA.
-// ---------------------------------------------------------------------
-#if !defined(AMREX_USE_GPU)
-inline void  count_ctop_seen()       { ++ps_counters().ctop_seen; }
-inline void  count_ctop_sub()        { ++ps_counters().ctop_sub; }
-inline void  count_ctop_host_floor() { ++ps_counters().ctop_host_floor; }
-#else
-AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_ctop_seen()       noexcept {}
-AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_ctop_sub()        noexcept {}
-AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE void count_ctop_host_floor() noexcept {}
-#endif
-
 } // namespace ps_guard
 
 #endif  // USE_PS_HYDRO

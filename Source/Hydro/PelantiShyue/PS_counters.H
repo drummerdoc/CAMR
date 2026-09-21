@@ -156,9 +156,6 @@ struct PsCounters {
     // ---- guards (PS_guards.H), [PS-GUARD] ----------------------------
     long   guard_seen        = 0;   // phase-pressure guard: calls
     long   guard_reject_low  = 0;   //   substitutions (there is no upper cap)
-    long   ctop_seen         = 0;   // ctoprim reference audit
-    long   ctop_sub          = 0;
-    long   ctop_host_floor   = 0;
     long   flux_sanit        = 0;   // silent limiters
     long   reflux_cap        = 0;
     long   reflux_clamp      = 0;
@@ -218,7 +215,6 @@ struct PsCounters {
     // ---- per-section resets (cadence in the header comment) ----------
     void reset_guards() {
         guard_seen = guard_reject_low = 0;
-        ctop_seen = ctop_sub = ctop_host_floor = 0;
         flux_sanit = reflux_cap = reflux_clamp = 0;
         nscbc_zg_slots = 0;
         for (long& c : nscbc_zg_cause) c = 0;

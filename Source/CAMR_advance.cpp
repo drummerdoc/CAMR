@@ -231,17 +231,6 @@ CAMR::CAMR_advance (Real time,
                            << parent->levelSteps(level) << " " << label
                            << ": phase-P seen = " << gs
                            << "  rej_low = " << gl;
-            //  Ctoprim reference audit (PS_guards.H); ctop_sub = 0 over a
-            //  run means no cell reached the host-phase reference.
-            amrex::Long ck_ = pc.ctop_seen;
-            amrex::Long cs_ = pc.ctop_sub;
-            amrex::Long cf_ = pc.ctop_host_floor;
-            amrex::ParallelDescriptor::ReduceLongSum(ck_);
-            amrex::ParallelDescriptor::ReduceLongSum(cs_);
-            amrex::ParallelDescriptor::ReduceLongSum(cf_);
-            amrex::Print() << " | ctop_seen = " << ck_
-                           << "  ctop_sub = " << cs_
-                           << "  ctop_host_floor = " << cf_;
             //  The counted limiters (flux non-finite sanitisation, reflux α
             //  co-move cap and clamp) report and reset at the same cadence.
             amrex::Long fs_ = pc.flux_sanit;

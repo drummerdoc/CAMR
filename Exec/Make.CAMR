@@ -33,6 +33,11 @@ ifeq ($(USE_PS_HYDRO), TRUE)
   ifeq ($(Eos_Model),$(filter $(Eos_Model),GammaLaw))
     $(error USE_PS_HYDRO=TRUE requires an EOS backend with the extended PS contract (PR, PRTab, GERG, GERGTab); Eos_Model=$(Eos_Model) does not provide it)
   endif
+  # hydro_umdrv_eb has no PS branch: cut boxes would run Godunov on the
+  # six-equation state.
+  ifeq ($(USE_EB), TRUE)
+    $(error USE_PS_HYDRO=TRUE does not support USE_EB=TRUE)
+  endif
 endif
 
 # ---------------------------------------------------------------------

@@ -794,10 +794,10 @@ The base CAMR pipeline defaults would corrupt the PS state, so four are auto-ove
 | setting | default | forced | why |
 |:--|:--|:--|:--|
 | `CAMR.difmag` | 0.1 | 0 (`Hydro_umdrv.cpp`) | the artificial-viscosity pass touches every slot, breaking the `flx[UALPHA1] = 0` invariant and the wave-propagation phase-energy defect assumption |
-| `CAMR.allow_negative_energy`, `allow_small_energy` | 0 | 1 (`CAMR.cpp::reset_internal_energy`, `CAMR_construct_hydro_source.cpp`) | liquid CO$_2$ has a physical $e \approx -130$ kJ/kg on the PR scale; the positive-$e$ assert trips at $t=0$ and the reset path would floor `UEINT`/`UEDEN` through `RTY2E(small_T)` |
+| `CAMR.allow_negative_energy`, `allow_small_energy` | 0 | 1 (`CAMR.cpp::reset_internal_energy`) | liquid CO$_2$ has a physical $e \approx -130$ kJ/kg on the PR scale; the positive-$e$ assert trips at $t=0$ and the reset path would floor `UEINT`/`UEDEN` through `RTY2E(small_T)` |
 | `CAMR.dual_energy_update_E_from_e` | 1 | 0 | an $e$-derived `UEDEN` write would corrupt the $m_1E_1 + m_2E_2$ accounting |
 | `CAMR.dual_energy_eta2` | $10^{-4}$ | 0 | selects the pure `UEINT = UEDEN − ρ·ke` reset, which is idempotent for PS state |
-| `CAMR.dual_energy_eta1` | 1.0 | 0 at ctoprim | `hydro_ctoprim` takes $(\text{UEDEN} - \text{ke})/\rho$ unconditionally, no `UEINT` fallback that would amplify round-off between the two |
+| primitive sweep (`hydro_ctoprim`, `ps_augment_primitives`, `hydro_srctoprim`, `hydro_divu`) | computed | not computed under `ps_hydro = 1` (`CAMR_construct_hydro_source.cpp`, `Hydro_umdrv.cpp`) | `PS_umeth` reads the conserved state only; the single-fluid inversion $(\rho_{\mathrm{mix}}, e_{\mathrm{mix}})$ is ill-posed on a two-phase cell. `divu` is set to zero (`difmag` is 0). A PS build does not support `USE_EB` |
 
 ### 8.5 The post-hydro stage chain
 
