@@ -167,3 +167,29 @@ Test 19 ($D$ = 0.3 added after 2e-3 came out on the wrong side; 3e-2 and 1e-2 dr
 
 The morphology length is the missing physics, as §5.6 of the model document already said; the ECCSEL pair now brackets it at both ends of the liquid range: $D \approx 0.2$ m at 10 °C and $D \lesssim 2\times10^{-3}$ m at 36 °C, against the single placeholder 0.1 m. A constant cannot serve; candidates for a state-dependent closure, none chosen: the paper's own correlation of θ with the scaled initial entropy (a property of the initial state, not local — awkward in a field code); a local form in the reduced temperature or in the surface tension (the nucleation barrier vanishes at the critical point, which is the paper's physical argument); the Downar-Zapolski form already examined in the model document; or the transported interfacial area of `FUTURE_WORK.md` §1. To do before choosing: GERG confirmation of the two bracketing values (Mac), and Tests 22 and 23 to see whether $D$ varies smoothly between the ends.
 
+## 6. The undershoot and its recovery (21 Sept)
+
+### 6.1 What the existing runs show
+
+Dip and recovery within 2.5 ms of the 40-bar drop (0.1 ms running median on the measurement): Test 19 measured 32.5 → 34.6 bar at 0.8 m and 29.5 → 33.4 bar at 1.599 m (0.78–0.86 of GERG's $P_{\mathrm{sat}}$ = 37.6 bar at the dip); Test 24 shows none at 0.28–1.6 m. CAMR's first level is flat in every run (recovery 0.0 bar at 0.8 and 1.6 m for every $D$ of §5, PR 33.8, GERG 35.6 bar), and it moved by 0.1 bar over a thousandfold scan of $D$. The level is held by the implicit nucleator, which commits exactly the nucleation that keeps the liquid at the top of its window: a pressure controller. A transfer-rate formulation acts behind that stage and cannot create an undershoot the nucleator does not allow. The experiment is therefore on the nucleation side, with existing dials.
+
+### 6.2 The experiment and its predictions (before the runs)
+
+Test 19, PR, mode 5, the last 3 m of the pipe at the same cell size (480 cells), to 5.8 ms; scored at 0.8 m and 1.599 m by dip, recovery and their times (`pd_hump.py`). $\beta = 1 - e^{-\Delta t/\tau_f}$ with $\Delta t \approx 3\times10^{-6}$ s is 0.26 → capped 0.2 at $\tau_f = 10^{-5}$, 0.03 at $10^{-4}$, 0.003 at $10^{-3}$; the loop gain of the nucleator on this liquid ($K \approx 3.2\times10^8$ Pa, band 3.7 bar) is then about 10, 1.5 and 0.15.
+
+| run | `ps_flash_tau` | `ps_mt_srt_d` | `ps_flash_metastable_margin` |
+|---|---|---|---|
+| A | 1e-5 | 0.1 | 0.1 |
+| B | 1e-4 | 0.1 | 0.1 |
+| C | 1e-3 | 0.1 | 0.1 |
+| D | 1e-4 | 2e-3 | 0.1 |
+| E | 1e-3 | 2e-3 | 0.1 |
+| F | 1e-7 (default) | 0.1 | 0.2 |
+
+H1. A is the default run within 0.2 bar everywhere (the 0.2 cap binds in both).
+H2. The nucleator stops pinning once its gain is of order one: B's first level is 1–2 bar below the default's 33.8, C's dip reaches the bottom of the window or below ($\le 0.87\,P_{\mathrm{sat}}$, about 31 bar with PR).
+H3. A recovery of 2 bar or more appears only where slow nucleation meets fast transfer (D, E); with $D$ = 0.1 (B, C) it is below 0.5 bar. In E the recovery overshoots the measurement (more than 4 bar, toward $P_{\mathrm{sat}}$).
+H4. F is flat like the default, at the top of the wider window: about 0.88–0.90 $P_{\mathrm{sat}}$ (31.5–32.5 bar), no recovery.
+H5. No run has both the hump at 0.8–1.6 m and the measured low pressure at 0.28 m afterwards (23–25 bar), because the hump wants a fast transfer and the outlet region a slow one. Low confidence.
+H6. All runs complete.
+
