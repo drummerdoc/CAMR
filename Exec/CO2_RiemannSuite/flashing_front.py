@@ -35,7 +35,7 @@ OUT  = os.environ.get('FLASH_OUT', './flash_red_runs')
 os.makedirs(OUT, exist_ok=True)
 
 T_SCORE = 8.0e-5           # scoring time (the reference dies just past it)
-RED = {'ref': 2.3649, 'vent': 2.4728, 'nr': 1.7139}   # recorded at BASE2 (production binary, e3f1de8)
+RED = {'ref': 2.3652, 'vent': 2.4730, 'nr': 1.7141}   # recorded at BASE3 (implicit nucleator)
 
 COMMON = ['inputs', 'CAMR.cfl=0.25', 'prob.alpha_trace=1.0e-6',
           'prob.u_L=0', 'prob.u_R=0', 'stop_time=2.5e-4',

@@ -11,7 +11,7 @@ import ps_plotfile as R
 src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'sens_front.py')).read()
 N = os.environ.get('NCELL', '64')
 ns = {}; exec(src[src.index('B2 = ('): src.index('tag = sys.argv[1]')], {'N': N}, ns); B2 = ns['B2']
-EXE = os.environ.get('EXE', './exe_keep/nc_FI.ex')
+EXE = os.environ.get('EXE') or sorted(glob.glob('./CAMR1d.*.ex'), key=os.path.getmtime)[-1]
 tag = sys.argv[1]; ov = sys.argv[2:]
 d = 'sens_runs/h_' + tag; os.makedirs(d, exist_ok=True)
 for p in glob.glob(d + '/s_*'):

@@ -132,14 +132,15 @@ inline void  ps_flash_refuse_reset()      { ps_counters().reset_flash_refuse(); 
     do { ++ps_flash_refuse_count(c); return false; } while (0)
 
 // Nucleate the minority phase of a single-phase metastable cell:
-//   alpha_new += beta (alpha_seed_target - alpha_new),
-//   beta = min(1 - exp(-dt/tau_flash), 0.2) w_T w_meta w_alpha,
+//   alpha_new += s beta (alpha_seed_target - alpha_new),
+//   beta = min(1 - exp(-dt/tau_flash), 0.2),   s = W(s) = w_T w_meta w_alpha
+//   on the state the step produces, s <= s_rep,
 // with newborn mass dm = rho_sat(T_dom) dalpha at the EOS-consistent
 // saturation energy (project_sat) -- (E.1) run backwards -- and the
 // donor's energy dropping by the latent heat.  The three windows are
 // smoothstep ramps so mirror cells straddling a threshold get rates
-// differing only by round-off.  The committed step is the largest
-// fraction of the proposal that keeps both phases representable.
+// differing only by round-off.  s_rep is the largest fraction of the
+// proposal that keeps both phases representable.
 // Returns true when mass moved; every refusal is counted by cause.
 // alpha_seed_target has no default: every caller passes the presence
 // design's alpha_birth explicitly (single-sourced, PS_presence.H).
@@ -235,22 +236,17 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
     if (w_alpha <= 0.0) PS_FLASH_REFUSE(PS_FLR_W_ALPHA);
 
     // Rate factor: 1 - exp(-dt/tau), capped at 20 % of the remaining
-    // distance per step, times the three windows.
-    //
-    // CAMR.ps_flash_implicit (1), temporary selector (docs/
-    // PLAN_flash_implicit.md): 0 = the windows of the entering state
-    // multiply the proposal (forward Euler in the window); 1 = the proposal
-    // is built with the windows at one and the committed fraction s solves
-    // s = W(s), the windows evaluated on the state the step produces
-    // (backward Euler in the window; a perturbation of the entering
-    // pressure leaves multiplied by 1/(1+g), g the loop gain).
-    static const int flash_implicit = ps_dial_int("ps_flash_implicit", 1);
-    if (flash_implicit != 0 && flash_implicit != 1)
-        amrex::Abort("CAMR.ps_flash_implicit must be 0 or 1");
+    // distance per step.
+    // The windows do not multiply the proposal: it is built with the windows
+    // at one, and the committed fraction s solves s = W(s), the windows
+    // evaluated on the state the step produces (backward Euler in the
+    // window, below).  A perturbation of the entering pressure leaves
+    // multiplied by 1/(1+g), g the loop gain of pressure -> nucleation ->
+    // pressure (about 10 at a liquid front); the forward-Euler form
+    // multiplied it by 1-g and cycled.  docs/MODEL_AND_ALGORITHM.md §5.5.
     const double W_0 = w_T * w_meta * w_alpha;
     double blend = 1.0 - std::exp(-dt / tau_flash);
     if (blend > 0.2) blend = 0.2;
-    if (flash_implicit == 0) blend *= w_T * w_meta * w_alpha;
 
     // Coupled alpha + m step with the saturation projection: dm =
     // rho_sat(T_dom) dalpha so the newborn phase lies on the saturation
@@ -368,7 +364,7 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
         }
         s_star = s_lo;
     }
-    if (flash_implicit == 1 && s_star > 0.0) {
+    if (s_star > 0.0) {
         // W(s): the three windows on the dominant phase of trial(s), queried
         // on its own branch as p_dom was.  A dominant phase without a finite
         // state closes the window (W = 0), which keeps the root below it.

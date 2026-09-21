@@ -1,0 +1,8 @@
+tag:      BASE3
+date:     2026-09-21T13:02Z
+camr:     1e9441186005992f9f190c4a35781e66497230a8 (0 modified tracked files)
+amrex:    65db2e4e678a15acec1b666d4c42e339ad5b9ec0
+host:     Linux aarch64
+compiler: g++ (Ubuntu 11.4.0-1ubuntu1~22.04.3) 11.4.0
+GERG_EXT_C=<unset>
+note:     re-recorded after the implicit nucleator (DESIGN_DECISIONS O-27): B2, B7, B9 move, the other 18 cases are byte-identical to BASE2; contraction-free build

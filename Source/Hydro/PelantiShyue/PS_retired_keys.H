@@ -100,6 +100,7 @@ inline void ps_abort_on_retired_keys()
         { "ps_lw_skip_contact",  "the contact-wave correction is always the smoothstep taper in |d alpha|/alpha_cond" },
         { "ps_promote_checked",  "promotion to Independent is always energy-checked" },
         { "ps_floor_indep",      "the per-phase floor acts on Independent phases only" },
+        { "ps_flash_implicit",   "the nucleator always solves its committed fraction implicitly in the windows" },
     };
     struct RetiredValue { const char* key; int value; const char* reason; };
     static const RetiredValue values[] = {

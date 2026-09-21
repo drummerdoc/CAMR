@@ -3,10 +3,10 @@
 (64 cells, defaults) under dial overrides.  Prints max relative difference of
 pressure / alpha_1 / density between the base and the perturbed run every PLOT
 steps, the cell where it sits, and the fitted growth factor per step between
-1e-10 and 1e-4.  EXE env = binary (default exe_keep/nc_D11b.ex)."""
+1e-10 and 1e-4.  EXE env = binary (default: the newest ./CAMR1d.*.ex)."""
 import os, sys, glob, subprocess, numpy as np
 import ps_plotfile as R
-EXE = os.environ.get('EXE', './exe_keep/nc_D11b.ex')
+EXE = os.environ.get('EXE') or sorted(glob.glob('./CAMR1d.*.ex'), key=os.path.getmtime)[-1]
 PLOT = int(os.environ.get('PLOT', '4')); EPS = float(os.environ.get('EPS', '1e-12'))
 N = os.environ.get('NCELL', '64')
 B2 = ('inputs amr.n_cell=%s geometry.prob_lo=0.0 geometry.prob_hi=1.0 prob.x_diaph=0.5 prob.alpha_trace=0.0 '
