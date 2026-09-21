@@ -69,6 +69,14 @@ _hem_reclose(amrex::Real P,
     const Real x     = (q_mix - ql) / (qv - ql);
     const Real v_sat = (Real(1.0) - x) / rl + x / rv;
     if (!(std::isfinite(v_sat) && v_sat > Real(0.0))) return false;
+    //  The two saturation states are asked through the non-aborting branch
+    //  query before anything is written: a backend whose branch has no root
+    //  there (GERG below the triple point) refuses the re-closure.
+    Real Yp[NUM_SPECIES];
+    ps_pure_species(Yp);
+    Real Pq1, Pq2, cq1, cq2, Tq, Sq;
+    if (!EOS::REY2PTSc_phase_try(rl, el, Yp, hem::Phase3::Liquid, Pq1, Tq, Sq, cq1)) return false;
+    if (!EOS::REY2PTSc_phase_try(rv, ev, Yp, hem::Phase3::Vapor,  Pq2, Tq, Sq, cq2)) return false;
     const Real rho_new = Real(1.0) / v_sat;
     m1 = (Real(1.0) - x) * rho_new;
     m2 = x * rho_new;
@@ -77,10 +85,8 @@ _hem_reclose(amrex::Real P,
     alpha1 = m1 / rl;                       // = (1-x)·v_l / v_sat
     if (alpha1 < Real(0.0)) alpha1 = Real(0.0);
     if (alpha1 > Real(1.0)) alpha1 = Real(1.0);
-    Real Yp[NUM_SPECIES];
-    ps_pure_species(Yp);
-    EOS::REY2PCs_liquid(r1, e1, Yp, Pk1, ck1);
-    EOS::REY2PCs_vapor (r2, e2, Yp, Pk2, ck2);
+    Pk1 = Pq1; ck1 = cq1;
+    Pk2 = Pq2; ck2 = cq2;
     if (Pk1 < ps_guard::P_FLOOR_PA || !std::isfinite(Pk1)) Pk1 = ps_guard::P_FLOOR_PA;
     if (Pk2 < ps_guard::P_FLOOR_PA || !std::isfinite(Pk2)) Pk2 = ps_guard::P_FLOOR_PA;
     if (!std::isfinite(ck1) || ck1 <= Real(0.0)) ck1 = ps_const::C_MIN;
@@ -172,16 +178,24 @@ _fan_march(const PsPhaseSpeeds& ph, amrex::Real P_N, amrex::Real un_out_N,
             (p2_present && (r2 < EOS::rho_min() || r2 > EOS::rho_max()))) {
             fan_ok = false; break;
         }
-        if (host_is_1) {
-            EOS::REY2PCs_liquid(r1, ee1, Yp, Pk1, ck1);
-            if (p2_present && ph.rg2 == PsRegime::Independent) {
-                EOS::REY2PCs_vapor(r2, ee2, Yp, Pk2, ck2);
-            } else { Pk2 = Pk1; ck2 = ck1; }
-        } else {
-            EOS::REY2PCs_vapor(r2, ee2, Yp, Pk2, ck2);
-            if (p1_present && ph.rg1 == PsRegime::Independent) {
-                EOS::REY2PCs_liquid(r1, ee1, Yp, Pk1, ck1);
-            } else { Pk1 = Pk2; ck1 = ck2; }
+        //  Non-aborting branch queries: a fan state with no root on its
+        //  branch (GERG refuses below the triple point, where PR continues
+        //  the branch) ends the fan as a refusal, like every other exit here.
+        {
+            Real Tq, Sq;
+            bool ok = true;
+            if (host_is_1) {
+                ok = EOS::REY2PTSc_phase_try(r1, ee1, Yp, hem::Phase3::Liquid, Pk1, Tq, Sq, ck1);
+                if (ok && p2_present && ph.rg2 == PsRegime::Independent) {
+                    ok = EOS::REY2PTSc_phase_try(r2, ee2, Yp, hem::Phase3::Vapor, Pk2, Tq, Sq, ck2);
+                } else { Pk2 = Pk1; ck2 = ck1; }
+            } else {
+                ok = EOS::REY2PTSc_phase_try(r2, ee2, Yp, hem::Phase3::Vapor, Pk2, Tq, Sq, ck2);
+                if (ok && p1_present && ph.rg1 == PsRegime::Independent) {
+                    ok = EOS::REY2PTSc_phase_try(r1, ee1, Yp, hem::Phase3::Liquid, Pk1, Tq, Sq, ck1);
+                } else { Pk1 = Pk2; ck1 = ck2; }
+            }
+            if (!ok) { fan_ok = false; break; }
         }
         if (Pk1 < ps_guard::P_FLOOR_PA || !std::isfinite(Pk1)) Pk1 = ps_guard::P_FLOOR_PA;
         if (Pk2 < ps_guard::P_FLOOR_PA || !std::isfinite(Pk2)) Pk2 = ps_guard::P_FLOOR_PA;
