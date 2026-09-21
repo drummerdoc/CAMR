@@ -134,6 +134,7 @@ One pressure pulse per front cell. With the implicit nucleator the evaporation-f
 - `regen_refs.sh` has no compile-only line per EOS backend; GERG and GERGTab stopped compiling on the PS path once without anyone noticing (fixed, `GERG/EOS.H` `PYT2REc_phase_checked`). `regen_refs.sh 2d` builds only; the 2-D byte-level check is a before/after pair on `CO2_XC2D`, and the fingerprinted check is `regen_refs.sh windows`.
 - The CUDA compile of the PS path is unchecked (a GPU build with an NSCBC face aborts by design).
 - A PS build with `USE_EB=TRUE` is a make error: `hydro_umdrv_eb` has no PS branch.
+- The `vent` face under GERG below the triple point. The outflow fan (`PS_bc_fan.H`) asks its branch states through the non-aborting query and refuses when a branch has no root (it used to abort the run: GERG has no vapour state below the triple-point temperature, PR continues the branch). With `prob.p_amb` below the triple-point pressure (5.18 bar) the fan's end state never exists under GERG, so the face is the counted fallback (`nscbc_rx_fb`) on every step: it runs, but it is not the vent model. Use `p_amb` ≥ 6e5 with GERG when the outflow is choked (the ambient value then cannot act upstream), or PR. A solid phase is what is missing (§3).
 
 ### 9.4 Cleanup that nobody needs in order to use the code
 
