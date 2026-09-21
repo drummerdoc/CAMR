@@ -193,3 +193,25 @@ H4. F is flat like the default, at the top of the wider window: about 0.88–0.9
 H5. No run has both the hump at 0.8–1.6 m and the measured low pressure at 0.28 m afterwards (23–25 bar), because the hump wants a fast transfer and the outlet region a slow one. Low confidence.
 H6. All runs complete.
 
+### 6.3 Results (PR, Test 19; run D dropped after B showed $\tau_f = 10^{-4}$ inert at the level)
+
+| run | `ps_flash_tau` | $D$ | margin | 0.8 m: dip → max (recovery) | 1.599 m: dip → max (recovery) | 0.28 m at +1, +2, +5 ms |
+|---|---|---|---|---|---|---|
+| measured | | | | 32.5 → 34.6 (2.2) | 29.5 → 33.4 (3.9) | 27.2, 24.0, 23.9 |
+| default | 1e-7 | 0.1 | 0.1 | 33.8 → 33.8 (0.0) | 33.8 → 33.8 (0.0) | 32.3, 28.9, 30.4 |
+| A | 1e-5 | 0.1 | 0.1 | 33.8 (0.0) | 33.8 (0.0) | |
+| B | 1e-4 | 0.1 | 0.1 | 33.8 (0.0) | 33.8 (0.0) | |
+| C | 1e-3 | 0.1 | 0.1 | 33.4 (0.0) | 33.7 (0.0) | 27.2, 28.7, 30.5 |
+| E | 1e-3 | 2e-3 | 0.1 | 33.6 (0.1) | 33.8 (0.0) | 33.6, 33.2, 35.5 |
+| F | 1e-7 | 0.1 | 0.2 | 31.9 (0.0) | 31.9 (0.0) | 31.1, 28.6, 30.2 |
+
+- **H1 holds** (A = default).
+- **H2 fails.** Four decades of `ps_flash_tau` move the first level by 0.4 bar. The gain argument was about a cell being pulled; behind the liquid rarefaction nothing pulls: the pressure is flat, a cell stays there for hundreds of steps, and any nonzero nucleation, however slow, makes its vapour in that time. The liquid therefore settles where the window first opens, whatever the rate.
+- **H3 fails**: no recovery in any run, including slow nucleation with fast transfer (E: 0.1 bar).
+- **H4 holds**, and it is the test of the reading above: with the margin at 0.2 the level is flat at 31.9 bar = 0.889 of PR's $P_{\mathrm{sat}}$ (the window now opens at 0.90), against 33.8 = 0.942 with the window opening at 0.95.
+- **H5 holds trivially** (no run has the hump). **H6 holds.**
+
+### 6.4 Conclusion
+
+CAMR's first level is a prescribed fraction of saturation, $\approx (1 - m/2)\,P_{\mathrm{sat}}(T)$ with $m$ the margin — a property of the smooth pressure window, independent of the nucleation rate, of the transfer rate behind it, and of the initial state. The measurement is none of these things: its undershoot varies with the initial temperature (about 2 % at 35.8 °C, 9–20 % at 10.2 °C depending on the sensor) and recovers by 2–4 bar within 1–2.5 ms in the cold test. An undershoot with a recovery needs an onset that lags the pressure — production weak at first and strong a moment later — and a window that tracks the pressure cannot lag it. No setting of the existing dials produces the feature. This is a design question on the nucleator, taken up in `PLAN_nucleation_onset.md`.
+

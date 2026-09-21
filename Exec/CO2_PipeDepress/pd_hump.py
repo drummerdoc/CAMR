@@ -7,7 +7,7 @@ import os, sys, numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__)); test = sys.argv[1]
 def hump(t, p):
     a = t[np.argmax(p < p[0] - 40.0)]; w = (t >= a) & (t <= a + 2.5e-3)
-    if w.sum() < 5 or t[-1] < a + 2.5e-3: return None
+    if w.sum() < 5 or t[-1] < a + 1.5e-3: return None      # window shortened to what the run has, at least 1.5 ms
     tw, pw = t[w], p[w]; n = max(1, int(1e-4 / np.median(np.diff(tw))))
     ps = np.array([np.median(pw[max(0, i - n // 2): i + n // 2 + 1]) for i in range(len(pw))])
     i = np.argmin(ps[: int(len(ps) * 0.6)]); j = i + np.argmax(ps[i:])
