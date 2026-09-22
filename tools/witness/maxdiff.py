@@ -2,14 +2,25 @@
 """maxdiff.py dirA prefixA dirB prefixB [--exclude v1,v2]
 
 Growth of a round-off difference between two runs: for each plotfile pair
-and each common variable, max |a - b| / max |a| on level 0 (the one level
-whose grids always coincide), and on finer levels where the grids match.
+and each common variable, max |a - b| / max |a| on level 0 (assembled on the
+domain, so the box layout may differ), and on finer levels where the grids match.
 Prints one line per plotfile with the worst field, then the worst overall.
 """
 import os, sys, glob
 import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cmpfields as C
+
+def full(fabs):
+    """Level 0 assembled on its bounding box, so a different box layout
+    (the grid chopping depends on the rank count) still compares."""
+    dim = len(fabs[0][0])
+    lo = [min(f[0][d] for f in fabs) for d in range(dim)]; hi = [max(f[1][d] for f in fabs) for d in range(dim)]
+    arr = np.full(tuple(hi[d] - lo[d] + 1 for d in reversed(range(dim))), np.nan)
+    for flo, fhi, a in fabs:
+        sl = tuple(slice(flo[d] - lo[d], fhi[d] - lo[d] + 1) for d in reversed(range(dim)))
+        arr[sl] = a
+    return (tuple(lo), tuple(hi), arr)
 
 def main(argv):
     ex = []
@@ -25,6 +36,10 @@ def main(argv):
         for v in [v for v in na if v in nb and v not in ex]:
             for lev in range(min(fa, fb) + 1):
                 A = C.level_fabs(p, lev, v); B = C.level_fabs(q, lev, v)
+                if lev == 0:
+                    A, B = [full(A)], [full(B)]
+                else:
+                    A = sorted(A, key=lambda x: (x[0], x[1])); B = sorted(B, key=lambda x: (x[0], x[1]))
                 if [(x[0], x[1]) for x in A] != [(y[0], y[1]) for y in B]:
                     if v == na[0]: gridnote.append('L%d grids differ' % lev)
                     continue
