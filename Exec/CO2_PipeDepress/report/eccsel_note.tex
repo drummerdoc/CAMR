@@ -1,0 +1,62 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=2.3cm]{geometry}
+\usepackage{graphicx,booktabs,amsmath,amssymb,hyperref,textcomp}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\hypersetup{colorlinks,linkcolor=black,citecolor=black,urlcolor=blue!50!black}
+\title{A six-equation two-pressure code against the ECCSEL CO$_2$ depressurization tests:\\ what the window nucleator and an HRM-type source each get right}
+\author{M.\ Day\thanks{Prepared with an AI assistant from the runs and notes of branch \texttt{pipe-depress} of CAMR; every number is from a run recorded there.}}
+\date{22 September 2026 --- draft for discussion}
+\begin{document}
+\maketitle
+
+\section*{Purpose}
+Log, Hammer, Deng, Austegard, Hafner and Munkejord (\emph{Int.\ J.\ Multiphase Flow} 170 (2024) 104624) published seven full-bore depressurizations of dense liquid-like CO$_2$ in the ECCSEL pipe, with pressure traces at 100\,kHz near the open end, and compared them with a homogeneous equilibrium model (HEM) and a $pT$-relaxed homogeneous relaxation model (HRM$^*$) whose single relaxation time $\theta$ was fitted per test. This note runs two of those tests, the coldest and the warmest of the public dataset, with CAMR, a six-equation Pelanti--Shyue two-pressure code, and asks two questions: how the code's own non-equilibrium closure compares with the measurements and with HRM$^*$, and what happens when the paper's source law is placed inside the two-pressure model. It is a basis for discussion, not a validation claim: nothing in the code was tuned to these data, and the runs are one-dimensional, adiabatic and frictionless over the last 3--4\,m of the pipe and the first 10\,ms.
+
+\section{The comparison}
+\paragraph{Tests.} Test 19 (124.7\,bar, 10.2\,\textdegree C; the paper's $\theta = 2.5\,ms$) and Test 24 (115.6\,bar, 35.8\,\textdegree C; $\theta = 0.14\,ms$). Sensors PT201--PT206 at 0.08, 0.18, 0.28, 0.484, 0.8 and 1.599\,m from the open end; uncertainty about 0.6\,bar.
+
+\paragraph{CAMR.} Six-equation model with instantaneous mechanical relaxation, a coupled pressure--temperature--Gibbs relaxation operator (X3) whose mass transfer uses a statistical-rate-theory (SRT) rate with an interfacial-area prefactor $\Sigma \propto (\alpha_2+\delta)\alpha_1/D$ ($\delta = 0.01$, morphology length $D$, default 0.1\,m), second-order wave-propagation hydrodynamics, 6.25\,mm cells (the paper: 6.17\,mm). A single-phase liquid below saturation acquires vapour through a \emph{nucleator}: a smooth window in pressure that opens at $(1 - m)P_{\mathrm{sat}}(T)$ with margin $m = 0.1$ and seeds vapour to a volume fraction of 0.04; the committed fraction is solved implicitly in the window (a contraction; the explicit form cycled). Below a vapour fraction of 0.02 the vapour phase is carried without an equation of state of its own and receives no transfer. The outlet is a characteristic face with an outflow fan (a \emph{vent}); the far end of the truncated domain is a wall the wave never returns from. EOS: GERG-2008 for the reference runs, Peng--Robinson (PR) for the parameter scans (PR cools the liquid about 2\,K too much on the isentrope and puts $P_{\mathrm{sat}}$ there 1.7\,bar low for Test 19).
+
+\paragraph{The HRM-source probe.} A switch replaces the nucleator by the paper's source, $\Gamma = \rho\,(x_{g,\mathrm{sat}} - x_g)/\theta$, active in every cell whose liquid is below $P_{\mathrm{sat}}(T)$, with $x_{g,\mathrm{sat}}$ the equilibrium quality at the cell's $(\rho, e)$ on the EOS's own dome, the SRT transfer switched off, and the instantaneous mechanical and thermal relaxation kept --- the $pT$-relaxed assumption of HRM$^*$ inside the two-pressure model. It is a probe of one question, not a proposed closure.
+
+\section{Results}
+\begin{figure}[htbp]\centering\includegraphics[width=\textwidth]{fig_test19.pdf}
+\caption{Test 19 (cold). Every trace is shifted so that its 40\,bar drop at the sensor is $t = 0$: the rupture disk of this test opens over about 3\,ms, the code opens instantly, so absolute times are not comparable while levels and the time after the wave are.}\label{f19}\end{figure}
+\begin{figure}[htbp]\centering\includegraphics[width=\textwidth]{fig_test24.pdf}
+\caption{Test 24 (warm), same conventions. The pink trace is the window nucleator with the SRT morphology length reduced from 0.1\,m to 2\,mm.}\label{f24}\end{figure}
+\begin{figure}[htbp]\centering\includegraphics[width=\textwidth]{fig_dscan.pdf}
+\caption{The morphology length $D$ of the SRT rate, window nucleator, PR, at the 0.28\,m sensor: the cold test wants $D \approx 0.2\,m$, the warm one $D \lesssim 2\,mm$.}\label{fd}\end{figure}
+
+\begin{table}[htbp]\centering\footnotesize\setlength{\tabcolsep}{3pt}
+\caption{Numbers behind the figures. ``Level'' is the first plateau after the fast drop; ``dip $\to$ max'' the lowest pressure within 1.5\,ms of the wave and the highest within 2.5\,ms (0.1\,ms median). HRM$^*$ rows are the paper's statements about its own model, read from its text; its traces are not reproduced here.}
+\begin{tabular}{llccp{3.0cm}p{2.3cm}}\toprule
+& & wave speed & level, 0.8\,m & dip $\to$ max, 0.8\,m & 0.08\,m at $+5\,ms$\\
+& & 0.8$\to$3.2\,m [m/s] & [bar] & [bar] & [bar]\\\midrule
+Test 19 & measured & 585 & 34.2 & $32.5 \to 34.6$ & 21.8\\
+& HRM$^*$, $\theta$ = 2.5 ms & --- & --- & captured (fitted); recovery ``more abrupt'' than measured & underestimates\\
+& CAMR GERG, window & 592 & 35.6 & flat & 25\\
+& CAMR PR, window & 497 & 33.8 & flat & 24.5\\
+& CAMR PR, HRM source, 2.5 ms & --- & --- & $12.7 \to 30.3$ & 18.4\\
+& CAMR PR, HRM source, 0.5 ms & --- & --- & $31.8 \to 34.8$ & 24.8\\\midrule
+Test 24 & measured & 370 & 63.8 & flat & 40.4\\
+& HRM$^*$, $\theta$ = 0.14 ms & --- & --- & no plateau; drop too slow & overestimates\\
+& CAMR GERG, window & 366 & 60.0 & flat & 36.9 at 10\,ms (meas.\ 37.2)\\
+& CAMR PR, window, $D$ = 2 mm & --- & 57.1 & flat & 41.2\\
+& CAMR PR, HRM source, 0.14 ms & --- & 62.0 & flat & 30.0\\\bottomrule
+\end{tabular}\end{table}
+
+\paragraph{What the two-pressure model gets right without tuning.} The head of the depressurization wave travels at the measured speed with GERG (within 1.2\,\% in both tests; PR is 15\,\% slow in the cold test). The first level after the fast drop is within 5\,\% of the measurement at both ends of the dataset (35.6 vs.\ 34.2 and 60.0 vs.\ 63.8\,bar), and the choked outlet pressure of the warm test at 10\,ms is reproduced (36.9 vs.\ 37.2\,bar).
+
+\paragraph{What it does not.} (i) The first level is a prescribed fraction of saturation, $(1 - m/2)P_{\mathrm{sat}}(T) \approx 0.94\,P_{\mathrm{sat}}$: it moved by 0.1\,bar over a thousandfold scan of $D$ and by 0.4\,bar over four decades of the nucleation time, and exactly as that formula says when $m$ was changed. The measurement is $0.98\,P_{\mathrm{sat}}$ warm and about $0.91\,P_{\mathrm{sat}}$ cold (GERG's crossing values); a fixed margin cannot follow that. (ii) There is no undershoot and recovery (Fig.~\ref{f19}, lower panels): the window is a pressure controller, and the vapour it seeds receives no transfer below a volume fraction of 0.02, so nothing can lift the pressure back once it has settled. (iii) Behind the first level the SRT rate at the default $D$ is far too slow for the warm test (25--40\,\% low for several ms, Fig.~\ref{f24}) and somewhat too fast for the cold one; the two tests bracket $D$ at about 0.2\,m and $\lesssim 2$\,mm (Fig.~\ref{fd}), a range of 100 or more against the paper's 18:1 in $\theta$ between the same two tests. The area factor $(\alpha_2 + \delta)\alpha_1$ does not supply the temperature dependence.
+
+\paragraph{What the HRM source inside the two-pressure model does.} With the paper's source law the code produces the undershoot and the recovery (Fig.~\ref{f19}), at the measured time after the wave (0.40 and 0.82\,ms against 0.33 and 0.79\,ms at 0.8 and 1.6\,m), and in the warm test the first level rises to saturation with no hump, as measured. So the two-pressure structure, the instantaneous mechanical and thermal relaxation and the trace-phase treatment are not the obstacle; the source law is. What the feature needs is a source that starts at the saturation line, is at full strength with no vapour present, and keeps producing while the pressure recovers.
+
+\paragraph{Two things we would like to discuss.}
+\begin{enumerate}
+\item At the paper's fitted $\theta = 2.5\,ms$ our dip is far deeper than the measurement (12.7\,bar at 0.8\,m against 32.5\,bar); $\theta = 0.5\,ms$ reproduces that sensor within 1\,bar in depth, recovery and final level but is 5--8\,bar high at 0.08--0.28\,m. We do not know how much of the difference at equal $\theta$ is the hydrodynamics (our second-order wave propagation against first-order HLLC smooths the wave that does the pulling less), how much the definition of $x_{g,\mathrm{sat}}$ (ours: the equilibrium quality at the cell's $(\rho,e)$), and how much the outlet condition (our vent chokes on the equilibrium path; the paper's minimum BBC is built not to restrain the non-equilibrium). A run of HRM$^*$ with the paper's own code on our truncated domain, or its 0.8\,m and 1.6\,m traces, would separate these.
+\item Neither a constant $\theta$ per test nor a constant $D$ per test fits one test at all sensors; the paper reaches the same verdict on its model. The paper's correlation of $\theta$ with the scaled initial entropy is a property of the initial state, which a field code with mixed histories cannot use as it stands; a local form (in superheat, reduced temperature or surface tension) or a transported interfacial area are the candidates we see. We would value the authors' view on which of these their nucleation-onset analysis (their Figs.\ 19--20, the superheat limit) supports, and on whether the warm-test onset near the homogeneous superheat limit and the cold-test onset far above it can be one local law.
+\end{enumerate}
+
+\paragraph{Caveats.} One-dimensional, no wall friction or heat transfer, no disk-opening model, adiabatic; the last 3--4\,m of the pipe only, so nothing here speaks to the plateau after 10\,ms. PR runs are for parameter scans; the GERG runs are the reference. The measured traces are the authors' public dataset (doi 10.5281/zenodo.7669536, CC BY 4.0).
+\end{document}
