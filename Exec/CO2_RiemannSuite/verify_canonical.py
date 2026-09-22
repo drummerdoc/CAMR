@@ -31,7 +31,7 @@ and 0.02 on the HEM checks.  The reference numbers are outputs of this
 implementation: they detect change, they do not certify correctness
 (docs/VERIFICATION.md).
 """
-import os, sys, glob, csv, subprocess
+import os, sys, glob, csv, subprocess, time
 import numpy as np
 
 os.environ.setdefault('PS_FROZEN', '0')
@@ -58,8 +58,17 @@ def load_hem_analytic(short):
     d = np.loadtxt(f'{F.REFS}/exact_{short}_pr.csv')
     return dict(x=d[:,0], rho=d[:,1], u=d[:,2], P=d[:,3])
 
+#  Start time of the last run_case: a plotfile older than it was written by
+#  an earlier run of the same prefix, so a run that aborted (e.g. at a
+#  startup gate) reads as "run failed", never as the previous run's result.
+_RUN_T0 = [0.0]
+
+def fresh_plotfiles(pref):
+    return [p for p in glob.glob(pref + '*') if os.path.isdir(p) and '.old' not in p
+            and os.path.getmtime(p) >= _RUN_T0[0]]
+
 def load_plotfile(pref):
-    g = [p for p in glob.glob(pref + '*') if os.path.isdir(p) and '.old' not in p]
+    g = fresh_plotfiles(pref)
     if not g: return None
     p = max(g, key=os.path.getmtime)
     rho = R.rd1d(p, 'density'); n = len(rho)
@@ -81,10 +90,16 @@ def run_case(name, extra, pref, N=64, env=None):
           'stop_time': tf}
     ov.update(extra)
     ov.update(F.camr_side(c[1], 'L')); ov.update(F.camr_side(c[2], 'R'))
+    #  PROBE_OV="k=v,k=v": one-off overrides, applied last so they always
+    #  win (as in exact_suite.py).
+    for _kv in os.environ.get('PROBE_OV', '').split(','):
+        if _kv.strip():
+            _k, _v = _kv.split('='); ov[_k.strip()] = _v.strip()
     cmd = [F.CAMR, 'inputs'] + [f'{k}={v}' for k, v in ov.items()]
     cmd += ['amr.plot_int=-1', f'amr.plot_per={tf}', f'amr.plot_file={pref}',
             'amr.v=0', 'CAMR.v=0']
     e = dict(os.environ); e.update(env or {})
+    _RUN_T0[0] = time.time() - 1.0     # mtime granularity margin
     subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                    timeout=300, env=e)
     return load_plotfile(pref)
@@ -246,7 +261,7 @@ B12 = 'B12-TwoPhase-Wall-Reflection'
 _pref = 'vcb12_'
 run_case(B12, {'CAMR.ps_relax_mode': 0, 'CAMR.ps_mt_tau': 0,
                'CAMR.ps_flash_tau': 0.0}, _pref)
-_g = [q for q in glob.glob(_pref + '*') if os.path.isdir(q) and '.old' not in q]
+_g = fresh_plotfiles(_pref)
 if not _g:
     check('B12 ran (plotfile written)', False, 'no plotfile — did the run abort?')
 else:
