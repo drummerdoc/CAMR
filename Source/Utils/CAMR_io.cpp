@@ -20,6 +20,8 @@
 #include "IndexDefines.H"
 #ifdef USE_PS_HYDRO
 #include "PS_dials.H"   // ps_sigma_mode, ps_sigma_restart_init
+#include "PS_relaxation.H"
+#include "PS_sources.H"   // ps_sigma_fill_algebraic
 #endif
 
 void
@@ -68,8 +70,11 @@ CAMR::restart(amrex::Amr& papa, std::istream& is, bool bReadSpecial)
         amrex::Abort("CAMR.ps_sigma >= 1 restarts from a checkpoint without "
                      "Sigma: set CAMR.ps_sigma_restart_init = zero or alg");
       } else if (init == "alg") {
-        amrex::Abort("CAMR.ps_sigma_restart_init = alg is not implemented yet "
-                     "(docs/PLAN_sigma.md commit 3); use zero");
+        //  Gate R2's `alg` leg: the algebraic closure in every two-phase
+        //  cell (docs/PLAN_sigma.md S-e).  StateData::restart has just
+        //  zero-filled it, so every other cell keeps 0.
+        ps_sigma_fill_algebraic(get_new_data(Sigma_Type),
+                                get_new_data(State_Type));
       }
       // zero: already zero-filled by StateData::restart.
     }

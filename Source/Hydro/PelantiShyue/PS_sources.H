@@ -279,6 +279,77 @@ ps_sigma_corridor_dm(amrex::Array4<const amrex::Real> const& U,
     return (s > 0.0) ? s * dm : 0.0;
 }
 
+
+//  CAMR.ps_sigma_restart_init = alg (docs/PLAN_sigma.md S-e, gate R2):
+//  fill Sigma from the algebraic closure X3's `rates` uses
+//  (hem_relax_x3.H), the only consistent guess for a checkpoint written
+//  before Sigma existed --
+//      Sigma = (32 / 2 pi) (alpha_recv + delta) alpha_send / D,
+//  send and receive chosen by g_1 > g_2 exactly as `rates` does, with the
+//  run's own CAMR.ps_mt_srt_d and ps_mt_srt_delta.  A cell without both
+//  phases present, or whose branch state is not finite, gets 0.  The
+//  continuation is the current model from that step on and is NOT the
+//  trajectory of a run with Sigma from t = 0; Part I S-e says so and the
+//  restart prints what it did.
+inline void
+ps_sigma_fill_algebraic(amrex::MultiFab& Sig, const amrex::MultiFab& S)
+{
+    const hem::PsPhaseAPI eos = ps_make_camr_eos_api();
+    const PsPres pr  = ps_presence_params();
+    const double D   = hem::ps_dial_mt_srt_d();
+    const double del = hem::ps_dial_mt_srt_delta();
+    if (!(D > 0.0)) {
+        amrex::Abort("CAMR.ps_sigma_restart_init = alg needs CAMR.ps_mt_srt_d > 0");
+    }
+    constexpr double two_pi = 6.283185307179586;
+    long n_set = 0, n_refused = 0;
+    for (amrex::MFIter mfi(Sig); mfi.isValid(); ++mfi) {
+        const amrex::Box bx = mfi.validbox();
+        amrex::Array4<amrex::Real> const& Sg = Sig.array(mfi);
+        amrex::Array4<const amrex::Real> const& U = S.const_array(mfi);
+        amrex::LoopOnCpu(bx, [=, &n_set, &n_refused] (int i, int j, int k) noexcept
+        {
+            Sg(i, j, k) = amrex::Real(0.0);
+            const amrex::Real a1 = U(i, j, k, UALPHA1);
+            if (!std::isfinite(a1)) { return; }
+            const amrex::Real a2 = amrex::Real(1.0) - a1;
+            const amrex::Real m1 = U(i, j, k, UM1RHO1);
+            const amrex::Real m2 = U(i, j, k, UM2RHO2);
+            if (ps_regime(a1, m1, pr) == PsRegime::Absent ||
+                ps_regime(a2, m2, pr) == PsRegime::Absent) { return; }
+            if (!(a1 > amrex::Real(0.0)) || !(a2 > amrex::Real(0.0))) { return; }
+            const amrex::Real rho_mix = m1 + m2;
+            const double ke = double(ps_kinetic_energy(U, i, j, k, rho_mix));
+            const double e_1 = double(U(i, j, k, UE1)) / double(m1) - ke;
+            const double e_2 = double(U(i, j, k, UE2)) / double(m2) - ke;
+            hem::PsPhase p1{}, p2{};
+            p1.alpha = double(a1); p2.alpha = double(a2);
+            eos.state_from_rho_e_phase(1, double(m1) / double(a1), e_1, p1);
+            eos.state_from_rho_e_phase(2, double(m2) / double(a2), e_2, p2);
+            if (!p1.valid || !p2.valid ||
+                !std::isfinite(p1.g) || !std::isfinite(p2.g)) {
+                ++n_refused; return;
+            }
+            const double a_geom = (p1.g > p2.g)
+                                ? (double(a2) + del) * double(a1)
+                                : (double(a1) + del) * double(a2);
+            const double sg = (32.0 / two_pi) * a_geom / D;
+            if (std::isfinite(sg) && sg > 0.0) {
+                Sg(i, j, k) = amrex::Real(sg);
+                ++n_set;
+            }
+        });
+    }
+    amrex::ParallelDescriptor::ReduceLongSum(n_set);
+    amrex::ParallelDescriptor::ReduceLongSum(n_refused);
+    amrex::Print() << "[PS-SIGMA] restart_init = alg: Sigma set in " << n_set
+                   << " two-phase cells (D = " << D << " m, delta = " << del
+                   << "), " << n_refused
+                   << " refused for a non-finite branch state; the run is the"
+                   << " current model from this step on, not the trajectory of"
+                   << " a run with Sigma from t = 0.\n";
+}
+
 // -----------------------------------------------------------------
 //  ps_apply_sources: called from CAMR_advance after ps_apply_relaxation,
 //  under ps_hydro != 0.  dt is the level time step the rate-based
