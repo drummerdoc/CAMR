@@ -44,6 +44,8 @@ Four contraction-free 1-D runs plus the battery, compared by `cmp` on every `Lev
 
 `tools/witness/w1.sh TAG REF` builds RS and runs FF, N1, N4; `w2.sh` runs N1b and the battery. A refactor must show every count at `differ=0` and "21 identical, 0 changed". The current references are BASE3 (`Exec/CO2_RiemannSuite/characterization/BASE3_nc_*.json`, `refs/*_BASE3.txt`, provenance in `refs/PROVENANCE_BASE3.txt`). The 2-D witness is a before/after pair on `Exec/CO2_XC2D` (60 steps, 6 ranks, AMR, with and without `CAMR.ps_wp_transverse=1`; `diff -rq --exclude=job_info` on the final plotfiles), run by the maintainer; `regen_refs.sh windows` is the fingerprinted 65-minute production check.
 
+**Multi-rank AMR is not byte-reproducible across an allocation change.** `ROUNDROBIN`'s rank order is a sort on bytes allocated per rank, so anything that changes what a rank allocates (a new state, a flux register, a diagnostic buffer) can break a rank tie at a regrid, move box ownership and change the summation order of reflux; XC2D is round-off-chaotic past $t \approx 2\times10^{-4}$ under any such change (measured, `PLAN_sigma.md` §II.3-results). A 2-D pair is therefore valid only with the same build, the same rank count and the same allocations; a claim of "nothing changed" across a build that allocates differently is made on 1 rank, or with `max_level = 0`, or with `tools/witness/maxdiff.py` and the growth judged against a rank-count control. `ci.sh` reads the author line from `CLAUDE_MODEL` (set it to the model running the session).
+
 Add a witness when a change touches a path none of these exercises (the audit's NaN-fill proof of K3 is the model: fill what you claim is unread with NaN and show the witnesses unchanged).
 
 ## 5. The tests

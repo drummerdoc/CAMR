@@ -171,3 +171,5 @@ The X3 solver's structure is not touched: Σ is a constant coefficient over the 
 
 Change any default; touch `Source/EOS/`; alter the presence classification or X3's Newton; merge branches in the VM; run 2-D cases (hand the commands to the maintainer); tune $r_{\mathrm{nuc}}$ or $D$ to the ECCSEL data (commit 5 is the maintainer's call after commit 4's gates); delete `PLAN_*` files (commit 6 is separate).
 
+**Stage-1 review (22 Sept, this conversation): accepted.** The multi-rank finding and the maintainer's relaxation stand; the handbook §4 now carries the rule. Housekeeping: the eleven stage-1 commits carry `Claude Fable 5.1` as co-author because `ci.sh` hard-coded it (cosmetic; `ci.sh` now reads `CLAUDE_MODEL`); `tools/witness/*.sh` want `chmod +x` on the Mac; `CAMR_pre` stays until stage 2's R2 (`alg`) pair. Open on the maintainer's side, not blocking: `regen_refs.sh windows` with the pre-Σ build against the new one at `ps_sigma = 0`, which would close the residual rank-tie risk for the production deck and refresh the stale `runs/BASE`.
+
