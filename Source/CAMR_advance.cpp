@@ -471,8 +471,11 @@ CAMR::CAMR_advance (Real time,
             amrex::MultiFab::Copy(a1_pre, S, UALPHA1, 0, 1, 0);
         }
         if (ps_do_relax_cached != 0) {
+            //  At CAMR.ps_sigma = 2 X3 reads the transported Sigma as its
+            //  area coefficient (docs/PLAN_sigma.md P4); at 1 nothing does.
             ps_apply_relaxation(S, dt_r, ng, do_print,    // dt_r for the finite-rate legs
-                                &work_est);
+                                &work_est,
+                                (ps_sigma_mode() == 2) ? Sig : nullptr);
             clean_state(S, false); // intermediate: skip the UTEMP diagnostic sweep
         }
         diag_mass(S, "C post relaxation (P/T/MT)");

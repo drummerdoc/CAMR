@@ -308,7 +308,8 @@ inline void
 ps_x3_grid_relax_cell(int i, int j, int k,
                       amrex::Array4<amrex::Real> const& U,
                       hem::PsPhaseAPI const& eos,
-                      amrex::Real dt, amrex::Real theta)
+                      amrex::Real dt, amrex::Real theta,
+                      amrex::Real sigma = amrex::Real(-1.0))
 {
     using amrex::Real;
     // Entry gates (presence refusal counted).
@@ -325,6 +326,9 @@ ps_x3_grid_relax_cell(int i, int j, int k,
     xp.srt_D          = hem::ps_dial_mt_srt_d();
     xp.srt_delta      = hem::ps_dial_mt_srt_delta();
     xp.coexist_action = ps_coexist_action();
+    //  sigma >= 0 (CAMR.ps_sigma = 2 only): the transported area replaces
+    //  the algebraic closure, and ps_mt_srt_d no longer enters.
+    xp.sigma          = double(sigma);
     //  [PS-DT] census from the kernel's own entry/exit states; -1 = the
     //  thermal leg did not run.
     double dt_pre = -1.0, dt_post = -1.0;
@@ -431,15 +435,20 @@ inline amrex::Real ps_work_kappa()
 //  statistics running.  Host-only: the kernels take a
 //  std::function callback.  work, when given (valid cells of S_new's
 //  grids, one component), accumulates kappa * (EOS solves this cell).
+//  Sig, when given (CAMR.ps_sigma = 2, mode 5; same grids, valid box),
+//  is the transported Sigma X3 reads as its area coefficient
+//  (docs/PLAN_sigma.md P4); nullptr keeps the algebraic closure.
 // -----------------------------------------------------------------
 inline void
 ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
                     int nghost = 0, bool do_print = true,
-                    amrex::MultiFab* work = nullptr)
+                    amrex::MultiFab* work = nullptr,
+                    const amrex::MultiFab* Sig = nullptr)
 {
     // EOS-heavy (branch-locked solves per phase per cell): the dominant
     // physics cost of CAMR_advance.
     BL_PROFILE("PS::ps_apply_relaxation()");
+    AMREX_ALWAYS_ASSERT(Sig == nullptr || nghost == 0);   // Sigma has no ghosts
 
     const hem::PsPhaseAPI eos = ps_make_camr_eos_api();
 
@@ -463,6 +472,8 @@ ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
         amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
         amrex::Array4<amrex::Real> const& W =
             work ? work->array(mfi) : amrex::Array4<amrex::Real>{};
+        amrex::Array4<const amrex::Real> const Sg =
+            Sig ? Sig->const_array(mfi) : amrex::Array4<const amrex::Real>{};
         // `eos` is captured by copy so the std::function is available in
         // each cell call.
         amrex::LoopOnCpu(bx, [=, &n_solve] (int i, int j, int k) noexcept
@@ -470,7 +481,12 @@ ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
             const long n0 = n_solve;
             ps_corridor_project(i, j, k, U, l_pres);
             if (relax_mode == 5) {
-                ps_x3_grid_relax_cell(i, j, k, U, eos, dt, theta);
+                if (Sg.p) {
+                    ps_x3_grid_relax_cell(i, j, k, U, eos, dt, theta,
+                                          Sg(i, j, k));
+                } else {
+                    ps_x3_grid_relax_cell(i, j, k, U, eos, dt, theta);
+                }
             } else if (relax_mode == 2) {
                 ps_ptg_relax_cell(i, j, k, U, eos, dt, theta);
             } else {

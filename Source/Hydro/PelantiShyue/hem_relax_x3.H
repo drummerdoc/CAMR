@@ -512,6 +512,11 @@ struct PsX3Params {
     double h_w        = 0.5;      // MT carrier weight (ps_mt_h_weight rule)
     double srt_D      = 0.1;      // SRT geometry scale [m]
     double srt_delta  = 0.01;     // SRT receiving-phase seed
+    //  The interfacial area density [1/m] of the SRT rate.  < 0 (default):
+    //  the algebraic closure (32/2 pi)(alpha_recv + srt_delta) alpha_send /
+    //  srt_D.  >= 0: the transported Sigma of the cell, a coefficient
+    //  frozen over the step (CAMR.ps_sigma = 2, docs/PLAN_sigma.md P4).
+    double sigma      = -1.0;
     bool   dome_gate  = true;     // the one eligibility question
     int    max_newton = 40;
     //  Band-exit policy (CAMR.ps_coexist_action, read in PS_relax.H;
@@ -674,7 +679,8 @@ inline bool ps_x3_relax_cell(V6& U, const PsPhaseAPI& eos, double dt,
         const double a_geom = (s.p1.g > s.p2.g)
                             ? (a2 + xp.srt_delta) * a1
                             : (a1 + xp.srt_delta) * a2;
-        const double Sig = (32.0 / two_pi) * a_geom / xp.srt_D;
+        const double Sig = (xp.sigma >= 0.0) ? xp.sigma
+                         : (32.0 / two_pi) * a_geom / xp.srt_D;
         if (!(s.p2.T > 0.0)) return false;
         rM = Sig * (m2 / a2)
            * std::sqrt(eos.molar_mass() / (two_pi * R_u * s.p2.T))
