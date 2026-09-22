@@ -50,7 +50,11 @@ overrides shown on a failure line.
   restart   B9 to step 100 with a checkpoint at 50, then a restart from
             chk00050 to step 100 in another directory.  Asserts plt00100
             byte-identical (every Level_0/Cell_D_*) and equal time.  B2 (the
-            case §10 shows amplifying 1e-12 perturbations) likewise.
+            case §10 shows amplifying 1e-12 perturbations) likewise.  The
+            sigma leg (docs/PLAN_sigma.md R1, R3): B9 at CAMR.ps_sigma = 1
+            with Sigma = 1 in cell 32; the restart from chk00050 is
+            byte-identical, sigma included (R1); that checkpoint restarted at
+            ps_sigma = 0 equals a ps_sigma = 0 run from scratch (R3).
   front     B2 (evaporation wave) and the nucleator's own feedback
             (docs/MODEL_AND_ALGORITHM.md §5.5).  Two runs differing by 1e-12
             in p_L, a plotfile every 4 steps.  Asserts: the largest relative
@@ -281,6 +285,33 @@ def t_restart():
         print('      %s: plt00100 straight vs restarted from chk00050: %s  (t = %.9e / %.9e;  max rel diff %s)'
               % (case, 'byte-identical' if same else 'DIFFERENT', tA, tB, fields_diff(pA, pB[0])))
         ok &= check(T, same and tA == tB, '%s: restart is not bit-reproducible: %s' % (case, fields_diff(pA, pB[0])), cmdB)
+    # Sigma leg (docs/PLAN_sigma.md R1, R3): B9 at CAMR.ps_sigma = 1 with
+    # Sigma = 1 in cell 32 (the test-only IC hook).  R1: the restart from
+    # chk00050 (three states, Sigma != 0) reproduces plt00100 byte for byte,
+    # sigma included.  R3: the same checkpoint restarted at ps_sigma = 0
+    # equals a ps_sigma = 0 run from scratch (Sigma read and ignored).
+    com = ['max_step=100', 'stop_time=1.0', 'amr.plot_int=100', 'amr.checkpoint_files_output=1', 'amr.check_int=50']
+    sig = ['CAMR.ps_sigma=1', 'CAMR.ps_sigma_ic_cell=32', 'CAMR.ps_sigma_ic_value=1.0']
+    runs = {}
+    for nm, extra in (('A', com + sig), ('B', None), ('C', com), ('D', None)):
+        d = os.path.join(ROOT, '%s_sigma_%s_%d' % (T, nm, time.time_ns() // 1000000))
+        if extra is None:
+            extra = (com + sig if nm == 'B' else com) + ['amr.restart=%s' % os.path.join(runs['A'][0], 'chk00050')]
+        rc, log, fs, cmd = run(T, 'B9', extra, final_only=False, d=d)
+        p = [q for q in fs if q.endswith('plt00100')]
+        runs[nm] = (d, p[0] if (rc == 0 and p) else None, cmd)
+        if not check(T, runs[nm][1] is not None, 'sigma leg %s: rc=%d, plt00100 %s' % (nm, rc, 'present' if p else 'MISSING'), cmd): return False
+    pA, pB, pC, pD = (runs[k][1] for k in 'ABCD')
+    hasS = 'sigma' in R.hdr(pA)[0] and 'sigma' not in R.hdr(pC)[0]
+    sA = R.rd1d(pA, 'sigma') if hasS else None
+    r1 = same_bytes(pA, pB) and R.hdr(pA)[1] == R.hdr(pB)[1]
+    r3 = same_bytes(pC, pD) and R.hdr(pC)[1] == R.hdr(pD)[1]
+    print('      B9 sigma: plotted at 1 and not at 0: %s;  sum(sigma) at step 100 = %s' % (hasS, repr(float(sA.sum())) if hasS else '-'))
+    print('      B9 sigma R1 (ps_sigma=1 restart from chk00050): %s' % ('byte-identical' if r1 else 'DIFFERENT ' + fields_diff(pA, pB)))
+    print('      B9 sigma R3 (that checkpoint at ps_sigma=0 vs a ps_sigma=0 run): %s' % ('byte-identical' if r3 else 'DIFFERENT ' + fields_diff(pC, pD)))
+    ok &= check(T, hasS, 'sigma leg: sigma must be plotted at ps_sigma=1 only', runs['A'][2])
+    ok &= check(T, r1, 'sigma leg R1: restart at ps_sigma=1 not bit-reproducible', runs['B'][2])
+    ok &= check(T, r3, 'sigma leg R3: a Sigma checkpoint restarted at ps_sigma=0 differs from a ps_sigma=0 run', runs['D'][2])
     return ok
 
 # ----------------------------------------------------------------- selftest
