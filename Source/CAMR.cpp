@@ -127,6 +127,18 @@ CAMR::read_params()
   ps_bc_nscbc_type();
   ps_bc_nscbc_nsec();
   ps_bc_nscbc_probe();
+  // CAMR.ps_sigma = 2 reads Sigma in the sources; Sigma's growth term is
+  // measured across the relaxation stage, which at ps_relax_mode = 0 or 2
+  // does not carry the split finite-rate transfer (it moves alpha_2 in
+  // ps_apply_sources with no growth term).  Until it does, that pairing
+  // aborts at startup (docs/PLAN_sigma.md §II.4-review).  ps_relax_mode is
+  // read here only at ps_sigma = 2.
+  if (ps_sigma_mode() == 2 && ps_relax_mode() != 5) {
+    amrex::Abort("CAMR.ps_sigma = 2 requires CAMR.ps_relax_mode = 5: at "
+                 "ps_relax_mode = " + std::to_string(ps_relax_mode()) +
+                 " the split finite-rate transfer moves alpha_2 with no "
+                 "Sigma growth term (docs/PLAN_sigma.md §II.4-review)");
+  }
 #endif
 
   pp.query("v", verbose);
