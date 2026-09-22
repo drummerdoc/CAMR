@@ -28,8 +28,15 @@
 // Work_Estimate_Type: per-cell cost of the last step (1 + kappa * branch-
 // locked EOS solves), the weight amr.loadbalance_with_workestimates knapsacks
 // at each regrid.  Not checkpointed.  docs/DESIGN_DECISIONS.md O-23.
+// Sigma_Type (PS builds): the transported interfacial-area density Sigma
+// [1/m], one component, always allocated and checkpointed; transported only
+// under CAMR.ps_sigma >= 1 (docs/PLAN_sigma.md).  The order is the
+// checkpoint order: descriptors are appended, never inserted.
 enum StateType { State_Type = 0,
                  Work_Estimate_Type,
+#ifdef USE_PS_HYDRO
+                 Sigma_Type,
+#endif
                  NUM_STATE_TYPE };
 
 // Create storage for all source terms.
@@ -126,7 +133,11 @@ public:
 
   // Work_Estimate_Type is not stored in checkpoints (older checkpoints
   // restart unchanged); restart() re-creates it from State_Type's grids.
+  // A checkpoint written with fewer descriptors than this build has holds
+  // the first nstate of them: restart() reads nstate ahead into
+  // m_nstate_in_chk and the hook marks state i present iff i < nstate.
   void set_state_in_checkpoint (amrex::Vector<int>& state_in_checkpoint) override;
+  int m_nstate_in_chk = -1;
 
   // Proceed with next timestep?
   int okToContinue () override;
@@ -143,10 +154,15 @@ public:
 
   static void react (amrex::MultiFab& S);
 
+  //  sig/sig_src (PS, CAMR.ps_sigma >= 1): the FillPatched Sigma border
+  //  (numGrow() ghosts) and the 1-component dSigma/dt to fill; nullptr
+  //  (the default) leaves Sigma untouched.
   void construct_hydro_source ( const amrex::MultiFab& S,
                                       amrex::MultiFab& src,
                                       amrex::Real time,
-                                      amrex::Real dt);
+                                      amrex::Real dt,
+                                const amrex::MultiFab* sig = nullptr,
+                                      amrex::MultiFab* sig_src = nullptr);
 
   void construct_old_source (
     int src,
@@ -322,9 +338,19 @@ public:
   amrex::YAFluxRegister& getPresReg();
   amrex::YAFluxRegister& getPresReg(int lev);
 
+#ifdef USE_PS_HYDRO
+  // Sigma's coarse-fine flux register (1 component), defined only under
+  // CAMR.ps_sigma >= 1 on a refluxing fine level (sigma_reg_on).
+  amrex::YAFluxRegister sigma_reg;
+  bool sigma_reg_on = false;
+#endif
 #endif
   void avgDown();
   void avgDown(int state_indx);
+#ifdef USE_PS_HYDRO
+  // Sigma >= 0 with the 1e-30 floor (docs/PLAN_sigma.md P7, P8).
+  static void sigma_clip(amrex::MultiFab& Sig, int ng);
+#endif
 
 // public for CUDA
 
@@ -469,6 +495,21 @@ void CAMR_bcfill_hyp(
   const amrex::Vector<amrex::BCRec>& bcr,
   const int bcomp,
   const int scomp);
+
+#ifdef USE_PS_HYDRO
+// Sigma_Type's physical-boundary fill: first-order extrapolation on every
+// face (its BCRec is FOEXTRAP wherever not periodic); no EXT_DIR work.
+void CAMR_sigmafill(
+  amrex::Box const& bx,
+  amrex::FArrayBox& data,
+  const int dcomp,
+  const int numcomp,
+  amrex::Geometry const& geom,
+  const amrex::Real time,
+  const amrex::Vector<amrex::BCRec>& bcr,
+  const int bcomp,
+  const int scomp);
+#endif
 
 void CAMR_nullfill(
   amrex::Box const& bx,

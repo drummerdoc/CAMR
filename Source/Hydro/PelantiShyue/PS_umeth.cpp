@@ -145,7 +145,9 @@ ps_wp_face(int idir, int i, int j, int k, int iL, int jL, int kL,
            amrex::Array4<amrex::Real> const& wv,
            bool store_waves,
            amrex::Box vbox,
-           const PsPres& l_pres) noexcept
+           const PsPres& l_pres,
+           amrex::Array4<const amrex::Real> const& sig,
+           amrex::Array4<amrex::Real> const& fsig) noexcept
 {
     using amrex::Real;
     const bool in_valid = vbox.contains(amrex::IntVect(AMREX_D_DECL(i,j,k)));
@@ -163,6 +165,7 @@ ps_wp_face(int idir, int i, int j, int k, int iL, int jL, int kL,
                                           i, j, k);
 
     Real Am[NVAR], Ap[NVAR], flx_loc[NVAR];
+    Real u_refused = Real(0.0);   // ū of a refused face (Sigma's speed there)
     if (ok) {
         for (int n = 0; n < NVAR; ++n) {
             Am[n]      = flu.Am[n];
@@ -206,6 +209,7 @@ ps_wp_face(int idir, int i, int j, int k, int iL, int jL, int kL,
             const Real unL = (rL > Real(0.0)) ? UL[mcomp] / rL : Real(0.0);
             const Real unR = (rR > Real(0.0)) ? UR[mcomp] / rR : Real(0.0);
             const Real ubar = Real(0.5) * (unL + unR);
+            u_refused = ubar;
             const Real da   = UR[UALPHA1] - UL[UALPHA1];
             const Real halfa = Real(0.5) * lam * da;
             Am[UALPHA1] = Real(0.5) * ubar * da - halfa;
@@ -229,6 +233,17 @@ ps_wp_face(int idir, int i, int j, int k, int iL, int jL, int kL,
         wpf(i,j,k, 3) = ps_finite_or(Ap[UE1],     Real(0.0));
         wpf(i,j,k, 4) = ps_finite_or(Am[UE2],     Real(0.0));
         wpf(i,j,k, 5) = ps_finite_or(Ap[UE2],     Real(0.0));
+
+        // Sigma (CAMR.ps_sigma >= 1; docs/PLAN_sigma.md §II.3 item 4):
+        // first-order upwind on the HLLC contact speed S_M = flu.s[1]
+        // (PS_hllc.H: f.s[1] = w.S_M), Sigma moving with the material
+        // contact as alpha_1 does; a refused face uses the ū of its alpha
+        // split above.  Not area-weighted here (hydro_umdrv does it).
+        if (sig.p != nullptr) {
+            const Real u_c = ok ? ps_finite_or(flu.s[1], Real(0.0)) : u_refused;
+            const Real s_up = (u_c > Real(0.0)) ? sig(iL, jL, kL, 0) : sig(i, j, k, 0);
+            fsig(i,j,k, 0) = ps_finite_or(u_c * s_up, Real(0.0));
+        }
     }
 
     // Raw waves W[l][n] and speeds s[l] for the correction pass; a refused
@@ -446,7 +461,11 @@ PS_umeth(const Box& bx,
                       Array4<Real> const& flx3),
          Array4<Real> const& pdivu,
          const GpuArray<Real, AMREX_SPACEDIM> dx,
-         const Real dt)
+         const Real dt,
+         Array4<const Real> const& sigma_in,
+         AMREX_D_DECL(Array4<Real> const& fsig1,
+                      Array4<Real> const& fsig2,
+                      Array4<Real> const& fsig3))
 {
     BL_PROFILE("PS_umeth()");
 
@@ -646,18 +665,18 @@ PS_umeth(const Box& bx,
         BL_PROFILE_VAR("PS::wp_face_riemann()", ps_wp_face_prof);
         amrex::ParallelFor(wxbx,
         [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
-            ps_wp_face(0, i, j, k, i-1, j, k, uin_arr, flx1, wp_fluct_x, wp_wave_x, store_w, xfbx, l_pres);
+            ps_wp_face(0, i, j, k, i-1, j, k, uin_arr, flx1, wp_fluct_x, wp_wave_x, store_w, xfbx, l_pres, sigma_in, fsig1);
         });
 #if (AMREX_SPACEDIM >= 2)
         amrex::ParallelFor(wybx,
         [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
-            ps_wp_face(1, i, j, k, i, j-1, k, uin_arr, flx2, wp_fluct_y, wp_wave_y, store_w, yfbx, l_pres);
+            ps_wp_face(1, i, j, k, i, j-1, k, uin_arr, flx2, wp_fluct_y, wp_wave_y, store_w, yfbx, l_pres, sigma_in, fsig2);
         });
 #endif
 #if (AMREX_SPACEDIM == 3)
         amrex::ParallelFor(wzbx,
         [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
-            ps_wp_face(2, i, j, k, i, j, k-1, uin_arr, flx3, wp_fluct_z, wp_wave_z, store_w, zfbx, l_pres);
+            ps_wp_face(2, i, j, k, i, j, k-1, uin_arr, flx3, wp_fluct_z, wp_wave_z, store_w, zfbx, l_pres, sigma_in, fsig3);
         });
 #endif
         BL_PROFILE_VAR_STOP(ps_wp_face_prof);

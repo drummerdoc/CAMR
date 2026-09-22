@@ -15,10 +15,20 @@ void
 CAMR::construct_hydro_source (const MultiFab& S,
                               MultiFab& src_to_fill,
                               Real /*time*/,
-                              Real dt)
+                              Real dt,
+                              const MultiFab* sig,
+                              MultiFab* sig_src)
 {
     BL_PROFILE("CAMR::construct_hydro_source()");
     src_to_fill.setVal(0);
+    // Sigma (CAMR.ps_sigma >= 1; docs/PLAN_sigma.md §II.3 item 4): both or
+    // neither, and only on the PS path without EB.
+    const bool do_sig = (sig != nullptr);
+    AMREX_ALWAYS_ASSERT(do_sig == (sig_src != nullptr));
+    if (do_sig) {
+        AMREX_ALWAYS_ASSERT(sig->nGrow() >= 1);
+        sig_src->setVal(0);
+    }
 
     if (verbose) {
         if (do_mol) {
@@ -266,6 +276,23 @@ CAMR::construct_hydro_source (const MultiFab& S,
             } // do_reflux
         } else {
 #endif
+            // Sigma's face flux (1 component) and dSigma/dt; empty Array4s
+            // (p == nullptr) switch the Sigma path off inside PS_umeth.
+            amrex::GpuArray<amrex::FArrayBox, AMREX_SPACEDIM> sflux;
+            amrex::Array4<const Real> sig_in{};
+            amrex::Array4<Real> sig_dsdt{};
+            amrex::GpuArray<amrex::Array4<Real>, AMREX_SPACEDIM> sflx_arr{};
+            if (do_sig) {
+              for (int dir = 0; dir < AMREX_SPACEDIM; ++dir) {
+                const Box& efbx = amrex::surroundingNodes(bx, dir);
+                sflux[dir].resize(efbx, 1, amrex::The_Async_Arena());
+                sflux[dir].setVal<RunOn::Device>(0.);
+                sflx_arr[dir] = sflux[dir].array();
+              }
+              sig_in   = sig->const_array(mfi);
+              sig_dsdt = sig_src->array(mfi);
+            }
+
             // Return hyd_src - centered at half-time if using Godunov method
             //                - centered at  old-time if using MOL method
             //
@@ -283,7 +310,8 @@ CAMR::construct_hydro_source (const MultiFab& S,
                        dt, ppm_type, plm_iorder, use_pslope,
                        use_flattening, transverse_reset_density,
                        small, small_dens, small_pres, CAMRConstants::smallu, difmag,
-                       flx_arr, a, volume.array(mfi), lpmap);
+                       flx_arr, a, volume.array(mfi), lpmap,
+                       sig_in, sig_dsdt, sflx_arr);
 
             //
             // Here fac_for_reflux = 1.0 if doing Godunov, 0.5 if doing MOL
@@ -299,6 +327,19 @@ CAMR::construct_hydro_source (const MultiFab& S,
                        {{AMREX_D_DECL(&(flux[0]), &(flux[1]), &(flux[2]))}},
                        dxDp, fac_for_reflux*dt, amrex::RunOn::Device);
                 }
+#if defined(USE_PS_HYDRO) && !defined(AMREX_USE_EB)
+                // Sigma's register mirrors flux_reg (extensive face flux).
+                if (do_sig && level < finest_level && getLevel(level + 1).sigma_reg_on) {
+                    getLevel(level + 1).sigma_reg.CrseAdd(mfi,
+                        {{AMREX_D_DECL(&(sflux[0]), &(sflux[1]), &(sflux[2]))}},
+                        dxDp, fac_for_reflux*dt, amrex::RunOn::Device);
+                }
+                if (do_sig && level > 0 && sigma_reg_on) {
+                    sigma_reg.FineAdd(mfi,
+                       {{AMREX_D_DECL(&(sflux[0]), &(sflux[1]), &(sflux[2]))}},
+                       dxDp, fac_for_reflux*dt, amrex::RunOn::Device);
+                }
+#endif
             } // do_reflux
 
 #ifdef AMREX_USE_EB

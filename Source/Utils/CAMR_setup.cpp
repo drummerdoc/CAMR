@@ -230,6 +230,31 @@ CAMR::variableSetUp()
                           amrex::StateDescriptor::BndryFunc(CAMR_nullfill));
   }
 
+#ifdef USE_PS_HYDRO
+  // Sigma (docs/PLAN_sigma.md §II.3 item 1): one cell-centred component
+  // [1/m], the State_Type ghost count, conservative interpolation (P7),
+  // always stored in checkpoints.  Physical-boundary ghosts are a
+  // first-order extrapolation (a copy of the boundary cell) on every face
+  // type (P6): the BCRec is FOEXTRAP on every non-periodic face and
+  // CAMR_sigmafill has no EXT_DIR work.  Transported only under
+  // CAMR.ps_sigma >= 1; plotted only then (CAMR::writePlotFile).
+  {
+    desc_lst.addDescriptor(
+      Sigma_Type, amrex::IndexType::TheCellType(),
+      amrex::StateDescriptor::Point, ngrow_state, 1, interp,
+      false /*extrap*/, true /*store_in_checkpoint*/);
+    amrex::BCRec bcs;
+    set_scalar_bc(bcs, phys_bc);
+    for (int dir = 0; dir < AMREX_SPACEDIM; ++dir) {
+      if (bcs.lo(dir) != amrex::BCType::int_dir) { bcs.setLo(dir, amrex::BCType::foextrap); }
+      if (bcs.hi(dir) != amrex::BCType::int_dir) { bcs.setHi(dir, amrex::BCType::foextrap); }
+    }
+    amrex::StateDescriptor::BndryFunc sigfill(CAMR_sigmafill);
+    sigfill.setRunOnGPU(true);
+    desc_lst.setComponent(Sigma_Type, 0, "sigma", bcs, sigfill);
+  }
+#endif
+
   num_state_type = desc_lst.size();
 
   // DEFINE DERIVED QUANTITIES

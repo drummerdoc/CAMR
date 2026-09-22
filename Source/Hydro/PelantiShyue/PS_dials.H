@@ -16,6 +16,7 @@
 #ifdef USE_PS_HYDRO
 
 #include <AMReX_REAL.H>
+#include <AMReX.H>
 #include <AMReX_ParmParse.H>
 #include <string>
 
@@ -47,6 +48,39 @@ inline std::string ps_dial_string(const char* key, const char* def)
     pp.query(key, v);
     pp.add(key, v);
     return v;
+}
+
+//  CAMR.ps_sigma (0): the transported interfacial-area density Sigma
+//  (Sigma_Type, docs/PLAN_sigma.md).  0 = allocated, zero, never
+//  transported, not plotted; 1 = transported on the HLLC contact speed,
+//  plotted and checkpointed, read by nothing; 2 = as 1 and read by the
+//  sources (commit 4).  Any other value aborts.  One read per process.
+inline int ps_sigma_mode()
+{
+    static const int cached = []() -> int {
+        const int v = ps_dial_int("ps_sigma", 0);
+        if (v < 0 || v > 2) {
+            amrex::Abort("CAMR.ps_sigma must be 0, 1 or 2");
+        }
+        return v;
+    }();
+    return cached;
+}
+
+//  CAMR.ps_sigma_restart_init (abort): how Sigma is filled when a run at
+//  ps_sigma >= 1 restarts from a checkpoint that does not hold it.
+//  abort = stop with a message naming this key; zero = Sigma = 0; alg =
+//  the algebraic closure (commit 3).  Read only on that path.
+inline const std::string& ps_sigma_restart_init()
+{
+    static const std::string cached = []() -> std::string {
+        std::string v = ps_dial_string("ps_sigma_restart_init", "abort");
+        if (v != "abort" && v != "zero" && v != "alg") {
+            amrex::Abort("CAMR.ps_sigma_restart_init must be abort, zero or alg");
+        }
+        return v;
+    }();
+    return cached;
 }
 
 #endif  // USE_PS_HYDRO

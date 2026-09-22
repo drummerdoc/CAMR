@@ -86,6 +86,11 @@ CAMR::CAMR_advance (Real time,
     if (level < finest_level && do_reflux) {
 
         getFluxReg(level + 1).reset();
+#if defined(USE_PS_HYDRO) && !defined(AMREX_USE_EB)
+        if (getLevel(level + 1).sigma_reg_on) {
+            getLevel(level + 1).sigma_reg.reset();
+        }
+#endif
 
     }
 
@@ -117,6 +122,19 @@ CAMR::CAMR_advance (Real time,
 
     const Real prev_time = state[State_Type].prevTime();
     const Real  cur_time = state[State_Type].curTime();
+
+#ifdef USE_PS_HYDRO
+    // Sigma (docs/PLAN_sigma.md §II.3 item 4).  At CAMR.ps_sigma = 0 its new
+    // data is zeroed (after swapTimeLevels it is a stale buffer that the
+    // checkpoint would carry); at >= 1 it is advanced beside the hydro.
+    const bool sig_on = (ps_sigma_mode() >= 1);
+    if (!sig_on) {
+        get_new_data(Sigma_Type).setVal(0.0);
+    } else if (do_mol || ps_hydro == 0 || !geom.IsCartesian()) {
+        amrex::Abort("CAMR.ps_sigma >= 1 needs CAMR.ps_hydro = 1, CAMR.do_mol = 0 "
+                     "and a Cartesian geometry");
+    }
+#endif
 
 #ifdef USE_PS_HYDRO
     // Pelanti-Shyue reaction operator (resyncs, folds, floor, relaxation,
@@ -522,6 +540,24 @@ CAMR::CAMR_advance (Real time,
         MultiFab::Saxpy  (S_new, 0.5*dt, new_hydro_source, 0, 0, NVAR, 0);
 
     } else {
+#ifdef USE_PS_HYDRO
+        if (sig_on) {
+            // Sigma border at the old time (physical ghosts: CAMR_sigmafill;
+            // coarse-fine ghosts: conservative interpolation), the hydro
+            // fills dSigma/dt beside hydro_source, then
+            // Sigma_new = Sigma_old + dt * dSigma/dt and Sigma >= 0 (P8).
+            MultiFab Sigma_border(grids, dmap, 1, numGrow(), MFInfo(), Factory());
+            FillPatch(*this, Sigma_border, numGrow(), prev_time, Sigma_Type, 0, 1);
+            sigma_clip(Sigma_border, numGrow());
+            MultiFab sigma_source(grids, dmap, 1, 0, MFInfo(), Factory());
+            construct_hydro_source(Sborder, hydro_source, time, dt,
+                                   &Sigma_border, &sigma_source);
+            MultiFab& Sig_new = get_new_data(Sigma_Type);
+            MultiFab::Copy(Sig_new, get_old_data(Sigma_Type), 0, 0, 1, 0);
+            MultiFab::Saxpy(Sig_new, dt, sigma_source, 0, 0, 1, 0);
+            sigma_clip(Sig_new, 0);
+        } else
+#endif
         construct_hydro_source(Sborder, hydro_source, time, dt);
 
         // S^{n+1} = S^n + dt * dSdt^{n+1/2}

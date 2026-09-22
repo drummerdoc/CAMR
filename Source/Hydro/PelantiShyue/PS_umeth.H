@@ -35,5 +35,13 @@ void PS_umeth(
         amrex::Array4<amrex::Real> const& flx3),
     amrex::Array4<amrex::Real> const& pdivu,
     const amrex::GpuArray<amrex::Real, AMREX_SPACEDIM> dx,
-    const amrex::Real dt);
+    const amrex::Real dt,
+    // Sigma (CAMR.ps_sigma >= 1): the border (>= 1 ghost) and the per-face
+    // upwind flux u_c * Sigma_upwind written on the valid faces; an empty
+    // sigma_in (p == nullptr) leaves the flux arrays untouched.
+    amrex::Array4<const amrex::Real> const& sigma_in,
+    AMREX_D_DECL(
+        amrex::Array4<amrex::Real> const& fsig1,
+        amrex::Array4<amrex::Real> const& fsig2,
+        amrex::Array4<amrex::Real> const& fsig3));
 #endif
