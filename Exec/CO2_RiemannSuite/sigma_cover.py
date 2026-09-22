@@ -11,17 +11,16 @@ move (that is witness W3.2's job, not this script's).
               cross-critical contacts B4 and B11, where nothing nucleates,
               carry Sigma == 0 exactly.
 
-              DEVIATION from §II.4's wording, open for the maintainer: the
-              plan writes the window as 1e-9 < alpha_2 < 1 - 1e-9, which
-              reaches BELOW the model's own death edge
-              CAMR.ps_presence_vanish = 1e-8.  A cell in 1e-9 < alpha_2 <
-              1e-8 has an Absent phase by ps_regime, and P2 of PLAN_sigma
-              says such a cell carries no interface -- so Sigma = 0 there
-              is the model working, not a gap in the coverage.  B9 has
-              exactly one such cell at its stop time.  The assertion here
-              is therefore on cells the presence classification itself
-              calls two-phase (alpha_2 > alpha_vanish); the plan's raw
-              1e-9 count is printed beside it on every run.
+              The window is the presence classification's own:
+              CAMR.ps_presence_vanish < alpha_2 < 1 - ps_presence_vanish
+              (1e-8, the model's death edge).  A cell below it has an
+              Absent phase by ps_regime, and P2 of PLAN_sigma says such a
+              cell carries no interface, so Sigma = 0 there is the model
+              working.  (§II.4 first wrote 1e-9, a decade below the edge;
+              the maintainer's review of 22 Sept, §II.4-review, adopted the
+              presence window.  B9 has exactly one cell in 1e-9 < alpha_2 <
+              1e-8 at its stop time; the old 1e-9 count is still printed
+              beside the assertion as a diagnostic.)
 
   production  G3b: with the growth source off (CAMR.ps_sigma_growth = 0)
               Sigma's only sources are production at nucleation and the two
