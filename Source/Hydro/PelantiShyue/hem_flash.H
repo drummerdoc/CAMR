@@ -240,10 +240,16 @@ inline double ps_flash_limiter(const PsFlashProposal& pr,
 // Returns true when mass moved; every refusal is counted by cause.
 // alpha_seed_target has no default: every caller passes the presence
 // design's alpha_birth explicitly (single-sourced, PS_presence.H).
+// d_alpha_seed, when given, receives the committed volume-fraction growth
+// of the SEEDED phase -- |alpha_1_committed - alpha_1|, positive in both
+// the liquid-dominant (vapour seeded) and vapour-dominant (liquid seeded)
+// branches -- and is written only on a fire.  It is Sigma's production
+// term (docs/PLAN_sigma.md §II.4 source 3); nothing else reads it.
 inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
                                   double dt, double tau_flash,
                                   double alpha_seed_target,
-                                  double alpha_floor = ps_const::ALPHA_ROUNDOFF)
+                                  double alpha_floor = ps_const::ALPHA_ROUNDOFF,
+                                  double* d_alpha_seed = nullptr)
 {
     if (tau_flash <= 0.0 || dt <= 0.0) PS_FLASH_REFUSE(PS_FLR_TAU);
     if (!eos.valid() || !eos.Psat_of_T) PS_FLASH_REFUSE(PS_FLR_EOS);
@@ -489,6 +495,7 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
     U[2] = U2_new;
     U[4] = U4_new;
     U[5] = U5_new;
+    if (d_alpha_seed) { *d_alpha_seed = std::abs(a1_new - alpha_1); }
     ++ps_flash_source_count();
     ++ps_flash_refuse_count(PS_FLR_FIRED);   // slot 0 = fires
     return true;
