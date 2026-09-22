@@ -131,6 +131,102 @@ inline void  ps_flash_refuse_reset()      { ps_counters().reset_flash_refuse(); 
 #define PS_FLASH_REFUSE(c) \
     do { ++ps_flash_refuse_count(c); return false; } while (0)
 
+// -----------------------------------------------------------------
+//  The fractional-transfer proposal and its representability limiter,
+//  factored out of ps_flash_source_cell so the corridor growth source of
+//  docs/PLAN_sigma.md P5 caps its explicit step with exactly the
+//  nucleator's rule.  PsFlashProposal is the cell before the step plus
+//  the full-step proposal; ps_flash_trial is the state at fraction s;
+//  ps_flash_limiter is the largest s in [0, 1] that keeps both phases
+//  representable, by a 24-step bisection when the full step is not.
+//  s = 0 is the current (valid) cell, so the committed transfer goes to
+//  zero continuously as the full step approaches invalidity, instead of
+//  an accept/reject that mirror cells straddle.  The arithmetic is the
+//  in-place version's, expression for expression; witness W3.0 of
+//  docs/PLAN_sigma.md §II.4-results is the proof.
+// -----------------------------------------------------------------
+struct PsFlashProposal {
+    double alpha_1 = 0.0;              // the cell before the step
+    double m_1 = 0.0, m_2 = 0.0;
+    double U4 = 0.0, U5 = 0.0;         // phase total energies
+    double d_alpha1 = 0.0;             // full-step change of alpha_1
+    double dm = 0.0;                   // full-step phase mass moved, >= 0
+    double sgn = 0.0;                  // m_1 += sgn * s * dm
+    double H_I = 0.0;                  // total enthalpy carried by that mass
+    double ke = 0.0;                   // 1/2 |u_mix|^2
+    double alpha_floor = ps_const::ALPHA_ROUNDOFF;
+};
+
+inline void ps_flash_trial(const PsFlashProposal& pr, double s,
+                           double& a1, double& U1, double& U2,
+                           double& U4, double& U5)
+{
+    a1 = pr.alpha_1 + s * pr.d_alpha1;
+    U1 = pr.m_1 + pr.sgn * s * pr.dm;
+    U2 = pr.m_2 - pr.sgn * s * pr.dm;
+    U4 = pr.U4 + pr.sgn * s * pr.dm * pr.H_I;
+    U5 = pr.U5 - pr.sgn * s * pr.dm * pr.H_I;
+}
+
+//  count_causes: attribute an inadmissible full step to its failing
+//  sub-test in the [PS-FLASH-REF] table (the nucleator's call; the
+//  corridor source passes false and counts nothing).
+inline double ps_flash_limiter(const PsFlashProposal& pr,
+                               const PsPhaseAPI& eos, bool count_causes)
+{
+    auto valid_at = [&](double s) -> bool {
+        double a1, U1, U2, U4, U5;
+        ps_flash_trial(pr, s, a1, U1, U2, U4, U5);
+        if (!std::isfinite(U1) || !std::isfinite(U2) ||
+            !std::isfinite(U4) || !std::isfinite(U5) ||
+            U1 <= 0.0 || U2 <= 0.0) return false;
+        if (a1 < pr.alpha_floor || a1 > 1.0 - pr.alpha_floor) return false;
+        const double r1 = U1 / a1, r2 = U2 / (1.0 - a1);
+        const double e1 = U4 / U1 - pr.ke, e2 = U5 / U2 - pr.ke;
+        PsPhase c1{}, c2{};
+        c1.alpha = a1; c2.alpha = 1.0 - a1;
+        eos.state_from_rho_e_phase(1, r1, e1, c1);
+        eos.state_from_rho_e_phase(2, r2, e2, c2);
+        // Representable = finite with positive T (metastable P <= 0
+        // accepted; requiring P > 0 would put a P = 0 cliff in the limiter).
+        return std::isfinite(c1.T) && std::isfinite(c1.P) && c1.T > 0.0
+            && std::isfinite(c2.T) && std::isfinite(c2.P) && c2.T > 0.0;
+    };
+    // When the full step is inadmissible, name the failing sub-test at s = 1.
+    auto count_full_step_reason = [&]() {
+        double a1t, U1t, U2t, U4t, U5t;
+        ps_flash_trial(pr, 1.0, a1t, U1t, U2t, U4t, U5t);
+        if (!std::isfinite(U1t) || !std::isfinite(U2t) ||
+            !std::isfinite(U4t) || !std::isfinite(U5t) ||
+            U1t <= 0.0 || U2t <= 0.0) {
+            ++ps_flash_refuse_count(PS_FLR_S1_MASS); return;
+        }
+        if (a1t < pr.alpha_floor || a1t > 1.0 - pr.alpha_floor) {
+            ++ps_flash_refuse_count(PS_FLR_S1_AFLOOR); return;
+        }
+        const double r1t = U1t / a1t, r2t = U2t / (1.0 - a1t);
+        const double e1t = U4t / U1t - pr.ke;
+        const double e2t = U5t / U2t - pr.ke;
+        PsPhase c1t{}, c2t{};
+        c1t.alpha = a1t; c2t.alpha = 1.0 - a1t;
+        eos.state_from_rho_e_phase(1, r1t, e1t, c1t);
+        eos.state_from_rho_e_phase(2, r2t, e2t, c2t);
+        const bool ok1 = std::isfinite(c1t.T) && std::isfinite(c1t.P) && c1t.T > 0.0;
+        const bool ok2 = std::isfinite(c2t.T) && std::isfinite(c2t.P) && c2t.T > 0.0;
+        if (!ok1) ++ps_flash_refuse_count(PS_FLR_S1_PH1);
+        if (!ok2) ++ps_flash_refuse_count(PS_FLR_S1_PH2);
+    };
+    if (valid_at(1.0)) { return 1.0; }          // full step admissible
+    if (count_causes) { count_full_step_reason(); }
+    // Largest valid s by bisection; 24 iterations resolve s to ~6e-8.
+    double s_lo = 0.0, s_hi = 1.0;
+    for (int it = 0; it < 24; ++it) {
+        const double sm = 0.5 * (s_lo + s_hi);
+        if (valid_at(sm)) s_lo = sm; else s_hi = sm;
+    }
+    return s_lo;
+}
+
 // Nucleate the minority phase of a single-phase metastable cell:
 //   alpha_new += s beta (alpha_seed_target - alpha_new),
 //   beta = min(1 - exp(-dt/tau_flash), 0.2),   s = W(s) = w_T w_meta w_alpha
@@ -320,76 +416,26 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
     const double d_alpha1 = alpha_1_new - alpha_1;          // full-step Δα_1
     const double sgn = flash_liq ? -1.0 : +1.0;            // m_1 += sgn·s·dm
     const double ke_cell = 0.5 * u_mix * u_mix;
-    auto trial = [&](double s, double& a1, double& U1, double& U2,
-                     double& U4, double& U5) {
-        a1 = alpha_1 + s * d_alpha1;
-        U1 = m_1 + sgn * s * dm;
-        U2 = m_2 - sgn * s * dm;
-        U4 = U[4] + sgn * s * dm * H_I;
-        U5 = U[5] - sgn * s * dm * H_I;
-    };
-    auto valid_at = [&](double s) -> bool {
-        double a1, U1, U2, U4, U5;
-        trial(s, a1, U1, U2, U4, U5);
-        if (!std::isfinite(U1) || !std::isfinite(U2) ||
-            !std::isfinite(U4) || !std::isfinite(U5) ||
-            U1 <= 0.0 || U2 <= 0.0) return false;
-        if (a1 < alpha_floor || a1 > 1.0 - alpha_floor) return false;
-        const double r1 = U1 / a1, r2 = U2 / (1.0 - a1);
-        const double e1 = U4 / U1 - ke_cell, e2 = U5 / U2 - ke_cell;
-        PsPhase c1{}, c2{};
-        c1.alpha = a1; c2.alpha = 1.0 - a1;
-        eos.state_from_rho_e_phase(1, r1, e1, c1);
-        eos.state_from_rho_e_phase(2, r2, e2, c2);
-        // Representable = finite with positive T (metastable P <= 0
-        // accepted; requiring P > 0 would put a P = 0 cliff in the limiter).
-        return std::isfinite(c1.T) && std::isfinite(c1.P) && c1.T > 0.0
-            && std::isfinite(c2.T) && std::isfinite(c2.P) && c2.T > 0.0;
-    };
-    // When the full step is inadmissible, name the failing sub-test at s = 1.
-    auto count_full_step_reason = [&]() {
-        double a1t, U1t, U2t, U4t, U5t;
-        trial(1.0, a1t, U1t, U2t, U4t, U5t);
-        if (!std::isfinite(U1t) || !std::isfinite(U2t) ||
-            !std::isfinite(U4t) || !std::isfinite(U5t) ||
-            U1t <= 0.0 || U2t <= 0.0) {
-            ++ps_flash_refuse_count(PS_FLR_S1_MASS); return;
-        }
-        if (a1t < alpha_floor || a1t > 1.0 - alpha_floor) {
-            ++ps_flash_refuse_count(PS_FLR_S1_AFLOOR); return;
-        }
-        const double r1t = U1t / a1t, r2t = U2t / (1.0 - a1t);
-        const double e1t = U4t / U1t - ke_cell;
-        const double e2t = U5t / U2t - ke_cell;
-        PsPhase c1t{}, c2t{};
-        c1t.alpha = a1t; c2t.alpha = 1.0 - a1t;
-        eos.state_from_rho_e_phase(1, r1t, e1t, c1t);
-        eos.state_from_rho_e_phase(2, r2t, e2t, c2t);
-        const bool ok1 = std::isfinite(c1t.T) && std::isfinite(c1t.P) && c1t.T > 0.0;
-        const bool ok2 = std::isfinite(c2t.T) && std::isfinite(c2t.P) && c2t.T > 0.0;
-        if (!ok1) ++ps_flash_refuse_count(PS_FLR_S1_PH1);
-        if (!ok2) ++ps_flash_refuse_count(PS_FLR_S1_PH2);
-    };
-    double s_star;
-    if (valid_at(1.0)) {
-        s_star = 1.0;                       // full flash admissible
-    } else {
-        count_full_step_reason();
-        // Largest valid s by bisection; 24 iterations resolve s to ~6e-8.
-        double s_lo = 0.0, s_hi = 1.0;
-        for (int it = 0; it < 24; ++it) {
-            const double sm = 0.5 * (s_lo + s_hi);
-            if (valid_at(sm)) s_lo = sm; else s_hi = sm;
-        }
-        s_star = s_lo;
-    }
+    PsFlashProposal prop;
+    prop.alpha_1     = alpha_1;
+    prop.m_1         = m_1;
+    prop.m_2         = m_2;
+    prop.U4          = U[4];
+    prop.U5          = U[5];
+    prop.d_alpha1    = d_alpha1;
+    prop.dm          = dm;
+    prop.sgn         = sgn;
+    prop.H_I         = H_I;
+    prop.ke          = ke_cell;
+    prop.alpha_floor = alpha_floor;
+    double s_star = ps_flash_limiter(prop, eos, true);
     if (flash_hrm == 0 && s_star > 0.0) {
-        // W(s): the three windows on the dominant phase of trial(s), queried
+        // W(s): the three windows on the dominant phase of the trial state,
         // on its own branch as p_dom was.  A dominant phase without a finite
         // state closes the window (W = 0), which keeps the root below it.
         auto W_at = [&](double s) -> double {
             double a1, U1, U2, U4, U5;
-            trial(s, a1, U1, U2, U4, U5);
+            ps_flash_trial(prop, s, a1, U1, U2, U4, U5);
             PsPhase c{};
             if (flash_liq) {
                 c.alpha = a1;
@@ -436,7 +482,7 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
     if (s_star <= 0.0) PS_FLASH_REFUSE(PS_FLR_SSTAR);        // no admissible flash this step
 
     double a1_new, U1_new, U2_new, U4_new, U5_new;
-    trial(s_star, a1_new, U1_new, U2_new, U4_new, U5_new);
+    ps_flash_trial(prop, s_star, a1_new, U1_new, U2_new, U4_new, U5_new);
 
     U[0] = a1_new;
     U[1] = U1_new;
