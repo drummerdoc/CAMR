@@ -120,20 +120,30 @@ void cell_P_uout(const Real U[NVAR], int idir, Real n_sgn, const PsPres& pr,
 //  The reaction chain on a trial MultiFab: the operator order of
 //  apply_ps_reaction in CAMR_advance.cpp without its diagnostics.
 void
-CAMR::ps_reaction_trial(MultiFab& T, Real dt_r, long& relaxed, long& flashed)
+CAMR::ps_reaction_trial(MultiFab& T, Real dt_r, long& relaxed, long& flashed,
+                        MultiFab* SigT)
 {
+    //  SigT (CAMR.ps_sigma = 2 only): the scratch Sigma of the trial cells;
+    //  it takes the interior's Sigma channels in the interior's order
+    //  (vanish fold, X3 coefficient, growth, production and corridor
+    //  transfer, P2/P8).  nullptr: the chain as before.
     clean_state(T, false);
     ps_resync_mixture_mass(T, 0);
     ps_resync_phase_energy(T, 0);
-    ps_apply_vanish_fold(T, 0);
+    ps_apply_vanish_fold(T, 0, SigT);
     ps_apply_tfloor_fold(T, 0);
     ps_apply_floor(T, 0);
     clean_state(T, false);
     MultiFab pre(T.boxArray(), T.DistributionMap(), 2, 0);
     MultiFab::Copy(pre, T, UALPHA1, 0, 1, 0);
     MultiFab::Copy(pre, T, UE1,     1, 1, 0);
+    MultiFab a1_pre;
+    if (SigT != nullptr) {
+        a1_pre.define(T.boxArray(), T.DistributionMap(), 1, 0);
+        MultiFab::Copy(a1_pre, T, UALPHA1, 0, 1, 0);
+    }
     if (ps_do_relax() != 0) {
-        ps_apply_relaxation(T, dt_r, 0, false, nullptr);
+        ps_apply_relaxation(T, dt_r, 0, false, nullptr, SigT);
         clean_state(T, false);
     }
     long nrel = 0, nfl = 0;
@@ -145,7 +155,9 @@ CAMR::ps_reaction_trial(MultiFab& T, Real dt_r, long& relaxed, long& flashed)
         });
     }
     MultiFab::Copy(pre, T, UM1RHO1, 0, 1, 0);
-    ps_apply_sources(T, dt_r, 0);
+    if (SigT != nullptr) { ps_sigma_apply_growth(*SigT, a1_pre, T, 0); }
+    ps_apply_sources(T, dt_r, 0, SigT);
+    if (SigT != nullptr) { ps_sigma_presence_floor(*SigT, T, 0); }
     for (MFIter mfi(T); mfi.isValid(); ++mfi) {
         auto const& a = T.const_array(mfi);
         auto const& p = pre.const_array(mfi);
@@ -158,7 +170,8 @@ CAMR::ps_reaction_trial(MultiFab& T, Real dt_r, long& relaxed, long& flashed)
 }
 
 void
-CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt)
+CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt,
+                    const MultiFab* sig)
 {
     BL_PROFILE("CAMR::ps_bc_relaxed()");
 #if defined(AMREX_USE_GPU)
@@ -206,6 +219,22 @@ CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt)
         MultiFab WV (sba, sdm, NVAR,    0);   // the fan's entering wave (vent outflow)
         AX.setVal(Real(0.0));
         WV.setVal(Real(0.0));
+        //  CAMR.ps_sigma = 2: the boundary cells' Sigma (SigQ, from the
+        //  border construct_hydro_source holds) and its per-trial scratch
+        //  copy SigT.  Not allocated below level 2.
+        const bool sig_trial = (sig != nullptr) && (ps_sigma_mode() == 2);
+        MultiFab SigQ, SigT;
+        if (sig_trial) {
+            SigQ.define(sba, sdm, 1, 0);
+            SigT.define(sba, sdm, 1, 0);
+            for (MFIter mfi(SigQ); mfi.isValid(); ++mfi) {
+                auto const& sq = SigQ.array(mfi);
+                auto const& sb = sig->const_array(gidx[mfi.index()]);
+                amrex::LoopOnCpu(mfi.validbox(), [&] (int i, int j, int k) noexcept {
+                    sq(i,j,k) = sb(i,j,k);
+                });
+            }
+        }
 
         // Counters: the trials are not part of the solution's accounting.
         const PsCounters snap = ps_counters();
@@ -308,7 +337,8 @@ CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt)
                     }
                 });
             }
-            ps_reaction_trial(T, dt_r, nrel, nfl);
+            if (sig_trial) { MultiFab::Copy(SigT, SigQ, 0, 0, 1, 0); }
+            ps_reaction_trial(T, dt_r, nrel, nfl, sig_trial ? &SigT : nullptr);
             for (MFIter mfi(T); mfi.isValid(); ++mfi) {
                 const Box& bx = mfi.validbox();
                 auto const& t  = T.const_array(mfi);

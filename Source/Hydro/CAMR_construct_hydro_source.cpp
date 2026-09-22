@@ -360,7 +360,7 @@ CAMR::construct_hydro_source (const MultiFab& S,
     // cell on the relaxed trial state and rewrite its hydro_source
     // (PS_nscbc.cpp; a no-op without an NSCBC face).
     if (ps_hydro != 0) {
-        ps_bc_relaxed(S, src_to_fill, dt);
+        ps_bc_relaxed(S, src_to_fill, dt, sig);
     }
 #endif
 }

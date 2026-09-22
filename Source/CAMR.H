@@ -435,10 +435,15 @@ protected:
   //  a post-processor on hydro_source at the boundary cells of the NSCBC
   //  faces; ps_reaction_trial is the reaction chain it evaluates on trial
   //  states (PS_nscbc.cpp, docs/MODEL_AND_ALGORITHM.md §6).
+  //  sig: the Sigma border of construct_hydro_source (nullptr below
+  //  CAMR.ps_sigma = 1); read only at ps_sigma = 2, where the trial chain
+  //  runs with a scratch copy of the boundary cells' Sigma (SigT), as
+  //  apply_ps_reaction does with Sigma_Type (docs/PLAN_sigma.md §II.5).
   void ps_bc_relaxed(const amrex::MultiFab& S, amrex::MultiFab& hyd_src,
-                     amrex::Real dt);
+                     amrex::Real dt, const amrex::MultiFab* sig = nullptr);
   void ps_reaction_trial(amrex::MultiFab& T, amrex::Real dt_r,
-                         long& relaxed, long& flashed);
+                         long& relaxed, long& flashed,
+                         amrex::MultiFab* SigT = nullptr);
 #endif
 #ifdef CAMR_USE_MOVING_EB
   void ZeroingOutForPlotting(amrex::MultiFab& S);
