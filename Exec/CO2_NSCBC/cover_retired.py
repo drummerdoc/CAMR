@@ -6,8 +6,9 @@ the 1-D executable once per row with the key set (max_step=0: the tables are
 checked at startup), asserting a non-zero exit and the row's own
 "CAMR.<key> ... is retired" message.  Then the boundary dials whose bad
 values must abort at startup too (resolved in read_params): an unknown face type,
-ps_bc_nscbc_nsec out of range, an explicit NSCBC enable on a wall face, and
-do_mol=1 with an NSCBC face (that one at the first step, max_step=1).  Prints one line per failure and a PASS/FAIL
+ps_bc_nscbc_nsec out of range, an explicit NSCBC enable on a wall face,
+ps_sigma=2 at a relaxation mode other than 5 (docs/PLAN_sigma.md §II.4-review),
+and do_mol=1 with an NSCBC face (that one at the first step, max_step=1).  Prints one line per failure and a PASS/FAIL
 summary; exit code 0 on PASS.  docs/VERIFICATION.md §6.4.
 
 Usage:  [EXE=...] python3 cover_retired.py
@@ -34,6 +35,8 @@ cases += [(['CAMR.%s=%s' % (k, v)], 0, 'CAMR.%s = %s is retired' % (k, v)) for k
 cases += [(['CAMR.ps_bc_nscbc_type_xhi=foo'], 0, 'must be nr or vent'),
           (['CAMR.ps_bc_nscbc_nsec=9'], 0, 'ps_bc_nscbc_nsec must be in'),
           (['CAMR.lo_bc=SlipWall', 'CAMR.ps_bc_nscbc_xlo=1'], 0, 'is not Inflow'),
+          (['CAMR.ps_sigma=2', 'CAMR.ps_relax_mode=2'], 0,
+           'CAMR.ps_sigma = 2 requires CAMR.ps_relax_mode = 5'),
           (['CAMR.do_mol=1', 'CAMR.cfl=0.25'], 1, 'do_mol=1')]
 bad = 0
 for args, ms, msg in cases:
@@ -42,6 +45,6 @@ for args, ms, msg in cases:
         bad += 1; print('FAIL  %-45s rc=%d  expected "%s"' % (' '.join(args), rc, msg))
 rc, out = run([], 0)
 if rc != 0: bad += 1; print('FAIL  the bare deck does not start (rc=%d)' % rc)
-print('%d retired keys, %d retired values, 4 boundary dials, bare deck: %s'
+print('%d retired keys, %d retired values, 5 boundary dials, bare deck: %s'
       % (len(keys), len(vals), 'PASS' if bad == 0 else 'FAIL (%d)' % bad))
 sys.exit(0 if bad == 0 else 1)
