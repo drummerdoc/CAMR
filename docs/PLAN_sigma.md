@@ -39,7 +39,7 @@ Why a second state type and not `NUM_ADV = 1` in `State_Type`: an extra `State_T
 
 ## 3. Commits, each with its witness
 
-1. `docs: PLAN_sigma.md` (this file, with the maintainer's S-decisions filled in).
+1. `docs: PLAN_sigma.md` (this file; done). **Staging**: one stage per conversation, each opened with: branch `pipe-depress` at tag `sigma-stage0`, read `docs/AGENT_HANDBOOK.md` then this file, do the one stage named, stop at the handbook's stop conditions. Stages: 1 = commit 2 (with the maintainer's 2-D pair and R2 on `chk_sj2_03550`); 2 = commit 3; review A (maintainer); 3 = commit 4, strongest model, predictions written first, no default changes; review B (maintainer: proceed or park Σ at level 1); 4 = commit 5; 5 = commit 6.
 2. `sigma: Sigma_Type, transport, plotfile, checkpoint` — `ps_sigma` 0/1, no sources. Witness: at 0, N1, N1b, N4, `flashing_front`, the battery, and the 2-D XC2D pair byte-identical; at 1 with Σ seeded by a one-cell IC hook, G2 (flux identities, reflux residual at round-off in the XC2D AMR run) and G3 (no events → Σ ≡ 0). Restart gates R1, R3.
 3. `sigma: sources` — production, growth, destruction, at `ps_sigma = 1`. Witness: `State_Type` byte-identical at 1 (Σ is not read); G3's one-event analytic value; G4 (the $r_{\mathrm{nuc}}$ sweep leaves the discriminator unchanged); the offline kill test of `FUTURE_WORK` §1.3 re-run live (coverage of B2/B9's two-phase cells, zero at B4/B11's contacts). Restart gate R2 with both `zero` and `alg`.
 4. `sigma: coupling` — `ps_sigma = 2`. Predictions before the run (to be written into this file at that commit): the ECCSEL Test 19 recovery of 2–4 bar appears at 0.8 and 1.6 m at the measured times; Test 24 stays flat at its first level; the battery's B rows move and A/C rows are byte-identical; B2 and B9 keep their `exact_suite` quality within scheme error (G1's statement); the 2-D windows of `regen_refs.sh windows` complete.
@@ -55,6 +55,8 @@ Why a second state type and not `NUM_ADV = 1` in `State_Type`: an extra `State_T
 `[DECIDE-S5]` $\theta(\Sigma)$: off (recommended now) or in.
 `[DECIDE-S6]` Default of `ps_sigma_restart_init`: abort (recommended), `zero`, or `alg`.
 
+**Taken (22 Sept), the recommended values on the maintainer's instruction to proceed: S1 go; S2 `Sigma_Type`; S3 growth on from commit 3; S4 no floor; S5 θ(Σ) off; S6 `abort`.** Part II is written for exactly these.
+
 ## 5. Effort and risk
 
 Commits 2–3: about three days including the 2-D reflux and the restart gates. Commit 4: one day of code, then the runs (ECCSEL on the Mac with GERG, about an hour; the battery in the VM; the 2-D windows on the Mac, ~65 min). Commit 5: half a day. Documents: one day. The risk is in commit 4 and it is physical, not numerical: whether nucleation-born area, grown as $\alpha^{2/3}$, gives the warm test a large Σ and the cold test a small one without a per-test constant. If it does not, Σ stays at `ps_sigma ≤ 1` as a diagnostic (G1's own falsifier) and the note says what was measured.
@@ -65,9 +67,9 @@ Commits 2–3: about three days including the 2-D reflux and the restart gates. 
 
 Read `docs/AGENT_HANDBOOK.md` first. Part I above is the design and the maintainer's decisions; Part II is the work order for commits 2 and 3 (infrastructure and sources; no recorded number changes) and the anchored design for commit 4 (coupling; numbers change, the maintainer reads the gates before it is merged). File and line anchors are as of commit `b6fc419` on `pipe-depress`; re-locate by the quoted text, not the number, if the file has moved.
 
-## II.1 Assumed decisions (Part I §4)
+## II.1 Decisions (Part I §4)
 
-Written for S1 = go, S2 = `Sigma_Type`, S3 = growth on from commit 3, S4 = no floor, S5 = θ(Σ) off, S6 = restart default aborts. If the maintainer decides otherwise the affected paragraph is marked "(S-n)".
+Taken as S1 = go, S2 = `Sigma_Type`, S3 = growth on from commit 3, S4 = no floor, S5 = θ(Σ) off, S6 = restart default aborts. Paragraphs marked "(S-n)" are the ones that would change under a different choice.
 
 ## II.2 Physics choices that Part I left implicit — now fixed, or flagged
 
