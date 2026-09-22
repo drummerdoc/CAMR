@@ -83,5 +83,37 @@ inline const std::string& ps_sigma_restart_init()
     return cached;
 }
 
+//  CAMR.ps_sigma_rnuc (1e-5 m): the nucleation radius of Sigma's
+//  production term, dSigma = (3/r_nuc) d_alpha_seed per committed
+//  nucleation event (docs/PLAN_sigma.md S-c).  Read only at
+//  CAMR.ps_sigma >= 1.  Must be > 0.
+inline amrex::Real ps_sigma_rnuc()
+{
+    static const amrex::Real cached = []() -> amrex::Real {
+        const amrex::Real v = ps_dial_real("ps_sigma_rnuc", amrex::Real(1.0e-5));
+        if (!(v > amrex::Real(0.0))) {
+            amrex::Abort("CAMR.ps_sigma_rnuc must be > 0");
+        }
+        return v;
+    }();
+    return cached;
+}
+
+//  CAMR.ps_sigma_growth (1): TEST-ONLY (retired in commit 6).  0 switches
+//  off Sigma's growth source (P1) and nothing else, so the production
+//  identity of witness G3b can be asserted on its own.  Read only at
+//  CAMR.ps_sigma >= 1.
+inline int ps_sigma_growth()
+{
+    static const int cached = []() -> int {
+        const int v = ps_dial_int("ps_sigma_growth", 1);
+        if (v != 0 && v != 1) {
+            amrex::Abort("CAMR.ps_sigma_growth must be 0 or 1");
+        }
+        return v;
+    }();
+    return cached;
+}
+
 #endif  // USE_PS_HYDRO
 #endif  // PS_DIALS_H
