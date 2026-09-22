@@ -35,6 +35,7 @@
 #include <AMReX_MultiFab.H>
 #include <AMReX_Print.H>
 #include <AMReX_BLProfiler.H>
+#include <iomanip>
 #include <cmath>
 
 //  Report helpers of the source driver: a cumulative count printed only
@@ -153,6 +154,15 @@ ps_sigma_presence_floor(amrex::MultiFab& Sig, const amrex::MultiFab& S,
             const amrex::Real s = Sg(i, j, k);
             //  The test is written so a non-finite Sigma also lands on 0.
             if (absent || !(s > amrex::Real(1.0e-30))) {
+                if (s != amrex::Real(0.0)) {
+                    //  The same destruction channel as the vanish fold's
+                    //  (P2), counted in the same pair so the production
+                    //  balance of witness G3b closes exactly.
+                    ++ps_counters().sigma_vanish_n;
+                    if (std::isfinite(s)) {
+                        ps_counters().sigma_vanish_sum += double(s);
+                    }
+                }
                 Sg(i, j, k) = amrex::Real(0.0);
             }
         });
@@ -348,6 +358,37 @@ ps_sigma_fill_algebraic(amrex::MultiFab& Sig, const amrex::MultiFab& S)
                    << " refused for a non-finite branch state; the run is the"
                    << " current model from this step on, not the trajectory of"
                    << " a run with Sigma from t = 0.\n";
+}
+
+//  [PS-SIGMA]: Sigma's own cumulative census, printed only when it grows.
+//  Counting only; nothing here is read by the numerics.  Called from
+//  CAMR_advance AFTER the P2/P8 pass, not from inside ps_apply_sources:
+//  that pass is a destruction channel too, and a census printed before it
+//  leaves the last step of a run unaccounted for (measured: the G3b
+//  balance closed to 1e-16 on every untruncated step and to 1.9e-8 on a
+//  run whose final step was cut short to land on stop_time).
+inline void ps_sigma_report()
+{
+    static long s_prev_prod = 0, s_prev_vanish = 0, s_prev_corr = 0;
+    const PsCounters& sc = ps_counters();
+    if (sc.sigma_prod_n > s_prev_prod ||
+        sc.sigma_vanish_n > s_prev_vanish ||
+        sc.sigma_corridor_would > s_prev_corr) {
+        //  17 digits: the production balance of witness G3b is asserted at
+        //  1e-10 relative, which the default 10-digit stream precision
+        //  cannot carry.
+        amrex::Print() << std::setprecision(17)
+                       << "[PS-SIGMA] prod_n=" << sc.sigma_prod_n
+                       << " prod_dalpha=" << sc.sigma_prod_dalpha
+                       << " vanish_n=" << sc.sigma_vanish_n
+                       << " vanish_sum=" << sc.sigma_vanish_sum
+                       << " corridor_would_transfer="
+                       << sc.sigma_corridor_would << "\n"
+                       << std::setprecision(6);
+        s_prev_prod   = sc.sigma_prod_n;
+        s_prev_vanish = sc.sigma_vanish_n;
+        s_prev_corr   = sc.sigma_corridor_would;
+    }
 }
 
 // -----------------------------------------------------------------
@@ -683,26 +724,6 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0,
             });
         }
         BL_PROFILE_VAR_STOP(ps_src_sigcorr);
-    }
-
-    //  [PS-SIGMA]: Sigma's own cumulative census, printed only when it
-    //  grows.  Counting only; nothing here is read by the numerics.
-    if (Sig != nullptr) {
-        static long s_prev_prod = 0, s_prev_vanish = 0, s_prev_corr = 0;
-        const PsCounters& sc = ps_counters();
-        if (sc.sigma_prod_n > s_prev_prod ||
-            sc.sigma_vanish_n > s_prev_vanish ||
-            sc.sigma_corridor_would > s_prev_corr) {
-            amrex::Print() << "[PS-SIGMA] prod_n=" << sc.sigma_prod_n
-                           << " prod_dalpha=" << sc.sigma_prod_dalpha
-                           << " vanish_n=" << sc.sigma_vanish_n
-                           << " vanish_sum=" << sc.sigma_vanish_sum
-                           << " corridor_would_transfer="
-                           << sc.sigma_corridor_would << "\n";
-            s_prev_prod   = sc.sigma_prod_n;
-            s_prev_vanish = sc.sigma_vanish_n;
-            s_prev_corr   = sc.sigma_corridor_would;
-        }
     }
 
     // -------------------------------------------------------------

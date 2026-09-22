@@ -472,7 +472,12 @@ CAMR::CAMR_advance (Real time,
         diag_a1(S, "reaction post-relax");  // jump here => MT/relaxation is the driver
         if (Sig != nullptr) { ps_sigma_apply_growth(*Sig, a1_pre, S, 0); }
         ps_apply_sources(S, dt_r, ng, Sig);
-        if (Sig != nullptr) { ps_sigma_presence_floor(*Sig, S, 0); }
+        if (Sig != nullptr) {
+            ps_sigma_presence_floor(*Sig, S, 0);
+            //  After the P2/P8 pass, so the census covers every channel of
+            //  the step it reports (including the last step of a run).
+            if (do_print) { ps_sigma_report(); }
+        }
         diag_mass(S, "D post sources (flash)");
 #ifdef CAMR_PS_DIAG
         {   // CAMR.ps_floor_diag (0): per-step census of the EOS repairs.
