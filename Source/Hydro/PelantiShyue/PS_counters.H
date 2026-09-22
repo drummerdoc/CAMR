@@ -219,6 +219,9 @@ struct PsCounters {
     long   sigma_vanish_n       = 0;
     double sigma_vanish_sum     = 0.0;
     long   sigma_corridor_would = 0;
+    //  sigma_corridor_dm : at ps_sigma = 2, the summed committed |dm|
+    //                   [kg/m^3] of those transfers.
+    double sigma_corridor_dm    = 0.0;
 
     // ---- hem kernels (hem_*.H) --------------------------------------
     long   mass_transfer_count  = 0;

@@ -25,6 +25,7 @@
 //      CAMR.ps_mt_update_alpha (-1), CAMR.ps_mt_tau_model (0).
 // =====================================================================
 
+#include <sstream>
 #include "IndexDefines.H"
 #include "EOS.H"
 #include "hem_pelanti_shyue.H"
@@ -212,14 +213,18 @@ ps_sigma_apply_growth(amrex::MultiFab& Sig, const amrex::MultiFab& a1_pre,
 //  saturation state exactly as the nucleator's does, and capped by the
 //  nucleator's representability limiter (ps_flash_limiter).
 //
-//  Returns the transfer this cell WOULD commit, |dm| in kg/m^3; 0 when
-//  the cell is not eligible or the limiter closed.  It writes nothing.
-//  At CAMR.ps_sigma = 1 the caller only counts it, so this commit moves
-//  no State_Type number; commit 4 applies it at ps_sigma = 2.
+//  ps_sigma_corridor_prop fills the full-step proposal and returns the
+//  limited fraction s in [0, 1] of it that keeps both phases
+//  representable; 0 when the cell is not eligible or the limiter closed.
+//  It writes nothing.  ps_sigma_corridor_dm is s * |dm| [kg/m^3], the
+//  transfer the cell would commit: at CAMR.ps_sigma = 1 the caller only
+//  counts it; at 2 the caller commits ps_flash_trial(prop, s) (commit 4,
+//  docs/PLAN_sigma.md §II.5).
 inline double
-ps_sigma_corridor_dm(amrex::Array4<const amrex::Real> const& U,
-                     int i, int j, int k, amrex::Real sigma,
-                     const hem::PsPhaseAPI& eos, const PsPres& pr, double dt)
+ps_sigma_corridor_prop(amrex::Array4<const amrex::Real> const& U,
+                       int i, int j, int k, amrex::Real sigma,
+                       const hem::PsPhaseAPI& eos, const PsPres& pr, double dt,
+                       hem::PsFlashProposal& prop)
 {
     using amrex::Real;
     if (!(sigma > Real(0.0)) || !(dt > 0.0)) { return 0.0; }
@@ -273,7 +278,6 @@ ps_sigma_corridor_dm(amrex::Array4<const amrex::Real> const& U,
     const double H_I = e_new + eos.Psat_of_T(T_dom) / rho_new + ke;
     if (!std::isfinite(H_I)) { return 0.0; }
 
-    hem::PsFlashProposal prop;
     prop.alpha_1     = double(a1);
     prop.m_1         = double(m1);
     prop.m_2         = double(m2);
@@ -286,7 +290,55 @@ ps_sigma_corridor_dm(amrex::Array4<const amrex::Real> const& U,
     prop.ke          = ke;
     prop.alpha_floor = ps_const::ALPHA_ROUNDOFF;
     const double s = hem::ps_flash_limiter(prop, eos, false);
-    return (s > 0.0) ? s * dm : 0.0;
+    return (s > 0.0) ? s : 0.0;
+}
+
+inline double
+ps_sigma_corridor_dm(amrex::Array4<const amrex::Real> const& U,
+                     int i, int j, int k, amrex::Real sigma,
+                     const hem::PsPhaseAPI& eos, const PsPres& pr, double dt)
+{
+    hem::PsFlashProposal prop;
+    const double s = ps_sigma_corridor_prop(U, i, j, k, sigma, eos, pr, dt, prop);
+    return (s > 0.0) ? s * prop.dm : 0.0;
+}
+
+//  The corridor transfer committed (CAMR.ps_sigma = 2 only): the limited
+//  fraction of the proposal, then P1 = P2 restored where the state changed
+//  (R-12, as after the nucleator), then Sigma grown by P1 on the vapour
+//  fraction's change across both (ps_sigma_growth = 1).  Returns the
+//  committed |dm| [kg/m^3], 0 when nothing moved.
+inline double
+ps_sigma_corridor_commit(amrex::Array4<amrex::Real> const& U,
+                         amrex::Array4<amrex::Real> const& Sg,
+                         int i, int j, int k,
+                         const hem::PsPhaseAPI& eos, const PsPres& pr, double dt)
+{
+    using amrex::Real;
+    hem::PsFlashProposal prop;
+    const double s = ps_sigma_corridor_prop(U, i, j, k, Sg(i, j, k), eos, pr, dt, prop);
+    if (!(s > 0.0)) { return 0.0; }
+    const Real a1_0 = U(i, j, k, UALPHA1);
+    hem::V6 Uv = ps_pack_v6(U, i, j, k, a1_0, U(i, j, k, UM1RHO1), U(i, j, k, UM2RHO2));
+    const hem::V6 Uv_pre = Uv;
+    double a1t, U1t, U2t, U4t, U5t;
+    hem::ps_flash_trial(prop, s, a1t, U1t, U2t, U4t, U5t);
+    Uv[0] = a1t; Uv[1] = U1t; Uv[2] = U2t; Uv[4] = U4t; Uv[5] = U5t;
+    if (Uv[0] != Uv_pre[0] || Uv[1] != Uv_pre[1] || Uv[4] != Uv_pre[4]) {
+        hem::ps_pressure_relax_cell(Uv, eos);
+    }
+    ps_unpack_v6(U, i, j, k, Uv);
+    if (ps_sigma_growth() != 0) {
+        const Real s0 = Sg(i, j, k);
+        const Real a2_0 = Real(1.0) - a1_0;
+        const Real a2_1 = Real(1.0) - U(i, j, k, UALPHA1);
+        if (s0 > Real(0.0) && a2_0 > Real(0.0) && a2_1 > Real(0.0) && a2_1 != a2_0) {
+            const Real c = Real(std::cbrt(double(a2_1) / double(a2_0)));
+            const Real s1 = s0 * c * c;
+            if (std::isfinite(s1) && s1 >= Real(0.0)) { Sg(i, j, k) = s1; }
+        }
+    }
+    return s * prop.dm;
 }
 
 
@@ -380,14 +432,20 @@ inline void ps_sigma_report()
         //  17 digits: the production balance of witness G3b is asserted at
         //  1e-10 relative, which the default 10-digit stream precision
         //  cannot carry.
-        amrex::Print() << std::setprecision(17)
-                       << "[PS-SIGMA] prod_n=" << sc.sigma_prod_n
-                       << " prod_dalpha=" << sc.sigma_prod_dalpha
-                       << " vanish_n=" << sc.sigma_vanish_n
-                       << " vanish_sum=" << sc.sigma_vanish_sum
-                       << " corridor_would_transfer="
-                       << sc.sigma_corridor_would << "\n"
-                       << std::setprecision(6);
+        std::ostringstream os;
+        os << std::setprecision(17)
+           << "[PS-SIGMA] prod_n=" << sc.sigma_prod_n
+           << " prod_dalpha=" << sc.sigma_prod_dalpha
+           << " vanish_n=" << sc.sigma_vanish_n
+           << " vanish_sum=" << sc.sigma_vanish_sum
+           << " corridor_would_transfer="
+           << sc.sigma_corridor_would;
+        //  At CAMR.ps_sigma = 2 those transfers were committed.
+        if (ps_sigma_mode() == 2) {
+            os << " corridor_dm=" << sc.sigma_corridor_dm;
+        }
+        os << "\n";
+        amrex::Print() << os.str();
         s_prev_prod   = sc.sigma_prod_n;
         s_prev_vanish = sc.sigma_vanish_n;
         s_prev_corr   = sc.sigma_corridor_would;
@@ -711,7 +769,28 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0,
     //      tells the maintainer, before commit 4 turns it on, how many
     //      cells the hand-over would act in.
     // -------------------------------------------------------------
-    if (Sig != nullptr) {
+    if (Sig != nullptr && ps_sigma_mode() == 2) {
+        //  CAMR.ps_sigma = 2: the transfer is committed (docs/PLAN_sigma.md
+        //  P5, §II.5); counted as before, plus its mass.
+        BL_PROFILE_VAR("PS::ps_source_sigma_corridor()", ps_src_sigcorr);
+        const PsPres l_prc = ps_presence_params();
+        const double l_dt  = double(dt);
+        for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
+            const amrex::Box bx = mfi.growntilebox(nghost);
+            amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
+            amrex::Array4<amrex::Real> const& Sg = Sig->array(mfi);
+            amrex::LoopOnCpu(bx, [=] (int i, int j, int k) noexcept
+            {
+                const double dm = ps_sigma_corridor_commit(U, Sg, i, j, k,
+                                                           eos, l_prc, l_dt);
+                if (dm > 0.0) {
+                    ++ps_counters().sigma_corridor_would;
+                    ps_counters().sigma_corridor_dm += dm;
+                }
+            });
+        }
+        BL_PROFILE_VAR_STOP(ps_src_sigcorr);
+    } else if (Sig != nullptr) {
         BL_PROFILE_VAR("PS::ps_source_sigma_corridor()", ps_src_sigcorr);
         const PsPres l_prc = ps_presence_params();
         const double l_dt  = double(dt);
