@@ -61,6 +61,9 @@ amrex::Vector<int> CAMR::src_list;
 amrex::Real CAMR::previousCPUTimeUsed = 0.0;
 amrex::Real CAMR::startCPUTime = 0.0;
 int CAMR::num_state_type = 0;
+#ifdef USE_PS_HYDRO
+amrex::Vector<int> CAMR::s_sigma_alg_pending;
+#endif
 
 void
 CAMR::read_params()
@@ -969,6 +972,14 @@ CAMR::post_regrid(int /*lbase*/, int /*new_finest*/)
     // fold audit counts the churn ([PS-FOLD]).
     ps_apply_vanish_fold(S_new, 0);
     ps_apply_floor(S_new, 0);
+  }
+  // CAMR.ps_sigma_restart_init = alg: a regrid before this level's first
+  // advance (the restart's initial regrid) re-applies the closure on the
+  // state just resynced, folded and floored (docs/PLAN_sigma.md §II.4b).
+  if (level < static_cast<int>(s_sigma_alg_pending.size()) &&
+      s_sigma_alg_pending[level] != 0) {
+    sigma_alg_fill("restart_init = alg, after the restart's regrid, level " +
+                   std::to_string(level));
   }
 #endif
 }

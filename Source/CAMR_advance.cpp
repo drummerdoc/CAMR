@@ -34,6 +34,14 @@ CAMR::advance(
 
     BL_PROFILE("CAMR::advance()");
 
+#ifdef USE_PS_HYDRO
+    // The level's first advance ends the restart's alg re-fill window
+    // (CAMR::post_regrid, docs/PLAN_sigma.md §II.4b).
+    if (level < static_cast<int>(s_sigma_alg_pending.size())) {
+        s_sigma_alg_pending[level] = 0;
+    }
+#endif
+
     if (do_mol) {
         amrex::Print() << "Doing MOL Advance" << std::endl;
 #ifdef USE_PS_HYDRO

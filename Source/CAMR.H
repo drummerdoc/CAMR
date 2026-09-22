@@ -350,6 +350,15 @@ public:
 #ifdef USE_PS_HYDRO
   // Sigma >= 0 with the 1e-30 floor (docs/PLAN_sigma.md P7, P8).
   static void sigma_clip(amrex::MultiFab& Sig, int ng);
+  // CAMR.ps_sigma_restart_init = alg (docs/PLAN_sigma.md §II.4b): fill this
+  // level's Sigma from the algebraic closure of its own State_Type.  The
+  // restart sets s_sigma_alg_pending on every level; post_regrid re-applies
+  // the fill while its level's flag is set, and the level's first advance
+  // clears it -- so a box the restart's initial regrid creates holds the
+  // closure, not an interpolant of it, and later regrids interpolate (P7).
+  // A host vector, no FAB: nothing is added to the per-rank byte count.
+  void sigma_alg_fill(const std::string& label);
+  static amrex::Vector<int> s_sigma_alg_pending;
 #endif
 
 // public for CUDA

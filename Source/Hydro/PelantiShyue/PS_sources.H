@@ -300,9 +300,12 @@ ps_sigma_corridor_dm(amrex::Array4<const amrex::Real> const& U,
 //  phases present, or whose branch state is not finite, gets 0.  The
 //  continuation is the current model from that step on and is NOT the
 //  trajectory of a run with Sigma from t = 0; Part I S-e says so and the
-//  restart prints what it did.
+//  restart prints what it did.  `label` names the call site in that line
+//  (the default is the restart's own fill; CAMR::post_regrid re-applies it
+//  after the restart's initial regrid, docs/PLAN_sigma.md §II.4b).
 inline void
-ps_sigma_fill_algebraic(amrex::MultiFab& Sig, const amrex::MultiFab& S)
+ps_sigma_fill_algebraic(amrex::MultiFab& Sig, const amrex::MultiFab& S,
+                        const std::string& label = "restart_init = alg")
 {
     const hem::PsPhaseAPI eos = ps_make_camr_eos_api();
     const PsPres pr  = ps_presence_params();
@@ -352,7 +355,7 @@ ps_sigma_fill_algebraic(amrex::MultiFab& Sig, const amrex::MultiFab& S)
     }
     amrex::ParallelDescriptor::ReduceLongSum(n_set);
     amrex::ParallelDescriptor::ReduceLongSum(n_refused);
-    amrex::Print() << "[PS-SIGMA] restart_init = alg: Sigma set in " << n_set
+    amrex::Print() << "[PS-SIGMA] " << label << ": Sigma set in " << n_set
                    << " two-phase cells (D = " << D << " m, delta = " << del
                    << "), " << n_refused
                    << " refused for a non-finite branch state; the run is the"

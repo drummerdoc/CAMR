@@ -72,9 +72,11 @@ CAMR::restart(amrex::Amr& papa, std::istream& is, bool bReadSpecial)
       } else if (init == "alg") {
         //  Gate R2's `alg` leg: the algebraic closure in every two-phase
         //  cell (docs/PLAN_sigma.md S-e).  StateData::restart has just
-        //  zero-filled it, so every other cell keeps 0.
-        ps_sigma_fill_algebraic(get_new_data(Sigma_Type),
-                                get_new_data(State_Type));
+        //  zero-filled it, so every other cell keeps 0.  Every level is
+        //  marked for the re-fill after the restart's initial regrid
+        //  (post_regrid, §II.4b), a level that regrid creates included.
+        s_sigma_alg_pending.assign(parent->maxLevel() + 1, 1);
+        sigma_alg_fill("restart_init = alg");
       }
       // zero: already zero-filled by StateData::restart.
     }
@@ -97,6 +99,15 @@ CAMR::restart(amrex::Amr& papa, std::istream& is, bool bReadSpecial)
     amrex::Print() << "read CPU time: " << previousCPUTimeUsed << "\n";
   }
 }
+
+#ifdef USE_PS_HYDRO
+void
+CAMR::sigma_alg_fill(const std::string& label)
+{
+  ps_sigma_fill_algebraic(get_new_data(Sigma_Type), get_new_data(State_Type),
+                          label);
+}
+#endif
 
 void
 CAMR::checkPoint(
