@@ -55,6 +55,9 @@ overrides shown on a failure line.
             with Sigma = 1 in cell 32; the restart from chk00050 is
             byte-identical, sigma included (R1); that checkpoint restarted at
             ps_sigma = 0 equals a ps_sigma = 0 run from scratch (R3).
+  sigma     Sigma's source coverage, by running sigma_cover.py with the
+            same executable (kill test, production identity G3b, r_nuc
+            scaling G4; docs/PLAN_sigma.md §II.4).
   front     B2 (evaporation wave) and the nucleator's own feedback
             (docs/MODEL_AND_ALGORITHM.md §5.5).  Two runs differing by 1e-12
             in p_L, a plotfile every 4 steps.  Asserts: the largest relative
@@ -352,8 +355,25 @@ def t_selftest():
     return ok
 
 
+# -------------------------------------------------------------------- sigma
+def t_sigma():
+    """Sigma's source coverage (sigma_cover.py; docs/PLAN_sigma.md §II.4):
+    the live kill test on B2/B9 and the zero-interface contacts B4/B11, the
+    production identity G3b with the growth source off, and G4's 1/r_nuc
+    scaling.  Runs at CAMR.ps_sigma = 1, where Sigma is read by nothing."""
+    T = 'sigma'
+    scr = os.path.join(HERE, 'sigma_cover.py')
+    r = subprocess.run([sys.executable, '-u', scr],
+                       env=dict(os.environ, EXE=EXE), capture_output=True, text=True)
+    for l in (r.stdout + r.stderr).rstrip('\n').split('\n'):
+        if l.strip(): print('      ' + l)
+    return check(T, r.returncode == 0, 'sigma_cover.py reported a failure (lines above)',
+                 'EXE=%s python3 -u %s' % (EXE, scr))
+
+
 TESTS = [('order', t_order), ('limiter', t_limiter), ('badkeys', t_badkeys), ('strang', t_strang),
-         ('derives', t_derives), ('restart', t_restart), ('selftest', t_selftest), ('front', t_front)]
+         ('derives', t_derives), ('restart', t_restart), ('selftest', t_selftest), ('front', t_front),
+         ('sigma', t_sigma)]
 if __name__ == '__main__':
     sel = sys.argv[1:] or [n for n, _ in TESTS]
     unknown = [s for s in sel if s not in dict(TESTS)]
