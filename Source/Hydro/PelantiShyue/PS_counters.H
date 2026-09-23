@@ -222,6 +222,12 @@ struct PsCounters {
     //  sigma_corridor_dm : at ps_sigma = 2, the summed committed |dm|
     //                   [kg/m^3] of those transfers.
     double sigma_corridor_dm    = 0.0;
+    //  sigma_corridor_eq_n : at ps_sigma = 2, steps whose equilibrium bound
+    //                   ([DECIDE-S7]) lay within the full step (s_eq <= 1).
+    //  sigma_corridor_sign_skip : steps skipped because the rate and the
+    //                   dominant phase disagreed on the direction.
+    long   sigma_corridor_eq_n      = 0;
+    long   sigma_corridor_sign_skip = 0;
 
     // ---- hem kernels (hem_*.H) --------------------------------------
     long   mass_transfer_count  = 0;

@@ -26,6 +26,7 @@
 // =====================================================================
 
 #include <sstream>
+#include <limits>
 #include "IndexDefines.H"
 #include "EOS.H"
 #include "hem_pelanti_shyue.H"
@@ -303,11 +304,79 @@ ps_sigma_corridor_dm(amrex::Array4<const amrex::Real> const& U,
     return (s > 0.0) ? s * prop.dm : 0.0;
 }
 
-//  The corridor transfer committed (CAMR.ps_sigma = 2 only): the limited
-//  fraction of the proposal, then P1 = P2 restored where the state changed
-//  (R-12, as after the nucleator), then Sigma grown by P1 on the vapour
-//  fraction's change across both (ps_sigma_growth = 1).  Returns the
-//  committed |dm| [kg/m^3], 0 when nothing moved.
+//  [DECIDE-S7] (docs/PLAN_sigma.md §II.5-S7): the equilibrium bound of the
+//  corridor step.  h(s) = sigma (P_dom(s) - Psat(T_dom(s))) on the dominant
+//  (Independent) phase of the trial state at fraction s of the full step
+//  (sigma = +1 when mass moves 1 -> 2); equilibrium is its root.  Returns
+//  false when the trial state cannot be evaluated.
+inline bool
+ps_sigma_corridor_h(const hem::PsFlashProposal& prop, const hem::PsPhaseAPI& eos,
+                    int dom, double sig, double s, double& h)
+{
+    double a1, U1, U2, U4, U5;
+    hem::ps_flash_trial(prop, s, a1, U1, U2, U4, U5);
+    if (!std::isfinite(a1) || !(a1 > 0.0) || !(a1 < 1.0)) { return false; }
+    if (!std::isfinite(U1) || !std::isfinite(U2) || !(U1 > 0.0) || !(U2 > 0.0)) { return false; }
+    hem::PsPhase c{};
+    if (dom == 1) {
+        c.alpha = a1;
+        eos.state_from_rho_e_phase(1, U1 / a1, U4 / U1 - prop.ke, c);
+    } else {
+        c.alpha = 1.0 - a1;
+        eos.state_from_rho_e_phase(2, U2 / (1.0 - a1), U5 / U2 - prop.ke, c);
+    }
+    if (!std::isfinite(c.T) || !std::isfinite(c.P) || !(c.T > 0.0)) { return false; }
+    const double Ps = eos.Psat_of_T(c.T);
+    if (!std::isfinite(Ps)) { return false; }
+    h = sig * (c.P - Ps);
+    return std::isfinite(h);
+}
+
+//  s_eq: the root of h on the trial path, bracketed on [0, 1] or by doubling
+//  to 64 full steps, refined by Illinois (7 steps and a final interpolation,
+//  the nucleator's pattern).  Returns +inf when no root is bracketed and
+//  0 when h(0) >= 0 (the rate and the dominant phase disagree on the
+//  direction).
+inline double
+ps_sigma_corridor_seq(const hem::PsFlashProposal& prop, const hem::PsPhaseAPI& eos,
+                      int dom, double sig)
+{
+    constexpr double inf = std::numeric_limits<double>::infinity();
+    double h0 = 0.0;
+    if (!ps_sigma_corridor_h(prop, eos, dom, sig, 0.0, h0)) { return 0.0; }
+    if (!(h0 < 0.0)) { return 0.0; }
+    double sa = 0.0, Fa = h0, sb = 1.0, Fb = 0.0;
+    bool bracketed = false;
+    for (int n = 0; n <= 6; ++n) {                       // sb = 1, 2, 4, ..., 64
+        double hb = 0.0;
+        if (!ps_sigma_corridor_h(prop, eos, dom, sig, sb, hb)) { return inf; }
+        if (hb >= 0.0) { Fb = hb; bracketed = true; break; }
+        sa = sb; Fa = hb; sb *= 2.0;
+    }
+    if (!bracketed) { return inf; }
+    if (Fb == 0.0) { return sb; }
+    int side = 0;
+    for (int it = 0; it < 7; ++it) {
+        const double sc = (sa * Fb - sb * Fa) / (Fb - Fa);
+        double Fc = 0.0;
+        if (!ps_sigma_corridor_h(prop, eos, dom, sig, sc, Fc)) { break; }
+        if (Fc == 0.0) { sa = sb = sc; break; }
+        if (Fc > 0.0) { sb = sc; Fb = Fc; if (side == -1) Fa *= 0.5; side = -1; }
+        else          { sa = sc; Fa = Fc; if (side == +1) Fb *= 0.5; side = +1; }
+    }
+    double sr = (sa == sb) ? sa : (sa * Fb - sb * Fa) / (Fb - Fa);
+    if (sr < sa) sr = sa;
+    if (sr > sb) sr = sb;
+    return sr;
+}
+
+//  The corridor transfer committed (CAMR.ps_sigma = 2 only): the fraction
+//  s_eq (1 - exp(-1/s_eq)) of the full step, bounded at equilibrium
+//  ([DECIDE-S7]) and capped by the representability limiter, then P1 = P2
+//  restored where the state changed (R-12, as after the nucleator), then
+//  Sigma grown by P1 on the vapour fraction's change across both
+//  (ps_sigma_growth = 1).  Returns the committed |dm| [kg/m^3], 0 when
+//  nothing moved.
 inline double
 ps_sigma_corridor_commit(amrex::Array4<amrex::Real> const& U,
                          amrex::Array4<amrex::Real> const& Sg,
@@ -316,7 +385,17 @@ ps_sigma_corridor_commit(amrex::Array4<amrex::Real> const& U,
 {
     using amrex::Real;
     hem::PsFlashProposal prop;
-    const double s = ps_sigma_corridor_prop(U, i, j, k, Sg(i, j, k), eos, pr, dt, prop);
+    const double s_rep = ps_sigma_corridor_prop(U, i, j, k, Sg(i, j, k), eos, pr, dt, prop);
+    if (!(s_rep > 0.0)) { return 0.0; }
+    //  Eligibility guarantees exactly one Independent phase: the dominant.
+    const int dom = (ps_regime(U(i, j, k, UALPHA1), U(i, j, k, UM1RHO1), pr)
+                     == PsRegime::Independent) ? 1 : 2;
+    const double sig = (prop.sgn < 0.0) ? 1.0 : -1.0;      // +1: mass 1 -> 2
+    const double s_eq = ps_sigma_corridor_seq(prop, eos, dom, sig);
+    if (!(s_eq > 0.0)) { ++ps_counters().sigma_corridor_sign_skip; return 0.0; }
+    if (s_eq <= 1.0) { ++ps_counters().sigma_corridor_eq_n; }
+    const double s_relax = std::isfinite(s_eq) ? s_eq * (1.0 - std::exp(-1.0 / s_eq)) : 1.0;
+    const double s = std::min(s_relax, s_rep);
     if (!(s > 0.0)) { return 0.0; }
     const Real a1_0 = U(i, j, k, UALPHA1);
     hem::V6 Uv = ps_pack_v6(U, i, j, k, a1_0, U(i, j, k, UM1RHO1), U(i, j, k, UM2RHO2));
@@ -442,7 +521,9 @@ inline void ps_sigma_report()
            << sc.sigma_corridor_would;
         //  At CAMR.ps_sigma = 2 those transfers were committed.
         if (ps_sigma_mode() == 2) {
-            os << " corridor_dm=" << sc.sigma_corridor_dm;
+            os << " corridor_dm=" << sc.sigma_corridor_dm
+               << " corridor_eq_n=" << sc.sigma_corridor_eq_n
+               << " corridor_sign_skip=" << sc.sigma_corridor_sign_skip;
         }
         os << "\n";
         amrex::Print() << os.str();
