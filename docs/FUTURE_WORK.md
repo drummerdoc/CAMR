@@ -8,7 +8,7 @@ The transported interfacial-area design that stood here was built, measured and 
 
 ### 1.1 The morphology wall
 
-Unchanged as a statement: a dispersed mixture and a smeared contact can carry the same cell state and need rates orders of magnitude apart; one $D$ (`CAMR.ps_mt_srt_d`) cannot serve both (§4). The ECCSEL pair brackets $D$ at ≈ 0.2 m at 10 °C and ≲ 2e-3 m at 36 °C (`PLAN_pipe_depress.md` §5.3). The discriminator result of the offline kill test (Σ produced at nucleation covers the evaporation-wave cells and stays zero at the cross-critical contacts) was reproduced live and still holds; it is a classification result, not a rate.
+Unchanged as a statement: a dispersed mixture and a smeared contact can carry the same cell state and need rates orders of magnitude apart; one $D$ (`CAMR.ps_mt_srt_d`) cannot serve both (§4). The ECCSEL pair brackets $D$ at ≈ 0.2 m at 10 °C and ≲ 2e-3 m at 36 °C (VERIFICATION §6.8 §5.3). The discriminator result of the offline kill test (Σ produced at nucleation covers the evaporation-wave cells and stays zero at the cross-critical contacts) was reproduced live and still holds; it is a classification result, not a rate.
 
 ### 1.2 The onset
 
@@ -16,7 +16,7 @@ Done (R-17, 23 Sept 2026): the margin is the classical-nucleation-theory onset a
 
 ### 1.3 The growth rate
 
-The measured hump (Test 19) is produced by a source that starts at saturation and keeps producing while the pressure recovers (`PLAN_pipe_depress.md` §7, the HRM-source probe). The physical form is heat-limited bubble growth (Plesset–Zwick / Mikić, a Jakob-number law), not the SRT kinetic flux, whose interface speed (≈ 1–3 m/s per bar of superheat) drove every Σ run to equilibrium. Any such rate below `alpha_cond` must be written without the trace phase's own intensive state (X-40), and integrated implicitly (the stiffness estimate kept in X-40).
+The measured hump (Test 19) is produced by a source that starts at saturation and keeps producing while the pressure recovers (VERIFICATION §6.8 (the HRM-source probe), the HRM-source probe). The physical form is heat-limited bubble growth (Plesset–Zwick / Mikić, a Jakob-number law), not the SRT kinetic flux, whose interface speed (≈ 1–3 m/s per bar of superheat) drove every Σ run to equilibrium. Any such rate below `alpha_cond` must be written without the trace phase's own intensive state (X-40), and integrated implicitly (the stiffness estimate kept in X-40).
 
 ### 1.4 Area, if reopened
 
