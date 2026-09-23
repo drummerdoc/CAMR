@@ -65,6 +65,52 @@ inline void co2_sat_state(double T, double& rho_L, double& rho_V)
     rho_V = rhoV_tab[lo] + w * (rhoV_tab[hi] - rhoV_tab[lo]);
 }
 
+// -----------------------------------------------------------------
+// Surface tension of CO2 [N/m]: sigma = 0.07863 (1 - T/Tc)^1.254, the
+// IAPWS-form fit of Mulero, Cachadina and Parra, J. Phys. Chem. Ref.
+// Data 41 (2012) 043105 (stated 1-2 % on CO2); zero at and above Tc.
+// -----------------------------------------------------------------
+inline double co2_surface_tension(double T, double T_c)
+{
+    const double x = 1.0 - T / T_c;
+    return (x > 0.0) ? 0.07863 * std::pow(x, 1.254) : 0.0;
+}
+
+// -----------------------------------------------------------------
+// The metastability margin from classical nucleation theory
+// (docs/PLAN_onset.md §2): the homogeneous nucleation rate
+//   J = N_l sqrt(2 sigma / (pi m1)) exp(-16 pi sigma^3 / (3 kB T dP^2)),
+//   dP = (P_sat - P) (1 - rho_v/rho_l),
+// solved for the onset pressure P_on at J = J_CRIT = 1e12 /(m^3 s) (Log
+// et al. 2024, App. A); m_CNT = 1 - P_on/P_sat, capped at m_max, which is
+// the heterogeneous (wall) floor the data require far from the critical
+// point.  Bisection on [0, P_sat]: J is monotone in P.  No EOS call: P_sat
+// through the api, the saturation densities from co2_sat_state.
+// -----------------------------------------------------------------
+inline double ps_flash_margin_cnt(double T, double P_sat, const PsPhaseAPI& eos,
+                                  double m_max)
+{
+    constexpr double kB = 1.380649e-23, NA = 6.02214076e23, J_CRIT = 1.0e12;
+    const double sig = co2_surface_tension(T, eos.t_crit());
+    if (!(sig > 0.0) || !(P_sat > 0.0) || !(T > 0.0)) return m_max;
+    double rho_l, rho_v; co2_sat_state(T, rho_l, rho_v);
+    const double m1  = eos.molar_mass() / NA;
+    const double poy = 1.0 - rho_v / rho_l;
+    if (!(poy > 0.0) || !(m1 > 0.0)) return m_max;
+    const double pref = (rho_l / m1) * std::sqrt(2.0 * sig / (M_PI * m1));
+    const double A    = 16.0 * M_PI * sig * sig * sig / (3.0 * kB * T);
+    // ln J(dP) = ln pref - A / dP^2 = ln J_CRIT  ->  dP^2 = A / ln(pref / J_CRIT)
+    // The band never closes to a hard switch: m >= M_MIN keeps the window
+    // a ramp of at least 0.1 % of P_sat (the near-critical limit, where
+    // sigma -> 0 and the homogeneous onset is at saturation).
+    constexpr double M_MIN = 1.0e-3;
+    const double L = std::log(pref / J_CRIT);
+    if (!(L > 0.0)) return M_MIN;                    // J exceeds J_CRIT at any undershoot
+    const double dP = std::sqrt(A / L) / poy;        // P_sat - P_on
+    const double m  = dP / P_sat;
+    return (m < M_MIN) ? M_MIN : (m < m_max) ? m : m_max;
+}
+
 inline long& ps_flash_source_count() { return ps_counters().flash_source_count; }
 inline long& ps_triple_point_count() { return ps_counters().triple_point_count; }
 
@@ -226,9 +272,19 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
     // CAMR.ps_flash_metastable_margin (0.10): the required undershoot, so
     // static contacts with both sides at saturation do not false-trigger
     // from marginal numerical dissipation.
-    static const double meta_margin =
+    static const double meta_margin_max =
         ps_dial_real("ps_flash_metastable_margin", 0.10);
+    // CAMR.ps_flash_onset (0): temporary selector (docs/PLAN_onset.md).
+    // 0 = the margin is the constant above; 1 = the margin is the classical
+    // nucleation theory onset at the liquid's temperature, capped at the
+    // constant (ps_flash_margin_cnt).  Other values abort.
+    static const int flash_onset = ps_dial_int("ps_flash_onset", 0);
+    if (flash_onset != 0 && flash_onset != 1)
+        amrex::Abort("CAMR.ps_flash_onset must be 0 or 1");
     const bool flash_liq = liq_dominant;
+    const double meta_margin = (flash_onset == 1 && flash_liq)
+        ? ps_flash_margin_cnt(p_dom.T, P_sat_here, eos, meta_margin_max)
+        : meta_margin_max;
     const double bw_P = meta_margin * P_sat_here;   // pressure ramp band
     double w_meta;
     if (flash_hrm == 1) {
@@ -403,10 +459,13 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
                             * ss01((T_crit_g - c.T) / bw_T);
             if (wT <= 0.0) return 0.0;
             const double Ps = eos.Psat_of_T(c.T);
-            const double bP = meta_margin * Ps;
+            const double mm = (flash_onset == 1 && flash_liq)
+                ? ps_flash_margin_cnt(c.T, Ps, eos, meta_margin_max) : meta_margin_max;
+            const double bP = mm * Ps;
+            if (!(bP > 0.0)) return 0.0;
             const double wM = flash_liq
-                ? ss01(0.5 + ((1.0 - meta_margin) * Ps - c.P) / bP)
-                : ss01(0.5 + (c.P - (1.0 + meta_margin) * Ps) / bP);
+                ? ss01(0.5 + ((1.0 - mm) * Ps - c.P) / bP)
+                : ss01(0.5 + (c.P - (1.0 + mm) * Ps) / bP);
             const double wA = flash_liq
                 ? ss01((a1 - (1.0 - flash_alpha_thr)) / (0.5 * flash_alpha_thr))
                 : ss01((flash_alpha_thr - a1)         / (0.5 * flash_alpha_thr));
