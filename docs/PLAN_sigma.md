@@ -367,6 +367,20 @@ Commits since the first stop: `0acc25f` [DECIDE-S7] and its predictions; `1e30fe
 
 Commits since the S7 stop: `0860485` [DECIDE-S8] and its predictions; `59efc49` the rule; this results block.
 
+## II.5-D — the B7/FF diagnostic (maintainer, 23 Sept: "a quick look, then decide whether to park"); predictions written before any code
+
+Two **test-only** keys, read only at `ps_sigma = 2`, default = the current behaviour, retired in commit 6 with the other test keys: `CAMR.ps_sigma_corridor` (1; 0 = the corridor transfer only counts, as at level 1) and `CAMR.ps_sigma_bc_mirror` (1; 0 = the relaxed-boundary trial runs without Σ, i.e. X3 there uses the algebraic closure). With both at 0, level 2 differs from level 1 only by X3 reading Σ (P4). Exploratory runs, not scored.
+
+| # | run (`nc_S4d`, level 2) | prediction (before the run) | result |
+|:--|:--|:--|:--|
+| D0 | defaults of both keys: battery, FF | byte-identical to `nc_S4c` (battery `AUD_S4cs2_nc`; FF the same abort at the same step); levels 0 and 1 untouched (the keys are not read there): battery "21 identical" at 0 and 1. | |
+| D1 | B7, `ps_sigma_corridor=0` | **the hot pocket persists**: P_max/P₀ > 1.05 and a both-Independent cell above 600 K by the end — i.e. X3 with Σ makes it (the corridor transfer committed only 35 times in B7). | |
+| D2 | FF, `ps_sigma_corridor=0` | still aborts (low confidence). | |
+| D3 | FF, `ps_sigma_bc_mirror=0` | still aborts (low confidence). | |
+| D4 | FF, both 0 | still aborts: X3 with Σ alone is enough (low confidence). | |
+
+**Decision rule, stated before the runs.** If D1 and D4 show the defects with X3-with-Σ alone, the coupling's core (P4) is at fault, not an auxiliary of it: recommend parking Σ at level 1. If they come only from the corridor transfer or the boundary mirror, those are fixable, but the physical verdict of §II.5 (no Test 19 recovery; Test 24 reproduced only as a smaller D already did) stands, and the recommendation is still to park, with the defect recorded for whoever reopens it.
+
 ## II.6 What the agent does not do
 
 Change any default; touch `Source/EOS/`; alter the presence classification or X3's Newton; merge branches in the VM; run 2-D cases (hand the commands to the maintainer); tune $r_{\mathrm{nuc}}$ or $D$ to the ECCSEL data (commit 5 is the maintainer's call after commit 4's gates); delete `PLAN_*` files (commit 6 is separate).
