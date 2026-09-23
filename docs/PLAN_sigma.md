@@ -311,6 +311,26 @@ Commits planned (branch `pipe-depress`, each by `tools/witness/ci.sh`): this blo
 *Not run, by the stop*: Q1–Q4 (ECCSEL, PR in the VM and GERG on the Mac), Q6 (`exact_suite`), Q7 (`verify_canonical`), Q8 (the `ps_mt_srt_d` scan), Q9, Q11. The ECCSEL runs go through the same corridor step (the liquid undershoot there is 2–5 bar, so the overshoot may be milder, but the step has the same lack of bound). Commits of this stage: `8ba84c3` the predictions block; `9f78665` X3's coefficient; `78518b7` the corridor transfer and census; `c521dc3` the boundary-trial mirror; `e43c891` `verify_canonical.py`; this results block. Run directories (untracked): `Exec/CO2_NSCBC/runs/audit/*_S4*`, `Exec/CO2_RiemannSuite/flashv_S4*`, `Exec/CO2_RiemannSuite/runs_s4dbg/`. Characterizations: `AUD_S4_nc`, `AUD_S4s1_nc`, `AUD_S4s2_nc` (19 of 21 cases), `DIAG_S3b_l1` (the level-1 census).
 
 
+## II.5-S7 — the corridor transfer bounded at equilibrium: decision, rule, predictions (written 23 Sept, before any code)
+
+`[DECIDE-S7]` How P5's transfer stops at equilibrium: (1) keep the explicit SRT rate and bound the step by the equilibrium transfer, relaxing toward it exponentially; or (2) integrate it implicitly (backward Euler, as X3). **Taken (23 Sept, maintainer): option 1.** Derivation, as put to him: at the stiffness measured on B2 (Δt ≈ 10 relaxation times) both options put the cell at equilibrium in one step, so implicit integration buys accuracy only where Δt ≈ τ; it costs a Newton in the trace phase's mass, which is the regime the presence design keeps out of any solve (below `alpha_cond` the phase's state is ill-conditioned; `[DECIDE-N3]` chose a separate source for that reason), and either widens X3's entry contract or duplicates X3 with a projection per evaluation. Option 1 reuses the machinery the nucleator already has (a derivative-free root on the trial path) and the relaxation form the mode-2 split transfer already uses (ASY1, τ = |Δm_eq|/Γ). It does not change §II.5-predictions' physical forecast: with nucleation-born area at r_nuc = 1e-5 m both ECCSEL tests go near equilibrium.
+
+**Rule** (in `ps_sigma_corridor_commit`, level 2 only; level 1 still counts the unbounded `ps_sigma_corridor_dm`, byte for byte):
+- The full step is the proposal of stage 2, `dm_full = |rM| Δt`, and the trial path `ps_flash_trial(prop, s)`.
+- Equilibrium is read on the **dominant (Independent) phase** of the trial state, as the nucleator's window is: h(s) = σ·(P_dom(s) − P_sat(T_dom(s))), with σ = +1 when mass moves 1 → 2 (rM > 0) and −1 otherwise. The corridor phase's own state enters only through the rate. If h(0) ≥ 0 the two disagree on the direction: nothing moves (counted, `corridor_sign_skip`).
+- s_eq is the root of h: bracketed on [0, 1] if h(1) > 0, otherwise by doubling s = 2, 4, …, 64 on the linear continuation of the trial path; refined by Illinois with 7 steps and a final interpolation (the nucleator's pattern), so it is continuous in the data. A trial state that cannot be evaluated while bracketing, or no sign change by s = 64, means s_eq = ∞.
+- Committed fraction: s = s_eq (1 − e^(−1/s_eq)) (s = 1 when s_eq = ∞; at s_eq = 64 it is 0.992, so the switch-over is 0.8 %), then s = min(s, s_rep) with s_rep the representability limiter as before. Δm = s·dm_full ≤ Δm_eq always: no step can pass equilibrium as the trial path measures it. The trial pressure is taken before the P1 = P2 re-projection, where the stiff liquid carries the whole volume change, so it overestimates the post-projection pressure and the bound errs early, not late.
+- Census, level 2: `corridor_eq_n` (steps where s_eq ≤ 1, i.e. the bound, not the rate, set the step) and `corridor_sign_skip`.
+
+**Predictions for the fix** (build `nc_S4b`, reference `nc_S4` and `nc_S3b`):
+
+| # | gate | prediction (before the run) | result |
+|:--|:--|:--|:--|
+| S7.0 | levels 0 and 1: Z0 and Z1 re-run with `nc_S4b` | byte-identical to `nc_S4` / `S3b` / `S3bs1` exactly as Z0 and Z1 (the change is inside the level-2 branch). | |
+| S7.1 | battery at level 2 (`AUD_S4bs2_nc` vs BASE3, and vs `AUD_S4s2_nc`) | **B2 and B7 complete**; against BASE3 "15 identical, 6 changed", the same 15 as Q5; B5, B11, B12 byte-identical to `AUD_S4s2_nc` (no corridor cell: Σ ≡ 0); B9 differs from `AUD_S4s2_nc` (its corridor steps are now bounded). | |
+| S7.2 | no corridor overshoot, B2 and B7 at level 2 (every 5 steps) | the largest pressure in any plotfile does not exceed the largest initial pressure by more than 1 % (B2: 80 bar); `corridor_eq_n` > 0 in B2 (the bound is what acts there); `corridor_sign_skip` reported, no prediction of its size. | |
+| S7.3 | the stopped gates of §II.5-predictions: Q1p, Q2/Q3 (PR parts), Q4–Q9, Q11 | as written there, unchanged. The Q5 magnitude clause for B5/B11/B12 has already failed and is not re-predicted. | |
+
 ## II.6 What the agent does not do
 
 Change any default; touch `Source/EOS/`; alter the presence classification or X3's Newton; merge branches in the VM; run 2-D cases (hand the commands to the maintainer); tune $r_{\mathrm{nuc}}$ or $D$ to the ECCSEL data (commit 5 is the maintainer's call after commit 4's gates); delete `PLAN_*` files (commit 6 is separate).
