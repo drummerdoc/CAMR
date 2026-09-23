@@ -373,13 +373,15 @@ Two **test-only** keys, read only at `ps_sigma = 2`, default = the current behav
 
 | # | run (`nc_S4d`, level 2) | prediction (before the run) | result |
 |:--|:--|:--|:--|
-| D0 | defaults of both keys: battery, FF | byte-identical to `nc_S4c` (battery `AUD_S4cs2_nc`; FF the same abort at the same step); levels 0 and 1 untouched (the keys are not read there): battery "21 identical" at 0 and 1. | |
-| D1 | B7, `ps_sigma_corridor=0` | **the hot pocket persists**: P_max/P₀ > 1.05 and a both-Independent cell above 600 K by the end — i.e. X3 with Σ makes it (the corridor transfer committed only 35 times in B7). | |
-| D2 | FF, `ps_sigma_corridor=0` | still aborts (low confidence). | |
-| D3 | FF, `ps_sigma_bc_mirror=0` | still aborts (low confidence). | |
-| D4 | FF, both 0 | still aborts: X3 with Σ alone is enough (low confidence). | |
+| D0 | defaults of both keys: battery, FF | byte-identical to `nc_S4c` (battery `AUD_S4cs2_nc`; FF the same abort at the same step); levels 0 and 1 untouched (the keys are not read there): battery "21 identical" at 0 and 1. |  **as predicted.** Battery at 0 and 1 "21 identical" against BASE3 (`AUD_S4dl0_nc`, `AUD_S4dl1_nc`); at 2 "21 identical" against `AUD_S4cs2_nc`; FF at 2: the 4 plotfiles byte-identical, same abort (ρ = 1.85·10⁵, e = −8.7·10¹⁵). |
+| D1 | B7, `ps_sigma_corridor=0` | **the hot pocket persists**: P_max/P₀ > 1.05 and a both-Independent cell above 600 K by the end — i.e. X3 with Σ makes it (the corridor transfer committed only 35 times in B7). |  **hot pocket as predicted; the pressure clause failed.** 101 plotfiles, completes: the hottest both-Independent cell reaches **826.5 K** (all switches on: 1012.5 K; level 1: 309.9 K), but P_max/P₀ = **1.0105**, not > 1.05 (all on: 1.198). X3 with Σ makes the hot cells; the corridor transfer makes most of the pressure overshoot. |
+| D2 | FF, `ps_sigma_corridor=0` | still aborts (low confidence). |  **as predicted: aborts**, earlier (2 plotfiles), liquid ρ = 2.81·10⁵, e = −8.1·10¹⁵. |
+| D3 | FF, `ps_sigma_bc_mirror=0` | still aborts (low confidence). |  **as predicted: aborts**, byte-identical to D0 (4 plotfiles, the same state): the boundary mirror is not involved. |
+| D4 | FF, both 0 | still aborts: X3 with Σ alone is enough (low confidence). |  **as predicted: aborts**, identical to D2: X3 reading Σ, with the corridor transfer and the boundary mirror both off, is enough. |
 
 **Decision rule, stated before the runs.** If D1 and D4 show the defects with X3-with-Σ alone, the coupling's core (P4) is at fault, not an auxiliary of it: recommend parking Σ at level 1. If they come only from the corridor transfer or the boundary mirror, those are fixable, but the physical verdict of §II.5 (no Test 19 recovery; Test 24 reproduced only as a smaller D already did) stands, and the recommendation is still to park, with the defect recorded for whoever reopens it.
+
+**Outcome under the decision rule.** D1 and D4 put both defects in the coupling's core: **X3 with the transported Σ as its area coefficient (P4)** produces B7's 800–1000 K both-Independent cells and FF's abort with the corridor transfer and the boundary mirror switched off. The rule stated before the runs gives: **recommend parking Σ at level 1.** Not established: why a large, constant-over-the-step area in X3 heats a dilute phase — the candidates are Σ no longer vanishing with α_send as the algebraic closure's (α_recv + δ)α_send does (so X3 keeps transferring out of a nearly exhausted phase), and the rate's size (Σ ≈ 10³ × the algebraic value) against the sub-step ladder; neither was measured.
 
 ## II.6 What the agent does not do
 
