@@ -109,6 +109,7 @@ inline void ps_abort_on_retired_keys()
         { "ps_promote_checked",  "promotion to Independent is always energy-checked" },
         { "ps_floor_indep",      "the per-phase floor acts on Independent phases only" },
         { "ps_flash_implicit",   "the nucleator always solves its committed fraction implicitly in the windows" },
+        { "ps_flash_onset",      "the metastability margin is always the classical-nucleation-theory onset capped at ps_flash_metastable_margin" },
     };
     struct RetiredValue { const char* key; int value; const char* reason; };
     static const RetiredValue values[] = {

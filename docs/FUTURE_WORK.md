@@ -12,7 +12,7 @@ Unchanged as a statement: a dispersed mixture and a smeared contact can carry th
 
 ### 1.2 The onset
 
-A state-dependent onset in place of the fixed-fraction pressure window: classical homogeneous nucleation, $J(T,P) = J_{\mathrm{crit}}$ with the CO₂ surface tension $\sigma(T)$ (vanishing at the critical point), local, no transported field (`PLAN_nucleation_onset.md` candidate A). Gate: the first level of ECCSEL Tests 19 and 24 within 1.5 bar with no per-test constant.
+Done (R-17, 23 Sept 2026): the margin is the classical-nucleation-theory onset at the liquid's temperature, capped at the former constant. What remains open on the onset side is the cold end, where the cap is the old constant standing in for wall nucleation: a heterogeneous law ($J_{\mathrm{hom}} + J_{\mathrm{het}}$ with a contact angle and a site density per wall area, a per-wall-area source needing $D_h$ in 1-D and undefined in the 2-D jet) would replace it; the data to decide it are Tests 19 and 22, where the measured onset is 9 % and the homogeneous limit 63 %. Also open: an independent check of Mulero's σ(T) against a primary measurement (Rathjen & Straub 1977; NIST uses the same fit).
 
 ### 1.3 The growth rate
 

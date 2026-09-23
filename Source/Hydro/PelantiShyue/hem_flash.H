@@ -269,20 +269,17 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
     // (b) Metastability window: a liquid-dominant cell boils as P falls
     //     below (1 - margin) P_sat, a vapour-dominant cell condenses as P
     //     rises above (1 + margin) P_sat, each a smooth ramp.
-    // CAMR.ps_flash_metastable_margin (0.10): the required undershoot, so
-    // static contacts with both sides at saturation do not false-trigger
-    // from marginal numerical dissipation.
+    // CAMR.ps_flash_metastable_margin (0.10) is the CAP on the margin: the
+    // heterogeneous (wall) floor.  For a liquid the margin itself is the
+    // classical-nucleation-theory onset at the liquid's temperature,
+    // ps_flash_margin_cnt, which is below the cap near the critical point
+    // (2 % at 298.5 K) and far above it (capped) below about 293 K.  For a
+    // vapour-dominant cell (condensation) the cap is the margin.
+    // docs/MODEL_AND_ALGORITHM.md §5.5.
     static const double meta_margin_max =
         ps_dial_real("ps_flash_metastable_margin", 0.10);
-    // CAMR.ps_flash_onset (0): temporary selector (docs/PLAN_onset.md).
-    // 0 = the margin is the constant above; 1 = the margin is the classical
-    // nucleation theory onset at the liquid's temperature, capped at the
-    // constant (ps_flash_margin_cnt).  Other values abort.
-    static const int flash_onset = ps_dial_int("ps_flash_onset", 0);
-    if (flash_onset != 0 && flash_onset != 1)
-        amrex::Abort("CAMR.ps_flash_onset must be 0 or 1");
     const bool flash_liq = liq_dominant;
-    const double meta_margin = (flash_onset == 1 && flash_liq)
+    const double meta_margin = flash_liq
         ? ps_flash_margin_cnt(p_dom.T, P_sat_here, eos, meta_margin_max)
         : meta_margin_max;
     const double bw_P = meta_margin * P_sat_here;   // pressure ramp band
@@ -459,7 +456,7 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
                             * ss01((T_crit_g - c.T) / bw_T);
             if (wT <= 0.0) return 0.0;
             const double Ps = eos.Psat_of_T(c.T);
-            const double mm = (flash_onset == 1 && flash_liq)
+            const double mm = flash_liq
                 ? ps_flash_margin_cnt(c.T, Ps, eos, meta_margin_max) : meta_margin_max;
             const double bP = mm * Ps;
             if (!(bP > 0.0)) return 0.0;
