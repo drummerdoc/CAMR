@@ -52,10 +52,7 @@ hydro_umdrv (bool do_mol,
              const amrex::GpuArray<const Array4<Real>, AMREX_SPACEDIM> flx,
              const amrex::GpuArray<const Array4<const Real>, AMREX_SPACEDIM> a,
              Array4<Real> const& vol,
-             const PassMap* lpmap,
-             [[maybe_unused]] Array4<const Real> const& sigma_in,
-             [[maybe_unused]] Array4<Real> const& sigma_dsdt,
-             [[maybe_unused]] const GpuArray<Array4<Real>, AMREX_SPACEDIM>& flx_sigma)
+             const PassMap* lpmap)
 {
     BL_PROFILE_VAR("umdrv()", umdrv);
 
@@ -83,8 +80,7 @@ hydro_umdrv (bool do_mol,
         // Pelanti-Shyue six-equation wave-propagation solver
         // (Source/Hydro/PelantiShyue/, docs/MODEL_AND_ALGORITHM.md §1).
         PS_umeth(bx, domlo, domhi, uin_arr, dsdt_arr,
-                 AMREX_D_DECL(flx[0], flx[1], flx[2]), pdivuarr, dx, dt,
-                 sigma_in, AMREX_D_DECL(flx_sigma[0], flx_sigma[1], flx_sigma[2]));
+                 AMREX_D_DECL(flx[0], flx[1], flx[2]), pdivuarr, dx, dt);
     } else
 #endif
     if (do_mol) {
@@ -148,36 +144,6 @@ hydro_umdrv (bool do_mol,
     adjust_fluxes(bx, uin_arr, flx, a, divuarr, dx, domlo, domhi, bclo, bchi, l_difmag_effective);
 
     hydro_consup  (bx, dsdt_arr, flx, vol, pdivuarr);
-
-#ifdef USE_PS_HYDRO
-    // Sigma (docs/PLAN_sigma.md §II.3 item 4): PS_umeth wrote the upwind
-    // face flux u_c * Sigma_upwind on the valid faces; make it extensive
-    // exactly as hydro_ext_flx does flx, and deposit its divergence exactly
-    // as hydro_update does (one component, no pdivu).  The extensive flux is
-    // what Sigma's flux register receives.
-    if (do_ps_hydro && sigma_in.p != nullptr) {
-        for (int dir = 0; dir < AMREX_SPACEDIM; ++dir) {
-            auto const& fs = flx_sigma[dir];
-            auto const& ad = a[dir];
-            amrex::ParallelFor(amrex::surroundingNodes(bx, dir),
-            [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-                amrex::Real area = ad(i, j, k);
-                fs(i, j, k, 0) *= area;
-            });
-        }
-        AMREX_D_TERM(auto const& fs0 = flx_sigma[0];,
-                     auto const& fs1 = flx_sigma[1];,
-                     auto const& fs2 = flx_sigma[2];);
-        amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-            amrex::Real volinv = 1.0/vol(i, j, k);
-            sigma_dsdt(i, j, k, 0) +=
-                (AMREX_D_TERM(fs0(i, j, k, 0) - fs0(i + 1, j, k, 0),
-                             +fs1(i, j, k, 0) - fs1(i, j + 1, k, 0),
-                             +fs2(i, j, k, 0) - fs2(i, j, k + 1, 0))) *
-                volinv;
-        });
-    }
-#endif
 
     BL_PROFILE_VAR_STOP(umdrv);
 }

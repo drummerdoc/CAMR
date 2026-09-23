@@ -105,17 +105,9 @@ ps_apply_tfloor_fold(amrex::MultiFab& S_new, int nghost = 0)
 //  no host; the validator reports it).  Each fold is counted with the mass
 //  moved.  Runs after each RK stage, at the head of the reaction step and
 //  after every AMR transfer, before the floor.  Docs §4.4.
-//
-//  Sig, when given (CAMR.ps_sigma >= 1, the reaction step's stage B;
-//  every other call site passes nullptr and is unchanged), is the
-//  matching Sigma_Type data on the same grids: P2 of docs/PLAN_sigma.md
-//  -- a cell that has just lost a phase carries no interface -- so the
-//  fold zeroes Sigma wherever it removed one, counting the event and the
-//  Sigma destroyed in [PS-SIGMA].  Sigma is never read back.
 // -----------------------------------------------------------------
 inline void
-ps_apply_vanish_fold(amrex::MultiFab& S_new, int nghost = 0,
-                     amrex::MultiFab* Sig = nullptr)
+ps_apply_vanish_fold(amrex::MultiFab& S_new, int nghost = 0)
 {
     // The threshold is the presence death edge, CAMR.ps_presence_vanish
     // (PS_presence.H).
@@ -129,8 +121,6 @@ ps_apply_vanish_fold(amrex::MultiFab& S_new, int nghost = 0,
     for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
         const amrex::Box bx = mfi.growntilebox(nghost);
         amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
-        amrex::Array4<amrex::Real> const Sg =
-            Sig ? Sig->array(mfi) : amrex::Array4<amrex::Real>{};
         amrex::LoopOnCpu(bx, [=] (int i, int j, int k) noexcept
         {
             hem::V6 Uv = ps_pack_v6(U, i, j, k, U(i, j, k, UALPHA1),
@@ -213,22 +203,6 @@ ps_apply_vanish_fold(amrex::MultiFab& S_new, int nghost = 0,
                 ps_unpack_v6(U, i, j, k, Uv);
                 // URHO / UEINT / UEDEN unchanged: mass and energy moved
                 // between phases within the cell, not between cells.
-                //  P2 (docs/PLAN_sigma.md): the cell has lost a phase, so
-                //  it carries no interface.  Counted, then zeroed.
-                if (Sg.p) {
-                    const double a1f = Uv[0];
-                    if (Uv[1] <= 0.0 || Uv[2] <= 0.0 ||
-                        a1f <= 0.0 || a1f >= 1.0) {
-                        const amrex::Real sg = Sg(i, j, k);
-                        if (sg != amrex::Real(0.0)) {
-#if !defined(AMREX_USE_GPU)
-                            ++ps_counters().sigma_vanish_n;
-                            ps_counters().sigma_vanish_sum += double(sg);
-#endif
-                            Sg(i, j, k) = amrex::Real(0.0);
-                        }
-                    }
-                }
             }
         });
     }

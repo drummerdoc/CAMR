@@ -33,12 +33,7 @@ void hydro_umdrv (bool do_mol,
                   const amrex::GpuArray<const amrex::Array4<amrex::Real>, AMREX_SPACEDIM> flx,
                   const amrex::GpuArray<const amrex::Array4<const amrex::Real>, AMREX_SPACEDIM> a,
                   amrex::Array4<amrex::Real> const& vol,
-                  const PassMap* lpmap,
-                  // Sigma (PS, CAMR.ps_sigma >= 1): border, dSigma/dt, face
-                  // flux; empty Array4s (p == nullptr) switch it off.
-                  amrex::Array4<const amrex::Real> const& sigma_in,
-                  amrex::Array4<amrex::Real> const& sigma_dsdt,
-                  const amrex::GpuArray<amrex::Array4<amrex::Real>, AMREX_SPACEDIM>& flx_sigma);
+                  const PassMap* lpmap);
 
 void adjust_fluxes (
   amrex::Box const& bx,

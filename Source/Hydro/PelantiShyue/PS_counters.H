@@ -202,36 +202,6 @@ struct PsCounters {
     PsPresDiag  pres;
     PsFoldAudit fold;
 
-    // ---- Sigma's sources (PS_sources.H, PS_folds.H), [PS-SIGMA] ------
-    //  Cumulative, host-only, never read by the numerics
-    //  (docs/PLAN_sigma.md §II.4).
-    //  sigma_prod_*   : nucleation events that produced Sigma, and the
-    //                   summed committed Delta-alpha of the seeded phase
-    //                   (so (3/r_nuc)*sigma_prod_dalpha is the Sigma
-    //                   produced -- witness G3b).
-    //  sigma_vanish_* : cells whose Sigma the vanish fold zeroed (P2) and
-    //                   the Sigma it destroyed.
-    //  sigma_corridor_would : cells whose corridor transfer (P5) came out
-    //                   non-zero.  At ps_sigma = 1 it is computed and
-    //                   counted, never applied.
-    long   sigma_prod_n         = 0;
-    double sigma_prod_dalpha    = 0.0;
-    long   sigma_vanish_n       = 0;
-    double sigma_vanish_sum     = 0.0;
-    long   sigma_corridor_would = 0;
-    //  sigma_corridor_dm : at ps_sigma = 2, the summed committed |dm|
-    //                   [kg/m^3] of those transfers.
-    double sigma_corridor_dm    = 0.0;
-    //  sigma_corridor_eq_n : at ps_sigma = 2, steps whose equilibrium bound
-    //                   ([DECIDE-S7]) lay within the full step (s_eq <= 1).
-    //  sigma_corridor_sign_skip : steps skipped because the rate and the
-    //                   dominant phase disagreed on the direction.
-    long   sigma_corridor_eq_n      = 0;
-    long   sigma_corridor_sign_skip = 0;
-    //  sigma_corridor_shrink_skip : steps skipped because the proposal
-    //                   would shrink the trace phase ([DECIDE-S8]).
-    long   sigma_corridor_shrink_skip = 0;
-
     // ---- hem kernels (hem_*.H) --------------------------------------
     long   mass_transfer_count  = 0;
     long   flash_source_count   = 0;

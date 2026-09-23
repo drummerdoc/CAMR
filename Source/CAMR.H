@@ -28,15 +28,8 @@
 // Work_Estimate_Type: per-cell cost of the last step (1 + kappa * branch-
 // locked EOS solves), the weight amr.loadbalance_with_workestimates knapsacks
 // at each regrid.  Not checkpointed.  docs/DESIGN_DECISIONS.md O-23.
-// Sigma_Type (PS builds): the transported interfacial-area density Sigma
-// [1/m], one component, always allocated and checkpointed; transported only
-// under CAMR.ps_sigma >= 1 (docs/PLAN_sigma.md).  The order is the
-// checkpoint order: descriptors are appended, never inserted.
 enum StateType { State_Type = 0,
                  Work_Estimate_Type,
-#ifdef USE_PS_HYDRO
-                 Sigma_Type,
-#endif
                  NUM_STATE_TYPE };
 
 // Create storage for all source terms.
@@ -133,11 +126,7 @@ public:
 
   // Work_Estimate_Type is not stored in checkpoints (older checkpoints
   // restart unchanged); restart() re-creates it from State_Type's grids.
-  // A checkpoint written with fewer descriptors than this build has holds
-  // the first nstate of them: restart() reads nstate ahead into
-  // m_nstate_in_chk and the hook marks state i present iff i < nstate.
   void set_state_in_checkpoint (amrex::Vector<int>& state_in_checkpoint) override;
-  int m_nstate_in_chk = -1;
 
   // Proceed with next timestep?
   int okToContinue () override;
@@ -154,15 +143,10 @@ public:
 
   static void react (amrex::MultiFab& S);
 
-  //  sig/sig_src (PS, CAMR.ps_sigma >= 1): the FillPatched Sigma border
-  //  (numGrow() ghosts) and the 1-component dSigma/dt to fill; nullptr
-  //  (the default) leaves Sigma untouched.
   void construct_hydro_source ( const amrex::MultiFab& S,
                                       amrex::MultiFab& src,
                                       amrex::Real time,
-                                      amrex::Real dt,
-                                const amrex::MultiFab* sig = nullptr,
-                                      amrex::MultiFab* sig_src = nullptr);
+                                      amrex::Real dt);
 
   void construct_old_source (
     int src,
@@ -338,28 +322,9 @@ public:
   amrex::YAFluxRegister& getPresReg();
   amrex::YAFluxRegister& getPresReg(int lev);
 
-#ifdef USE_PS_HYDRO
-  // Sigma's coarse-fine flux register (1 component), defined only under
-  // CAMR.ps_sigma >= 1 on a refluxing fine level (sigma_reg_on).
-  amrex::YAFluxRegister sigma_reg;
-  bool sigma_reg_on = false;
-#endif
 #endif
   void avgDown();
   void avgDown(int state_indx);
-#ifdef USE_PS_HYDRO
-  // Sigma >= 0 with the 1e-30 floor (docs/PLAN_sigma.md P7, P8).
-  static void sigma_clip(amrex::MultiFab& Sig, int ng);
-  // CAMR.ps_sigma_restart_init = alg (docs/PLAN_sigma.md §II.4b): fill this
-  // level's Sigma from the algebraic closure of its own State_Type.  The
-  // restart sets s_sigma_alg_pending on every level; post_regrid re-applies
-  // the fill while its level's flag is set, and the level's first advance
-  // clears it -- so a box the restart's initial regrid creates holds the
-  // closure, not an interpolant of it, and later regrids interpolate (P7).
-  // A host vector, no FAB: nothing is added to the per-rank byte count.
-  void sigma_alg_fill(const std::string& label);
-  static amrex::Vector<int> s_sigma_alg_pending;
-#endif
 
 // public for CUDA
 
@@ -435,15 +400,10 @@ protected:
   //  a post-processor on hydro_source at the boundary cells of the NSCBC
   //  faces; ps_reaction_trial is the reaction chain it evaluates on trial
   //  states (PS_nscbc.cpp, docs/MODEL_AND_ALGORITHM.md §6).
-  //  sig: the Sigma border of construct_hydro_source (nullptr below
-  //  CAMR.ps_sigma = 1); read only at ps_sigma = 2, where the trial chain
-  //  runs with a scratch copy of the boundary cells' Sigma (SigT), as
-  //  apply_ps_reaction does with Sigma_Type (docs/PLAN_sigma.md §II.5).
   void ps_bc_relaxed(const amrex::MultiFab& S, amrex::MultiFab& hyd_src,
-                     amrex::Real dt, const amrex::MultiFab* sig = nullptr);
+                     amrex::Real dt);
   void ps_reaction_trial(amrex::MultiFab& T, amrex::Real dt_r,
-                         long& relaxed, long& flashed,
-                         amrex::MultiFab* SigT = nullptr);
+                         long& relaxed, long& flashed);
 #endif
 #ifdef CAMR_USE_MOVING_EB
   void ZeroingOutForPlotting(amrex::MultiFab& S);
@@ -509,21 +469,6 @@ void CAMR_bcfill_hyp(
   const amrex::Vector<amrex::BCRec>& bcr,
   const int bcomp,
   const int scomp);
-
-#ifdef USE_PS_HYDRO
-// Sigma_Type's physical-boundary fill: first-order extrapolation on every
-// face (its BCRec is FOEXTRAP wherever not periodic); no EXT_DIR work.
-void CAMR_sigmafill(
-  amrex::Box const& bx,
-  amrex::FArrayBox& data,
-  const int dcomp,
-  const int numcomp,
-  amrex::Geometry const& geom,
-  const amrex::Real time,
-  const amrex::Vector<amrex::BCRec>& bcr,
-  const int bcomp,
-  const int scomp);
-#endif
 
 void CAMR_nullfill(
   amrex::Box const& bx,

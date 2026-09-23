@@ -28,7 +28,6 @@
 #include "PS_retired_keys.H"  // ps_abort_on_retired_keys (read_params)
 #include "PS_nscbc.H"         // the boundary dials, resolved in read_params
 #include "PS_constants.H"     // ps_const::ALPHA_REFLUX_MIN (reflux)
-#include "PS_dials.H"         // ps_sigma_mode (Sigma_Type)
 #endif
 
 bool CAMR::signalStopJob = false;
@@ -61,9 +60,6 @@ amrex::Vector<int> CAMR::src_list;
 amrex::Real CAMR::previousCPUTimeUsed = 0.0;
 amrex::Real CAMR::startCPUTime = 0.0;
 int CAMR::num_state_type = 0;
-#ifdef USE_PS_HYDRO
-amrex::Vector<int> CAMR::s_sigma_alg_pending;
-#endif
 
 void
 CAMR::read_params()
@@ -127,18 +123,6 @@ CAMR::read_params()
   ps_bc_nscbc_type();
   ps_bc_nscbc_nsec();
   ps_bc_nscbc_probe();
-  // CAMR.ps_sigma = 2 reads Sigma in the sources; Sigma's growth term is
-  // measured across the relaxation stage, which at ps_relax_mode = 0 or 2
-  // does not carry the split finite-rate transfer (it moves alpha_2 in
-  // ps_apply_sources with no growth term).  Until it does, that pairing
-  // aborts at startup (docs/PLAN_sigma.md §II.4-review).  ps_relax_mode is
-  // read here only at ps_sigma = 2.
-  if (ps_sigma_mode() == 2 && ps_relax_mode() != 5) {
-    amrex::Abort("CAMR.ps_sigma = 2 requires CAMR.ps_relax_mode = 5: at "
-                 "ps_relax_mode = " + std::to_string(ps_relax_mode()) +
-                 " the split finite-rate transfer moves alpha_2 with no "
-                 "Sigma growth term (docs/PLAN_sigma.md §II.4-review)");
-  }
 #endif
 
   pp.query("v", verbose);
@@ -363,16 +347,6 @@ CAMR::init_stuff(amrex::Amr& papa,
       bl, papa.boxArray(level - 1), dm, papa.DistributionMap(level - 1),
       level_geom, papa.Geom(level - 1), papa.refRatio(level - 1), level, NVAR);
 
-#if defined(USE_PS_HYDRO) && !defined(AMREX_USE_EB)
-    // Sigma's own register (1 component), only when Sigma is transported.
-    if (ps_sigma_mode() >= 1) {
-      sigma_reg.define(
-        bl, papa.boxArray(level - 1), dm, papa.DistributionMap(level - 1),
-        level_geom, papa.Geom(level - 1), papa.refRatio(level - 1), level, 1);
-      sigma_reg_on = true;
-    }
-#endif
-
     if (!amrex::DefaultGeometry().IsCartesian()) {
       pres_reg.define(
         bl, papa.boxArray(level - 1), dm, papa.DistributionMap(level - 1),
@@ -511,41 +485,6 @@ CAMR::initData()
 
   computeTemp(S_new,0);
 
-#ifdef USE_PS_HYDRO
-  // Sigma starts at zero.  Test-only IC hook (commit 2's gates; retired in
-  // commit 6): CAMR.ps_sigma_ic_cell = AMREX_SPACEDIM integers, a cell in
-  // level-0 index space, and CAMR.ps_sigma_ic_value.  On level L every cell
-  // covering that coarse cell gets the value, so the totals of all levels
-  // agree.  Applied only under CAMR.ps_sigma >= 1.
-  {
-    amrex::MultiFab& Sig = get_new_data(Sigma_Type);
-    Sig.setVal(0.0);
-    if (ps_sigma_mode() >= 1) {
-      amrex::ParmParse pp("CAMR");
-      amrex::Vector<int> icc;
-      if (pp.queryarr("ps_sigma_ic_cell", icc)) {
-        if (static_cast<int>(icc.size()) != AMREX_SPACEDIM) {
-          amrex::Abort("CAMR.ps_sigma_ic_cell needs AMREX_SPACEDIM integers");
-        }
-        amrex::Real icv = 0.0;
-        pp.query("ps_sigma_ic_value", icv);
-        const amrex::IntVect civ(AMREX_D_DECL(icc[0], icc[1], icc[2]));
-        amrex::Box cb(civ, civ);
-        for (int l = 0; l < level; ++l) { cb.refine(parent->refRatio(l)); }
-        for (amrex::MFIter mfi(Sig); mfi.isValid(); ++mfi) {
-          const amrex::Box b = mfi.validbox() & cb;
-          if (b.ok()) {
-            auto sa = Sig.array(mfi);
-            amrex::ParallelFor(b, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-              sa(i, j, k, 0) = icv;
-            });
-          }
-        }
-      }
-    }
-  }
-#endif
-
   if (verbose) {
     amrex::Print() << "Done initializing level " << level << " data "
                    << std::endl;
@@ -571,26 +510,13 @@ CAMR::init(AmrLevel& old)
      amrex::MultiFab& state_MF = get_new_data(s);
      FillPatch(old, state_MF, state_MF.nGrow(), cur_time, s, 0, state_MF.nComp());
   }
-#ifdef USE_PS_HYDRO
-  if (ps_sigma_mode() >= 1) {
-    sigma_clip(get_new_data(Sigma_Type), 0);   // after interpolation (P7)
-  }
-#endif
 }
 
 void
 CAMR::set_state_in_checkpoint(amrex::Vector<int>& state_in_checkpoint)
 {
-  // AMReX calls this only when the checkpoint counts fewer states than the
-  // build has descriptors.  Descriptors are appended in order, so the
-  // checkpoint holds exactly the first nstate of them (1: State_Type only,
-  // before Work_Estimate_Type; 2: + Work_Estimate_Type's header block with
-  // no data; 3: + Sigma_Type).  nstate is read ahead by CAMR::restart.
-  if (m_nstate_in_chk < 1) {
-    amrex::Abort("CAMR::set_state_in_checkpoint: the checkpoint's state count was not read");
-  }
   for (int i = 0; i < num_state_type; ++i) {
-    state_in_checkpoint[i] = (i < m_nstate_in_chk) ? 1 : 0;
+    state_in_checkpoint[i] = (i == Work_Estimate_Type) ? 0 : 1;
   }
 }
 
@@ -615,15 +541,6 @@ CAMR::init()
   // constant) so a regrid before its first advance has a weight to use.
   FillCoarsePatch(get_new_data(Work_Estimate_Type), 0, cur_time,
                   Work_Estimate_Type, 0, 1);
-#ifdef USE_PS_HYDRO
-  // Sigma on the new level: conservative interpolation, then Sigma >= 0 (P7).
-  FillCoarsePatch(get_new_data(Sigma_Type), 0, cur_time, Sigma_Type, 0, 1);
-  if (ps_sigma_mode() >= 1) {
-    sigma_clip(get_new_data(Sigma_Type), 0);
-  } else {
-    get_new_data(Sigma_Type).setVal(0.0);
-  }
-#endif
 #ifdef USE_PS_HYDRO
   // CAMR.ps_diag_alpha: alpha_1 range on a new fine level right after
   // coarse->fine interpolation, to attribute a drive toward a pure phase
@@ -985,14 +902,6 @@ CAMR::post_regrid(int /*lbase*/, int /*new_finest*/)
     ps_apply_vanish_fold(S_new, 0);
     ps_apply_floor(S_new, 0);
   }
-  // CAMR.ps_sigma_restart_init = alg: a regrid before this level's first
-  // advance (the restart's initial regrid) re-applies the closure on the
-  // state just resynced, folded and floored (docs/PLAN_sigma.md §II.4b).
-  if (level < static_cast<int>(s_sigma_alg_pending.size()) &&
-      s_sigma_alg_pending[level] != 0) {
-    sigma_alg_fill("restart_init = alg, after the restart's regrid, level " +
-                   std::to_string(level));
-  }
 #endif
 }
 
@@ -1144,13 +1053,6 @@ CAMR::reflux()
           });
       }
   }
-
-  // Sigma: its own register, then Sigma >= 0 (P7).
-  if (fine_level.sigma_reg_on) {
-      amrex::MultiFab& Sig_crse = get_new_data(Sigma_Type);
-      fine_level.sigma_reg.Reflux(Sig_crse);
-      sigma_clip(Sig_crse, 0);
-  }
 #endif
 
   if (verbose) {
@@ -1180,11 +1082,6 @@ CAMR::avgDown()
     }
 
     avgDown(State_Type);
-#ifdef USE_PS_HYDRO
-    if (ps_sigma_mode() >= 1) {
-      avgDown(Sigma_Type);
-    }
-#endif
 }
 
 void
@@ -1922,20 +1819,3 @@ CAMR::time_to_sum_integrated(amrex::Real time)
       return false;
   }
 }
-
-#ifdef USE_PS_HYDRO
-// Sigma >= 0 with the P8 floor: a value below 1e-30 (negative included)
-// becomes exactly 0.  Applied after transport, interpolation and reflux.
-void
-CAMR::sigma_clip(amrex::MultiFab& Sig, int ng)
-{
-  for (amrex::MFIter mfi(Sig, amrex::TilingIfNotGPU()); mfi.isValid(); ++mfi) {
-    const amrex::Box bx = mfi.growntilebox(ng);
-    auto sa = Sig.array(mfi);
-    amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
-      const amrex::Real v = sa(i, j, k, 0);
-      if (!(v >= amrex::Real(1.0e-30))) { sa(i, j, k, 0) = amrex::Real(0.0); }
-    });
-  }
-}
-#endif

@@ -25,8 +25,6 @@
 //      CAMR.ps_mt_update_alpha (-1), CAMR.ps_mt_tau_model (0).
 // =====================================================================
 
-#include <sstream>
-#include <limits>
 #include "IndexDefines.H"
 #include "EOS.H"
 #include "hem_pelanti_shyue.H"
@@ -37,7 +35,6 @@
 #include <AMReX_MultiFab.H>
 #include <AMReX_Print.H>
 #include <AMReX_BLProfiler.H>
-#include <iomanip>
 #include <cmath>
 
 //  Report helpers of the source driver: a cumulative count printed only
@@ -123,443 +120,19 @@ inline int ps_strang()
     return v;
 }
 
-// =====================================================================
-//  Sigma's sources (docs/PLAN_sigma.md §II.4), all reached only when the
-//  caller hands the driver the matching Sigma_Type data, i.e. only at
-//  CAMR.ps_sigma >= 1.  Nothing here reads Sigma back into State_Type at
-//  this commit: production, growth and destruction write Sigma alone, and
-//  the corridor source (P5) is computed and counted but never applied.
-// =====================================================================
-
-//  P8 and P2, applied to the state that leaves the reaction: Sigma >= 0
-//  with the 1e-30 floor, and Sigma = 0 in every cell where either phase
-//  is Absent (a cell with one phase carries no interface).  The floor
-//  repeats CAMR::sigma_clip's rule, which is a static member of CAMR and
-//  not reachable from here; the two must stay the same number.
-inline void
-ps_sigma_presence_floor(amrex::MultiFab& Sig, const amrex::MultiFab& S,
-                        int nghost)
-{
-    const PsPres pr = ps_presence_params();
-    for (amrex::MFIter mfi(Sig); mfi.isValid(); ++mfi) {
-        const amrex::Box bx = mfi.growntilebox(nghost);
-        amrex::Array4<amrex::Real> const& Sg = Sig.array(mfi);
-        amrex::Array4<const amrex::Real> const& U = S.const_array(mfi);
-        amrex::LoopOnCpu(bx, [=] (int i, int j, int k) noexcept
-        {
-            const amrex::Real a1 = U(i, j, k, UALPHA1);
-            const amrex::Real m1 = U(i, j, k, UM1RHO1);
-            const amrex::Real m2 = U(i, j, k, UM2RHO2);
-            const bool absent =
-                (ps_regime(a1, m1, pr) == PsRegime::Absent) ||
-                (ps_regime(amrex::Real(1.0) - a1, m2, pr) == PsRegime::Absent);
-            const amrex::Real s = Sg(i, j, k);
-            //  The test is written so a non-finite Sigma also lands on 0.
-            if (absent || !(s > amrex::Real(1.0e-30))) {
-                if (s != amrex::Real(0.0)) {
-                    //  The same destruction channel as the vanish fold's
-                    //  (P2), counted in the same pair so the production
-                    //  balance of witness G3b closes exactly.
-                    ++ps_counters().sigma_vanish_n;
-                    if (std::isfinite(s)) {
-                        ps_counters().sigma_vanish_sum += double(s);
-                    }
-                }
-                Sg(i, j, k) = amrex::Real(0.0);
-            }
-        });
-    }
-}
-
-//  P1, the growth law: Sigma <- Sigma (alpha_2_new / alpha_2_old)^(2/3),
-//  spheres of a fixed number, evaluated on the vapour fraction whatever
-//  the transfer direction (condensation shrinks Sigma by the same law).
-//  a1_pre holds alpha_1 as it was before the operator that moved it --
-//  here the relaxation stage, whose committed Delta-alpha_2 is X3's at
-//  CAMR.ps_relax_mode = 5 (§II.4 source 2).  A cell that lost a phase is
-//  left to P2's channel, not grown.  CAMR.ps_sigma_growth = 0 (test-only)
-//  switches this off and nothing else.
-inline void
-ps_sigma_apply_growth(amrex::MultiFab& Sig, const amrex::MultiFab& a1_pre,
-                      const amrex::MultiFab& S, int nghost)
-{
-    if (ps_sigma_growth() == 0) { return; }
-    for (amrex::MFIter mfi(Sig); mfi.isValid(); ++mfi) {
-        const amrex::Box bx = mfi.growntilebox(nghost);
-        amrex::Array4<amrex::Real> const& Sg = Sig.array(mfi);
-        amrex::Array4<const amrex::Real> const& A0 = a1_pre.const_array(mfi);
-        amrex::Array4<const amrex::Real> const& U = S.const_array(mfi);
-        amrex::LoopOnCpu(bx, [=] (int i, int j, int k) noexcept
-        {
-            const amrex::Real s0 = Sg(i, j, k);
-            if (!(s0 > amrex::Real(0.0))) { return; }
-            const amrex::Real a2_0 = amrex::Real(1.0) - A0(i, j, k);
-            const amrex::Real a2_1 = amrex::Real(1.0) - U(i, j, k, UALPHA1);
-            if (!(a2_0 > amrex::Real(0.0)) || !(a2_1 > amrex::Real(0.0))) { return; }
-            if (a2_1 == a2_0) { return; }
-            const amrex::Real c = amrex::Real(std::cbrt(double(a2_1) / double(a2_0)));
-            const amrex::Real s1 = s0 * c * c;
-            if (std::isfinite(s1) && s1 >= amrex::Real(0.0)) { Sg(i, j, k) = s1; }
-        });
-    }
-}
-
-//  P5, the corridor growth source: with Sigma present, a transfer into a
-//  trace phase below alpha_cond has an owner that X3 (whose entry
-//  contract is both-Independent) will not take.  The rate is X3's own
-//  `rates` (hem_relax_x3.H) with the transported Sigma in place of the
-//  algebraic area,
-//      rM = Sigma (m_2/alpha_2) sqrt(M / (2 pi R T_2)) (g_1 - g_2),
-//  explicit over dt, the newborn mass entering at the receiving phase's
-//  saturation state exactly as the nucleator's does, and capped by the
-//  nucleator's representability limiter (ps_flash_limiter).
-//
-//  ps_sigma_corridor_prop fills the full-step proposal and returns the
-//  limited fraction s in [0, 1] of it that keeps both phases
-//  representable; 0 when the cell is not eligible or the limiter closed.
-//  It writes nothing.  ps_sigma_corridor_dm is s * |dm| [kg/m^3], the
-//  transfer the cell would commit: at CAMR.ps_sigma = 1 the caller only
-//  counts it; at 2 the caller commits ps_flash_trial(prop, s) (commit 4,
-//  docs/PLAN_sigma.md §II.5).
-inline double
-ps_sigma_corridor_prop(amrex::Array4<const amrex::Real> const& U,
-                       int i, int j, int k, amrex::Real sigma,
-                       const hem::PsPhaseAPI& eos, const PsPres& pr, double dt,
-                       hem::PsFlashProposal& prop)
-{
-    using amrex::Real;
-    if (!(sigma > Real(0.0)) || !(dt > 0.0)) { return 0.0; }
-    if (!eos.valid() || !eos.Psat_of_T) { return 0.0; }
-    const Real a1 = U(i, j, k, UALPHA1);
-    if (!std::isfinite(a1) || !(a1 > Real(0.0)) || !(a1 < Real(1.0))) { return 0.0; }
-    const Real a2 = Real(1.0) - a1;
-    const Real m1 = U(i, j, k, UM1RHO1), m2 = U(i, j, k, UM2RHO2);
-    if (!(m1 > Real(0.0)) || !(m2 > Real(0.0))) { return 0.0; }
-    const PsRegime r1 = ps_regime(a1, m1, pr);
-    const PsRegime r2 = ps_regime(a2, m2, pr);
-    const bool one_corridor =
-        (r1 == PsRegime::Corridor && r2 == PsRegime::Independent) ||
-        (r2 == PsRegime::Corridor && r1 == PsRegime::Independent);
-    if (!one_corridor) { return 0.0; }
-
-    const Real  rho_mix = m1 + m2;
-    const double ke = double(ps_kinetic_energy(U, i, j, k, rho_mix));
-    const double E1 = double(U(i, j, k, UE1)), E2 = double(U(i, j, k, UE2));
-    const double e_1 = E1 / double(m1) - ke;
-    const double e_2 = E2 / double(m2) - ke;
-    if (!std::isfinite(e_1) || !std::isfinite(e_2)) { return 0.0; }
-    hem::PsPhase p1{}, p2{};
-    p1.alpha = double(a1); p2.alpha = double(a2);
-    eos.state_from_rho_e_phase(1, double(m1) / double(a1), e_1, p1);
-    eos.state_from_rho_e_phase(2, double(m2) / double(a2), e_2, p2);
-    if (!p1.valid || !p2.valid) { return 0.0; }
-    if (!std::isfinite(p1.g) || !std::isfinite(p2.g)) { return 0.0; }
-    if (!(p2.T > 0.0)) { return 0.0; }
-
-    constexpr double two_pi = 6.283185307179586;
-    const double rM = double(sigma) * (double(m2) / double(a2))
-                    * std::sqrt(eos.molar_mass() / (two_pi * eos.r_gas() * p2.T))
-                    * (p1.g - p2.g);
-    if (!std::isfinite(rM) || rM == 0.0) { return 0.0; }
-    const double dm = std::abs(rM) * dt;
-    if (!(dm > 0.0)) { return 0.0; }
-
-    //  rM > 0 moves mass from phase 1 to phase 2.  The newborn mass sits
-    //  on the receiving branch's saturation locus at the Independent
-    //  phase's temperature, and takes the volume that density implies.
-    const int    recv  = (rM > 0.0) ? 2 : 1;
-    const double T_dom = (r1 == PsRegime::Independent) ? p1.T : p2.T;
-    if (!std::isfinite(T_dom) || !(T_dom > 0.0)) { return 0.0; }
-    double rho_L_sat = 0.0, rho_V_sat = 0.0;
-    hem::co2_sat_state(T_dom, rho_L_sat, rho_V_sat);
-    const double rho_new = (recv == 2) ? rho_V_sat : rho_L_sat;
-    if (!(rho_new > 0.0)) { return 0.0; }
-    const double e_new = hem::ps_flash_e_of_rhoT(eos, recv, rho_new, T_dom);
-    if (!std::isfinite(e_new)) { return 0.0; }
-    const double H_I = e_new + eos.Psat_of_T(T_dom) / rho_new + ke;
-    if (!std::isfinite(H_I)) { return 0.0; }
-
-    prop.alpha_1     = double(a1);
-    prop.m_1         = double(m1);
-    prop.m_2         = double(m2);
-    prop.U4          = E1;
-    prop.U5          = E2;
-    prop.d_alpha1    = (recv == 2) ? -(dm / rho_new) : +(dm / rho_new);
-    prop.dm          = dm;
-    prop.sgn         = (recv == 2) ? -1.0 : +1.0;
-    prop.H_I         = H_I;
-    prop.ke          = ke;
-    prop.alpha_floor = ps_const::ALPHA_ROUNDOFF;
-    const double s = hem::ps_flash_limiter(prop, eos, false);
-    return (s > 0.0) ? s : 0.0;
-}
-
-inline double
-ps_sigma_corridor_dm(amrex::Array4<const amrex::Real> const& U,
-                     int i, int j, int k, amrex::Real sigma,
-                     const hem::PsPhaseAPI& eos, const PsPres& pr, double dt)
-{
-    hem::PsFlashProposal prop;
-    const double s = ps_sigma_corridor_prop(U, i, j, k, sigma, eos, pr, dt, prop);
-    return (s > 0.0) ? s * prop.dm : 0.0;
-}
-
-//  [DECIDE-S7] (docs/PLAN_sigma.md §II.5-S7): the equilibrium bound of the
-//  corridor step.  h(s) = sigma (P_dom(s) - Psat(T_dom(s))) on the dominant
-//  (Independent) phase of the trial state at fraction s of the full step
-//  (sigma = +1 when mass moves 1 -> 2); equilibrium is its root.  Returns
-//  false when the trial state cannot be evaluated.
-inline bool
-ps_sigma_corridor_h(const hem::PsFlashProposal& prop, const hem::PsPhaseAPI& eos,
-                    int dom, double sig, double s, double& h)
-{
-    double a1, U1, U2, U4, U5;
-    hem::ps_flash_trial(prop, s, a1, U1, U2, U4, U5);
-    if (!std::isfinite(a1) || !(a1 > 0.0) || !(a1 < 1.0)) { return false; }
-    if (!std::isfinite(U1) || !std::isfinite(U2) || !(U1 > 0.0) || !(U2 > 0.0)) { return false; }
-    hem::PsPhase c{};
-    if (dom == 1) {
-        c.alpha = a1;
-        eos.state_from_rho_e_phase(1, U1 / a1, U4 / U1 - prop.ke, c);
-    } else {
-        c.alpha = 1.0 - a1;
-        eos.state_from_rho_e_phase(2, U2 / (1.0 - a1), U5 / U2 - prop.ke, c);
-    }
-    if (!std::isfinite(c.T) || !std::isfinite(c.P) || !(c.T > 0.0)) { return false; }
-    const double Ps = eos.Psat_of_T(c.T);
-    if (!std::isfinite(Ps)) { return false; }
-    h = sig * (c.P - Ps);
-    return std::isfinite(h);
-}
-
-//  s_eq: the root of h on the trial path, bracketed on [0, 1] or by doubling
-//  to 64 full steps, refined by Illinois (7 steps and a final interpolation,
-//  the nucleator's pattern).  Returns +inf when no root is bracketed and
-//  0 when h(0) >= 0 (the rate and the dominant phase disagree on the
-//  direction).
-inline double
-ps_sigma_corridor_seq(const hem::PsFlashProposal& prop, const hem::PsPhaseAPI& eos,
-                      int dom, double sig)
-{
-    constexpr double inf = std::numeric_limits<double>::infinity();
-    double h0 = 0.0;
-    if (!ps_sigma_corridor_h(prop, eos, dom, sig, 0.0, h0)) { return 0.0; }
-    if (!(h0 < 0.0)) { return 0.0; }
-    double sa = 0.0, Fa = h0, sb = 1.0, Fb = 0.0;
-    bool bracketed = false;
-    for (int n = 0; n <= 6; ++n) {                       // sb = 1, 2, 4, ..., 64
-        double hb = 0.0;
-        if (!ps_sigma_corridor_h(prop, eos, dom, sig, sb, hb)) { return inf; }
-        if (hb >= 0.0) { Fb = hb; bracketed = true; break; }
-        sa = sb; Fa = hb; sb *= 2.0;
-    }
-    if (!bracketed) { return inf; }
-    if (Fb == 0.0) { return sb; }
-    int side = 0;
-    for (int it = 0; it < 7; ++it) {
-        const double sc = (sa * Fb - sb * Fa) / (Fb - Fa);
-        double Fc = 0.0;
-        if (!ps_sigma_corridor_h(prop, eos, dom, sig, sc, Fc)) { break; }
-        if (Fc == 0.0) { sa = sb = sc; break; }
-        if (Fc > 0.0) { sb = sc; Fb = Fc; if (side == -1) Fa *= 0.5; side = -1; }
-        else          { sa = sc; Fa = Fc; if (side == +1) Fb *= 0.5; side = +1; }
-    }
-    double sr = (sa == sb) ? sa : (sa * Fb - sb * Fa) / (Fb - Fa);
-    if (sr < sa) sr = sa;
-    if (sr > sb) sr = sb;
-    return sr;
-}
-
-//  The corridor transfer committed (CAMR.ps_sigma = 2 only): the fraction
-//  s_eq (1 - exp(-1/s_eq)) of the full step, bounded at equilibrium
-//  ([DECIDE-S7]) and capped by the representability limiter, then P1 = P2
-//  restored where the state changed (R-12, as after the nucleator), then
-//  Sigma grown by P1 on the vapour fraction's change across both
-//  (ps_sigma_growth = 1).  Returns the committed |dm| [kg/m^3], 0 when
-//  nothing moved.
-inline double
-ps_sigma_corridor_commit(amrex::Array4<amrex::Real> const& U,
-                         amrex::Array4<amrex::Real> const& Sg,
-                         int i, int j, int k,
-                         const hem::PsPhaseAPI& eos, const PsPres& pr, double dt)
-{
-    using amrex::Real;
-    hem::PsFlashProposal prop;
-    const double s_rep = ps_sigma_corridor_prop(U, i, j, k, Sg(i, j, k), eos, pr, dt, prop);
-    if (!(s_rep > 0.0)) { return 0.0; }
-    //  Eligibility guarantees exactly one Independent phase: the dominant.
-    const int dom = (ps_regime(U(i, j, k, UALPHA1), U(i, j, k, UM1RHO1), pr)
-                     == PsRegime::Independent) ? 1 : 2;
-    const double sig = (prop.sgn < 0.0) ? 1.0 : -1.0;      // +1: mass 1 -> 2
-    //  [DECIDE-S8] (docs/PLAN_sigma.md §II.5-S8): P5 only grows the trace
-    //  (Corridor) phase; a proposal whose receiving phase is the dominant
-    //  one moves nothing.
-    const int recv = (prop.sgn < 0.0) ? 2 : 1;
-    if (recv == dom) { ++ps_counters().sigma_corridor_shrink_skip; return 0.0; }
-    const double s_eq = ps_sigma_corridor_seq(prop, eos, dom, sig);
-    if (!(s_eq > 0.0)) { ++ps_counters().sigma_corridor_sign_skip; return 0.0; }
-    if (s_eq <= 1.0) { ++ps_counters().sigma_corridor_eq_n; }
-    const double s_relax = std::isfinite(s_eq) ? s_eq * (1.0 - std::exp(-1.0 / s_eq)) : 1.0;
-    const double s = std::min(s_relax, s_rep);
-    if (!(s > 0.0)) { return 0.0; }
-    const Real a1_0 = U(i, j, k, UALPHA1);
-    hem::V6 Uv = ps_pack_v6(U, i, j, k, a1_0, U(i, j, k, UM1RHO1), U(i, j, k, UM2RHO2));
-    const hem::V6 Uv_pre = Uv;
-    double a1t, U1t, U2t, U4t, U5t;
-    hem::ps_flash_trial(prop, s, a1t, U1t, U2t, U4t, U5t);
-    Uv[0] = a1t; Uv[1] = U1t; Uv[2] = U2t; Uv[4] = U4t; Uv[5] = U5t;
-    if (Uv[0] != Uv_pre[0] || Uv[1] != Uv_pre[1] || Uv[4] != Uv_pre[4]) {
-        hem::ps_pressure_relax_cell(Uv, eos);
-    }
-    ps_unpack_v6(U, i, j, k, Uv);
-    if (ps_sigma_growth() != 0) {
-        const Real s0 = Sg(i, j, k);
-        const Real a2_0 = Real(1.0) - a1_0;
-        const Real a2_1 = Real(1.0) - U(i, j, k, UALPHA1);
-        if (s0 > Real(0.0) && a2_0 > Real(0.0) && a2_1 > Real(0.0) && a2_1 != a2_0) {
-            const Real c = Real(std::cbrt(double(a2_1) / double(a2_0)));
-            const Real s1 = s0 * c * c;
-            if (std::isfinite(s1) && s1 >= Real(0.0)) { Sg(i, j, k) = s1; }
-        }
-    }
-    return s * prop.dm;
-}
-
-
-//  CAMR.ps_sigma_restart_init = alg (docs/PLAN_sigma.md S-e, gate R2):
-//  fill Sigma from the algebraic closure X3's `rates` uses
-//  (hem_relax_x3.H), the only consistent guess for a checkpoint written
-//  before Sigma existed --
-//      Sigma = (32 / 2 pi) (alpha_recv + delta) alpha_send / D,
-//  send and receive chosen by g_1 > g_2 exactly as `rates` does, with the
-//  run's own CAMR.ps_mt_srt_d and ps_mt_srt_delta.  A cell without both
-//  phases present, or whose branch state is not finite, gets 0.  The
-//  continuation is the current model from that step on and is NOT the
-//  trajectory of a run with Sigma from t = 0; Part I S-e says so and the
-//  restart prints what it did.  `label` names the call site in that line
-//  (the default is the restart's own fill; CAMR::post_regrid re-applies it
-//  after the restart's initial regrid, docs/PLAN_sigma.md §II.4b).
-inline void
-ps_sigma_fill_algebraic(amrex::MultiFab& Sig, const amrex::MultiFab& S,
-                        const std::string& label = "restart_init = alg")
-{
-    const hem::PsPhaseAPI eos = ps_make_camr_eos_api();
-    const PsPres pr  = ps_presence_params();
-    const double D   = hem::ps_dial_mt_srt_d();
-    const double del = hem::ps_dial_mt_srt_delta();
-    if (!(D > 0.0)) {
-        amrex::Abort("CAMR.ps_sigma_restart_init = alg needs CAMR.ps_mt_srt_d > 0");
-    }
-    constexpr double two_pi = 6.283185307179586;
-    long n_set = 0, n_refused = 0;
-    for (amrex::MFIter mfi(Sig); mfi.isValid(); ++mfi) {
-        const amrex::Box bx = mfi.validbox();
-        amrex::Array4<amrex::Real> const& Sg = Sig.array(mfi);
-        amrex::Array4<const amrex::Real> const& U = S.const_array(mfi);
-        amrex::LoopOnCpu(bx, [=, &n_set, &n_refused] (int i, int j, int k) noexcept
-        {
-            Sg(i, j, k) = amrex::Real(0.0);
-            const amrex::Real a1 = U(i, j, k, UALPHA1);
-            if (!std::isfinite(a1)) { return; }
-            const amrex::Real a2 = amrex::Real(1.0) - a1;
-            const amrex::Real m1 = U(i, j, k, UM1RHO1);
-            const amrex::Real m2 = U(i, j, k, UM2RHO2);
-            if (ps_regime(a1, m1, pr) == PsRegime::Absent ||
-                ps_regime(a2, m2, pr) == PsRegime::Absent) { return; }
-            if (!(a1 > amrex::Real(0.0)) || !(a2 > amrex::Real(0.0))) { return; }
-            const amrex::Real rho_mix = m1 + m2;
-            const double ke = double(ps_kinetic_energy(U, i, j, k, rho_mix));
-            const double e_1 = double(U(i, j, k, UE1)) / double(m1) - ke;
-            const double e_2 = double(U(i, j, k, UE2)) / double(m2) - ke;
-            hem::PsPhase p1{}, p2{};
-            p1.alpha = double(a1); p2.alpha = double(a2);
-            eos.state_from_rho_e_phase(1, double(m1) / double(a1), e_1, p1);
-            eos.state_from_rho_e_phase(2, double(m2) / double(a2), e_2, p2);
-            if (!p1.valid || !p2.valid ||
-                !std::isfinite(p1.g) || !std::isfinite(p2.g)) {
-                ++n_refused; return;
-            }
-            const double a_geom = (p1.g > p2.g)
-                                ? (double(a2) + del) * double(a1)
-                                : (double(a1) + del) * double(a2);
-            const double sg = (32.0 / two_pi) * a_geom / D;
-            if (std::isfinite(sg) && sg > 0.0) {
-                Sg(i, j, k) = amrex::Real(sg);
-                ++n_set;
-            }
-        });
-    }
-    amrex::ParallelDescriptor::ReduceLongSum(n_set);
-    amrex::ParallelDescriptor::ReduceLongSum(n_refused);
-    amrex::Print() << "[PS-SIGMA] " << label << ": Sigma set in " << n_set
-                   << " two-phase cells (D = " << D << " m, delta = " << del
-                   << "), " << n_refused
-                   << " refused for a non-finite branch state; the run is the"
-                   << " current model from this step on, not the trajectory of"
-                   << " a run with Sigma from t = 0.\n";
-}
-
-//  [PS-SIGMA]: Sigma's own cumulative census, printed only when it grows.
-//  Counting only; nothing here is read by the numerics.  Called from
-//  CAMR_advance AFTER the P2/P8 pass, not from inside ps_apply_sources:
-//  that pass is a destruction channel too, and a census printed before it
-//  leaves the last step of a run unaccounted for (measured: the G3b
-//  balance closed to 1e-16 on every untruncated step and to 1.9e-8 on a
-//  run whose final step was cut short to land on stop_time).
-inline void ps_sigma_report()
-{
-    static long s_prev_prod = 0, s_prev_vanish = 0, s_prev_corr = 0;
-    const PsCounters& sc = ps_counters();
-    if (sc.sigma_prod_n > s_prev_prod ||
-        sc.sigma_vanish_n > s_prev_vanish ||
-        sc.sigma_corridor_would > s_prev_corr) {
-        //  17 digits: the production balance of witness G3b is asserted at
-        //  1e-10 relative, which the default 10-digit stream precision
-        //  cannot carry.
-        std::ostringstream os;
-        os << std::setprecision(17)
-           << "[PS-SIGMA] prod_n=" << sc.sigma_prod_n
-           << " prod_dalpha=" << sc.sigma_prod_dalpha
-           << " vanish_n=" << sc.sigma_vanish_n
-           << " vanish_sum=" << sc.sigma_vanish_sum
-           << " corridor_would_transfer="
-           << sc.sigma_corridor_would;
-        //  At CAMR.ps_sigma = 2 those transfers were committed.
-        if (ps_sigma_mode() == 2) {
-            os << " corridor_dm=" << sc.sigma_corridor_dm
-               << " corridor_eq_n=" << sc.sigma_corridor_eq_n
-               << " corridor_sign_skip=" << sc.sigma_corridor_sign_skip
-               << " corridor_shrink_skip=" << sc.sigma_corridor_shrink_skip;
-        }
-        os << "\n";
-        amrex::Print() << os.str();
-        s_prev_prod   = sc.sigma_prod_n;
-        s_prev_vanish = sc.sigma_vanish_n;
-        s_prev_corr   = sc.sigma_corridor_would;
-    }
-}
-
 // -----------------------------------------------------------------
 //  ps_apply_sources: called from CAMR_advance after ps_apply_relaxation,
 //  under ps_hydro != 0.  dt is the level time step the rate-based
 //  sources integrate over; nghost grows the tile box.  Returns without
-//  touching S_new when no source is enabled and no Sigma was handed in.
-//
-//  Sig (CAMR.ps_sigma >= 1 only; the relaxed-state boundary pass of
-//  PS_nscbc.cpp and every other caller pass nullptr) is the matching
-//  Sigma_Type data on the same grids.  With it, two of Sigma's sources
-//  run here: production at each committed nucleation event
-//  (dSigma = (3/r_nuc) d_alpha_seed, §II.4 source 3) and the corridor
-//  source, computed and counted but never applied (source 4).
+//  touching S_new when no source is enabled.
 // -----------------------------------------------------------------
 inline void
-ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0,
-                 amrex::MultiFab* Sig = nullptr)
+ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
 {
     BL_PROFILE("PS::ps_apply_sources()");
     const PsSourceDials& dials = ps_source_dials();
 
-    if (!dials.any_enabled() && Sig == nullptr) return;
+    if (!dials.any_enabled()) return;
 
     amrex::ignore_unused(S_new, dt);
 
@@ -580,13 +153,9 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0,
         const PsPres l_pr = ps_presence_params();
         // The seed level is the presence design's alpha_birth (single-sourced).
         const amrex::Real l_seed = ps_presence_params().alpha_birth;
-        //  Sigma's production radius, read only when Sigma is present.
-        const double l_rnuc = (Sig != nullptr) ? double(ps_sigma_rnuc()) : 0.0;
         for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
             const amrex::Box bx = mfi.growntilebox(nghost);
             amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
-            amrex::Array4<amrex::Real> const Sg =
-                Sig ? Sig->array(mfi) : amrex::Array4<amrex::Real>{};
             amrex::LoopOnCpu(bx, [=] (int i, int j, int k) noexcept
             {
                 const amrex::Real a1 = U(i,j,k, UALPHA1);
@@ -613,10 +182,8 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0,
                     return;
                 }
                 const hem::V6 Uv_pre = Uv;
-                double d_seed = 0.0;
                 if (hem::ps_flash_source_cell(Uv, eos, double(dt), double(tau),
-                                              double(l_seed), ps_const::ALPHA_ROUNDOFF,
-                                              &d_seed)) {
+                                              double(l_seed), ps_const::ALPHA_ROUNDOFF)) {
                     // Reproject: the flash moved mass; restore P1 = P2
                     // (alpha-adjusting; preserves m_k and mixture rho, E).
                     // The model closure is instantaneous mechanical
@@ -631,15 +198,6 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0,
                         hem::ps_pressure_relax_cell(Uv, eos);
                     }
                     ps_unpack_v6(U, i, j, k, Uv);
-                    //  Sigma's production (docs/PLAN_sigma.md S-c, §II.4
-                    //  source 3): the committed seed volume becomes
-                    //  interface at the nucleation radius.  Sigma only;
-                    //  no State_Type slot is touched here.
-                    if (Sg.p && d_seed > 0.0) {
-                        Sg(i, j, k) += amrex::Real((3.0 / l_rnuc) * d_seed);
-                        ++ps_counters().sigma_prod_n;
-                        ps_counters().sigma_prod_dalpha += d_seed;
-                    }
                 }
             });
         }
@@ -846,53 +404,6 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0,
         ps_print_when_grown(s_prev_mt, hem::ps_mass_transfer_count(),
                             "[ps_mt] cumulative cells with finite-rate MT = ");
         BL_PROFILE_VAR_STOP(ps_src_mt);
-    }
-
-    // -------------------------------------------------------------
-    //  (2b) The corridor growth source (P5), computed and counted only.
-    //      Placed after the nucleator, so it sees the cells it seeded,
-    //      and before the triple-point response.  At CAMR.ps_sigma = 1
-    //      nothing is written: this is the coverage measurement that
-    //      tells the maintainer, before commit 4 turns it on, how many
-    //      cells the hand-over would act in.
-    // -------------------------------------------------------------
-    if (Sig != nullptr && ps_sigma_mode() == 2 && ps_sigma_corridor() == 1) {
-        //  CAMR.ps_sigma = 2: the transfer is committed (docs/PLAN_sigma.md
-        //  P5, §II.5); counted as before, plus its mass.
-        BL_PROFILE_VAR("PS::ps_source_sigma_corridor()", ps_src_sigcorr);
-        const PsPres l_prc = ps_presence_params();
-        const double l_dt  = double(dt);
-        for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
-            const amrex::Box bx = mfi.growntilebox(nghost);
-            amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
-            amrex::Array4<amrex::Real> const& Sg = Sig->array(mfi);
-            amrex::LoopOnCpu(bx, [=] (int i, int j, int k) noexcept
-            {
-                const double dm = ps_sigma_corridor_commit(U, Sg, i, j, k,
-                                                           eos, l_prc, l_dt);
-                if (dm > 0.0) {
-                    ++ps_counters().sigma_corridor_would;
-                    ps_counters().sigma_corridor_dm += dm;
-                }
-            });
-        }
-        BL_PROFILE_VAR_STOP(ps_src_sigcorr);
-    } else if (Sig != nullptr) {
-        BL_PROFILE_VAR("PS::ps_source_sigma_corridor()", ps_src_sigcorr);
-        const PsPres l_prc = ps_presence_params();
-        const double l_dt  = double(dt);
-        for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
-            const amrex::Box bx = mfi.growntilebox(nghost);
-            amrex::Array4<const amrex::Real> const& U = S_new.const_array(mfi);
-            amrex::Array4<const amrex::Real> const& Sg = Sig->const_array(mfi);
-            amrex::LoopOnCpu(bx, [=] (int i, int j, int k) noexcept
-            {
-                const double dm = ps_sigma_corridor_dm(U, i, j, k, Sg(i, j, k),
-                                                       eos, l_prc, l_dt);
-                if (dm > 0.0) { ++ps_counters().sigma_corridor_would; }
-            });
-        }
-        BL_PROFILE_VAR_STOP(ps_src_sigcorr);
     }
 
     // -------------------------------------------------------------

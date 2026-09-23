@@ -34,14 +34,6 @@ CAMR::advance(
 
     BL_PROFILE("CAMR::advance()");
 
-#ifdef USE_PS_HYDRO
-    // The level's first advance ends the restart's alg re-fill window
-    // (CAMR::post_regrid, docs/PLAN_sigma.md §II.4b).
-    if (level < static_cast<int>(s_sigma_alg_pending.size())) {
-        s_sigma_alg_pending[level] = 0;
-    }
-#endif
-
     if (do_mol) {
         amrex::Print() << "Doing MOL Advance" << std::endl;
 #ifdef USE_PS_HYDRO
@@ -94,11 +86,6 @@ CAMR::CAMR_advance (Real time,
     if (level < finest_level && do_reflux) {
 
         getFluxReg(level + 1).reset();
-#if defined(USE_PS_HYDRO) && !defined(AMREX_USE_EB)
-        if (getLevel(level + 1).sigma_reg_on) {
-            getLevel(level + 1).sigma_reg.reset();
-        }
-#endif
 
     }
 
@@ -130,19 +117,6 @@ CAMR::CAMR_advance (Real time,
 
     const Real prev_time = state[State_Type].prevTime();
     const Real  cur_time = state[State_Type].curTime();
-
-#ifdef USE_PS_HYDRO
-    // Sigma (docs/PLAN_sigma.md §II.3 item 4).  At CAMR.ps_sigma = 0 its new
-    // data is zeroed (after swapTimeLevels it is a stale buffer that the
-    // checkpoint would carry); at >= 1 it is advanced beside the hydro.
-    const bool sig_on = (ps_sigma_mode() >= 1);
-    if (!sig_on) {
-        get_new_data(Sigma_Type).setVal(0.0);
-    } else if (do_mol || ps_hydro == 0 || !geom.IsCartesian()) {
-        amrex::Abort("CAMR.ps_sigma >= 1 needs CAMR.ps_hydro = 1, CAMR.do_mol = 0 "
-                     "and a Cartesian geometry");
-    }
-#endif
 
 #ifdef USE_PS_HYDRO
     // Pelanti-Shyue reaction operator (resyncs, folds, floor, relaxation,
@@ -431,17 +405,8 @@ CAMR::CAMR_advance (Real time,
         }
 #endif
     };
-    //  Sig: the Sigma_Type data matching S (old at the Strang pre-hydro
-    //  half step, new after hydro), or nullptr at CAMR.ps_sigma = 0.  With
-    //  it the reaction also runs Sigma's sources: destruction in the
-    //  vanish fold (B), growth on the relaxation's committed Delta-alpha_2
-    //  (C), production at each nucleation event and the counted-only
-    //  corridor source (D), then P2/P8.  Sigma is state data with no ghost
-    //  cells, so its passes always run on the valid box (ng is 0 at both
-    //  call sites).  docs/PLAN_sigma.md §II.4.
     auto apply_ps_reaction = [&](amrex::MultiFab& S, amrex::Real dt_r,
-                                 int ng, bool do_print,
-                                 amrex::MultiFab* Sig) {
+                                 int ng, bool do_print) {
         diag_mass(S, "A enter (post-hydro/C-F)", true);
         PS_CELL_PROBE(S, "A  enter (post-hydro)   ");
         ps_resync_mixture_mass(S, ng);  // URHO == UM1RHO1 + UM2RHO2 after hydro/C-F
@@ -453,7 +418,7 @@ CAMR::CAMR_advance (Real time,
         // ps_apply_floor is what raises e_k to meet the temperature floor,
         // and it must see the cells the folds have just rewritten.
         // See docs/MODEL_AND_ALGORITHM.md §8.5.
-        ps_apply_vanish_fold(S, ng, Sig);
+        ps_apply_vanish_fold(S, ng);
         PS_CELL_PROBE(S, "A5 post VANISH fold    ");
         ps_apply_tfloor_fold(S, ng);          // must follow the vanish fold
         PS_CELL_PROBE(S, "A6 post TFLOOR fold    ");
@@ -463,32 +428,15 @@ CAMR::CAMR_advance (Real time,
         diag_mass(S, "B post floor/fold/clean");
         PS_CELL_PROBE(S, "B  post clean_state    ");
         diag_a1(S, "reaction pre-relax");   // entering: reflects hydro/advection/C-F
-        //  alpha_1 as the relaxation stage finds it: Sigma's growth law
-        //  (P1) needs the Delta-alpha_2 the stage commits.
-        amrex::MultiFab a1_pre;
-        if (Sig != nullptr) {
-            a1_pre.define(S.boxArray(), S.DistributionMap(), 1, 0);
-            amrex::MultiFab::Copy(a1_pre, S, UALPHA1, 0, 1, 0);
-        }
         if (ps_do_relax_cached != 0) {
-            //  At CAMR.ps_sigma = 2 X3 reads the transported Sigma as its
-            //  area coefficient (docs/PLAN_sigma.md P4); at 1 nothing does.
             ps_apply_relaxation(S, dt_r, ng, do_print,    // dt_r for the finite-rate legs
-                                &work_est,
-                                (ps_sigma_mode() == 2) ? Sig : nullptr);
+                                &work_est);
             clean_state(S, false); // intermediate: skip the UTEMP diagnostic sweep
         }
         diag_mass(S, "C post relaxation (P/T/MT)");
         PS_CELL_PROBE(S, "C  post relaxation     ");
         diag_a1(S, "reaction post-relax");  // jump here => MT/relaxation is the driver
-        if (Sig != nullptr) { ps_sigma_apply_growth(*Sig, a1_pre, S, 0); }
-        ps_apply_sources(S, dt_r, ng, Sig);
-        if (Sig != nullptr) {
-            ps_sigma_presence_floor(*Sig, S, 0);
-            //  After the P2/P8 pass, so the census covers every channel of
-            //  the step it reports (including the last step of a run).
-            if (do_print) { ps_sigma_report(); }
-        }
+        ps_apply_sources(S, dt_r, ng);
         diag_mass(S, "D post sources (flash)");
 #ifdef CAMR_PS_DIAG
         {   // CAMR.ps_floor_diag (0): per-step census of the EOS repairs.
@@ -520,8 +468,7 @@ CAMR::CAMR_advance (Real time,
     // combine to a full dt between hydro solves.
     if (ps_strang_cached != 0 && ps_hydro != 0) {
         apply_ps_reaction(get_old_data(State_Type), amrex::Real(0.5) * dt,
-                          0, false,
-                          sig_on ? &get_old_data(Sigma_Type) : nullptr);
+                          0, false);
     }
 #endif
 
@@ -575,24 +522,6 @@ CAMR::CAMR_advance (Real time,
         MultiFab::Saxpy  (S_new, 0.5*dt, new_hydro_source, 0, 0, NVAR, 0);
 
     } else {
-#ifdef USE_PS_HYDRO
-        if (sig_on) {
-            // Sigma border at the old time (physical ghosts: CAMR_sigmafill;
-            // coarse-fine ghosts: conservative interpolation), the hydro
-            // fills dSigma/dt beside hydro_source, then
-            // Sigma_new = Sigma_old + dt * dSigma/dt and Sigma >= 0 (P8).
-            MultiFab Sigma_border(grids, dmap, 1, numGrow(), MFInfo(), Factory());
-            FillPatch(*this, Sigma_border, numGrow(), prev_time, Sigma_Type, 0, 1);
-            sigma_clip(Sigma_border, numGrow());
-            MultiFab sigma_source(grids, dmap, 1, 0, MFInfo(), Factory());
-            construct_hydro_source(Sborder, hydro_source, time, dt,
-                                   &Sigma_border, &sigma_source);
-            MultiFab& Sig_new = get_new_data(Sigma_Type);
-            MultiFab::Copy(Sig_new, get_old_data(Sigma_Type), 0, 0, 1, 0);
-            MultiFab::Saxpy(Sig_new, dt, sigma_source, 0, 0, 1, 0);
-            sigma_clip(Sig_new, 0);
-        } else
-#endif
         construct_hydro_source(Sborder, hydro_source, time, dt);
 
         // S^{n+1} = S^n + dt * dSdt^{n+1/2}
@@ -642,8 +571,7 @@ CAMR::CAMR_advance (Real time,
         }
         amrex::MultiFab m1_pre(grids, dmap, 1, 0);
         amrex::MultiFab::Copy(m1_pre, S_new, UM1RHO1, 0, 1, 0);
-        apply_ps_reaction(S_new, dt_react, 0, true,
-                          sig_on ? &get_new_data(Sigma_Type) : nullptr);
+        apply_ps_reaction(S_new, dt_react, 0, true);
         amrex::MultiFab::Copy    (flash_src, m1_pre, 0, 0, 1, 0);
         amrex::MultiFab::Subtract(flash_src, S_new, UM1RHO1, 0, 1, 0); // m1_pre - m1_post
         flash_src.mult(amrex::Real(1.0) / dt_react, 0, 1, 0);

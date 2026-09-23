@@ -376,24 +376,6 @@ CAMR_bcfill_hyp(
   hyp_bndry_func(bx, data, dcomp, numcomp, geom, time, bcr, bcomp, scomp);
 }
 
-#ifdef USE_PS_HYDRO
-void
-CAMR_sigmafill(
-  amrex::Box const& bx,
-  amrex::FArrayBox& data,
-  const int dcomp,
-  const int numcomp,
-  amrex::Geometry const& geom,
-  const amrex::Real time,
-  const amrex::Vector<amrex::BCRec>& bcr,
-  const int bcomp,
-  const int scomp)
-{
-  amrex::GpuBndryFuncFab<amrex::FabFillNoOp> fill(amrex::FabFillNoOp{});
-  fill(bx, data, dcomp, numcomp, geom, time, bcr, bcomp, scomp);
-}
-#endif
-
 void
 CAMR_nullfill(
   amrex::Box const& /*bx*/,

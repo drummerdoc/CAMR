@@ -18,70 +18,16 @@
 #include "CAMR.H"
 #include "CAMR_io.H"
 #include "IndexDefines.H"
-#ifdef USE_PS_HYDRO
-#include "PS_dials.H"   // ps_sigma_mode, ps_sigma_restart_init
-#include "PS_relaxation.H"
-#include "PS_sources.H"   // ps_sigma_fill_algebraic
-#endif
 
 void
 CAMR::restart(amrex::Amr& papa, std::istream& is, bool bReadSpecial)
 {
-  // Read the checkpoint's state count ahead, in the order AmrLevel::restart
-  // reads the level block (level, geometry, box array, nstate), and rewind:
-  // set_state_in_checkpoint needs it and is not given it.
-  {
-    const auto pos = is.tellg();
-    int lev_in = -1;
-    amrex::Geometry geom_in;
-    amrex::BoxArray ba_in;
-    is >> lev_in;
-    is >> geom_in;
-    if (bReadSpecial) {
-      amrex::readBoxArray(ba_in, is, bReadSpecial);
-    } else {
-      ba_in.readFrom(is);
-    }
-    is >> m_nstate_in_chk;
-    if (!is || m_nstate_in_chk < 1 || m_nstate_in_chk > NUM_STATE_TYPE) {
-      amrex::Abort("CAMR::restart: could not read the checkpoint's state count");
-    }
-    is.seekg(pos);
-  }
-
   AmrLevel::restart(papa, is, bReadSpecial);
 
   // Work_Estimate_Type is never in a checkpoint: define it on State_Type's
   // grids and times, zero-filled, so the first advance can write it.
   state[Work_Estimate_Type].restart(desc_lst[Work_Estimate_Type],
                                     state[State_Type]);
-
-#ifdef USE_PS_HYDRO
-  // A checkpoint written before Sigma_Type existed (nstate <= Sigma_Type)
-  // does not hold it: define it on State_Type's grids and times (zero), and
-  // at CAMR.ps_sigma >= 1 fill it per CAMR.ps_sigma_restart_init (gate R2).
-  // At ps_sigma = 0 it stays zero and the restart is today's.  A checkpoint
-  // that holds Sigma is read whatever ps_sigma is (gate R3).
-  if (Sigma_Type >= m_nstate_in_chk) {
-    state[Sigma_Type].restart(desc_lst[Sigma_Type], state[State_Type]);
-    if (ps_sigma_mode() >= 1) {
-      const std::string& init = ps_sigma_restart_init();
-      if (init == "abort") {
-        amrex::Abort("CAMR.ps_sigma >= 1 restarts from a checkpoint without "
-                     "Sigma: set CAMR.ps_sigma_restart_init = zero or alg");
-      } else if (init == "alg") {
-        //  Gate R2's `alg` leg: the algebraic closure in every two-phase
-        //  cell (docs/PLAN_sigma.md S-e).  StateData::restart has just
-        //  zero-filled it, so every other cell keeps 0.  Every level is
-        //  marked for the re-fill after the restart's initial regrid
-        //  (post_regrid, §II.4b), a level that regrid creates included.
-        s_sigma_alg_pending.assign(parent->maxLevel() + 1, 1);
-        sigma_alg_fill("restart_init = alg");
-      }
-      // zero: already zero-filled by StateData::restart.
-    }
-  }
-#endif
 
   init_stuff(papa,geom,grids,dmap);
 
@@ -99,15 +45,6 @@ CAMR::restart(amrex::Amr& papa, std::istream& is, bool bReadSpecial)
     amrex::Print() << "read CPU time: " << previousCPUTimeUsed << "\n";
   }
 }
-
-#ifdef USE_PS_HYDRO
-void
-CAMR::sigma_alg_fill(const std::string& label)
-{
-  ps_sigma_fill_algebraic(get_new_data(Sigma_Type), get_new_data(State_Type),
-                          label);
-}
-#endif
 
 void
 CAMR::checkPoint(
@@ -482,12 +419,6 @@ CAMR::writePlotFile(
   amrex::Vector<std::pair<int, int>> plot_var_map;
   for (int typ = 0; typ < desc_lst.size(); typ++) {
     for (int comp = 0; comp < desc_lst[typ].nComp(); comp++) {
-#ifdef USE_PS_HYDRO
-      // Sigma is plotted only when transported (CAMR.ps_sigma >= 1), so a
-      // ps_sigma = 0 plotfile is byte-identical to one written before
-      // Sigma_Type existed.
-      if (typ == Sigma_Type && ps_sigma_mode() == 0) { continue; }
-#endif
       if (
         amrex::Amr::isStatePlotVar(desc_lst[typ].name(comp)) &&
         desc_lst[typ].getType() == amrex::IndexType::TheCellType()) {
