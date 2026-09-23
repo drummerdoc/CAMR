@@ -61,3 +61,16 @@ If O-P2 holds and O-P3 holds, the onset law is right where the homogeneous limit
 - **O-P2, PR preview** (the gate is GERG on the Mac): Test 24 first level at 0.484 m rises from 57.0 to **59.7 bar**, which is 0.98 of PR's own $P_{\mathrm{sat}}$ at the crossing (60.9 bar; the script prints Span–Wagner's 61.9), i.e. exactly $(1 - m/2)$ with $m$ = 0.041 at 296.45 K. The mechanism works as derived; the absolute level with PR is limited by PR's $P_{\mathrm{sat}}$.
 - O-P3, O-P7: pending (GERG, Mac; the σ check is below).- **O-P7, as far as it can be done here**: the fit gives σ = 3.28 mN/m at 280 K and 0.358 mN/m at 300 K. The NIST WebBook's CO₂ surface tension *is* Mulero et al.'s correlation, so a NIST comparison is circular; an independent check needs a primary measurement (Rathjen & Straub 1977 is the classic set). Recorded as open, not failed; the sensitivity of the onset to σ is $P_{\mathrm{sat}} - P_{\mathrm{on}} \propto \sigma^{3/2}$, so a 3 % error in σ is 4.5 % of the undershoot, i.e. 0.1 bar at the warm crossing.
 
+### 6.2 Mac (GERG), 23 Sept, `gerg_onset.ex` at `6f63c1b`, `ps_flash_onset = 1`, `prob.p_amb = 6e5`
+
+| | measured | window (BASE3) | CNT onset | prediction |
+|---|---|---|---|---|
+| Test 24, level at 0.28 / 0.484 / 0.8 / 1.6 m [bar] | 60.9 / 62.7 / 63.8 / 65.8 | 59.6 / 59.8 / 60.0 / 60.5 | **63.8 / 63.9 / 64.0 / 64.3** | 64.0 ± 0.5 at 0.8 m |
+| Test 24, level / $P_{\mathrm{sat}}(T)$ | ≈ 0.98 | 0.92 | 0.979–0.987 | $1 - m/2$, $m$ = 0.023 |
+| Test 24, wave speed | 370 m/s | 366 | 366 | unchanged |
+| Test 24, 0.8 m at +2, +3, +5 ms | 61.9, 61.9, 61.6 | 48.1, 46.9, 50.9 | 49.5, 47.8, 51.4 | not improved (transfer rate) |
+| Test 19, every sensor and delay | 34.2 at 0.8 m | 35.6 | **35.6, identical** | identical (cap binds) |
+
+- **O-P2 holds** at the predicted number; **O-P3 holds**; O-P6 holds (no abort, `rc 0` both).
+- Verdict: the CNT onset with the present margin as cap reproduces the warm test's first level with nothing fitted (0.2 bar from the measurement, 3.8 bar closer than the window) and leaves the cold test exactly as it was. What it does not do, by construction, is predict the cold onset: there the cap is the old constant standing in for wall nucleation ([DECIDE-O1](b), a separate note if wanted). What it does not touch, by design, is the collapse behind the level, which is candidate 2 of `FUTURE_WORK.md` §1.
+
