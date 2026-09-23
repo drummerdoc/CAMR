@@ -16,6 +16,8 @@ Done (R-17, 23 Sept 2026): the margin is the classical-nucleation-theory onset a
 
 ### 1.3 The growth rate
 
+Planned (`PLAN_growth.md`, [DECIDE-G1] taken 24 Sept 2026): heat-limited growth with a bubble number density $n$ as the one knob, in the flash kernel below `alpha_cond`, exact per-step integral, Tests 19 and 24 as the bracket test.
+
 The measured hump (Test 19) is produced by a source that starts at saturation and keeps producing while the pressure recovers (VERIFICATION §6.8 (the HRM-source probe), the HRM-source probe). The physical form is heat-limited bubble growth (Plesset–Zwick / Mikić, a Jakob-number law), not the SRT kinetic flux, whose interface speed (≈ 1–3 m/s per bar of superheat) drove every Σ run to equilibrium. Any such rate below `alpha_cond` must be written without the trace phase's own intensive state (X-40), and integrated implicitly (the stiffness estimate kept in X-40).
 
 ### 1.4 Area, if reopened
