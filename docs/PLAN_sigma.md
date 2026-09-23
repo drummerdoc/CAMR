@@ -1,3 +1,5 @@
+> **Thread closed (23 Sept 2026): reverted.** Σ was built through stage 3 and refuted (`DESIGN_DECISIONS.md` X-40); `Source/` is back at `sigma-stage0` on branch `sigma-revert`, the full implementation at tag `sigma-parked`, the keys retired. This note is kept as the record of the stages until the maintainer deletes it; what remains open is `FUTURE_WORK.md` §1.
+
 # Σ, the transported interfacial-area density: a runtime option, coupled to the sources when present
 
 Status: plan for the maintainer's decisions; no code. Derivation and gates G0–G4 are in `FUTURE_WORK.md` §1 and are not repeated; this note settles the *engineering* — where Σ lives, how it is transported, restarted, coupled and proven — and adds the restart gates and the ECCSEL validation. Every `[DECIDE-S*]` is the maintainer's. Predictions are written per commit before the runs, in this file.

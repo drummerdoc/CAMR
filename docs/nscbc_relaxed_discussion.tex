@@ -1,0 +1,723 @@
+% =====================================================================
+%  A characteristic outflow posed on the relaxed state
+%  Discussion note for a conversation on NSCBC beyond the frozen gas:
+%  flashing / relaxing two-phase flow at a subsonic outlet, with flow
+%  reversal.  Reuses docs/PLAN_relaxed_boundary.md (derivation, decisions,
+%  measurements) and camr_ps_model.tex S8 (the ghost construction).
+%  Build: pdflatex nscbc_relaxed_discussion.tex (twice).
+% =====================================================================
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=25mm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage[colorlinks=true,linkcolor=blue,citecolor=blue,urlcolor=blue]{hyperref}
+\usepackage{xcolor}
+\newcommand{\dd}[2]{\frac{\partial #1}{\partial #2}}
+\newcommand{\code}[1]{\texttt{\small #1}}
+\newcommand{\Lin}{\mathcal{L}_{\mathrm{in}}}
+\newcommand{\W}{\mathcal{W}}
+\newcommand{\uout}{u_{\mathrm{out}}}
+\newcommand{\Pinf}{P_\infty}
+\newcommand{\ceq}{c_{\mathrm{eq}}}
+\newcommand{\cf}{c_{f}}
+\newcommand{\cw}{c_{w}}
+\newcommand{\uvec}{\mathbf{u}}
+\newcommand{\Ivec}{\mathsf{I}}
+
+\title{A characteristic outflow posed on the relaxed state\\
+\large Notes for a discussion of NSCBC in flashing, relaxing two-phase flow}
+\author{M.~Day \quad (CAMR, branch \code{co2-eos})}
+\date{September 2026 --- work in progress (tree \code{7abcc31})}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent
+We are simulating CO$_2$ pipeline depressurisation with a six-equation
+two-phase model (Pelanti--Shyue) on real-fluid equations of state
+(Peng--Robinson and GERG-2008), whose closures are an instantaneous
+pressure-equilibrium constraint between the phases, finite-rate thermal
+and mass-transfer relaxation, and nucleation (flash).  The
+interior scheme is wave propagation.  At a subsonic outflow the
+classical NSCBC construction, written on the frozen (Wallis)
+eigenstructure, reflects a large fraction of any wave that has been
+relaxed: the relaxed wave has components on both frozen
+characteristics, and any condition that sets the entering frozen wave
+from the far field returns part of the leaving relaxed one.  We built an
+alternative that treats the strength of the entering discrete wave as
+the one modelled quantity and poses the boundary condition on the state
+the cell relaxes to at the end of the step, with the relaxed impedance
+measured from the trial evaluations themselves.  On plane relaxed waves
+it takes the reflection from $0.24$ to $0.01$ with nothing lost on pure
+vapour.  On the production outlet --- a supersonic two-phase jet core
+impinging on the outflow plane with the surrounding face in reversed
+flow --- it has taught us, run by run, which parts of the classical
+construction were doing what.  This note frames the construction against
+Poinsot--Lele for a reader whose reference application is reacting flow,
+and lists the questions we would like to discuss.
+\end{abstract}
+
+% ---------------------------------------------------------------------
+\section{Where the applications overlap}
+% ---------------------------------------------------------------------
+
+The reacting-flow and the flashing-flow outlet share the structure that
+made NSCBC necessary in the first place.  Both have a subsonic outflow
+through which acoustic waves must leave without reflection while the
+mean pressure is held to a far-field value; both carry a convected
+scalar field (composition; volume fraction and phase state) that must
+cross the boundary without generating pressure; both have a stiff source
+term whose time scale is far below the acoustic one.  Sutherland and
+Kennedy's observation for reacting flows --- that the source belongs
+\emph{in} the boundary relation, because the characteristic amplitudes
+are not decoupled from a stiff source over a time step --- is the
+starting point here too.
+
+Both applications also meet the two situations the literature treats
+least well.  Reversed flow on part of the outlet (a recirculating jet, a
+Mach-disk recompression) turns an outflow face into a partial inflow
+with the entering entropy and vorticity waves undetermined.  And the
+finite-volume setting has no boundary node: the condition must be
+imposed through a ghost state or on a face flux, so the drift and the
+near-sonic ill-conditioning that Masset et al.\ analyse for ghost-cell
+CBC are shared.
+
+
+% ---------------------------------------------------------------------
+\section{The model, in the variables used below}
+% ---------------------------------------------------------------------
+
+The six-equation model of Pelanti and Shyue carries, for two phases
+$k = 1$ (liquid) and $k = 2$ (vapour, or supercritical fluid) sharing
+one velocity $\uvec$, the volume fraction $\alpha_1$
+($\alpha_2 = 1 - \alpha_1$), the partial masses $m_k = \alpha_k\rho_k$,
+the mixture momentum $\rho\uvec$ and the phase total energies
+$\mathcal{E}_k = \alpha_k\rho_k E_k$ with $E_k = e_k + \tfrac12|\uvec|^2$.
+Each phase has its own density $\rho_k$, internal energy $e_k$,
+temperature $T_k$ and pressure $P_k = P_k(\rho_k, e_k)$ from its own
+branch of the equation of state; the mixture pressure is
+$P = \alpha_1 P_1 + \alpha_2 P_2$ and the mixture density
+$\rho = m_1 + m_2$.  The system is
+\begin{align}
+  \partial_t\alpha_1 + \uvec\!\cdot\!\nabla\alpha_1 &= \mathcal{S}_\alpha, \\
+  \partial_t m_k + \nabla\!\cdot\!(m_k\uvec) &= \pm\Gamma, \\
+  \partial_t(\rho\uvec) + \nabla\!\cdot\!(\rho\uvec\otimes\uvec + P\Ivec) &= 0, \\
+  \partial_t\mathcal{E}_k + \nabla\!\cdot\!(\mathcal{E}_k\uvec + \alpha_k P_k\uvec)
+    &= \mp P_I\,\partial_t\alpha_1 \pm \mathcal{Q} \pm \Gamma H_I ,
+\end{align}
+with $\mathcal{Q}$ the thermal relaxation ($T_1 \to T_2$), $\Gamma$ the
+mass transfer (driving the Gibbs energies together; nucleation of a
+phase that is absent is a separate flash operator), the interfacial
+pressure $P_I = \tfrac12(P_1 + P_2)$, and $\mathcal{S}_\alpha$ the term
+that couples the two phase pressures.  In Pelanti and Shyue's
+formulation $\mathcal{S}_\alpha = \mu\,(P_1 - P_2)$ with $\mu \to
+\infty$; we take that limit literally rather than as a rate.  The
+hyperbolic step advances the six equations with $\alpha_1$ advected and
+each phase carrying its own pressure, and after every step $\alpha_1$
+is reset, cell by cell, to the value at which $P_1 = P_2$ (a Newton on
+$\alpha_1$, with the interfacial work $\mp P_I\,\delta\alpha_1$
+deposited in the phase energies as the discrete form of the
+non-conservative term).  Pressure equality is therefore a constraint of
+the closure --- mechanical equilibrium, imposed by redistributing
+volume between the phases --- and not a relaxation process with a time
+scale: a finite-rate version was measured inert and removed.  Thermal
+and mass-transfer relaxation are finite-rate in the production closure
+(the coupled ``X3'' operator, which integrates both on the $P_1 = P_2$
+manifold and whose fixed point is the equilibrium state).  The mixture
+total energy $\rho E = \mathcal{E}_1 + \mathcal{E}_2$ is fluxed in
+strict conservation form; the volume-fraction and phase-energy
+equations are not in divergence form, which is why the interior uses
+wave propagation rather than flux differencing.
+
+The phases are evaluated on real-fluid equations of state: Peng--Robinson
+(analytic, and a tabulated form) and GERG-2008 (the reference
+multiparameter equation, tabulated), each with a branch-locked
+liquid/vapour inversion so that a phase is always queried on its own
+branch and ``no root'' is reported rather than substituted.  Every
+saturation quantity the closures use ($P_{\mathrm{sat}}(T)$,
+$T_{\mathrm{sat}}(P)$, the saturated phase states) is the equation of
+state's own coexistence curve.
+
+\paragraph{The homogeneous-equilibrium limit.}  As all three relaxation
+times go to zero, $P_1 = P_2$, $T_1 = T_2$ and $g_1 = g_2$ at every
+instant; $\alpha_1$, $m_1$ and $m_2$ cease to be independent and are
+fixed by $(\rho, e)$ through the saturation curve, and the six equations
+collapse to the three-equation Euler system for the mixture with an
+equilibrium (HEM) equation of state $P = P_{\mathrm{HEM}}(\rho, e)$.  The
+HEM limit is what the closures relax toward and what our exact
+two-phase reference solutions are computed on; the finite-rate model
+sits between the frozen system and that limit.
+
+\paragraph{Frozen and relaxed sound speeds.}  Throughout this note
+``frozen'' means that the relaxation terms are ignored: the sources
+$\mathcal{S}_\alpha$, $\mathcal{Q}$ and $\Gamma$ are set to zero, so each
+phase keeps its own pressure, temperature and mass, and the mixture is
+two phases compressed side by side.  Three sound speeds follow from
+which of the closures act on a disturbance.  With none of them acting
+--- the frozen system --- each phase is compressed along its own
+isentrope at fixed volume fraction, the mixture's bulk modulus is the
+mass-weighted sum of the phase moduli, and the speed is
+$\cf^2 = Y_1 c_1^2 + Y_2 c_2^2$ with $Y_k = m_k/\rho$ (Wallis).  In the
+model as we solve it no physical wave travels at $\cf$: the pressure
+constraint is re-imposed after every step, so $\cf$ is the speed of the
+characteristics of the hyperbolic operator within a step, the object
+the split scheme propagates and the Riemann solver is built on, and
+nothing more.  With the pressure constraint acting, the volume
+fractions redistribute so that the more compressible phase takes more
+of the volume change; the mixture's compressibility is the
+volume-weighted sum of the phase compressibilities,
+$1/(\rho\cw^2) = \sum_k \alpha_k/(\rho_k c_k^2)$, and the speed $\cw$
+(Wood) satisfies $\cw \le \cf$, with the gap large in a bubbly mixture
+(here $\cw = 174$~m/s against $\cf = 282$~m/s); this is the speed of a
+wave in the model with the thermal and mass-transfer legs switched off.
+With those legs also in equilibrium, evaporation and condensation along
+the wave absorb part of the pressure change and the speed is lower
+still: $\ceq$, the sound speed of the homogeneous equilibrium
+mixture.  Two further symbols are used below.  The
+\emph{impedance} $Z = \rho c$ is the ratio $\Delta P/\Delta u$ across an
+acoustic wave travelling at speed $c$, so $Z_f = \rho\cf$ for a frozen
+wave and $Z_{\mathrm{rel}} = \rho\,c_{\mathrm{rel}}$ for a relaxed one;
+and $c_{\mathrm{rel}}$ denotes the speed at which a wave actually travels
+in the relaxed flow --- $\cw$ when only the pressure constraint has
+acted, $\ceq$ when the thermal and mass-transfer legs are in
+equilibrium too, and in between for the finite-rate closure (139~m/s
+measured for the production closure on the mixture above).  The scheme
+propagates frozen characteristics within the step and applies the
+constraint and the relaxation legs afterwards; the physical waves
+travel at $c_{\mathrm{rel}}$.
+
+% ---------------------------------------------------------------------
+\section{Where flashing flow differs from reacting flow}
+% ---------------------------------------------------------------------
+
+Three differences matter at the boundary, and they compound.
+
+\paragraph{The source changes the eigenstructure.}  A reaction term
+moves the state along the composition direction and leaves the acoustic
+eigenstructure of the gas essentially alone.  Relaxation in a two-phase
+mixture does not: the frozen (Wallis) sound speed of the six-equation
+system,
+\begin{equation}
+  \cf^2 = Y_1 c_1^2 + Y_2 c_2^2 ,
+\end{equation}
+is the speed of the characteristics the scheme propagates, while the
+speed at which a wave actually travels once the pressure constraint has
+acted is the Wood speed,
+\begin{equation}
+  \frac{1}{\rho\,\cw^2} = \frac{\alpha_1}{\rho_1 c_1^2} + \frac{\alpha_2}{\rho_2 c_2^2},
+\end{equation}
+and after thermal and mass-transfer relaxation the equilibrium speed
+$\ceq$, lower still.  The sub-characteristic condition
+$\ceq \le \cw \le \cf$ is what makes the split scheme stable, and it is
+also what makes the boundary reflect.  A relaxed wave travelling at
+$c_{\mathrm{rel}}$ carries $\Delta P/\Delta u = Z_{\mathrm{rel}} =
+\rho\,c_{\mathrm{rel}}$; the frozen Riemann invariants of the boundary
+cell, $R^\pm = u \pm P/Z_f$, are built with $Z_f = \rho\cf$, so that
+same wave has a non-zero component on the \emph{entering} frozen
+characteristic,
+\begin{equation}
+  \Delta R^- = \Delta P\Big(\frac{1}{Z_{\mathrm{rel}}} - \frac{1}{Z_f}\Big),
+\end{equation}
+which any condition written on the frozen characteristics sends back
+into the domain.  The reflected fraction of the pressure amplitude is
+the impedance mismatch $(Z_f - Z_{\mathrm{rel}})/(Z_f + Z_{\mathrm{rel}})$.
+For our saturated mixture at $\alpha_1 = 0.05$, $\cf = 282$~m/s and the
+measured $c_{\mathrm{rel}} = 139$~m/s give a predicted reflection of
+about $0.3$; measured $0.22$--$0.24$, the same for the NSCBC ghost and
+for a plain zero-gradient copy.  Nothing in the invariant construction
+is at fault; the basis is.
+
+\paragraph{The source acts along the wave, not only in the cell.}  A
+depressurising liquid expands through an isentropic fan along which it
+crosses the saturation dome and flashes; the fan's own sound speed
+collapses as vapour forms, and the physical exit chokes at the
+equilibrium sound speed, far below the frozen one.  Our boundary
+construction for a venting face follows exactly that path.  Starting
+from the phase states of the boundary cell, it marches the pressure
+from the cell value toward the ambient value in substeps (each limited
+to a 5\,\% density change of either phase --- a march in pressure along
+the isentrope, not a march in time through the CFD step), moves each
+phase along its own isentrope at every substep, and, whenever the
+mixture enthalpy at the current pressure lies inside the saturation
+dome, re-closes the mixture to the equilibrium (HEM) saturated state at
+that pressure, which is where the flash enters and where the path's
+sound speed falls.  The march stops at the ambient pressure or at the
+point of maximal mass flux $\rho u$ along the path, the critical-flow
+condition; the state reached is the ghost state.  We measure this
+construction on a one-dimensional tube of supercritical liquid CO$_2$
+(100~bar, 320~K) venting through one end to 1~bar, scoring the mass
+that has left the tube by $80~\mu$s.  The reference is the same tube
+computed on a domain twice as long, with the vent plane an interior
+interface and 1~bar vapour beyond it, so that no boundary model is
+involved; the fan construction vents 4.4\,\% more mass than that
+reference.  A relaxation operator that acts on the boundary cell
+\emph{after} a frozen wave has entered cannot reproduce this.  The wave
+that enters the cell is a frozen HLLC jump; a frozen jump from 100~bar
+to about 1~bar on a liquid is an isentropic expansion by 99~bar with no
+phase change, and the liquid branch of the equation of state has no
+state there, so the trial evaluation refuses it.  The physical path
+flashes on the way down, with the pressure falling through the dome in
+a two-phase mixture, which is what the substepped march follows and a
+single jump cannot.  This is the one place the new construction has had
+to concede ground, and it is one of the questions below.
+
+\paragraph{The boundary state has a thermodynamic admissibility
+problem.}  Each phase is evaluated on its own branch of a cubic
+equation of state, and a boundary value obtained by extrapolation or by
+construction may fall outside the region where that phase-locked
+evaluation has a solution --- a liquid density and energy for which the
+liquid branch has no root, say --- and is then simply not a state.
+Masset et al.\ meet the same problem for multicomponent gases with
+complex state laws and answer it by shrinking the boundary gradient
+until the ghost becomes admissible.  Our implementation avoids floors
+and thresholds of that kind: where a construction generates a
+non-physical value we do not adjust it, we discard it, count the
+refusal, and fall back to a lower-accuracy construction that is
+admissible by design.  For example, an extrapolated ghost state whose
+phases have no root on their branches is replaced by a copy of the
+boundary cell, which is admissible because the boundary cell is; and a
+trial state of the relaxed boundary that refuses is replaced by the
+wave the interior fan had already sent.
+
+% ---------------------------------------------------------------------
+\section{The interior scheme, and the boundary face in its language}
+% ---------------------------------------------------------------------
+
+The interior is Berger--LeVeque wave propagation.  At every face the
+HLLC fan gives three waves $\W_l$ with speeds $s_l$, and the two cells
+that share the face are each updated with the sum of the fluctuations
+$\sum s_l \W_l$ of the waves travelling into them, i.e.\ arriving from
+upwind; a limited second-order correction flux is added on top.  The
+non-conserved quantities --- the volume fraction and the two phase
+energies --- are updated by those same fluctuations rather than by a
+flux divergence, which would require a carefully synchronised
+subtraction of the non-conservative source term.  The viscous
+contribution is a Newtonian stress with a constant effective viscosity
+$\mu$ (a deck parameter chosen to give the orifice shear layer a
+resolved thickness), added in flux form with the viscous heating
+partitioned to the phase energies by mass fraction.  After the
+hydrodynamic increment, a reaction operator $\mathcal{R}$ acts cell by
+cell: the mixture-consistency resyncs, the phase-removal operators (a
+phase whose volume fraction or partial mass has fallen below what the
+model can resolve is removed and its mass and energy assigned to the
+other phase), the pressure-equilibrium projection, the finite-rate
+thermal and mass-transfer relaxation, and nucleation.
+
+At a domain face $f$ between the boundary cell $N$ and its ghost $G$
+the fan decomposes the jump $q_G - q_N$ that the ghost fill created.  For
+subsonic outflow exactly one wave enters cell $N$, the acoustic one; for
+subsonic reversed flow two enter, the acoustic wave and the contact,
+which carries the ghost's composition and entropy inward.  By the time
+the level's fluxes are formed, the boundary cell's predicted increment
+is known to the last term --- every interior face, the corrections, the
+transverse and viscous contributions, the non-conservative deposit ---
+except for the entering acoustic wave:
+\begin{equation}
+  \Delta q_N = \underbrace{\Delta q^{\mathrm{int}} + \Delta q^{f,\mathrm{out}} + \Delta q^{f,\mathrm{cont}}}_{\text{known}}
+  \;-\; \frac{\Delta t}{\Delta x}\, s_{\mathrm{ac}} \W_{\mathrm{ac}} .
+  \label{eq:split}
+\end{equation}
+The construction below replaces $\W_{\mathrm{ac}}$ and leaves everything
+else --- including the ghost's contact wave in reversed flow --- as the
+scheme produced it.
+
+% ---------------------------------------------------------------------
+\section{The construction}
+% ---------------------------------------------------------------------
+
+\subsection{The modelled wave}
+
+The entering acoustic wave is taken to be the HLLC star jump on the
+$N$ side of $f$ for a prescribed pressure amplitude $a$ [Pa].  Two
+speeds of the frozen fan enter here, and they are frozen quantities
+because the fan is: $s_{\mathrm{ac}}$ is the HLLC estimate of the speed of
+the acoustic wave entering the domain (on a high face
+$S_L = \min(u_N - \cf{}_{,N},\, u_G - \cf{}_{,G})$, the outer wave speed on
+the domain side), and $c_{\mathrm{eff}} = |s_{\mathrm{ac}} - u_{n,N}|$ is that
+wave's speed relative to the boundary cell, which equals $\cf{}_{,N}$
+whenever the domain side sets the estimate.  The modelled wave is thus
+a frozen wave, as every wave the scheme propagates is; the relaxation
+acts on the cell afterwards, in the trial evaluation.  With
+$n_{\mathrm{sgn}} = \pm 1$ the outward sign,
+\begin{equation}
+  S_M(a) = u_{n,N} - \frac{n_{\mathrm{sgn}}\, a}{\rho_N\, c_{\mathrm{eff}}},
+  \qquad
+  \hat\W(a) = U^\star_N\big(s_{\mathrm{ac}}, S_M(a)\big) - q_N ,
+  \label{eq:wave}
+\end{equation}
+so that the HLLC pressure behind the wave is exactly $P_N + a$ and the
+velocity jump is that of an inward-running acoustic wave,
+$\mathrm{d}\uout = -a/\rho_N c_{\mathrm{eff}}$.  The star state is built by
+the interior's own routine, so the wave satisfies the conservation
+identities the scheme relies on, refuses (rather than clamps) when the
+jump is inadmissible, and needs no new discretisation at the boundary.
+$a = a_{\mathrm{fan}}$ reproduces the wave the ghost fan actually sent; $a
+= 0$ is no wave.  The modelled wave enters first order --- formally: on
+an outflow the entering wave is $O(r\,p')$ small, and the order series of
+\S\ref{sec:meas} finds no trace of it.
+
+\subsection{The trial state}
+
+For a candidate $a$ the boundary cell's end-of-step state and its
+relaxed image are
+\begin{equation}
+  q^{\mathrm{h}}(a) = q_N + \Delta q^{\mathrm{known}} - \frac{\Delta t}{\Delta x}\, s_{\mathrm{ac}}\hat\W(a),
+  \qquad
+  \tilde q(a) = \mathcal{R}\big(q^{\mathrm{h}}(a);\,\Delta t_r\big),
+\end{equation}
+where $\mathcal{R}$ is the production reaction chain applied to the
+boundary strip only, with its counters snapshotted so the trials leave
+no trace in the solution's accounting.  From $\tilde q$ we read the
+six-equation mixture pressure $\tilde P = \alpha_1 P_1 + \alpha_2 P_2$,
+the outward velocity $\tilde\uout$ and the mixture density $\tilde\rho$.
+This is the Sutherland--Kennedy move --- the stiff source inside the
+boundary relation --- carried out by evaluating the source on trial
+states rather than by deriving a relaxed eigenstructure.
+
+\subsection{The condition}
+
+Let $I(q) = P(q) - Z\,\uout(q)$ be the incoming relaxed invariant of the
+boundary cell.  In the LODI frame,
+$\partial_t(P - \rho c\,\uout) = -\Lin$ exactly, so every classical
+outflow is a statement about $\Lin$, and we discretise it on the relaxed
+step:
+\begin{align}
+  \text{rate form:}\quad & I(\tilde q(a)) - I(q_N) + \Delta t\,K\,(P_N - \Pinf) = 0, \label{eq:rate}\\
+  \text{value form:}\quad & I(\tilde q(a)) - \Pinf = 0 . \label{eq:value}
+\end{align}
+The rate form with $K = 0$ is Poinsot--Lele's $\Lin = 0$; with
+$K = \sigma(1-M^2)c/L$ it is the Rudy--Strikwerda anchoring.  The value
+form is Hedstrom's: the incoming invariant \emph{equals} its far-field
+value every step.  The two differ only when $I$ has drifted from
+$\Pinf$; the value form restores it within the step, the rate form
+never does.  Both are non-reflecting for an outgoing wave that keeps
+$I$ constant --- which a relaxed wave does when $Z$ is its impedance.
+
+\subsection{The impedance}
+
+$Z$ was first taken as the Wood impedance $\rho_N\cw$ of the boundary
+cell.  With the wave at the Wood speed (the pressure constraint only,
+the thermal and mass-transfer legs off) the condition is then exact to
+the single-phase level; with the production
+closure the wave travels at the equilibrium speed and a residual
+reflection of $0.07$ remains, the $Z_w$--$Z_{\mathrm{eq}}$ gap.  The gap
+is closed by measuring $Z$ on the trials themselves: the two seed
+evaluations at $a = 0$ and $a = a_{\mathrm{fan}}$ give relaxed states
+that differ by one injected frozen wave, and
+\begin{equation}
+  \ceq^2 = \frac{\tilde P(a_1) - \tilde P(a_0)}{\tilde\rho(a_1) - \tilde\rho(a_0)},
+  \qquad Z = \rho_N \ceq ,
+  \label{eq:zeq}
+\end{equation}
+is the equilibrium slope the reaction chain itself imposes on the cell,
+whatever the relaxation regime --- no EOS derivative along the
+coexistence curve, no neighbour, no model of which legs are fast.  A
+degenerate pair keeps the Wood value and is counted.
+
+\subsection{Face types}
+
+The face type is a deck choice per face, never a runtime predicate on
+the state.  \code{nr} is the condition above.  \code{vent} is an exit
+into a plenum at $\Pinf$, and treats its two flow directions
+differently, as every characteristic condition distinguishes them by
+the entering waves.  A cell is classed inflow or outflow by the sign of
+$\tilde\uout$ on the $a = 0$ trial, the cell's own relaxed evolution
+with nothing entering.  An outflow cell takes as its entering wave the
+substepped fan of \S3 --- the boundary cell's phase states marched in
+pressure toward $\Pinf$ along their isentropes with HEM re-closure
+inside the dome, terminated at $\Pinf$ or at the critical-flow point ---
+with the wave's amplitude fixed by the fan, no secant, the choke being
+the fan's own termination; the trial evaluation is still run on that
+wave, so the probe reports the relaxed face state after the fan's wave
+has entered.  An inflow cell solves the Hedstrom relation
+(\ref{eq:value}), which is the linearised stagnation condition for
+fluid entering from a plenum at rest ($P < \Pinf$ by the dynamic head
+for inward $u$).  Two earlier forms of the vent were built and refuted
+on the way to this one: a static-pressure Dirichlet $\tilde P = \Pinf$
+solved by the secant with a choke re-solve $\tilde\uout = \ceq$ where
+the ambient solution was relaxed-supersonic, which over-drove the
+reversed-flow part of the outlet to supersonic inflow (\S\ref{sec:demo3})
+and could not represent the flashing expansion (\S\ref{sec:meas}); and
+the same with the plenum inflow relation, which fixed the inflow but
+left the outflow cells with a one-jump amplitude that had no root on
+the liquid branch on the flashing vent.  The vent type exists because
+the production outlet needed it.
+
+\subsection{The scalar solve, refusal, cost}
+
+$g(a)$ is one scalar in one unknown, nearly linear (slope
+$\nu\,(\ceq^2/\cf^2 + \ceq/\cf)$ with $\nu$ the swept fraction), solved
+by a secant from the seeds $\{0, a_{\mathrm{fan}}\}$ with a fixed number
+of updates and no tolerance; the residual is reported.  Any evaluation
+that refuses --- a star state with a negative partial mass, a trial
+state whose host phase has no EOS root (tested on the EOS's
+non-aborting surface with the same dispatch the flux uses), a non-finite
+result --- drops the cell to the fan's own wave and is counted.  Three to
+four reaction evaluations per boundary cell per step.  There is no Mach
+dispatch anywhere: the frozen fan decides whether a wave enters, the
+condition decides its strength.
+
+\subsection{Transverse terms and corners}
+
+In 3D-NSCBC the boundary relation is
+$\Lin = K(P - \Pinf) + (1-\beta)\mathcal{T}$.  Here the transverse
+fluctuations of the boundary cell are part of the known increment
+(\ref{eq:split}), so the entering wave compensates them in full ---
+$\beta = 0$ --- without anything transverse being computed; $\beta > 0$
+would need the transverse change of $I$ separately.  A corner cell is
+processed once per face in direction order.
+
+% ---------------------------------------------------------------------
+\section{Contrast with Poinsot--Lele}
+% ---------------------------------------------------------------------
+
+\begin{description}
+\item[What is modelled.]  P\&L model a wave amplitude in a differential
+relation and integrate a boundary ODE.  We model the strength of a
+discrete wave the interior scheme already propagates; the outgoing waves
+are not modelled at all.
+\item[What the condition is posed on.]  P\&L impose it on the frozen
+eigenstructure.  We impose it on the state after the source has acted,
+with the source's own impedance.  Sutherland--Kennedy with relaxation as
+the source, without the relaxed eigenstructure on paper.
+\item[When it is applied.]  P\&L at the level of the PDE; we at the
+level of one time step with the complete increment of the boundary cell
+in hand.  Transverse effects enter through that increment.
+\item[What the far field means.]  P\&L's non-reflecting limit says the
+incoming invariant does not change; the far field enters only through
+$K$.  Hedstrom, and the ghost construction we shipped, set the incoming
+invariant's \emph{value} to its far-field value every step.  On the
+production outlet the difference was decisive (\S\ref{sec:demo3}).
+\item[What is deliberately absent.]  A Mach dispatch on any relaxed
+speed; any use of the ghost's invariants; any tolerance; any division by
+a wave speed --- the near-sonic blow-up of ghost-cell CBC is absent by
+construction, its analogue being a conditioning loss of the secant as
+the entering wave's swept fraction vanishes.
+\end{description}
+
+% ---------------------------------------------------------------------
+\section{What has been measured}
+\label{sec:meas}
+% ---------------------------------------------------------------------
+
+$r$ is reflected over incident pressure amplitude; 256 cells, a 1~m/s
+velocity pulse, both faces NSCBC.
+
+\begin{center}
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{lrrrr}
+\toprule
+case & ghost & relaxed, Wood $Z$ & relaxed, trial $Z$ & wave speed \\
+\midrule
+N1 vapour 20 bar / 280 K & $+0.0005$ & $-0.00004$ & $-0.00002$ & 234 m/s \\
+N1b mixture $\alpha_1 = 0.05$, full closure & $+0.241$ & $+0.067$ & $\mathbf{-0.011}$ & 139 m/s \\
+N1b, pressure constraint only & $+0.144$ & $+0.005$ & $+0.005$ & 174 m/s (Wood) \\
+N2 2-D pulse, residual/$A$, 4/5/6 ms & .0083/.0067/.0071 & .0091/.0072/.0056 & same & --- \\
+\bottomrule
+\end{tabular}
+\normalsize
+\end{center}
+
+The value form on N1 gives the ghost's $+0.0005$ (in vapour the two are
+the same condition) and on N1b $+0.0052$.  N4, mean-pressure recovery
+from $1.1\Pinf$ through both faces, in units of the initial excess per
+millisecond: ghost $1, .763, .528, .293, .060, .008, \ldots$; relaxed
+\code{nr} (value) $1, .761, .526, .291, .058, .008, \ldots$; \code{vent}
+$1, .54, .08, -.37, -.82, -.73, -.51, -.29, -.07, .007$ (an open end that
+rings once and is then absorbed on the inflow phase).  Every run was
+bit-identical to the shipped code with the construction off, and no
+trial ever had to fall back on the 1-D set.
+
+The flashing vent (the 100~bar supercritical liquid tube of \S3
+venting to 1~bar, vented mass at 80~$\mu$s against the boundary-free
+reference): the shipped choked fan $+4.4\,\%$; relaxed \code{nr}
+$-38\,\%$ (the frozen linear number); the secant \code{vent} $+14\,\%$,
+with the secant accepting four early steps at residuals of half the
+pressure and refusing every step after; the \code{vent} with the fan as
+its outflow wave model reproduces the shipped $+4.4\,\%$ to every digit
+with no refusal.  The one-wave form does not do this case; the fan does,
+inside the relaxed construction.
+
+\paragraph{Order at the face.}  N1 at 256/512/1024 cells against a
+boundary-free reference at the same $\Delta x$ and $\Delta t$ (the same
+grid extended so that no face reflection can return in the window),
+scoring the face cell's pressure error integrated over the pulse's
+passage: the shipped ghost falls by $4.2$ and $3.4$ per refinement, the
+relaxed boundary over the same ghost by $4.2$ and $3.4$ --- equal to
+four digits --- so the entering wave's dropped correction costs nothing
+measurable and the face is second order.  The reflected residual left
+in the domain, $0.23$~Pa on a $5$~kPa pulse for every boundary at every
+resolution, does not converge: it is the amplitude nonlinearity of the
+linearised Hedstrom invariant (a 50~m/s pulse gives $40\times$ the
+reflection of a 1~m/s one), not discretisation.
+
+\paragraph{What the ghost still supplies.}  With the entering wave
+modelled and the vent's wave the fan's, the ghost state at an NSCBC
+face is read only for the outgoing waves at the face and, in reversed
+flow, the contact.  Replacing the characteristic ghost by a plain copy
+of the boundary cell leaves N1, N4 and the 2-D pulse unchanged, moves
+N1b's reflection from $+0.005$ to $-0.006$ (the same magnitude, and
+within 10\,\% of the ghost on the boundary-free residual), costs
+$1.1\,\%$ of the vented mass at the flashing vent, and drops the face to
+first order on outgoing waves (ratios $1.8$, $1.9$; $5$--$22\times$ the
+face-cell error): what a copy removes is the outgoing wave's
+second-order correction, not anything characteristic.  Replacing it
+instead by a minmod continuation of the phase states past the face
+(the mixture assembled from the phases so that $\rho = m_1 + m_2$ and
+$\rho E = \mathcal{E}_1 + \mathcal{E}_2$ hold exactly; a continuation
+with no EOS root refused to the copy and counted) recovers the ghost's
+order and values to four digits on N1 and N4, $-0.28\,\%$ on the
+flashing vent, and the smallest residual of the three on N1b.  If that
+holds on the production outlet, the characteristic construction ---
+invariants, extrapolation, Mach dispatch, strain cap --- has nothing
+left to supply and is retired.
+
+\subsection{The production outlet}
+\label{sec:demo3}
+
+A saturated two-phase jet from a pipe rupture reaches the outflow plane
+20 diameters downstream as an overexpanded supersonic core
+($u/c \approx 1.5$, $13$~bar in gas at $20$~bar) with 60--70\,\% of the
+face in reversed flow.  The shipped ghost relieves the arrival transient
+within a millisecond and lets the core leave supersonically.  Each
+version of the relaxed construction was restarted from the same
+checkpoint before arrival and run through it.
+
+\begin{description}
+\item[Rate form, \code{nr}.]  Robust --- no refusal on any face in 3000
+steps, the validator clean --- and wrong: the last cells hold 40--47~bar
+against a supersonic core behind them.  The probe shows the ghost
+sending an expansion of $-0.5$ to $-2$~MPa per step at arrival and the
+relaxed condition choosing $+40$~kPa.  $\Lin = 0$ carries no far field:
+once the arrival raised $P$ and the flow reversed, $P - Z\uout$ stayed
+where it was.
+\item[Value form, \code{nr}.]  Worse, 46--58~bar and the shock ten cells
+inside by 24~ms, for a reason that took the numbers to see: at the
+arrival cell $P = 38$~bar, $u = 85$~m/s, $\rho c \approx 3.5\times10^4$,
+so $P - \rho c u \approx 8$~bar, \emph{below} $\Pinf$, and the Hedstrom
+invariant condition asks for a compression.  The ghost's linear branch
+would too; the ghost relieves because the jump exceeds its strain cap
+and it switches to the choked fan, which ignores the invariants.  The
+shipped face is a characteristic outflow at small jumps and a venting
+outlet at large ones, with a threshold deciding.  An acoustic
+linearisation about a quiescent far field accepts $P \ne \Pinf$
+compensated by velocity; an exit into a plenum does not.
+\item[\code{vent}, Dirichlet on all subsonic cells.]  The arrival is
+relieved (harder than the ghost: face at 6.5~bar, core through at
+$u/c = 1.95$) and the picture at $+2$~ms matches the ghost's.  Later it
+goes the other way: the reversed-flow part of the face is driven to
+supersonic \emph{inflow} ($u/c$ to $-2.2$), the mass pushed in
+recompresses the core and the shock walks inside.  A static-pressure
+Dirichlet is the exit condition for outflow into a plenum; for inflow
+from a plenum at rest the condition is stagnation.
+\item[\code{vent} as a plenum (inflow on the Hedstrom relation).]  The
+arrival as before; the reversed-flow pathology gone (inflow $u/c$ no
+lower than $-0.16$), the inflow cells sitting below $\Pinf$ as the
+stagnation relation has them, the time step tracking the ghost's.  The
+core takes a detour the ghost does not --- subsonic at 22~bar at
+$+4$~ms where the ghost is supersonic at 14, supersonic again at
+$+8$~ms --- a recompression excursion consistent with the open-end ring
+of the N4 test acting on the subsonic surroundings; whether that or the
+ghost's earlier settling is the better outlet is not decidable against
+the ghost, since both are boundary constructions.  Two to three cells
+per step still refused to the fan's wave in the late phase.
+\item[\code{vent} with the fan as the outflow wave model.]  Identical to
+the previous run to the second decimal at every station; the refusals
+fall from 7979 in 3000 steps to 1, because the fan reaches the same
+relaxed state along an admissible path with a wave one tenth the
+secant's amplitude.  This is the configuration that ships: \code{nr}
+on the lateral faces, \code{vent} on the outlet, the value form, the
+trial impedance.
+\item[Ghost fill: copy.]  With the characteristic ghost replaced by a
+copy of the boundary cell, the outlet is again identical to the
+previous run to the second decimal through the reversed-flow phase,
+with no refusal on any face: the plenum inflow relation on the cell,
+not the ghost's contact wave, is what sets the inflow.  The one change
+is diagnostic --- with no wave sent by the ghost the two seed trials of
+(\ref{eq:zeq}) coincide on a third of the lateral-face cells and the
+impedance falls back to Wood there, harmlessly (the cells are at rest
+near $\Pinf$).
+\item[Ghost fill: continuation.]  A first form that continued every
+conserved slot separately was refuted by the validator on the first
+step (a hundred boundary cells with $\rho \ne m_1 + m_2$ at $10^{-9}$)
+and, 2300 steps later, by a time-step collapse and an abort; the
+assembled form of \S\ref{sec:meas} is running at the time of writing.
+\end{description}
+
+% ---------------------------------------------------------------------
+\section{Questions for discussion}
+% ---------------------------------------------------------------------
+
+\begin{enumerate}
+\item \textbf{Value or rate.}  Hedstrom's value condition on the relaxed
+invariant against Poinsot--Lele's rate condition with a $K$.  On plane
+waves both are transparent; on the impinging outlet the value form
+anchors strongly and still could not vent.  Is there a principled way to
+choose the anchoring strength for a face that sees both small-amplitude
+acoustics and an order-one transient, other than a threshold on the
+jump?
+\item \textbf{The source along the wave.}  For a flashing expansion the
+relaxation acts along the fan, not after the wave has entered the cell,
+and a frozen star jump cannot represent it.  Is there an analogue in
+reacting flow --- a case where the reaction must be integrated along the
+characteristic rather than in the boundary relation --- and how was it
+treated?  Our answer is to keep the substepped fan as the outflow
+wave model of the vent type and use the trial evaluation only to read
+the relaxed result; it reproduces the flashing-vent benchmark exactly
+and the production outlet to the second decimal.
+\item \textbf{Reversed flow.}  On the part of the face where the flow
+enters, the acoustic wave is the modelled one and the contact wave
+carries whatever the ghost holds.  What should enter: the cell's
+own fluid, or the far-field composition and temperature?  On our outlet
+the answer made no measurable difference --- a ghost that sends no
+contact at all reproduces the outlet, because the plenum inflow
+relation on the cell sets the inflow --- but the far field there has
+the composition of the jet.  In reacting flow this is the burnt-gas
+backflow question; the answer probably carries over.
+\item \textbf{The impedance from the trials.}  Equation (\ref{eq:zeq})
+measures the equilibrium slope the source imposes over one step and
+adapts to whatever the relaxation regime is.  Is there a cleaner
+statement of what invariant a relaxing system conserves across a
+subsonic outflow, so that $Z$ need not be measured?
+\item \textbf{Transverse terms.}  Compensating the boundary cell's
+transverse fluctuations in full ($\beta = 0$) through the known
+increment left the 2-D pulse's corner residual unchanged at about
+$6\,\%$.  Is the Yoo--Im $\beta = M$ compromise still the recommendation
+when the transverse terms are known exactly rather than estimated?
+\item \textbf{Order and conditioning.}  The modelled wave enters first
+order (no limited correction for a wave with no upwind neighbour), yet
+the measured order at the face is the ghost's, second, because the
+entering wave on an outflow is small; what does cost an order is a ghost
+that carries no outgoing wave (a copy).  Masset et al.'s bound --- the
+minimum over the extrapolation, the outgoing-wave estimate and the
+scheme --- reads the same way.  Is there a case in reacting flow where
+the entering wave is large enough for its order to matter, and what was
+done there?
+\item \textbf{The relaxed-supersonic reading.}  The frozen fan decides
+whether a wave enters; when the flow is relaxed-supersonic but
+frozen-subsonic the condition is still imposed.  A dispatch on the
+relaxed Mach number was refuted on this outlet (it held the jet head
+against the plane).  Is there a better statement for that regime?
+\end{enumerate}
+
+% ---------------------------------------------------------------------
+\section*{References}
+% ---------------------------------------------------------------------
+\begin{itemize}
+\item T.~J.~Poinsot, S.~K.~Lele, Boundary conditions for direct simulations of compressible viscous flows, \emph{J.\ Comput.\ Phys.} 101 (1992).
+\item K.~W.~Thompson, Time dependent boundary conditions for hyperbolic systems, \emph{J.\ Comput.\ Phys.} 68 (1987).
+\item G.~W.~Hedstrom, Nonreflecting boundary conditions for nonlinear hyperbolic systems, \emph{J.\ Comput.\ Phys.} 30 (1979).
+\item D.~H.~Rudy, J.~C.~Strikwerda, A nonreflecting outflow boundary condition for subsonic Navier--Stokes calculations, \emph{J.\ Comput.\ Phys.} 36 (1980).
+\item J.~C.~Sutherland, C.~A.~Kennedy, Improved boundary conditions for viscous, reacting, compressible flows, \emph{J.\ Comput.\ Phys.} 191 (2003).
+\item C.~S.~Yoo, H.~G.~Im, Characteristic boundary conditions for simulations of compressible reacting flows with multi-dimensional, viscous and reaction effects, \emph{Combust.\ Theory Model.} 11 (2007).
+\item G.~Lodato, P.~Domingo, L.~Vervisch, Three-dimensional boundary conditions for direct and large-eddy simulation of compressible viscous flows, \emph{J.\ Comput.\ Phys.} 227 (2008).
+\item E.~Motheau, A.~Almgren, J.~B.~Bell, Navier--Stokes characteristic boundary conditions using ghost cells, \emph{AIAA J.} 55 (2017).
+\item P.-A.~Masset, L.~Lecointre, C.~Tenaud, M.~Massot, S.~Koudriakov, E.~Studer, Characteristic boundary conditions using ghost cells (GC-CBC) for high-order finite volume simulations of multicomponent Euler gas equations handling near-zero/sonic velocities, preprint.
+\item M.~Pelanti, K.-M.~Shyue, A mixture-energy-consistent six-equation two-phase numerical model for fluids with interfaces, cavitation and evaporation waves, \emph{J.\ Comput.\ Phys.} 259 (2014).
+\item R.~J.~LeVeque, \emph{Finite Volume Methods for Hyperbolic Problems}, Cambridge (2002).
+\end{itemize}
+
+\end{document}
