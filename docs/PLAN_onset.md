@@ -74,3 +74,19 @@ If O-P2 holds and O-P3 holds, the onset law is right where the homogeneous limit
 - **O-P2 holds** at the predicted number; **O-P3 holds**; O-P6 holds (no abort, `rc 0` both).
 - Verdict: the CNT onset with the present margin as cap reproduces the warm test's first level with nothing fitted (0.2 bar from the measurement, 3.8 bar closer than the window) and leaves the cold test exactly as it was. What it does not do, by construction, is predict the cold onset: there the cap is the old constant standing in for wall nucleation ([DECIDE-O1](b), a separate note if wanted). What it does not touch, by design, is the collapse behind the level, which is candidate 2 of `FUTURE_WORK.md` §1.
 
+### 6.3 Held-out check, Test 23 (121.9 bar, 31.5 °C; GERG, Mac, 23 Sept) — the falsifier fired
+
+Prediction (written before the run): the liquid crosses at about 295.5 K, $m_{\mathrm{CNT}} \approx 0.045$, first level at 0.8 m about 59.5 bar against about 57.3 for the window; falsifier: the onset run farther from the measured level than the window run.
+
+| 0.8 m, bar | +0.5 ms | +1 | +2 | +3 | +5 | "level" |
+|---|---|---|---|---|---|---|
+| measured | 53.1 | 45.3 | 43.1 | 44.5 | 49.3 | 42.9 |
+| window | 56.8 | 55.3 | 54.1 | 47.2 | 50.1 | 55.4 (0.934 $P_{\mathrm{sat}}$) |
+| CNT onset | 57.5 | 56.6 | 48.0 | 47.4 | 50.2 | 56.7 (0.956 $P_{\mathrm{sat}}$) |
+
+Crossing at 294.6 K, $P_{\mathrm{sat}}$ = 59.3 bar; both runs give the level their formula says. The measured "level" is 42.9 bar, 0.72 $P_{\mathrm{sat}}$, and the onset run is 1.3 bar farther from it than the window run: **the falsifier fired.** Why the test does not discriminate onset laws: a liquid at 43 bar and 294.6 K would be 28 % below saturation, past the homogeneous limit, which cannot be; the fluid there is colder, i.e. it is already evaporating (the paper says the same of Tests 23, 8, 4, 22: the HRM* paths pass the superheat limit and "the temperature is most likely colder at the lowest point of the dip"). Test 23 has no metastable plateau: vapour forms near 56 bar as both laws say, the pressure keeps falling with the expansion for another 13 bar, and vapour production catches up in a 6 bar recovery. CAMR cannot follow because the window pins the liquid at the onset (§6.4 of `PLAN_pipe_depress.md`) and the transfer behind it is slow: candidate 2, now measured at 31.5 °C. Over the five delays the onset run is nearer the measurement at three (it leaves the plateau a millisecond earlier: 48.0 against 54.1 at +2 ms) and farther at two, the first level among them; both converge to 50 by +5 ms against 49.3.
+
+State of the evidence for the law: confirmed at one point (Test 24, 0.2 bar), untestable at the cold end (Test 19, cap-bound), not discriminated by Test 23 (transfer-limited). Test 22 (14.9 °C, crossing ≈ 285 K, $m_{\mathrm{CNT}}$ = 0.26 capped) would be cap-bound and uninformative.
+
+`[DECIDE-O3]` is put to the maintainer with the falsifier on record: (a) flip, with this section as the caveat; (b) leave the selector at 0, the law parked as a proven-inert option.
+
