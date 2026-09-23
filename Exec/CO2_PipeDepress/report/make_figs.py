@@ -53,3 +53,26 @@ panel(axs[1], '24', [2], [('t24_pr', r'$D$ = 0.1 m (default)', C['win'], '-'), (
 for ax in axs: ax.legend(fontsize=7.5, loc='lower center', ncol=2)
 fig.suptitle(r'CAMR, PR, window nucleator: the SRT morphology length $D$', fontsize=10, x=0.02, ha='left'); fig.tight_layout(); fig.savefig(os.path.join(H, 'fig_dscan.pdf')); plt.close(fig)
 print('ok')
+
+# Fig 5: the 0.08 m sensor, measured, the paper's HEM and HRM* (digitised), CAMR
+def paper(test, model):
+    return np.loadtxt(os.path.join(H, 'paper_curves', 'paper_Exp%s_%s_0.08m.csv' % (test, model)), delimiter=',', skiprows=1)
+fig, axs = plt.subplots(1, 3, figsize=(7.2, 3.1), sharey=False)
+for ax, test, camr, extra, ttl, ylim in ((axs[0], '19', 'on19_gerg', [('k19', r'CAMR PR, HRM source, $\theta$ = 2.5 ms', C['hrm2'], '--')], 'Test 19, 0.08 m', (0, 50)),
+                                          (axs[1], '23', 'on23_gerg', [], 'Test 23, 0.08 m', (20, 70)),
+                                          (axs[2], '24', 'on24_gerg', [], 'Test 24, 0.08 m', (20, 70))):
+    M = meas(test); tt, pp = shifted(M[:, 0], M[:, 1]); w = (tt > -0.5) & (tt < 10)
+    ax.plot(tt[w], pp[w], color=C['meas'], lw=2.2, alpha=0.55, label='measured')
+    for model, lab, col, ls in (('HEM', 'paper: HEM', C['D'], '-'), ('HRMstar', r'paper: HRM$^*$ (fitted $\theta$)', C['hrm'], '-')):
+        P = paper(test, model); tt, pp = shifted(P[:, 0], P[:, 1]); w = (tt > -0.5) & (tt < 10)
+        ax.plot(tt[w], pp[w], color=col, ls=ls, marker='.', ms=3, label=lab)
+    T = run(camr); tt, pp = shifted(T[:, 0], T[:, 1]); w = (tt > -0.5) & (tt < 10)
+    ax.plot(tt[w], pp[w], color=C['gerg'], label='CAMR, GERG, CNT onset')
+    for tag, lab, col, ls in extra:
+        T = run(tag); tt, pp = shifted(T[:, 0], T[:, 1]); w = (tt > -0.5) & (tt < 10); ax.plot(tt[w], pp[w], color=col, ls=ls, label=lab)
+    ax.set_xlim(-0.5, 10); ax.set_ylim(*ylim); ax.set_title(ttl, fontsize=9, loc='left'); ax.set_xlabel('time after the wave [ms]')
+axs[0].set_ylabel('pressure [bar]')
+hs, ls = axs[0].get_legend_handles_labels(); fig.legend(hs, ls, loc='lower center', ncol=3, fontsize=7.5, bbox_to_anchor=(0.5, 0.0))
+fig.suptitle("The paper's models (digitised from its Figs. 13 and 15) against CAMR at the 8 cm sensor", fontsize=10, x=0.02, ha='left')
+fig.tight_layout(rect=(0, 0.13, 1, 1)); fig.savefig(os.path.join(H, 'fig_paper.pdf')); plt.close(fig)
+print('ok2')
