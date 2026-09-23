@@ -99,6 +99,28 @@ inline amrex::Real ps_sigma_rnuc()
     return cached;
 }
 
+//  CAMR.ps_sigma_corridor (1) and CAMR.ps_sigma_bc_mirror (1): TEST-ONLY
+//  (the B7/FF diagnostic, docs/PLAN_sigma.md §II.5-D; retired in commit 6).
+//  Read only at CAMR.ps_sigma = 2.  ps_sigma_corridor = 0: the corridor
+//  transfer counts but does not commit, as at level 1.  ps_sigma_bc_mirror
+//  = 0: the relaxed-boundary trial runs without Sigma.
+inline int ps_sigma_test_switch(const char* key)
+{
+    const int v = ps_dial_int(key, 1);
+    if (v != 0 && v != 1) { amrex::Abort(std::string("CAMR.") + key + " must be 0 or 1"); }
+    return v;
+}
+inline int ps_sigma_corridor()
+{
+    static const int cached = ps_sigma_test_switch("ps_sigma_corridor");
+    return cached;
+}
+inline int ps_sigma_bc_mirror()
+{
+    static const int cached = ps_sigma_test_switch("ps_sigma_bc_mirror");
+    return cached;
+}
+
 //  CAMR.ps_sigma_growth (1): TEST-ONLY (retired in commit 6).  0 switches
 //  off Sigma's growth source (P1) and nothing else, so the production
 //  identity of witness G3b can be asserted on its own.  Read only at

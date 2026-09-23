@@ -222,7 +222,8 @@ CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt,
         //  CAMR.ps_sigma = 2: the boundary cells' Sigma (SigQ, from the
         //  border construct_hydro_source holds) and its per-trial scratch
         //  copy SigT.  Not allocated below level 2.
-        const bool sig_trial = (sig != nullptr) && (ps_sigma_mode() == 2);
+        const bool sig_trial = (sig != nullptr) && (ps_sigma_mode() == 2)
+                               && (ps_sigma_bc_mirror() == 1);
         MultiFab SigQ, SigT;
         if (sig_trial) {
             SigQ.define(sba, sdm, 1, 0);

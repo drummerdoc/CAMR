@@ -856,7 +856,7 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0,
     //      tells the maintainer, before commit 4 turns it on, how many
     //      cells the hand-over would act in.
     // -------------------------------------------------------------
-    if (Sig != nullptr && ps_sigma_mode() == 2) {
+    if (Sig != nullptr && ps_sigma_mode() == 2 && ps_sigma_corridor() == 1) {
         //  CAMR.ps_sigma = 2: the transfer is committed (docs/PLAN_sigma.md
         //  P5, §II.5); counted as before, plus its mass.
         BL_PROFILE_VAR("PS::ps_source_sigma_corridor()", ps_src_sigcorr);
