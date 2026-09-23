@@ -228,6 +228,9 @@ struct PsCounters {
     //                   dominant phase disagreed on the direction.
     long   sigma_corridor_eq_n      = 0;
     long   sigma_corridor_sign_skip = 0;
+    //  sigma_corridor_shrink_skip : steps skipped because the proposal
+    //                   would shrink the trace phase ([DECIDE-S8]).
+    long   sigma_corridor_shrink_skip = 0;
 
     // ---- hem kernels (hem_*.H) --------------------------------------
     long   mass_transfer_count  = 0;

@@ -391,6 +391,11 @@ ps_sigma_corridor_commit(amrex::Array4<amrex::Real> const& U,
     const int dom = (ps_regime(U(i, j, k, UALPHA1), U(i, j, k, UM1RHO1), pr)
                      == PsRegime::Independent) ? 1 : 2;
     const double sig = (prop.sgn < 0.0) ? 1.0 : -1.0;      // +1: mass 1 -> 2
+    //  [DECIDE-S8] (docs/PLAN_sigma.md §II.5-S8): P5 only grows the trace
+    //  (Corridor) phase; a proposal whose receiving phase is the dominant
+    //  one moves nothing.
+    const int recv = (prop.sgn < 0.0) ? 2 : 1;
+    if (recv == dom) { ++ps_counters().sigma_corridor_shrink_skip; return 0.0; }
     const double s_eq = ps_sigma_corridor_seq(prop, eos, dom, sig);
     if (!(s_eq > 0.0)) { ++ps_counters().sigma_corridor_sign_skip; return 0.0; }
     if (s_eq <= 1.0) { ++ps_counters().sigma_corridor_eq_n; }
@@ -523,7 +528,8 @@ inline void ps_sigma_report()
         if (ps_sigma_mode() == 2) {
             os << " corridor_dm=" << sc.sigma_corridor_dm
                << " corridor_eq_n=" << sc.sigma_corridor_eq_n
-               << " corridor_sign_skip=" << sc.sigma_corridor_sign_skip;
+               << " corridor_sign_skip=" << sc.sigma_corridor_sign_skip
+               << " corridor_shrink_skip=" << sc.sigma_corridor_shrink_skip;
         }
         os << "\n";
         amrex::Print() << os.str();
