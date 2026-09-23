@@ -344,6 +344,19 @@ Commits planned (branch `pipe-depress`, each by `tools/witness/ci.sh`): this blo
 Commits since the first stop: `0acc25f` [DECIDE-S7] and its predictions; `1e30fe6` the bound; this results block.
 
 
+## II.5-S8 — the corridor transfer only grows the trace phase: decision, rule, predictions (written 23 Sept, before any code)
+
+`[DECIDE-S8]` What P5 does when the sign of g₁ − g₂ would shrink the trace phase. **Taken (23 Sept, maintainer): (a), nothing.** P5 acts only in the direction that grows the trace (Corridor) phase, as its wording says ("the newborn mass enters at the trace phase's saturation state"); a shrinking trace phase is left to transport and the vanish fold, as at level 1. Derivation in the S7 stop note: the other direction booked the trace donor at the receiving phase's saturation volume and enthalpy (B2's trace liquid at 10⁶ kg/m³), and option (b) would need the trace phase's own intensive state, which the presence design holds to be unreliable below `alpha_cond`.
+
+**Rule** (in `ps_sigma_corridor_commit`, level 2 only): the receiving phase of the proposal (phase 2 when mass moves 1 → 2) must be the Corridor phase; otherwise nothing moves and the step is counted as `corridor_shrink_skip` (printed at level 2). Checked before the equilibrium bound, so the S7 direction check (`corridor_sign_skip`) now only sees growth proposals. Level 1 still counts the unrestricted `ps_sigma_corridor_dm`, byte for byte.
+
+| # | gate | prediction (before the run) | result |
+|:--|:--|:--|:--|
+| S8.0 | levels 0 and 1, `nc_S4c` against `nc_S4b`: FF, N1, N4, N1b; battery at 0 and at 1; FF at 1 against `S4bs1` | byte-identical as S7.0. | |
+| S8.1 | battery at level 2 (`AUD_S4cs2_nc`) against BASE3 and `AUD_S4bs2_nc` | **B2, B7, B9 complete**; "15 identical, 6 changed" against BASE3, the same 15 as Q5; B5, B11, B12 byte-identical to `AUD_S4bs2_nc`. | |
+| S8.2 | B2 and B7 at level 2, plotfile every 5 steps | largest pressure in any plotfile within 1 % of the largest initial pressure; in every cell with a Corridor liquid (α_vanish < α₁ < α_cond) the liquid density α₁ρ₁/α₁ stays below 1200 kg/m³ (level 1: ≤ 1041); `corridor_shrink_skip` > 0 in B2 (the rule acts). | |
+| S8.3 | the gates stopped since §II.5-predictions: Q6 (`exact_suite`), Q7 (`verify_canonical`), Q8 (`ps_mt_srt_d` scan), Q9, Q11, and the PR ECCSEL runs of Q1p, Q2, Q3, Q4 | as written in §II.5-predictions, unchanged. | |
+
 ## II.6 What the agent does not do
 
 Change any default; touch `Source/EOS/`; alter the presence classification or X3's Newton; merge branches in the VM; run 2-D cases (hand the commands to the maintainer); tune $r_{\mathrm{nuc}}$ or $D$ to the ECCSEL data (commit 5 is the maintainer's call after commit 4's gates); delete `PLAN_*` files (commit 6 is separate).
