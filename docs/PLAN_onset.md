@@ -49,3 +49,15 @@ If O-P2 holds and O-P3 holds, the onset law is right where the homogeneous limit
 1. `docs: PLAN_onset.md` (this file).
 2. `flash: ps_flash_onset (0)` — `sigma_of_T`, `ps_flash_margin_cnt(T, api)` in `hem_flash.H`, the two window sites read $m(T)$ at 1; witness O-P1.
 3. `flash: gates` — O-P2..O-P7 recorded here against their predictions (Mac GERG runs by the maintainer; battery, FF, N-witnesses in the VM). Then `[DECIDE-O3]`'s flip is the maintainer's.
+
+## 6. Results
+
+### 6.1 VM (PR), 23 Sept, build `nc_ON` at commit `6f63c1b`
+
+- **O-P1 holds**: at 0, FF 14, N1 9, N4 13, N1b 13 plotfiles `differ=0`, 85 probe lines identical, battery 21 identical to BASE3.
+- **O-P4 partly fails, in the way the prediction allowed for.** At 1: 20 battery rows byte-identical, **B7 moved** (P 2.2·10⁻², α₁ 8·10⁻³). B7 is the rupture-sonic case whose liquid enters the dome from 310 K, i.e. at the warm end where the cap does not bind — the prediction's own clause. Its `exact_suite` row improves slightly (P rel-L2 0.3289 → 0.3113, ρ 0.1597 → 0.1603, u 0.7481 → 0.7418). B2 and B9 byte-identical, as predicted (their fronts are at 256–260 K). A and C rows, B3–B6, B8, B10–B12 byte-identical. `verify_canonical` 31 PASS as BASE3.
+- **O-P5 holds**: `flashing_front` pins move by +0.5 % (ref 2.3652 → 2.3768), +0.2 % (`vent` 2.4730 → 2.4777), +0.3 % (`nr`), all under the 2 % falsifier; no abort.
+- **O-P6 holds** on every VM run.
+- **O-P2, PR preview** (the gate is GERG on the Mac): Test 24 first level at 0.484 m rises from 57.0 to **59.7 bar**, which is 0.98 of PR's own $P_{\mathrm{sat}}$ at the crossing (60.9 bar; the script prints Span–Wagner's 61.9), i.e. exactly $(1 - m/2)$ with $m$ = 0.041 at 296.45 K. The mechanism works as derived; the absolute level with PR is limited by PR's $P_{\mathrm{sat}}$.
+- O-P3, O-P7: pending (GERG, Mac; the σ check is below).- **O-P7, as far as it can be done here**: the fit gives σ = 3.28 mN/m at 280 K and 0.358 mN/m at 300 K. The NIST WebBook's CO₂ surface tension *is* Mulero et al.'s correlation, so a NIST comparison is circular; an independent check needs a primary measurement (Rathjen & Straub 1977 is the classic set). Recorded as open, not failed; the sensitivity of the onset to σ is $P_{\mathrm{sat}} - P_{\mathrm{on}} \propto \sigma^{3/2}$, so a 3 % error in σ is 4.5 % of the undershoot, i.e. 0.1 bar at the warm crossing.
+
