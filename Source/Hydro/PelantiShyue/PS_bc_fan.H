@@ -120,7 +120,8 @@ AMREX_FORCE_INLINE
 FanEnd
 _fan_march(const PsPhaseSpeeds& ph, amrex::Real P_N, amrex::Real un_out_N,
            amrex::Real P_t, bool p1_present, bool p2_present, bool host_is_1,
-           amrex::Real G_stop = amrex::Real(-1.0)) noexcept
+           amrex::Real G_stop = amrex::Real(-1.0),
+           bool steady = false) noexcept
 {
     using amrex::Real;
     constexpr Real PACK_ETA = Real(0.05);  // max |drho_k|/rho_k per substep (5 % strain)
@@ -147,6 +148,26 @@ _fan_march(const PsPhaseSpeeds& ph, amrex::Real P_N, amrex::Real un_out_N,
     Real s_r1 = r1, s_e1 = ee1, s_r2 = r2, s_e2 = ee2;
     Real s_m1 = fm1, s_m2 = fm2, s_a1 = fal1;
     Real s_u = u_out, s_P = P_cur;
+    //  steady (CAMR.ps_bc_vent_choke = bernoulli, PLAN_growth.md [DECIDE-V2]):
+    //  the same thermodynamic path, but the velocity from the steady energy
+    //  equation u^2 = u_N^2 + 2 (h_N - h) instead of the simple-wave
+    //  increment, and the end where u reaches the path sound speed (the
+    //  Bernoulli choking point of the reference's BBC) instead of the
+    //  simple-wave G maximum, which lies at a much lower pressure (for a
+    //  gas 0.28 p0 against 0.53 p0) and over-expands a quasi-steady outlet.
+    //  A cell already at or past its own sonic point gets no fan.
+    const Real h_N = (fm1 * (ee1 + P_cur / amrex::max(r1, Real(1.0e-300)))
+                    + fm2 * (ee2 + P_cur / amrex::max(r2, Real(1.0e-300))))
+                   / amrex::max(fm1 + fm2, Real(ps_const::M_TINY));
+    const Real uN2 = u_out * u_out;
+    if (steady) {
+        const Real Y1n = fm1 / amrex::max(fm1 + fm2, Real(ps_const::M_TINY));
+        const Real c2n = ps_cmix2(Y1n, Real(1.0) - Y1n, ck1, ck2);
+        if (u_out > Real(0.0) && c2n > Real(0.0) && uN2 >= c2n) {
+            out.u_out = u_out; out.m1 = fm1; out.m2 = fm2; out.e1 = ee1; out.e2 = ee2;
+            out.alpha1 = fal1; out.ok = true; return out;
+        }
+    }
     //  G_stop >= 0 (the partly open disc, PS_nscbc.cpp): the march ends
     //  where the mass flux first reaches G_stop, the last substep taken
     //  fractionally between its two fan states; at or above it already,
@@ -229,7 +250,31 @@ _fan_march(const PsPhaseSpeeds& ph, amrex::Real P_N, amrex::Real un_out_N,
             if (!(c2p > Real(0.0)) || !std::isfinite(c2p)) { fan_ok = false; break; }
         }
         const Real rho_mid = Real(0.5) * (msum + rho_after);
-        u_out += -dPs / (rho_mid * std::sqrt(c2p));
+        if (steady) {
+            const Real h_p = (fm1 * (ee1 + P_cur / amrex::max(r1, Real(1.0e-300)))
+                            + fm2 * (ee2 + P_cur / amrex::max(r2, Real(1.0e-300))))
+                           / amrex::max(rho_after, Real(ps_const::M_TINY));
+            const Real u2 = uN2 + Real(2.0) * (h_N - h_p);
+            u_out = (u2 > Real(0.0)) ? std::sqrt(u2) : Real(0.0);
+            if (u2 >= c2p) {
+                //  Sonic within this substep: interpolate to u = c on the
+                //  straight line between the two fan states.
+                const Real us = s_u, cs2 = (s_m1 + s_m2 > Real(0.0))
+                    ? ps_cmix2(s_m1 / (s_m1 + s_m2), s_m2 / (s_m1 + s_m2), ck1, ck2) : c2p;
+                const Real fa = us * us - cs2, fb = u2 - c2p;
+                Real f = (fb != fa) ? (-fa) / (fb - fa) : Real(1.0);
+                if (!(f >= Real(0.0))) f = Real(0.0);
+                if (!(f <= Real(1.0))) f = Real(1.0);
+                r1 = s_r1 + f * (r1 - s_r1);   ee1 = s_e1 + f * (ee1 - s_e1);
+                r2 = s_r2 + f * (r2 - s_r2);   ee2 = s_e2 + f * (ee2 - s_e2);
+                fm1 = s_m1 + f * (fm1 - s_m1); fm2 = s_m2 + f * (fm2 - s_m2);
+                fal1 = s_a1 + f * (fal1 - s_a1);
+                u_out = s_u + f * (u_out - s_u); P_cur = s_P + f * (P_cur - s_P);
+                break;
+            }
+        } else {
+            u_out += -dPs / (rho_mid * std::sqrt(c2p));
+        }
 
         // Critical-flow termination (expansion/outflow only): the
         // fan ends at MAXIMAL G = rho*u — the throat.  Past the
@@ -249,7 +294,7 @@ _fan_march(const PsPhaseSpeeds& ph, amrex::Real P_N, amrex::Real un_out_N,
                 break;
             }
         }
-        if (expanding && u_out > Real(0.0)) {
+        if (!steady && expanding && u_out > Real(0.0)) {
             const Real G = rho_after * u_out;
             if (G < G_prev && steps > 1) {
                 r1 = s_r1; ee1 = s_e1; r2 = s_r2; ee2 = s_e2;

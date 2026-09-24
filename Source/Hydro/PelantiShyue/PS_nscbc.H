@@ -123,6 +123,17 @@ inline const amrex::GpuArray<int, 6>& ps_bc_nscbc_type()
     return t;
 }
 
+//  CAMR.ps_bc_vent_choke (fan): the vent fan's end.  fan = the simple-wave
+//  G maximum (today); bernoulli = the steady-energy velocity along the
+//  same path, ended where u = c (the reference's Bernoulli choking
+//  pressure).  PLAN_growth.md [DECIDE-V2].
+inline bool ps_bc_vent_choke_steady()
+{
+    static const bool v = []() { const std::string s = ps_dial_string("ps_bc_vent_choke", "fan");
+        if (s == "fan") return false; if (s == "bernoulli") return true;
+        amrex::Abort("CAMR.ps_bc_vent_choke must be fan or bernoulli"); return false; }();
+    return v;
+}
 //  CAMR.ps_bc_vent_open_time (0 s) and CAMR.ps_bc_vent_open_exp (1): the
 //  rupture disc's opening law on every vent face, beta(t) = min(1,
 //  (t/tau)^p) the open-area fraction; 0 = fully open from t = 0 (today's
