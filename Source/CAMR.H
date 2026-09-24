@@ -401,7 +401,7 @@ protected:
   //  faces; ps_reaction_trial is the reaction chain it evaluates on trial
   //  states (PS_nscbc.cpp, docs/MODEL_AND_ALGORITHM.md §6).
   void ps_bc_relaxed(const amrex::MultiFab& S, amrex::MultiFab& hyd_src,
-                     amrex::Real dt);
+                     amrex::Real dt, amrex::Real time);
   void ps_reaction_trial(amrex::MultiFab& T, amrex::Real dt_r,
                          long& relaxed, long& flashed);
 #endif

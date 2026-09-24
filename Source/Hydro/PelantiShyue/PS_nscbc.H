@@ -123,6 +123,26 @@ inline const amrex::GpuArray<int, 6>& ps_bc_nscbc_type()
     return t;
 }
 
+//  CAMR.ps_bc_vent_open_time (0 s) and CAMR.ps_bc_vent_open_exp (1): the
+//  rupture disc's opening law on every vent face, beta(t) = min(1,
+//  (t/tau)^p) the open-area fraction; 0 = fully open from t = 0 (today's
+//  vent, the fan untouched).  docs/PLAN_growth.md [DECIDE-V1].
+inline double ps_bc_vent_open_time() { static const double v = ps_dial_real("ps_bc_vent_open_time", 0.0); return v; }
+inline double ps_bc_vent_open_exp()  { static const double v = ps_dial_real("ps_bc_vent_open_exp",  1.0); return v; }
+//  CAMR.ps_bc_vent_open_frac0 (0): the open fraction at the burst, beta(t)
+//  = beta0 + (1 - beta0) min(1, t/tau)^p (a scored disc bursts to beta0
+//  at once and the petals peel to 1 over tau).
+inline double ps_bc_vent_open_frac0() { static const double v = ps_dial_real("ps_bc_vent_open_frac0", 0.0); return v; }
+inline double ps_bc_vent_beta(double t)
+{
+    const double tau = ps_bc_vent_open_time();
+    if (!(tau > 0.0)) return 1.0;
+    const double b0 = ps_bc_vent_open_frac0();
+    if (!(t > 0.0)) return b0;
+    if (t >= tau) return 1.0;
+    return b0 + (1.0 - b0) * std::pow(t / tau, ps_bc_vent_open_exp());
+}
+
 //  CAMR.ps_bc_nscbc_probe (0): 0 off; nonzero prints the [PS-BCRX]
 //  per-face line every step.
 inline int ps_bc_nscbc_probe()

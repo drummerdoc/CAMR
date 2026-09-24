@@ -119,7 +119,8 @@ AMREX_GPU_HOST_DEVICE
 AMREX_FORCE_INLINE
 FanEnd
 _fan_march(const PsPhaseSpeeds& ph, amrex::Real P_N, amrex::Real un_out_N,
-           amrex::Real P_t, bool p1_present, bool p2_present, bool host_is_1) noexcept
+           amrex::Real P_t, bool p1_present, bool p2_present, bool host_is_1,
+           amrex::Real G_stop = amrex::Real(-1.0)) noexcept
 {
     using amrex::Real;
     constexpr Real PACK_ETA = Real(0.05);  // max |drho_k|/rho_k per substep (5 % strain)
@@ -146,6 +147,14 @@ _fan_march(const PsPhaseSpeeds& ph, amrex::Real P_N, amrex::Real un_out_N,
     Real s_r1 = r1, s_e1 = ee1, s_r2 = r2, s_e2 = ee2;
     Real s_m1 = fm1, s_m2 = fm2, s_a1 = fal1;
     Real s_u = u_out, s_P = P_cur;
+    //  G_stop >= 0 (the partly open disc, PS_nscbc.cpp): the march ends
+    //  where the mass flux first reaches G_stop, the last substep taken
+    //  fractionally between its two fan states; at or above it already,
+    //  the face is the cell (no entering wave).
+    if (G_stop >= Real(0.0) && G_prev >= G_stop) {
+        out.u_out = u_out; out.m1 = fm1; out.m2 = fm2; out.e1 = ee1; out.e2 = ee2;
+        out.alpha1 = fal1; out.ok = true; return out;
+    }
     while (P_cur != P_t) {
         const Real msum = fm1 + fm2;
         if (!(msum > ps_const::M_TINY)) { fan_ok = false; break; }
@@ -225,6 +234,21 @@ _fan_march(const PsPhaseSpeeds& ph, amrex::Real P_N, amrex::Real un_out_N,
         // Critical-flow termination (expansion/outflow only): the
         // fan ends at MAXIMAL G = rho*u — the throat.  Past the
         // max, revert to the previous substep's state and stop.
+        if (G_stop >= Real(0.0)) {
+            const Real G = rho_after * u_out;
+            if (G >= G_stop) {
+                const Real Gs = (s_m1 + s_m2) * s_u;
+                Real f = (G > Gs) ? (G_stop - Gs) / (G - Gs) : Real(1.0);
+                if (!(f >= Real(0.0))) f = Real(0.0);
+                if (!(f <= Real(1.0))) f = Real(1.0);
+                r1 = s_r1 + f * (r1 - s_r1);   ee1 = s_e1 + f * (ee1 - s_e1);
+                r2 = s_r2 + f * (r2 - s_r2);   ee2 = s_e2 + f * (ee2 - s_e2);
+                fm1 = s_m1 + f * (fm1 - s_m1); fm2 = s_m2 + f * (fm2 - s_m2);
+                fal1 = s_a1 + f * (fal1 - s_a1);
+                u_out = s_u + f * (u_out - s_u); P_cur = s_P + f * (P_cur - s_P);
+                break;
+            }
+        }
         if (expanding && u_out > Real(0.0)) {
             const Real G = rho_after * u_out;
             if (G < G_prev && steps > 1) {
