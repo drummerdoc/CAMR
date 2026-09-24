@@ -168,7 +168,9 @@ enum PsFlashRefuse {
     PS_FLR_SSTAR = 15,
     //  sub-attribution of the s=1 (full-step) trial when SSTAR fires:
     PS_FLR_S1_MASS = 16, PS_FLR_S1_AFLOOR = 17,
-    PS_FLR_S1_PH1 = 18,  PS_FLR_S1_PH2 = 19,  PS_FLR_NCAUSE = 20
+    PS_FLR_S1_PH1 = 18,  PS_FLR_S1_PH2 = 19,
+    //  growth sub-operator (PLAN_growth.md): no liquid superheat
+    PS_FLR_GROW_SH = 20, PS_FLR_NCAUSE = 21
 };
 static_assert(PS_FLR_NCAUSE == PS_COUNTERS_FLR_NCAUSE,
               "PsCounters::flash_refuse extent must match PsFlashRefuse");
@@ -193,7 +195,8 @@ inline void  ps_flash_refuse_reset()      { ps_counters().reset_flash_refuse(); 
 inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
                                   double dt, double tau_flash,
                                   double alpha_seed_target,
-                                  double alpha_floor = ps_const::ALPHA_ROUNDOFF)
+                                  double alpha_floor = ps_const::ALPHA_ROUNDOFF,
+                                  const PsGrowthParams* gp = nullptr)
 {
     if (tau_flash <= 0.0 || dt <= 0.0) PS_FLASH_REFUSE(PS_FLR_TAU);
     if (!eos.valid() || !eos.Psat_of_T) PS_FLASH_REFUSE(PS_FLR_EOS);
@@ -231,6 +234,11 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
     if (rho_mix <= 0.0) PS_FLASH_REFUSE(PS_FLR_RHOMIX);
     const double u_mix = U[3] / rho_mix;
     const double alpha_2 = 1.0 - alpha_1;
+    // Growth law (PLAN_growth.md): on for a liquid-dominant cell when n > 0;
+    // grow_mode once the vapour is at the seed, until the hand-over.
+    const bool grow_on   = (gp != nullptr) && (gp->n > 0.0) && liq_dominant && (flash_hrm == 0);
+    const bool grow_mode = grow_on && !abs_trace && (alpha_2 >= 0.5 * gp->seed)
+                                   && (alpha_2 < gp->alpha_hand);
     // An Absent phase has no state: never form its quotients (0/0) or
     // feed them to the EOS.  The sentinels are fenced by abs_trace.
     const double rho_1 = (abs_trace && vap_dominant) ? 0.0 : m_1 / alpha_1;
@@ -291,6 +299,9 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
     } else {
         w_meta = ss01(0.5 + (p_dom.P - (1.0 + meta_margin) * P_sat_here) / bw_P);
     }
+    // A growing bubble needs superheat, not the onset window (the recovery
+    // is growth after the pressure has left the window).
+    if (grow_mode) w_meta = 1.0;
     if (w_meta <= 0.0) PS_FLASH_REFUSE(PS_FLR_W_META);
     // (c) Dominance window: ramps to zero at the alpha threshold so a cell
     //     drifting toward the mid-range hands over to mass transfer smoothly.
@@ -322,10 +333,24 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
     co2_sat_state(p_dom.T, rho_L_sat, rho_V_sat);
 
     if (flash_liq) {
-        // Grow alpha_2 (vapour).
-        const double alpha_2_target = alpha_seed_target;
-        double alpha_2_new = alpha_2 + blend * (alpha_2_target - alpha_2);
-        if (flash_hrm == 1) {
+        // Grow alpha_2 (vapour).  Under the growth law the nucleator's
+        // target is the seed, proposed in full (the window root s <= 1
+        // still applies); a 20 %-per-step approach would never reach it.
+        const double alpha_2_target = grow_on ? gp->seed : alpha_seed_target;
+        double alpha_2_new = grow_on ? alpha_2_target
+                                     : alpha_2 + blend * (alpha_2_target - alpha_2);
+        if (grow_mode) {
+            const double K = ps_growth_K(eos, *gp, p_dom.T, p_dom.P, rho_L_sat, rho_V_sat);
+            if (!(K > 0.0)) PS_FLASH_REFUSE(PS_FLR_GROW_SH);
+            const double y = std::cbrt(alpha_2 * alpha_2) + K * dt;   // alpha^(2/3)
+            alpha_2_new = y * std::sqrt(y);
+            const bool hand = (alpha_2_new >= gp->alpha_hand);
+            if (hand) alpha_2_new = gp->alpha_hand;               // clean landing: promoted
+            const double rate = (alpha_2_new - alpha_2) / dt;
+            if (gp->n_grow) ++*gp->n_grow;
+            if (gp->max_rate && rate > *gp->max_rate) *gp->max_rate = rate;
+            if (hand) { if (gp->n_hand) ++*gp->n_hand; if (gp->rate_hand) *gp->rate_hand = rate; }
+        } else if (flash_hrm == 1) {
             const double x_g   = m_2 / rho_mix;
             const double e_mix = (U[4] + U[5]) / rho_mix - 0.5 * u_mix * u_mix;
             const double x_sat = eos.xsat_of_rho_e(rho_mix, e_mix);
@@ -436,7 +461,7 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
         }
         s_star = s_lo;
     }
-    if (flash_hrm == 0 && s_star > 0.0) {
+    if (flash_hrm == 0 && !grow_mode && s_star > 0.0) {
         // W(s): the three windows on the dominant phase of trial(s), queried
         // on its own branch as p_dom was.  A dominant phase without a finite
         // state closes the window (W = 0), which keeps the root below it.

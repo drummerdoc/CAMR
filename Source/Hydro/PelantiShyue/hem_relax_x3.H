@@ -13,6 +13,7 @@
 #define HEM_RELAX_X3_H
 
 #include "hem_eos_api.H"
+#include "hem_growth.H"
 
 namespace hem {
 
@@ -512,6 +513,10 @@ struct PsX3Params {
     double h_w        = 0.5;      // MT carrier weight (ps_mt_h_weight rule)
     double srt_D      = 0.1;      // SRT geometry scale [m]
     double srt_delta  = 0.01;     // SRT receiving-phase seed
+    //  Commit 3b (PLAN_growth.md, [DECIDE-G2] second option): with
+    //  growth.n > 0 the boiling-direction rate (g1 > g2) is the heat-
+    //  limited growth law instead of the SRT flux; condensation keeps SRT.
+    PsGrowthParams growth;
     bool   dome_gate  = true;     // the one eligibility question
     int    max_newton = 40;
     //  Band-exit policy (CAMR.ps_coexist_action, read in PS_relax.H;
@@ -679,6 +684,12 @@ inline bool ps_x3_relax_cell(V6& U, const PsPhaseAPI& eos, double dt,
         rM = Sig * (m2 / a2)
            * std::sqrt(eos.molar_mass() / (two_pi * R_u * s.p2.T))
            * (s.p1.g - s.p2.g);
+        if (xp.growth.n > 0.0 && s.p1.g > s.p2.g) {
+            // Heat-limited growth in the boiling direction: the liquid's
+            // own (T, P) and the vapour volume only (X-40); vanishes as
+            // the superheat does.
+            rM = ps_growth_rate(eos, xp.growth, s.p1.T, s.p1.P, a2);
+        }
         return std::isfinite(rT) && std::isfinite(rM);
     };
     if (xp.dT_pre) *xp.dT_pre = std::abs(s0.p1.T - s0.p2.T);   // [PS-DT]

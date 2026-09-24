@@ -153,6 +153,18 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
         const PsPres l_pr = ps_presence_params();
         // The seed level is the presence design's alpha_birth (single-sourced).
         const amrex::Real l_seed = ps_presence_params().alpha_birth;
+        // Heat-limited growth (docs/PLAN_growth.md): CAMR.ps_growth_n = 0 is
+        // off and the kernel is the nucleator alone.
+        hem::PsGrowthParams l_gp;
+        l_gp.n    = ps_dial_real("ps_growth_n",    0.0);
+        l_gp.seed = ps_dial_real("ps_growth_seed", 1.0e-6);
+        l_gp.a_l  = ps_dial_real("ps_growth_a_l",  4.7e-8);
+        l_gp.k_l  = ps_dial_real("ps_growth_k_l",  0.10);
+        l_gp.alpha_hand = double(l_pr.alpha_cond);
+        long   g_ngrow = 0, g_nhand = 0; double g_maxrate = 0.0, g_ratehand = 0.0;
+        l_gp.n_grow = &g_ngrow; l_gp.n_hand = &g_nhand;
+        l_gp.max_rate = &g_maxrate; l_gp.rate_hand = &g_ratehand;
+        const hem::PsGrowthParams* l_gpp = (l_gp.n > 0.0) ? &l_gp : nullptr;
         for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
             const amrex::Box bx = mfi.growntilebox(nghost);
             amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
@@ -183,7 +195,8 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                 }
                 const hem::V6 Uv_pre = Uv;
                 if (hem::ps_flash_source_cell(Uv, eos, double(dt), double(tau),
-                                              double(l_seed), ps_const::ALPHA_ROUNDOFF)) {
+                                              double(l_seed), ps_const::ALPHA_ROUNDOFF,
+                                              l_gpp)) {
                     // Reproject: the flash moved mass; restore P1 = P2
                     // (alpha-adjusting; preserves m_k and mixture rho, E).
                     // The model closure is instantaneous mechanical
@@ -205,6 +218,14 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
         static long s_prev_flash = 0;
         ps_print_when_grown(s_prev_flash, hem::ps_flash_source_count(),
                             "[ps_flash] cumulative cells flashed = ");
+        // [PS-GROW] (ps_pres_diag, n > 0): growth steps, hand-overs and the
+        // rate at the last hand-over, per sweep (the hand-over discontinuity
+        // is measured, not assumed: PLAN_growth.md G-a).
+        if (l_gpp != nullptr && hem::ps_diag_pres() != 0 && g_ngrow > 0) {
+            amrex::Print() << "[PS-GROW] grow=" << g_ngrow << " hand=" << g_nhand
+                           << " max_dalpha_dt=" << g_maxrate
+                           << " rate_at_hand=" << g_ratehand << "\n";
+        }
         // [PS-FLASH-REF] (ps_pres_diag): the kernel's refusal-cause table
         // per sweep, so "zero events" decomposes by cause.
         {
@@ -213,7 +234,7 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                     "FIRED", "tau", "eos", "a_nan", "not_dom", "m_guard",
                     "rhomix", "pdom", "w_T", "w_meta", "w_alpha", "da2",
                     "da1", "a_floor", "h_nan", "sstar",
-                    "s1_mass", "s1_afloor", "s1_ph1", "s1_ph2" };
+                    "s1_mass", "s1_afloor", "s1_ph1", "s1_ph2", "grow_sh" };
                 long tot = 0;
                 for (int c = 1; c < hem::PS_FLR_NCAUSE; ++c)
                     tot += hem::ps_flash_refuse_count(c);

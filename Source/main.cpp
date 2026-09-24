@@ -134,7 +134,9 @@ main(int argc, char* argv[])
     pp_ps.query("ps_relax_sweep", ps_relax_sweep);
     int ps_x3_test = 0;                    // X3 fixed-point acceptance harness
     pp_ps.query("ps_x3_test", ps_x3_test);
-    if (ps_ptg_selftest || ps_relax_sweep || ps_x3_test) {
+    int ps_growth_test_on = 0;             // heat-limited growth exact-integral test
+    pp_ps.query("ps_growth_test", ps_growth_test_on);
+    if (ps_ptg_selftest || ps_relax_sweep || ps_x3_test || ps_growth_test_on) {
       // CI gate: nonzero exit on any failure so ctest/CI can fail the
       // build.  Only IOProcessor runs the serial, deterministic checks.
       int fail = 0;
@@ -142,6 +144,7 @@ main(int argc, char* argv[])
         if (ps_ptg_selftest) fail += ps_ptg_zerod_selftest();
         if (ps_relax_sweep)  fail += ps_relax_corner_sweep();
         if (ps_x3_test)      fail += ps_x3_fixedpoint_test();
+        if (ps_growth_test_on) fail += ps_growth_test();
       }
       amrex::ParallelDescriptor::Bcast(&fail, 1,
                                        amrex::ParallelDescriptor::IOProcessorNumber());

@@ -324,6 +324,15 @@ ps_x3_grid_relax_cell(int i, int j, int k,
     xp.h_w            = hem::ps_dial_mt_h_weight();
     xp.srt_D          = hem::ps_dial_mt_srt_d();
     xp.srt_delta      = hem::ps_dial_mt_srt_delta();
+    //  Commit 3b: the growth law as X3's boiling rate when ps_growth_n > 0
+    //  (the same keys the flash kernel reads, PS_sources.H).
+    static const double g_n = ps_dial_real("ps_growth_n", 0.0);
+    if (g_n > 0.0) {
+        xp.growth.n    = g_n;
+        xp.growth.seed = ps_dial_real("ps_growth_seed", 1.0e-6);
+        xp.growth.a_l  = ps_dial_real("ps_growth_a_l",  4.7e-8);
+        xp.growth.k_l  = ps_dial_real("ps_growth_k_l",  0.10);
+    }
     xp.coexist_action = ps_coexist_action();
     //  [PS-DT] census from the kernel's own entry/exit states; -1 = the
     //  thermal leg did not run.
