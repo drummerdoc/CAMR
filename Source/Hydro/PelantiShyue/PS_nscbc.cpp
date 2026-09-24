@@ -452,8 +452,14 @@ CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt, Real time)
                         //  carries beta G_max and sits on the fan's subsonic
                         //  branch where G first reaches it.
                         const Real G_end = (fe.m1 + fe.m2) * fe.u_out;
-                        fe = PS_NSCBC::_fan_march(ph, P_Nm, n_sgn * un, P_t, p1, p2, ph.alpha1 >= ph.alpha2,
-                                                  amrex::max(Real(0.0), vent_beta * G_end), vent_steady);
+                        const Real G_tgt = amrex::max(Real(0.0), vent_beta * G_end);
+                        const Real G_N   = ph.rho * (n_sgn * un);
+                        //  Below the throat's flux the face is on the expansion
+                        //  fan; above it (the cell has out-run the opening) the
+                        //  face is the compression that brings G back to it.
+                        const Real P_far = (G_N > G_tgt) ? amrex::max(Real(10.0) * P_Nm, P_t) : P_t;
+                        fe = PS_NSCBC::_fan_march(ph, P_Nm, n_sgn * un, P_far, p1, p2, ph.alpha1 >= ph.alpha2,
+                                                  G_tgt, vent_steady);
                     }
                     Real Y_N[NUM_SPECIES];
                     for (int n = 0; n < NUM_SPECIES; ++n) Y_N[n] = ps_finite_or(UN[UFS + n], Real(0.0)) / ph.rho;

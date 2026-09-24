@@ -163,7 +163,7 @@ _fan_march(const PsPhaseSpeeds& ph, amrex::Real P_N, amrex::Real un_out_N,
     if (steady) {
         const Real Y1n = fm1 / amrex::max(fm1 + fm2, Real(ps_const::M_TINY));
         const Real c2n = ps_cmix2(Y1n, Real(1.0) - Y1n, ck1, ck2);
-        if (u_out > Real(0.0) && c2n > Real(0.0) && uN2 >= c2n) {
+        if (expanding && u_out > Real(0.0) && c2n > Real(0.0) && uN2 >= c2n) {
             out.u_out = u_out; out.m1 = fm1; out.m2 = fm2; out.e1 = ee1; out.e2 = ee2;
             out.alpha1 = fal1; out.ok = true; return out;
         }
@@ -172,7 +172,10 @@ _fan_march(const PsPhaseSpeeds& ph, amrex::Real P_N, amrex::Real un_out_N,
     //  where the mass flux first reaches G_stop, the last substep taken
     //  fractionally between its two fan states; at or above it already,
     //  the face is the cell (no entering wave).
-    if (G_stop >= Real(0.0) && G_prev >= G_stop) {
+    //  In the compression direction (P_t > P_N: the cell carries more than
+    //  the throat passes) the march decelerates the flow until G falls to
+    //  G_stop.
+    if (G_stop >= Real(0.0) && (expanding ? (G_prev >= G_stop) : (G_prev <= G_stop))) {
         out.u_out = u_out; out.m1 = fm1; out.m2 = fm2; out.e1 = ee1; out.e2 = ee2;
         out.alpha1 = fal1; out.ok = true; return out;
     }
@@ -281,7 +284,7 @@ _fan_march(const PsPhaseSpeeds& ph, amrex::Real P_N, amrex::Real un_out_N,
         // max, revert to the previous substep's state and stop.
         if (G_stop >= Real(0.0)) {
             const Real G = rho_after * u_out;
-            if (G >= G_stop) {
+            if (expanding ? (G >= G_stop) : (G <= G_stop)) {
                 const Real Gs = (s_m1 + s_m2) * s_u;
                 Real f = (G > Gs) ? (G_stop - Gs) / (G - Gs) : Real(1.0);
                 if (!(f >= Real(0.0))) f = Real(0.0);
