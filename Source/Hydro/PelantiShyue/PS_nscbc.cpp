@@ -158,7 +158,7 @@ CAMR::ps_reaction_trial(MultiFab& T, Real dt_r, long& relaxed, long& flashed)
 }
 
 void
-CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt, Real time)
+CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt)
 {
     BL_PROFILE("CAMR::ps_bc_relaxed()");
 #if defined(AMREX_USE_GPU)
@@ -176,10 +176,6 @@ CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt, Real time)
     const Box& domain = geom.Domain();
     const int step = parent->levelSteps(level);
     static const char* fnm[6] = {"xlo", "xhi", "ylo", "yhi", "zlo", "zhi"};
-    //  Disc opening (PLAN_growth.md [DECIDE-V1]): the vent's open-area
-    //  fraction at this step's time; 1 leaves the fan exactly as it was.
-    const Real vent_beta = Real(ps_bc_vent_beta(double(time)));
-    const bool vent_steady = ps_bc_vent_choke_steady();
 
     for (int idir = 0; idir < AMREX_SPACEDIM; ++idir) {
     for (int side = 0; side < 2; ++side) {
@@ -444,23 +440,7 @@ CAMR::ps_bc_relaxed(const MultiFab& S, MultiFab& hyd_src, Real dt, Real time)
                     const Real un   = (idir == 0) ? ph.ux : (idir == 1) ? ph.uy : ph.uz;
                     const Real P_t  = amrex::max(P_inf, amrex::max(Real(1.0e-3) * P_inf, Real(ps_guard::P_FLOOR_PA)));
                     const bool p1 = (ph.m1 > ps_const::M_TINY), p2 = (ph.m2 > ps_const::M_TINY);
-                    PS_NSCBC::FanEnd fe = PS_NSCBC::_fan_march(ph, P_Nm, n_sgn * un, P_t, p1, p2, ph.alpha1 >= ph.alpha2,
-                                                               Real(-1.0), vent_steady);
-                    if (fe.ok && vent_beta < Real(1.0)) {
-                        //  A partly open disc is a throat of area beta A: it
-                        //  chokes at the fan's own G_max, so the pipe face
-                        //  carries beta G_max and sits on the fan's subsonic
-                        //  branch where G first reaches it.
-                        const Real G_end = (fe.m1 + fe.m2) * fe.u_out;
-                        const Real G_tgt = amrex::max(Real(0.0), vent_beta * G_end);
-                        const Real G_N   = ph.rho * (n_sgn * un);
-                        //  Below the throat's flux the face is on the expansion
-                        //  fan; above it (the cell has out-run the opening) the
-                        //  face is the compression that brings G back to it.
-                        const Real P_far = (G_N > G_tgt) ? amrex::max(Real(10.0) * P_Nm, P_t) : P_t;
-                        fe = PS_NSCBC::_fan_march(ph, P_Nm, n_sgn * un, P_far, p1, p2, ph.alpha1 >= ph.alpha2,
-                                                  G_tgt, vent_steady);
-                    }
+                    const PS_NSCBC::FanEnd fe = PS_NSCBC::_fan_march(ph, P_Nm, n_sgn * un, P_t, p1, p2, ph.alpha1 >= ph.alpha2);
                     Real Y_N[NUM_SPECIES];
                     for (int n = 0; n < NUM_SPECIES; ++n) Y_N[n] = ps_finite_or(UN[UFS + n], Real(0.0)) / ph.rho;
                     Real s_end[NVAR];

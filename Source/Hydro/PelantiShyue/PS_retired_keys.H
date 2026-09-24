@@ -110,6 +110,16 @@ inline void ps_abort_on_retired_keys()
         { "ps_floor_indep",      "the per-phase floor acts on Independent phases only" },
         { "ps_flash_implicit",   "the nucleator always solves its committed fraction implicitly in the windows" },
         { "ps_flash_onset",      "the metastability margin is always the classical-nucleation-theory onset capped at ps_flash_metastable_margin" },
+        //  The 24 Sept 2026 probes (docs/PLAN_growth.md §7): all refuted as the
+        //  mechanism of the measured second decline, all retired with their code.
+        { "ps_growth_n",         "the heat-limited growth law is retired (PLAN_growth.md §7); no bulk rate other than the SRT" },
+        { "ps_growth_seed",      "the heat-limited growth law is retired (PLAN_growth.md §7)" },
+        { "ps_growth_a_l",       "the heat-limited growth law is retired (PLAN_growth.md §7)" },
+        { "ps_growth_k_l",       "the heat-limited growth law is retired (PLAN_growth.md §7)" },
+        { "ps_bc_vent_open_time","the disc-opening law is retired (PLAN_growth.md §7); the vent opens at t = 0" },
+        { "ps_bc_vent_open_exp", "the disc-opening law is retired (PLAN_growth.md §7)" },
+        { "ps_bc_vent_open_frac0","the disc-opening law is retired (PLAN_growth.md §7)" },
+        { "ps_bc_vent_choke",    "the vent fan ends at the simple-wave G maximum (PLAN_growth.md §7 records the Bernoulli alternative and the over-expanded exit cell)" },
     };
     struct RetiredValue { const char* key; int value; const char* reason; };
     static const RetiredValue values[] = {

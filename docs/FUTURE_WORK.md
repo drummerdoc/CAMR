@@ -16,7 +16,7 @@ Done (R-17, 23 Sept 2026): the margin is the classical-nucleation-theory onset a
 
 ### 1.3 The growth rate
 
-Planned (`PLAN_growth.md`, [DECIDE-G1] taken 24 Sept 2026): heat-limited growth with a bubble number density $n$ as the one knob, in the flash kernel below `alpha_cond`, exact per-step integral, Tests 19 and 24 as the bracket test.
+Built, measured and retired on 24 Sept 2026 (`PLAN_growth.md` §7): heat-limited growth with a bubble number density $n$ (Plesset–Zwick, exact per-step integral, in the flash kernel and as X3's boiling rate). At $n \approx 10^{13}$ m⁻³ it puts Test 19's post-onset level on the data at 8 and 28 cm, but the pressure is then stationary: no second decline, no recovery. The disc opening, the vent's choking criterion (which did expose an over-expanded exit cell, Mach 1.46 with the simple-wave fan) and thermal non-equilibrium were refuted in the same note. What produces the measured second decline and recovery near the outlet is open; the reference's HEM shows a slow equilibrium fan there that none of our configurations shows.
 
 The measured hump (Test 19) is produced by a source that starts at saturation and keeps producing while the pressure recovers (VERIFICATION §6.8 (the HRM-source probe), the HRM-source probe). The physical form is heat-limited bubble growth (Plesset–Zwick / Mikić, a Jakob-number law), not the SRT kinetic flux, whose interface speed (≈ 1–3 m/s per bar of superheat) drove every Σ run to equilibrium. Any such rate below `alpha_cond` must be written without the trace phase's own intensive state (X-40), and integrated implicitly (the stiffness estimate kept in X-40).
 

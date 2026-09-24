@@ -29,7 +29,7 @@
 //  hem::PsMtCause, hem::PsFlashRefuse) static_assert against these.
 constexpr int PS_COUNTERS_FL_NCAUSE  = 5;
 constexpr int PS_COUNTERS_MT_NCAUSE  = 14;
-constexpr int PS_COUNTERS_FLR_NCAUSE = 21;
+constexpr int PS_COUNTERS_FLR_NCAUSE = 20;
 
 // ---------------------------------------------------------------------
 //  Per-sweep thermal-leg instrument, reset and reported with the sweep.

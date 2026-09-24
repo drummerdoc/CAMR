@@ -14,7 +14,7 @@ using namespace amrex;
 void
 CAMR::construct_hydro_source (const MultiFab& S,
                               MultiFab& src_to_fill,
-                              Real time,
+                              Real /*time*/,
                               Real dt)
 {
     BL_PROFILE("CAMR::construct_hydro_source()");
@@ -319,7 +319,7 @@ CAMR::construct_hydro_source (const MultiFab& S,
     // cell on the relaxed trial state and rewrite its hydro_source
     // (PS_nscbc.cpp; a no-op without an NSCBC face).
     if (ps_hydro != 0) {
-        ps_bc_relaxed(S, src_to_fill, dt, time);
+        ps_bc_relaxed(S, src_to_fill, dt);
     }
 #endif
 }
