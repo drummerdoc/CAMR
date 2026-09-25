@@ -555,6 +555,12 @@ the iteration trajectory (root unchanged to tolerance), G = GPU-compatible.
    structural blocker is `std::function`; none of 1–6 adds a host-only
    construct if caches are MultiFab components and tables are device arrays.
    (That is `[DECIDE-25]`'s neighbour.)
+   **Done 2026-09-25:** `PsPhaseAPI` is a trivially copyable value whose EOS
+   queries are `AMREX_GPU_HOST_DEVICE` members (`hem::ps_eos_phase_state`),
+   the kernel dials travel in `PsKernelDials`, counters sit behind
+   `PS_COUNT` (no-op on GPU builds), and every per-cell loop is a
+   `ParallelFor` (the triple-point count a `ReduceOps`).  CPU results are
+   bit-identical; GPU results sit inside the rounding fingerprint.
 
 Rule 1 applies to every item: no new threshold; tolerances are changed with
 a derivation of what the discretisation needs. Rule 4 applies: item 1 and

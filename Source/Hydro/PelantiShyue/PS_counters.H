@@ -23,8 +23,20 @@
 //
 //  Nothing here touches the numerics: every field is written after the
 //  decision it records has been taken.
+//
+//  PS_COUNT(stmt) is the wrapper for a counting statement inside a
+//  per-cell kernel (AMREX_GPU_HOST_DEVICE): it runs on CPU builds and
+//  compiles away on GPU builds, where the store is not reachable from
+//  device code and the counters read zero.  Multi-statement diagnostics
+//  (extremes, re-solves) sit in #if !defined(AMREX_USE_GPU) blocks.
 // =====================================================================
 #ifdef USE_PS_HYDRO
+
+#if defined(AMREX_USE_GPU)
+#define PS_COUNT(...) ((void)0)
+#else
+#define PS_COUNT(...) do { __VA_ARGS__; } while (0)
+#endif
 
 //  Array extents; the enums that index them (PS_HLLC::PsFlCause,
 //  hem::PsMtCause, hem::PsFlashRefuse) static_assert against these.

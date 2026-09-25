@@ -75,7 +75,7 @@ ps_resync_mixture_mass(amrex::MultiFab& S_new, int nghost = 0)
     for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
         const amrex::Box bx = mfi.growntilebox(nghost);
         amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
-        amrex::LoopOnCpu(bx, [=] (int i, int j, int k) noexcept
+        amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
         {
             const Real m1 = U(i,j,k, UM1RHO1);
             const Real m2 = U(i,j,k, UM2RHO2);
@@ -118,11 +118,12 @@ ps_resync_phase_energy(amrex::MultiFab& S_new, int nghost = 0)
     // CAMR.ps_phase_e_cap (1e9 J/kg): credibility bound on |UE_k|/m_k.
     // Physical CO2 runs 1e5-1e6 J/kg including kinetic energy, so three
     // orders of headroom; <= 0 disables the test.
-    static const Real e_cap = ps_dial_real("ps_phase_e_cap", Real(1.0e9));
+    static const Real e_cap_dial = ps_dial_real("ps_phase_e_cap", Real(1.0e9));
+    const Real e_cap = e_cap_dial;   // captured by value
     for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
         const amrex::Box bx = mfi.growntilebox(nghost);
         amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
-        amrex::LoopOnCpu(bx, [=] (int i, int j, int k) noexcept
+        amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
         {
             const Real ue1 = U(i,j,k, UE1);
             const Real ue2 = U(i,j,k, UE2);
@@ -182,7 +183,7 @@ ps_apply_floor(amrex::MultiFab& S_new, int nghost = 0)
     for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
         const amrex::Box bx = mfi.growntilebox(nghost);
         amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
-        amrex::LoopOnCpu(bx, [=] (int i, int j, int k) noexcept
+        amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
         {
             Real alpha1 = U(i,j,k, UALPHA1);
             if (!std::isfinite(alpha1)) return;

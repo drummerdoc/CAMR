@@ -629,9 +629,20 @@ amrex::Real CAMR::estTimeStep(amrex::Real /*dt_old*/)
         static const int dtd = []() { int v = 0; amrex::ParmParse pp("CAMR");
                                       pp.query("ps_dt_diag", v); return v; }();
         if (dtd != 0) {
+#ifdef AMREX_USE_GPU
+          amrex::FArrayBox hfab(amrex::The_Pinned_Arena());
+#endif
           for (amrex::MFIter mfi(stateMF); mfi.isValid(); ++mfi) {
             const amrex::Box& dbx = mfi.validbox();
+#ifdef AMREX_USE_GPU
+            //  The reporter is host-serial: copy the fab down first.
+            hfab.resize(stateMF[mfi].box(), stateMF.nComp());
+            amrex::Gpu::dtoh_memcpy(hfab.dataPtr(), stateMF[mfi].dataPtr(),
+                                    hfab.nBytes());
+            auto const& sarr = hfab.const_array();
+#else
             auto const& sarr = stateMF.const_array(mfi);
+#endif
             CAMR_dt_diag_t dd = CAMR_estdt_hydro_diag(dbx, sarr,
 #ifdef USE_PS_HYDRO
                                                       l_ps_hydro_dt, l_pr_dt,

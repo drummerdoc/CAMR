@@ -27,7 +27,9 @@
 //  V4/V5 use a 1e-10 relative tolerance: post-resync drift is round-off,
 //  while the post-hydro drift eta ~ 3e-4 trips at the "A enter" stage by
 //  design; the per-stage labels localise which operator breaks which
-//  invariant.  Host-only diagnostic (LoopOnCpu).
+//  invariant.  Host-side diagnostic (argmax locations, first offenders):
+//  the cell loop runs on the host, over each fab copied to pinned host
+//  memory first on GPU builds.
 // =====================================================================
 #ifdef USE_PS_HYDRO
 
@@ -38,6 +40,8 @@
 #include "PS_util.H"          // ps_kinetic_energy
 #include "PS_dials.H"         // ps_dial_int (CAMR.ps_validate)
 #include <AMReX_MultiFab.H>
+#include <AMReX_FArrayBox.H>
+#include <AMReX_GpuDevice.H>
 #include <AMReX_ParallelDescriptor.H>
 #include <AMReX_Print.H>
 #include <cmath>
@@ -62,8 +66,7 @@ ps_validate_state(amrex::MultiFab& S, const char* label, int nghost = 0)
 
     amrex::Long n_v1=0, n_v2=0, n_v3=0, n_v4=0, n_v5=0,
                 n_v6_bulk=0, n_v6_trace=0, n_v7_bulk=0, n_v7_trace=0;
-    // V7's EOS access is the PsPhaseAPI validity channel (host-only, so the
-    // std::function is legal here).  Built once.
+    // V7's EOS access is the PsPhaseAPI validity channel.  Built once.
     const PsPres l_pr_v7 = ps_presence_params();
     static const hem::PsPhaseAPI api_v7 = ps_make_camr_eos_api();
     // First V7 offender, for a report that can be fed straight to probe_pr.
@@ -91,9 +94,19 @@ ps_validate_state(amrex::MultiFab& S, const char* label, int nghost = 0)
     bool abort_hit = false;
     int  ab_i=0, ab_j=0, ab_k=0;
 
+#ifdef AMREX_USE_GPU
+    amrex::FArrayBox hfab(amrex::The_Pinned_Arena());
+#endif
     for (amrex::MFIter mfi(S); mfi.isValid(); ++mfi) {
         const amrex::Box bx = mfi.growntilebox(nghost);
+#ifdef AMREX_USE_GPU
+        //  The loop reads the fab on the host: copy it down first.
+        hfab.resize(S[mfi].box(), S.nComp());
+        amrex::Gpu::dtoh_memcpy(hfab.dataPtr(), S[mfi].dataPtr(), hfab.nBytes());
+        amrex::Array4<amrex::Real> const& U = hfab.array();
+#else
         amrex::Array4<amrex::Real> const& U = S.array(mfi);
+#endif
         amrex::LoopOnCpu(bx, [&] (int i, int j, int k) noexcept
         {
             const Real a1 = U(i,j,k, UALPHA1);

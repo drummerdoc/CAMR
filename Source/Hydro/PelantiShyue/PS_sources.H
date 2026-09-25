@@ -110,7 +110,7 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
         for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
             const amrex::Box bx = mfi.growntilebox(nghost);
             amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
-            amrex::LoopOnCpu(bx, [=] (int i, int j, int k) noexcept
+            amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
             {
                 const amrex::Real a1 = U(i,j,k, UALPHA1);
                 const amrex::Real m1 = U(i,j,k, UM1RHO1);
@@ -226,7 +226,7 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
         for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
             const amrex::Box bx = mfi.growntilebox(nghost);
             amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
-            amrex::LoopOnCpu(bx, [=] (int i, int j, int k) noexcept
+            amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
             {
                 const amrex::Real a1 = U(i,j,k, UALPHA1);
                 const amrex::Real m1 = U(i,j,k, UM1RHO1);
@@ -386,21 +386,28 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
         BL_PROFILE_VAR("PS::ps_source_triple()", ps_src_tp);
         const int action = dials.triple_point_action;
         const amrex::Real T_triple = EOS::T_triple();
+        //  The solid-region cells are counted by a reduction, so the count
+        //  and the ERROR action (an abort on the host after the sweep) hold
+        //  on every build; CLIP acts in the kernel.
+        amrex::ReduceOps<amrex::ReduceOpSum> tp_op;
+        amrex::ReduceData<amrex::Long> tp_data(tp_op);
+        using TpTuple = typename decltype(tp_data)::Type;
         for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
             const amrex::Box bx = mfi.growntilebox(nghost);
             amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
-            amrex::LoopOnCpu(bx, [=] (int i, int j, int k) noexcept
+            tp_op.eval(bx, tp_data,
+            [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept -> TpTuple
             {
                 const amrex::Real a1 = U(i,j,k, UALPHA1);
                 const amrex::Real m1 = U(i,j,k, UM1RHO1);
                 const amrex::Real m2 = U(i,j,k, UM2RHO2);
                 if (!std::isfinite(a1) || m1 <= amrex::Real(0.0)
-                                       || m2 <= amrex::Real(0.0)) { return; }
+                                       || m2 <= amrex::Real(0.0)) { return {0}; }
                 const amrex::Real a2 = amrex::Real(1.0) - a1;
                 const int   dom  = (a1 >= a2) ? 1 : 2;
                 const amrex::Real ad = (dom == 1) ? a1 : a2;
                 const amrex::Real md = (dom == 1) ? m1 : m2;
-                if (ad <= amrex::Real(0.0)) { return; }
+                if (ad <= amrex::Real(0.0)) { return {0}; }
                 const amrex::Real rho_d = md / ad;
                 const amrex::Real rho_mix = m1 + m2;
                 const amrex::Real ke = ps_kinetic_energy(U, i, j, k, rho_mix);
@@ -409,14 +416,9 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                 hem::PsPhase p{};
                 p.alpha = ad;
                 eos.state_from_rho_e_phase(dom, rho_d, e_d, p);
-                if (!p.valid) { return; }
-                if (!hem::ps_below_triple_point(p.T, p.P, eos)) { return; }
-                ++hem::ps_triple_point_count();
-                if (action == 3) {
-                    amrex::Abort("CAMR.ps_triple_point_action=error: a cell "
-                                 "entered the CO2 solid region (below triple "
-                                 "point).");
-                } else if (action == 2) {   // CLIP: raise energy to T_triple
+                if (!p.valid) { return {0}; }
+                if (!hem::ps_below_triple_point(p.T, p.P, eos)) { return {0}; }
+                if (action == 2) {   // CLIP: raise energy to T_triple
                     amrex::Real Y[NUM_SPECIES];
                     ps_pure_species(Y);
                     amrex::Real e_clip;
@@ -432,7 +434,15 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
                         U(i,j,k, UEINT) += dU;
                     }
                 }
+                return {1};
             });
+        }
+        const amrex::Long n_tp = amrex::get<0>(tp_data.value(tp_op));
+        hem::ps_triple_point_count() += long(n_tp);
+        if (action == 3 && n_tp > 0) {
+            amrex::Abort("CAMR.ps_triple_point_action=error: a cell "
+                         "entered the CO2 solid region (below triple "
+                         "point).");
         }
         static long s_prev_tp = 0;
         const long ntp = hem::ps_triple_point_count();

@@ -80,7 +80,7 @@ ps_kinetic_energy(amrex::Array4<const amrex::Real> const& U,
 //  only ½(V6[3]/rho_mix)²: slot 3 carries the momentum magnitude
 //  sqrt(px² + py² + pz²), which is exact for that use.  alpha_1, m_1, m_2
 //  are passed in because every caller has already read and gated them.
-//  Host-only.
+AMREX_GPU_HOST_DEVICE
 inline std::array<double, 6>
 ps_pack_v6(amrex::Array4<const amrex::Real> const& U, int i, int j, int k,
            amrex::Real alpha1, amrex::Real m1, amrex::Real m2) noexcept
@@ -109,7 +109,8 @@ ps_pack_v6(amrex::Array4<const amrex::Real> const& U, int i, int j, int k,
 
 //  Write the five six-equation slots of a V6 back into cell (i,j,k):
 //  alpha_1, both partial masses and both phase energies.  URHO, momentum
-//  and UEDEN are not touched (invariants of every kernel).  Host-only.
+//  and UEDEN are not touched (invariants of every kernel).
+AMREX_GPU_HOST_DEVICE
 inline void
 ps_unpack_v6(amrex::Array4<amrex::Real> const& U, int i, int j, int k,
              const std::array<double, 6>& Uv) noexcept

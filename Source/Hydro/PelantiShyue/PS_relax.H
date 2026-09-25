@@ -43,20 +43,23 @@ inline int ps_pres_diag() {
 }
 
 // -----------------------------------------------------------------
-//  ps_make_camr_eos_api — the PsPhaseAPI callback every hem kernel here
+//  ps_make_camr_eos_api — the PsPhaseAPI value every hem kernel here
 //  uses.  Fluid metadata (critical and triple points, density domain,
-//  Psat(T), molar mass) comes from the EOS, so no kernel carries a fluid
-//  constant.  state_from_rho_e_phase is branch-locked (phase 1 liquid,
-//  phase 2 vapour, each with its metastable extrapolation) because the
-//  relaxation Newton must see per-phase pressures on the phase's own
-//  branch; a mixture-root query walks off wherever a phase sits across
-//  the dome from its state.  No root is reported as ph.valid = false,
-//  never an abort (docs/MODEL_AND_ALGORITHM.md §7.2).
+//  molar mass) comes from the EOS, so no kernel carries a fluid
+//  constant; the branch-locked phase query is hem::ps_eos_phase_state
+//  (docs/MODEL_AND_ALGORITHM.md §7.2); the kernel dials are resolved here
+//  (hem::ps_kernel_dials).  Host-only; the result is captured by copy.
 // -----------------------------------------------------------------
 inline hem::PsPhaseAPI
 ps_make_camr_eos_api()
 {
     hem::PsPhaseAPI api;
+    //  The EOS queries themselves are PsPhaseAPI member functions
+    //  (hem::ps_eos_phase_state, EOS::Psat): device-callable, so the API is
+    //  a plain value the per-cell kernels capture by copy.
+    api.has_eos  = true;
+    api.has_psat = true;
+    api.dials    = hem::ps_kernel_dials();
     api.T_crit_K   = double(EOS::T_crit());
     api.P_crit_Pa  = double(EOS::P_crit());
     api.T_triple_K = double(EOS::T_triple());
@@ -65,8 +68,6 @@ ps_make_camr_eos_api()
     // so neither phase can be stepped off it (docs §5.2).
     api.rho_dom_lo = double(EOS::rho_min());
     api.rho_dom_hi = double(EOS::rho_max());
-    // Saturation pressure for the flash metastability window.
-    api.Psat_of_T  = [](double T) { return double(EOS::Psat(amrex::Real(T))); };
     // Molar mass for the SRT kinetic prefactor.
     {
         amrex::Real Yw[NUM_SPECIES];
@@ -75,40 +76,6 @@ ps_make_camr_eos_api()
         EOS::Y2WBAR(Yw, wbar);            // [kg/mol] in every CAMR backend
         api.M_kg_mol = double(wbar);
     }
-    api.state_from_rho_e_phase =
-        [](int phase, double rho, double e, hem::PsPhase& ph)
-    {
-        amrex::Real Y[NUM_SPECIES];
-        ps_pure_species(Y);
-        // One state solve yields P, T, s together; the extra outputs are
-        // free by-products of the solve P needs, so callers wanting only P
-        // (the relaxation Newton) pay nothing.
-        amrex::Real P, T, S;
-        const hem::Phase3 ph3 = (phase == 1) ? hem::Phase3::Liquid
-                                             : hem::Phase3::Vapor;
-        if (!EOS::REY2PTS_phase_try(amrex::Real(rho), amrex::Real(e), Y, ph3,
-                                    P, T, S)) {
-            //  No root on this branch: report invalid per the PsPhaseAPI
-            //  contract; every consumer tests ph.valid.
-            ph.alpha = ph.alpha; ph.rho = rho; ph.e = e;
-            ph.P = 0.0; ph.T = 0.0; ph.c = 0.0;
-            ph.h = 0.0; ph.s = 0.0; ph.g = 0.0;
-            ph.valid = false;
-            return;
-        }
-        ph.rho   = rho;
-        ph.e     = e;
-        ph.P     = double(P);
-        ph.T     = double(T);
-        ph.h     = e + double(P) / rho;        // h = e + P/rho on the EOS energy scale
-        ph.s     = double(S);
-        ph.g     = ph.h - double(T) * double(S);   // Gibbs = h - T s
-        // Sound speed is always filled: ps_state_from_cons requires ph.c > 0.
-        amrex::Real Cs = amrex::Real(0);
-        EOS::REY2Cs_phase(amrex::Real(rho), amrex::Real(e), Y, ph3, Cs);
-        ph.c     = double(Cs);
-        ph.valid = std::isfinite(P) && P > 0.0 && std::isfinite(T) && T > 0.0;
-    };
     return api;
 }
 
@@ -161,10 +128,12 @@ bool ps_presence_relax_gate(amrex::Real a1, amrex::Real m1, amrex::Real m2,
 //  (docs §4.7), whose refusal is counted.  Returns true when the cell may
 //  be relaxed, with alpha1_in, m1, m2 read out; false leaves the cell
 //  untouched.  Mode 0 keeps its own copy: it counts every early return.
+//  pr is ps_presence_params(), resolved by the host sweep.
 // -----------------------------------------------------------------
+AMREX_GPU_HOST_DEVICE
 inline bool
 ps_relax_entry_gate(int i, int j, int k,
-                    amrex::Array4<amrex::Real> const& U,
+                    amrex::Array4<amrex::Real> const& U, const PsPres& pr,
                     amrex::Real& alpha1_in, amrex::Real& m1, amrex::Real& m2)
 {
     using amrex::Real;
@@ -175,12 +144,10 @@ ps_relax_entry_gate(int i, int j, int k,
     m1 = U(i,j,k, UM1RHO1);
     m2 = U(i,j,k, UM2RHO2);
     if (m1 <= Real(0.0) || m2 <= Real(0.0)) return false;
-    {   // presence gate; refusal counted
-        const PsPres& prS4g = ps_presence_params();
-        if (!ps_presence_relax_gate(alpha1_in, m1, m2, prS4g)) {
-            ++ps_counters().n_gate_presence;
-            return false;
-        }
+    // presence gate; refusal counted
+    if (!ps_presence_relax_gate(alpha1_in, m1, m2, pr)) {
+        PS_COUNT(++ps_counters().n_gate_presence);
+        return false;
     }
     return true;
 }
@@ -193,12 +160,13 @@ ps_relax_entry_gate(int i, int j, int k,
 //  work booked into UE1/UE2.  Writes UALPHA1, UE1, UE2 only; URHO,
 //  momentum, UEDEN, UEINT and the phase masses are invariants of the
 //  kernel.  Every early return leaves the cell unchanged, as does a
-//  kernel failure.  Host-only (std::function EOS).
+//  kernel failure.
 // -----------------------------------------------------------------
+AMREX_GPU_HOST_DEVICE
 inline void
 ps_mechanical_relax_cell(int i, int j, int k,
                           amrex::Array4<amrex::Real> const& U,
-                          hem::PsPhaseAPI const& eos)
+                          hem::PsPhaseAPI const& eos, const PsPres& prS4)
 {
     using amrex::Real;
 
@@ -223,9 +191,8 @@ ps_mechanical_relax_cell(int i, int j, int k,
         return;
     }
     // Presence gate (docs §4.7); refusal counted.
-    const PsPres& prS4 = ps_presence_params();
     if (!ps_presence_relax_gate(alpha1_in, m1, m2, prS4)) {
-        ++ps_counters().n_gate_presence;
+        PS_COUNT(++ps_counters().n_gate_presence);
         return;
     }
 
@@ -235,8 +202,8 @@ ps_mechanical_relax_cell(int i, int j, int k,
     hem::V6 Uv = ps_pack_v6(U, i, j, k, alpha1_in, m1, m2);
 
     // Default PsPressureRelaxParams (max_iter 30, tol_P_rel 1e-4,
-    // alpha_min ps_const::ALPHA_NEWTON_MIN = 1e-9, step_cap_frac 0.3,
-    // single_phase_threshold = CAMR.ps_single_phase_threshold, 5e-3).
+    // alpha_min ps_const::ALPHA_NEWTON_MIN = 1e-9, step_cap_frac 0.3;
+    // single-phase skip at eos.dials.single_phase_threshold).
     // Uv[0], Uv[4], Uv[5] update in place; Uv[1..3] are invariants.
     int reason = hem::PSR_OK;
     const bool ok = hem::ps_pressure_relax_cell(Uv, eos,
@@ -263,16 +230,17 @@ ps_mechanical_relax_cell(int i, int j, int k,
 //  thermal coupling bounds the per-phase energies.  Writes UE1/UE2 only.
 //  Retained as the finite-rate control closure (docs §5.7).
 // -----------------------------------------------------------------
+AMREX_GPU_HOST_DEVICE
 inline void
 ps_ptg_relax_cell(int i, int j, int k,
                   amrex::Array4<amrex::Real> const& U,
-                  hem::PsPhaseAPI const& eos,
+                  hem::PsPhaseAPI const& eos, const PsPres& pr,
                   amrex::Real dt, amrex::Real theta,
                   int outer_iters = 3)
 {
     using amrex::Real;
     Real alpha1_in, m1, m2;
-    if (!ps_relax_entry_gate(i, j, k, U, alpha1_in, m1, m2)) return;
+    if (!ps_relax_entry_gate(i, j, k, U, pr, alpha1_in, m1, m2)) return;
 
     hem::V6 Uv = ps_pack_v6(U, i, j, k, alpha1_in, m1, m2);
 
@@ -302,37 +270,34 @@ inline int ps_coexist_action();
 //  and projection failures leave the cell untouched, a sub-step bail-out
 //  keeps its partial, admissible, conservative progress.  Writes alpha,
 //  both masses and UE1/UE2; mixture rho, momentum and E are invariant.
+//  xp0 carries the host-resolved rate, carrier and policy dials
+//  (ps_x3_params); pres_diag is ps_pres_diag().
 //  Docs/MODEL_AND_ALGORITHM.md §5.1; 0-D harness CAMR.ps_x3_test.
 // -----------------------------------------------------------------
+AMREX_GPU_HOST_DEVICE
 inline void
 ps_x3_grid_relax_cell(int i, int j, int k,
                       amrex::Array4<amrex::Real> const& U,
-                      hem::PsPhaseAPI const& eos,
-                      amrex::Real dt, amrex::Real theta)
+                      hem::PsPhaseAPI const& eos, const PsPres& pr,
+                      const hem::PsX3Params& xp0, int pres_diag,
+                      amrex::Real dt)
 {
     using amrex::Real;
     // Entry gates (presence refusal counted).
     Real alpha1_in, m1, m2;
-    if (!ps_relax_entry_gate(i, j, k, U, alpha1_in, m1, m2)) return;
+    if (!ps_relax_entry_gate(i, j, k, U, pr, alpha1_in, m1, m2)) return;
     hem::V6 Uv = ps_pack_v6(U, i, j, k, alpha1_in, m1, m2);
 
-    hem::PsX3Params xp;
-    xp.theta = double(theta);
-    //  Rate and carrier dials are the mass-transfer family, so a
-    //  configuration means the same thing at every mode.  ps_mt_tau has no
-    //  meaning here: the SRT source carries no relaxation time.
-    xp.h_w            = hem::ps_dial_mt_h_weight();
-    xp.srt_D          = hem::ps_dial_mt_srt_d();
-    xp.srt_delta      = hem::ps_dial_mt_srt_delta();
-    xp.coexist_action = ps_coexist_action();
+    hem::PsX3Params xp = xp0;
     //  [PS-DT] census from the kernel's own entry/exit states; -1 = the
     //  thermal leg did not run.
     double dt_pre = -1.0, dt_post = -1.0;
-    if (ps_pres_diag() != 0) { xp.dT_pre = &dt_pre; xp.dT_post = &dt_post; }
+    if (pres_diag != 0) { xp.dT_pre = &dt_pre; xp.dT_post = &dt_post; }
 
     hem::ps_x3_relax_cell(Uv, eos, double(dt), xp);
 
-    if (ps_pres_diag() != 0 && dt_pre >= 0.0 && dt_post >= 0.0) {
+#if !defined(AMREX_USE_GPU)
+    if (pres_diag != 0 && dt_pre >= 0.0 && dt_post >= 0.0) {
         PsPresDiag& pdt = ps_pres_diag_data();
         ++pdt.n_dt;
         pdt.dtpre_sum  += dt_pre;
@@ -340,6 +305,7 @@ ps_x3_grid_relax_cell(int i, int j, int k,
         if (dt_pre  > pdt.dtpre_max)  pdt.dtpre_max  = dt_pre;
         if (dt_post > pdt.dtpost_max) pdt.dtpost_max = dt_post;
     }
+#endif
 
     //  The kernel writes Uv only past its entry gates, and everything it
     //  writes is admissible and conservative, a bail-out's partial
@@ -404,6 +370,16 @@ inline int ps_coexist_action()
         if (v != 0 && v != 1) {
             amrex::Abort("CAMR.ps_coexist_action must be 0 or 1");
         }
+#if defined(AMREX_USE_GPU)
+        //  Action 1 is a diagnosis mode: its abort is raised inside the
+        //  per-cell kernel (a no-op in device code) and read from the host
+        //  counters (compiled out on GPU builds), so it would silently act
+        //  as 0 here.
+        if (v == 1) {
+            amrex::Abort("CAMR.ps_coexist_action=1 needs the host counters "
+                         "and the per-cell abort; run it on a CPU build");
+        }
+#endif
         return v; }();
     return a;
 }
@@ -427,8 +403,8 @@ inline amrex::Real ps_theta_tau()
 //  kernel for ps_relax_mode, then prints the gated reports ([PS-PRES],
 //  [PS-GATE], [PS-DT], [PS-X3]).  Called from apply_ps_reaction under
 //  CAMR.ps_do_relax; do_print is accepted for the Strang pre-half step,
-//  which prints nothing else.  Host-only: the kernels take a
-//  std::function callback.
+//  which prints nothing else.  The cell loop is a ParallelFor; every
+//  dial it needs is resolved here and captured by value.
 // -----------------------------------------------------------------
 inline void
 ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
@@ -449,21 +425,31 @@ ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
     // Dispatch on ps_relax_mode (documented at its accessor).
     const int relax_mode = ps_relax_mode();
     const amrex::Real theta = ps_theta_tau();
+    const int pres_diag = ps_pres_diag();
+
+    //  Mode-5 operator settings.  Rate and carrier dials are the
+    //  mass-transfer family, so a configuration means the same thing at
+    //  every mode.  ps_mt_tau has no meaning here: the SRT source carries
+    //  no relaxation time.
+    hem::PsX3Params xp;
+    xp.theta          = double(theta);
+    xp.h_w            = hem::ps_dial_mt_h_weight();
+    xp.srt_D          = hem::ps_dial_mt_srt_d();
+    xp.srt_delta      = hem::ps_dial_mt_srt_delta();
+    xp.coexist_action = ps_coexist_action();
 
     for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
         const amrex::Box bx = mfi.growntilebox(nghost);
         amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
-        // `eos` is captured by copy so the std::function is available in
-        // each cell call.
-        amrex::LoopOnCpu(bx, [=] (int i, int j, int k) noexcept
+        amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
         {
             ps_corridor_project(i, j, k, U, l_pres);
             if (relax_mode == 5) {
-                ps_x3_grid_relax_cell(i, j, k, U, eos, dt, theta);
+                ps_x3_grid_relax_cell(i, j, k, U, eos, l_pres, xp, pres_diag, dt);
             } else if (relax_mode == 2) {
-                ps_ptg_relax_cell(i, j, k, U, eos, dt, theta);
+                ps_ptg_relax_cell(i, j, k, U, eos, l_pres, dt, theta);
             } else {
-                ps_mechanical_relax_cell(i, j, k, U, eos);
+                ps_mechanical_relax_cell(i, j, k, U, eos, l_pres);
             }
         });
     }

@@ -130,7 +130,7 @@ inline void ps_apply_corridor_projection(amrex::MultiFab& S, int nghost)
     for (amrex::MFIter mfi(S); mfi.isValid(); ++mfi) {
         const amrex::Box bx = mfi.growntilebox(nghost);
         amrex::Array4<amrex::Real> const& U = S.array(mfi);
-        amrex::LoopOnCpu(bx, [=] (int i, int j, int k) noexcept {
+        amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
             ps_corridor_project(i, j, k, U, pr);
         });
     }

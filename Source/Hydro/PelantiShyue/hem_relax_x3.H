@@ -5,8 +5,8 @@
 //  isochoric pressure and thermal kernels (ps_iso_pressure_relax_cell,
 //  ps_iso_thermal_relax_cell, ps_iso_thermal_relax_cell_finite), and the
 //  coupled X3 operator (PsX3Params, ps_x3_relax_cell: the production default,
-//  CAMR.ps_relax_mode=5).  Host-only; every kernel either converges and
-//  writes U or returns false with U untouched.  Part of the
+//  CAMR.ps_relax_mode=5).  AMREX_GPU_HOST_DEVICE; every kernel either
+//  converges and writes U or returns false with U untouched.  Part of the
 //  hem_pelanti_shyue.H umbrella.  docs/MODEL_AND_ALGORITHM.md §5.1-§5.3.
 // =====================================================================
 #ifndef HEM_RELAX_X3_H
@@ -25,25 +25,13 @@ inline PsPrStats& ps_pr_stats() { return ps_counters().pr_stats; }
 //  Relaxation kernels.
 // =====================================================================
 
-// CAMR.ps_single_phase_threshold (5e-3): below this alpha_k the
-// pressure and mass-transfer kernels skip the cell as single-phase.
-// The minority phase's (rho_k, e_k) is then typically off its EOS
-// domain, so its P_k and derivatives are meaningless and a Newton fed
-// with them sees a wild slope; the minority contributes < threshold of
-// the flux anyway, and the cell re-enters relaxation when it grows.
-inline double ps_single_phase_threshold_default() {
-    static const double t =
-        ps_dial_real("ps_single_phase_threshold", 5.0e-3);
-    return t;
-}
-
 struct PsPressureRelaxParams {
     double tol_P_rel = 1.0e-4;   // stop when |P_1-P_2|/max(|P_1|,|P_2|)<tol
     int    max_iter  = 30;
     double alpha_min = ps_const::ALPHA_NEWTON_MIN;   // hard bound on alpha to keep rho_k finite
     double step_cap_frac = 0.3;  // Newton step capped to this fraction of
                                  //   min(alpha, 1-alpha) to avoid overshoot
-    double single_phase_threshold = ps_single_phase_threshold_default();
+    // The single-phase skip threshold is eos.dials.single_phase_threshold.
 };
 
 // Instantaneous mechanical relaxation (Saurel-Petitpas-Berry): Newton on
@@ -64,6 +52,7 @@ enum PsRelaxFail {
     PSR_SLOPE = 3,      // no usable dP/dalpha even with one-sided + shrink
     PSR_MAXITER = 4     // did not converge within max_iter
 };
+AMREX_GPU_HOST_DEVICE
 inline bool ps_pressure_relax_cell(V6& U, const PsPhaseAPI& eos,
                                     const PsPressureRelaxParams& p =
                                         PsPressureRelaxParams{},
@@ -78,7 +67,7 @@ inline bool ps_pressure_relax_cell(V6& U, const PsPhaseAPI& eos,
     alpha1 = std::max(p.alpha_min, std::min(1.0 - p.alpha_min, alpha1));
 
     // Single-phase skip: returning true (as-if converged) leaves U unchanged.
-    const double spt = p.single_phase_threshold;
+    const double spt = eos.dials.single_phase_threshold;
     if (alpha1 < spt || alpha1 > 1.0 - spt) {
         return true;
     }
@@ -119,7 +108,7 @@ inline bool ps_pressure_relax_cell(V6& U, const PsPhaseAPI& eos,
     double e_2      = e2;
 
     for (int iter = 0; iter < p.max_iter; ++iter) {
-        ++ps_mt_stats().pr_iters;   // CAMR.ps_mt_diag: the nesting multiplier
+        PS_COUNT(++ps_mt_stats().pr_iters);   // CAMR.ps_mt_diag: the nesting multiplier
         // Query per-phase P at current state.
         PsPhase ph1, ph2;
         ph1.alpha = alpha; ph2.alpha = 1.0 - alpha;
@@ -140,7 +129,7 @@ inline bool ps_pressure_relax_cell(V6& U, const PsPhaseAPI& eos,
             // alpha*rho_k*E_k: E_k = e_k + 0.5*u^2 (u unchanged).
             U[4] = m1 * (e_1 + 0.5 * u * u);
             U[5] = m2 * (e_2 + 0.5 * u * u);
-            ++ps_pressure_relax_count();
+            PS_COUNT(++ps_pressure_relax_count());
             return true;
         }
 
@@ -232,19 +221,19 @@ inline bool ps_pressure_relax_cell(V6& U, const PsPhaseAPI& eos,
 //  alpha-adjusting kernel instead.  Returns true on a committed
 //  fully-valid state; false leaves U unchanged.
 // ---------------------------------------------------------------------
+AMREX_GPU_HOST_DEVICE
 inline bool ps_iso_pressure_relax_cell(V6& U, const PsPhaseAPI& eos,
                                         double tol_rel = 1.0e-5,
-                                        int    max_iter = 30,
-                                        double single_phase_thr =
-                                            ps_single_phase_threshold_default())
+                                        int    max_iter = 30)
 {
     if (!eos.valid()) return false;
-    ++ps_pr_stats().seen;
+    const double single_phase_thr = eos.dials.single_phase_threshold;
+    PS_COUNT(++ps_pr_stats().seen);
     double alpha1 = U[0];
-    if (!std::isfinite(alpha1)) { ++ps_pr_stats().trivial; return false; }
+    if (!std::isfinite(alpha1)) { PS_COUNT(++ps_pr_stats().trivial); return false; }
     // Skip trivially-single-phase cells (no minority phase to relax).
     if (alpha1 < single_phase_thr || alpha1 > 1.0 - single_phase_thr) {
-        ++ps_pr_stats().trivial; return true; }
+        PS_COUNT(++ps_pr_stats().trivial); return true; }
 
     const double m1 = U[1];
     const double m2 = U[2];
@@ -320,7 +309,7 @@ inline bool ps_iso_pressure_relax_cell(V6& U, const PsPhaseAPI& eos,
         const double e2 = e2_of_e1(e1v);
         U[4] = m1 * (e1v + 0.5 * u * u);
         U[5] = m2 * (e2 + 0.5 * u * u);
-        ++ps_pressure_relax_count();
+        PS_COUNT(++ps_pressure_relax_count());
     };
 
     double e1 = e1_init;
@@ -330,17 +319,15 @@ inline bool ps_iso_pressure_relax_cell(V6& U, const PsPhaseAPI& eos,
     // Newton with FD derivative and step cap; on breakdown (non-finite,
     // singular slope) break to the bracketing fallback rather than fail.
     for (int iter = 0; iter < max_iter; ++iter) {
-        ++ps_pr_stats().nt_iters;
+        PS_COUNT(++ps_pr_stats().nt_iters);
         double r, P1, P2, P_ref;
         const bool fv = eval_rv(e1, r, P1, P2, P_ref);   // fused: 2 inversions
         if (!std::isfinite(r)) break;
         if (fv && std::abs(r) < tol_rel * P_ref) {
-            ++ps_pr_stats().nt_ok; commit(e1); return true; }
+            PS_COUNT(++ps_pr_stats().nt_ok); commit(e1); return true; }
         const double de = 1.0e-4 * std::max(1.0e3, std::abs(e1));
-        // CAMR.ps_pr_fd1 (0): central FD (4 inversions); 1 = one-sided
-        // difference reusing r (2 inversions), which changes the Newton
-        // trajectory but not the root.
-        static const bool fd_one_sided = ps_dial_int("ps_pr_fd1", 0) != 0;
+        // CAMR.ps_pr_fd1 (documented at its accessor).
+        const bool fd_one_sided = eos.dials.pr_fd1 != 0;
         const double rp = residual(e1 + de);
         double drde;
         if (fd_one_sided) {
@@ -368,32 +355,32 @@ inline bool ps_iso_pressure_relax_cell(V6& U, const PsPhaseAPI& eos,
     {
         const double Escale = std::max({std::abs(e1_init), std::abs(e2_init), 1.0e5});
         const int NS = 64;
-        ++ps_pr_stats().fb;
+        PS_COUNT(++ps_pr_stats().fb);
         bool have_prev = false; double e_prev = 0.0, r_prev = 0.0;
         for (int s = 0; s <= NS; ++s) {
-            ++ps_pr_stats().fb_samples;
+            PS_COUNT(++ps_pr_stats().fb_samples);
             const double es = e1_init + (2.0 * (double(s) / NS) - 1.0) * Escale;
             double P1, P2, Pref;
             if (!fully_valid(es, P1, P2, Pref)) { have_prev = false; continue; }
             const double rs = P1 - P2;
             if (std::abs(rs) < tol_rel * Pref) {
-                ++ps_pr_stats().fb_ok; commit(es); return true; }
+                PS_COUNT(++ps_pr_stats().fb_ok); commit(es); return true; }
             if (have_prev && ((r_prev < 0.0) != (rs < 0.0))) {
                 double a = e_prev, b = es, ra = r_prev;
                 for (int it = 0; it < 60; ++it) {
-                    ++ps_pr_stats().fb_bisect;
+                    PS_COUNT(++ps_pr_stats().fb_bisect);
                     const double mid = 0.5 * (a + b);
                     double Pa, Pb, Pr;
                     if (!fully_valid(mid, Pa, Pb, Pr)) break;   // validity broke inside bracket
                     const double rmid = Pa - Pb;
                     if (std::abs(rmid) < tol_rel * Pr) {
-                        ++ps_pr_stats().fb_ok; commit(mid); return true; }
+                        PS_COUNT(++ps_pr_stats().fb_ok); commit(mid); return true; }
                     if ((ra < 0.0) != (rmid < 0.0)) b = mid; else { a = mid; ra = rmid; }
                 }
             }
             e_prev = es; r_prev = rs; have_prev = true;
         }
-        ++ps_pr_stats().refused;
+        PS_COUNT(++ps_pr_stats().refused);
         return false;   // no stable P1=P2 at this alpha -> leave unchanged (safe)
     }
 }
@@ -408,13 +395,13 @@ inline bool ps_iso_pressure_relax_cell(V6& U, const PsPhaseAPI& eos,
 //  plateau at the critical pressure; equalising T releases it.
 //  Returns true on convergence; false leaves U unchanged.
 // ---------------------------------------------------------------------
+AMREX_GPU_HOST_DEVICE
 inline bool ps_iso_thermal_relax_cell(V6& U, const PsPhaseAPI& eos,
                                        double tol_rel = 1.0e-5,
-                                       int    max_iter = 30,
-                                       double single_phase_thr =
-                                           ps_single_phase_threshold_default())
+                                       int    max_iter = 30)
 {
     if (!eos.valid()) return false;
+    const double single_phase_thr = eos.dials.single_phase_threshold;
 
     double alpha1 = U[0];
     if (!std::isfinite(alpha1)) return false;
@@ -492,6 +479,7 @@ inline bool ps_iso_thermal_relax_cell(V6& U, const PsPhaseAPI& eos,
 //  while no thermal coupling lets a phase energy run away; the finite
 //  rate is the middle ground (docs/MODEL_AND_ALGORITHM.md §5.3).
 // ---------------------------------------------------------------------
+AMREX_GPU_HOST_DEVICE
 inline bool ps_iso_thermal_relax_cell_finite(V6& U, const PsPhaseAPI& eos,
                                              double dt, double theta,
                                              double tol_rel = 1.0e-5,
@@ -557,19 +545,22 @@ struct PsX3Params {
     double* dT_post = nullptr;
 };
 
+AMREX_GPU_HOST_DEVICE
 inline bool ps_x3_relax_cell(V6& U, const PsPhaseAPI& eos, double dt,
                              const PsX3Params& xp)
 {
+#if !defined(AMREX_USE_GPU)
     PsX3Stats& x3s = ps_x3_stats();
-    ++x3s.n_calls;
-    if (!eos.valid() || !(dt > 0.0)) { ++x3s.n_entry_refused; return false; }
+#endif
+    PS_COUNT(++x3s.n_calls);
+    if (!eos.valid() || !(dt > 0.0)) { PS_COUNT(++x3s.n_entry_refused); return false; }
     constexpr double alpha_floor = ps_const::ALPHA_ROUNDOFF;
-    if (!std::isfinite(U[0])) { ++x3s.n_entry_refused; return false; }
+    if (!std::isfinite(U[0])) { PS_COUNT(++x3s.n_entry_refused); return false; }
     if (U[0] <= alpha_floor || U[0] >= 1.0 - alpha_floor) {
-        ++x3s.n_entry_refused; return false; }
-    if (U[1] <= 0.0 || U[2] <= 0.0) { ++x3s.n_entry_refused; return false; }
+        PS_COUNT(++x3s.n_entry_refused); return false; }
+    if (U[1] <= 0.0 || U[2] <= 0.0) { PS_COUNT(++x3s.n_entry_refused); return false; }
     const double rho_mix = U[1] + U[2];
-    if (!(rho_mix > 0.0)) { ++x3s.n_entry_refused; return false; }
+    if (!(rho_mix > 0.0)) { PS_COUNT(++x3s.n_entry_refused); return false; }
     const double u_mix = U[3] / rho_mix;
     const double ke    = 0.5 * u_mix * u_mix;
 
@@ -596,11 +587,11 @@ inline bool ps_x3_relax_cell(V6& U, const PsPhaseAPI& eos, double dt,
     {
         int pr_why = PSR_OK;
         if (!constrain(W0, &pr_why)) {
-            ++x3s.n_proj_entry;
-            if      (pr_why == PSR_BAD_INPUT) ++x3s.n_pr_input;
-            else if (pr_why == PSR_BAD_EOS)   ++x3s.n_pr_eos;
-            else if (pr_why == PSR_SLOPE)     ++x3s.n_pr_slope;
-            else if (pr_why == PSR_MAXITER)   ++x3s.n_pr_maxiter;
+            PS_COUNT(++x3s.n_proj_entry);
+            if      (pr_why == PSR_BAD_INPUT) PS_COUNT(++x3s.n_pr_input);
+            else if (pr_why == PSR_BAD_EOS)   PS_COUNT(++x3s.n_pr_eos);
+            else if (pr_why == PSR_SLOPE)     PS_COUNT(++x3s.n_pr_slope);
+            else if (pr_why == PSR_MAXITER)   PS_COUNT(++x3s.n_pr_maxiter);
             return false;
         }
     }
@@ -623,7 +614,7 @@ inline bool ps_x3_relax_cell(V6& U, const PsPhaseAPI& eos, double dt,
         s.ok = true; return s;
     };
     const X3SS s0 = recon(W0);
-    if (!s0.ok) { ++x3s.n_entry_refused; return false; }
+    if (!s0.ok) { PS_COUNT(++x3s.n_entry_refused); return false; }
 
     // The one eligibility question (post-projection): both T_k inside
     // (T_triple, T_crit).  A stand is not a failure -- the cell is not this
@@ -656,6 +647,7 @@ inline bool ps_x3_relax_cell(V6& U, const PsPhaseAPI& eos, double dt,
             if (!cont) {
                 // action 1: abort with the full cell context, for diagnosis.
                 if (xp.coexist_action == 1) {
+#if !AMREX_DEVICE_COMPILE
                     amrex::AllPrint()
                         << "\n[PS-X3] COEXISTENCE BAND EXIT (ps_coexist_action=1 -> abort)\n"
                         << "  side: " << (lo ? "below T_triple" : "")
@@ -665,10 +657,11 @@ inline bool ps_x3_relax_cell(V6& U, const PsPhaseAPI& eos, double dt,
                         << "  P1 = " << s0.p1.P << " Pa  P2 = " << s0.p2.P << " Pa"
                         << "  g1-g2 = " << (s0.p1.g - s0.p2.g) << " J/kg\n"
                         << "  band = (" << Ttr << ", " << Tcr << ") K\n";
+#endif
                     amrex::Abort("PS-X3: phase left the coexistence band "
                                  "(CAMR.ps_coexist_action=1)");
                 }
-                ++x3s.n_gate_stood;
+                PS_COUNT(++x3s.n_gate_stood);
                 for (int n = 0; n < 6; ++n) U[n] = W0[n];
                 return true;
             }
@@ -756,7 +749,7 @@ inline bool ps_x3_relax_cell(V6& U, const PsPhaseAPI& eos, double dt,
             if (dm <  dm_lo) dm =  dm_lo;
         };
         auto path = [&](double q, double dm, V6& W, X3SS& s) -> bool {
-            ++x3s.n_path;
+            PS_COUNT(++x3s.n_path);
             W = Wb;
             const double m1p = Wb[1] - dm, m2p = Wb[2] + dm;
             if (!(m1p > 0.0) || !(m2p > 0.0)) return false;
@@ -767,7 +760,7 @@ inline bool ps_x3_relax_cell(V6& U, const PsPhaseAPI& eos, double dt,
             W[5] = Wb[5] + dm * H_c + q;
             if (!std::isfinite(W[4]) || !std::isfinite(W[5])) return false;
             if (!constrain(W, nullptr)) {                          // constraint
-                ++x3s.n_proj_path; return false; }
+                PS_COUNT(++x3s.n_proj_path); return false; }
             s = recon(W);
             return s.ok;
         };
@@ -790,7 +783,7 @@ inline bool ps_x3_relax_cell(V6& U, const PsPhaseAPI& eos, double dt,
         double rTc = 0.0, rMc = 0.0;
         if (!rates(Wl, sl, rTc, rMc)) return 1;
         for (int it = 0; it < xp.max_newton; ++it) {
-            ++x3s.n_nit;
+            PS_COUNT(++x3s.n_nit);
             const double R1 = q  - dtl * rTc;
             const double R2 = dm - dtl * rMc;
             if (std::abs(R1) <= tol_q && std::abs(R2) <= tol_m) {
@@ -862,7 +855,7 @@ inline bool ps_x3_relax_cell(V6& U, const PsPhaseAPI& eos, double dt,
                         const double S2 = std::abs(dm) + std::abs(dtl * rMt) + tol_m;
                         if (std::abs(R1t) > 1.0e-2 * S1 ||
                             std::abs(R2t) > 1.0e-2 * S2)
-                            ++x3s.n_tiny_nonconv;
+                            PS_COUNT(++x3s.n_tiny_nonconv);
                     }
                 }
                 Wc = Wl; scur = sl; return 0;
@@ -875,11 +868,11 @@ inline bool ps_x3_relax_cell(V6& U, const PsPhaseAPI& eos, double dt,
     int  nsub = 0;
     bool ok   = true;
     while (t_done < dt * (1.0 - 1.0e-12)) {
-        if (++nsub > 64) { ok = false; ++x3s.n_subcap; break; }
-        ++x3s.n_sub;
+        if (++nsub > 64) { ok = false; PS_COUNT(++x3s.n_subcap); break; }
+        PS_COUNT(++x3s.n_sub);
         const int rc = be_once(dt_try);
-        if (rc == 1) ++x3s.n_newton;
-        else if (rc == 2) ++x3s.n_dead;
+        if (rc == 1) PS_COUNT(++x3s.n_newton);
+        else if (rc == 2) PS_COUNT(++x3s.n_dead);
         if (rc == 0) {
             t_done += dt_try;
             const double rem = dt - t_done;
@@ -896,7 +889,7 @@ inline bool ps_x3_relax_cell(V6& U, const PsPhaseAPI& eos, double dt,
     // on-manifold even on a bail-out).
     for (int n = 0; n < 6; ++n) U[n] = Wc[n];
     if (xp.dT_post) *xp.dT_post = std::abs(scur.p1.T - scur.p2.T);  // [PS-DT]
-    if (ok) ++x3s.n_ok;
+    if (ok) PS_COUNT(++x3s.n_ok);
     return ok;
 }
 

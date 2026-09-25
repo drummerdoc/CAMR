@@ -74,7 +74,7 @@ ps_apply_tfloor_fold(amrex::MultiFab& S_new, int nghost = 0)
     for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
         const amrex::Box bx = mfi.growntilebox(nghost);
         amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
-        amrex::LoopOnCpu(bx, [=] (int i, int j, int k) noexcept
+        amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
         {
             hem::V6 Uv;
             Uv[0] = double(U(i, j, k, UALPHA1));
@@ -131,7 +131,7 @@ ps_apply_vanish_fold(amrex::MultiFab& S_new, int nghost = 0)
     for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
         const amrex::Box bx = mfi.growntilebox(nghost);
         amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
-        amrex::LoopOnCpu(bx, [=] (int i, int j, int k) noexcept
+        amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
         {
             // Pack the cell into the V6 layout the fold helper expects.
             hem::V6 Uv;

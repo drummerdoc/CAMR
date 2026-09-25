@@ -3,7 +3,8 @@
 //  model: ps_flash_source_cell with its metastability windows and the
 //  [PS-FLASH-REF] refusal causes (PsFlashRefuse, PS_FLASH_REFUSE), the
 //  CO2 saturation-density table (co2_sat_state), the sublimation-line
-//  test (ps_below_triple_point) and ps_flash_e_of_rhoT.  Host-only.
+//  test (ps_below_triple_point) and ps_flash_e_of_rhoT.
+//  AMREX_GPU_HOST_DEVICE; the refusal counters are host-build only.
 //  Part of the hem_pelanti_shyue.H umbrella; needs only hem_eos_api.H.
 //  docs/MODEL_AND_ALGORITHM.md §5.5.
 // =====================================================================
@@ -33,6 +34,7 @@ namespace hem {
 // ~2 % within 1 K of critical.  Used by the flash's saturation
 // projection to place the newborn phase at its equilibrium density.
 // -----------------------------------------------------------------
+AMREX_GPU_HOST_DEVICE
 inline void co2_sat_state(double T, double& rho_L, double& rho_V)
 {
     static constexpr int N = 20;
@@ -72,6 +74,7 @@ inline long& ps_triple_point_count() { return ps_counters().triple_point_count; 
 // extrapolates analytically past the solid region.  The triple point
 // comes from the EOS metadata the api carries.  The response is
 // selected by CAMR.ps_triple_point_action (read in PS_sources.H).
+AMREX_GPU_HOST_DEVICE
 inline bool ps_below_triple_point(double T, double P_Pa, const PsPhaseAPI& eos) {
     const double T_triple = eos.t_triple();   // K
     const double P_triple = eos.p_triple();   // Pa
@@ -88,6 +91,7 @@ inline bool ps_below_triple_point(double T, double P_Pa, const PsPhaseAPI& eos) 
 // a tabulated saturation enthalpy sits in a different reference
 // convention than this EOS's energy scale.  Returns NaN on failure; the
 // caller refuses rather than seeding garbage.
+AMREX_GPU_HOST_DEVICE
 inline double ps_flash_e_of_rhoT(const PsPhaseAPI& eos, int phase,
                                  double rho, double T_target)
 {
@@ -129,7 +133,7 @@ static_assert(PS_FLR_NCAUSE == PS_COUNTERS_FLR_NCAUSE,
 inline long& ps_flash_refuse_count(int c) { return ps_counters().flash_refuse[c]; }
 inline void  ps_flash_refuse_reset()      { ps_counters().reset_flash_refuse(); }
 #define PS_FLASH_REFUSE(c) \
-    do { ++ps_flash_refuse_count(c); return false; } while (0)
+    do { PS_COUNT(++ps_flash_refuse_count(c)); return false; } while (0)
 
 // Nucleate the minority phase of a single-phase metastable cell:
 //   alpha_new += beta (alpha_seed_target - alpha_new),
@@ -143,22 +147,21 @@ inline void  ps_flash_refuse_reset()      { ps_counters().reset_flash_refuse(); 
 // Returns true when mass moved; every refusal is counted by cause.
 // alpha_seed_target has no default: every caller passes the presence
 // design's alpha_birth explicitly (single-sourced, PS_presence.H).
+AMREX_GPU_HOST_DEVICE
 inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
                                   double dt, double tau_flash,
                                   double alpha_seed_target,
                                   double alpha_floor = ps_const::ALPHA_ROUNDOFF)
 {
     if (tau_flash <= 0.0 || dt <= 0.0) PS_FLASH_REFUSE(PS_FLR_TAU);
-    if (!eos.valid() || !eos.Psat_of_T) PS_FLASH_REFUSE(PS_FLR_EOS);
+    if (!eos.valid() || !eos.has_psat) PS_FLASH_REFUSE(PS_FLR_EOS);
 
     double alpha_1 = U[0];
     if (!std::isfinite(alpha_1)) PS_FLASH_REFUSE(PS_FLR_A_NAN);
 
-    // CAMR.ps_flash_alpha_thr (0.10): dominance threshold; the flash
-    // acts only for alpha_dom > 1 - thr, mid-range cells belong to
-    // mass transfer.
-    static const double flash_alpha_thr =
-        ps_dial_real("ps_flash_alpha_thr", 0.10);
+    // CAMR.ps_flash_alpha_thr (documented at its accessor): dominance
+    // threshold.
+    const double flash_alpha_thr = eos.dials.flash_alpha_thr;
     const bool liq_dominant = (alpha_1 > 1.0 - flash_alpha_thr);
     const bool vap_dominant = (alpha_1 <       flash_alpha_thr);
     if (!liq_dominant && !vap_dominant) PS_FLASH_REFUSE(PS_FLR_NOT_DOM);
@@ -213,11 +216,8 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
     // (b) Metastability window: a liquid-dominant cell boils as P falls
     //     below (1 - margin) P_sat, a vapour-dominant cell condenses as P
     //     rises above (1 + margin) P_sat, each a smooth ramp.
-    // CAMR.ps_flash_metastable_margin (0.10): the required undershoot, so
-    // static contacts with both sides at saturation do not false-trigger
-    // from marginal numerical dissipation.
-    static const double meta_margin =
-        ps_dial_real("ps_flash_metastable_margin", 0.10);
+    // CAMR.ps_flash_metastable_margin (documented at its accessor).
+    const double meta_margin = eos.dials.flash_meta_margin;
     const bool flash_liq = liq_dominant;
     const double bw_P = meta_margin * P_sat_here;   // pressure ramp band
     double w_meta;
@@ -288,20 +288,10 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
         if (liq_dominant) eos.state_from_rho_e_phase(2, rho_2, e_2, p_other);
         else              eos.state_from_rho_e_phase(1, rho_1, e_1, p_other);
     }
-    // CAMR.ps_flash_h_mode ("auto"): energy carried when a trace phase
-    // already exists (the projection path below overrides it).
-    //   "avg" : h = (h_dom + h_trace)/2, the interface enthalpy -- right
-    //           subcritical where latent heat is real, but pushes a low-rho
-    //           supercritical trace phase to absurd T;
-    //   "dom" : h = h_dom, mass carries its own enthalpy (Joule-Thomson) --
-    //           right supercritical, under-couples subcritical;
-    //   "auto": avg below T_c - 30 K, dom above T_c + 30 K, linear between.
-    static const int h_mode = []{
-        const std::string v = ps_dial_string("ps_flash_h_mode", "auto");
-        if (v == "avg") return 1;
-        if (v == "dom") return 0;
-        return 2;   // "auto" default
-    }();
+    // CAMR.ps_flash_h_mode (documented at its accessor): energy carried
+    // when a trace phase already exists (the projection path below
+    // overrides it); 1 avg, 0 dom, 2 auto.
+    const int h_mode = eos.dials.flash_h_mode;
     const bool other_ok = p_other.valid && std::isfinite(p_other.h)
                           && p_other.T > 100.0;
     const double h_dom   = p_dom.h;
@@ -372,17 +362,19 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
         return std::isfinite(c1.T) && std::isfinite(c1.P) && c1.T > 0.0
             && std::isfinite(c2.T) && std::isfinite(c2.P) && c2.T > 0.0;
     };
-    // When the full step is inadmissible, name the failing sub-test at s = 1.
+    // When the full step is inadmissible, name the failing sub-test at s = 1
+    // (counting only, so host builds only).
+#if !defined(AMREX_USE_GPU)
     auto count_full_step_reason = [&]() {
         double a1t, U1t, U2t, U4t, U5t;
         trial(1.0, a1t, U1t, U2t, U4t, U5t);
         if (!std::isfinite(U1t) || !std::isfinite(U2t) ||
             !std::isfinite(U4t) || !std::isfinite(U5t) ||
             U1t <= 0.0 || U2t <= 0.0) {
-            ++ps_flash_refuse_count(PS_FLR_S1_MASS); return;
+            PS_COUNT(++ps_flash_refuse_count(PS_FLR_S1_MASS)); return;
         }
         if (a1t < alpha_floor || a1t > 1.0 - alpha_floor) {
-            ++ps_flash_refuse_count(PS_FLR_S1_AFLOOR); return;
+            PS_COUNT(++ps_flash_refuse_count(PS_FLR_S1_AFLOOR)); return;
         }
         const double r1t = U1t / a1t, r2t = U2t / (1.0 - a1t);
         const double e1t = U4t / U1t - ke_cell;
@@ -393,14 +385,15 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
         eos.state_from_rho_e_phase(2, r2t, e2t, c2t);
         const bool ok1 = std::isfinite(c1t.T) && std::isfinite(c1t.P) && c1t.T > 0.0;
         const bool ok2 = std::isfinite(c2t.T) && std::isfinite(c2t.P) && c2t.T > 0.0;
-        if (!ok1) ++ps_flash_refuse_count(PS_FLR_S1_PH1);
-        if (!ok2) ++ps_flash_refuse_count(PS_FLR_S1_PH2);
+        if (!ok1) PS_COUNT(++ps_flash_refuse_count(PS_FLR_S1_PH1));
+        if (!ok2) PS_COUNT(++ps_flash_refuse_count(PS_FLR_S1_PH2));
     };
+#endif
     double s_star;
     if (valid_at(1.0)) {
         s_star = 1.0;                       // full flash admissible
     } else {
-        count_full_step_reason();
+        PS_COUNT(count_full_step_reason());   // counting only: skipped on GPU
         // Largest valid s by bisection; 24 iterations resolve s to ~6e-8.
         double s_lo = 0.0, s_hi = 1.0;
         for (int it = 0; it < 24; ++it) {
@@ -419,8 +412,8 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
     U[2] = U2_new;
     U[4] = U4_new;
     U[5] = U5_new;
-    ++ps_flash_source_count();
-    ++ps_flash_refuse_count(PS_FLR_FIRED);   // slot 0 = fires
+    PS_COUNT(++ps_flash_source_count());
+    PS_COUNT(++ps_flash_refuse_count(PS_FLR_FIRED));   // slot 0 = fires
     return true;
 }
 

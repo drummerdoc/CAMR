@@ -8,8 +8,9 @@
 //  and mass-transfer relaxation kernels; the coupled X3 operator
 //  (ps_x3_relax_cell, the production default); the flash nucleator.
 //  Algorithms and rationale: docs/MODEL_AND_ALGORITHM.md ch. 5 (sources)
-//  and ch. 4 (presence).  Every kernel here is host-only (std::function
-//  EOS API) and operates on one cell's conserved vector
+//  and ch. 4 (presence).  Every kernel here is AMREX_GPU_HOST_DEVICE
+//  (EOS and dials reached through the PsPhaseAPI value) and operates on
+//  one cell's conserved vector
 //      U = (alpha_1, alpha_1 rho_1, alpha_2 rho_2, rho u,
 //           alpha_1 rho_1 E_1, alpha_2 rho_2 E_2),   E_k = e_k + u^2/2,
 //  with a common velocity u and per-phase e_k, T_k, P_k.
@@ -20,9 +21,9 @@
 //  refusal is a verdict).  Mixture mass, momentum and total energy are
 //  invariant under every kernel by construction.
 //
-//  Dials: all read once via the CAMR.* ParmParse accessors below and
-//  documented at their accessor (ps_dial_*, ps_diag_*, and the
-//  function-local statics in the kernels).
+//  Dials: all read once via the CAMR.* ParmParse accessors in
+//  hem_eos_api.H and documented at their accessor (ps_dial_*, ps_diag_*);
+//  the kernels read them from PsPhaseAPI::dials (PsKernelDials).
 // =====================================================================
 #pragma once
 

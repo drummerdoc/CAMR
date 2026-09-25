@@ -201,29 +201,43 @@ CAMR::CAMR_advance (Real time,
         // CAMR.ps_diag_mass (0): the probe's gate.
         static const int dgm = ps_dial_int("ps_diag_mass", 0);
         if (dgm == 0) return;
-        amrex::Real worst = 0.0, mmax = 0.0, e1max = 0.0, e2max = 0.0;
-        amrex::Long nbad = 0;
+        //  Per-cell contributions, each >= 0 (the extrema start at 0 and
+        //  take finite values only), reduced max / max / max / max / sum.
+        amrex::ReduceOps<amrex::ReduceOpMax, amrex::ReduceOpMax, amrex::ReduceOpMax,
+                         amrex::ReduceOpMax, amrex::ReduceOpSum> mass_op;
+        amrex::ReduceData<amrex::Real, amrex::Real, amrex::Real, amrex::Real,
+                          amrex::Long> mass_data(mass_op);
+        using MassTuple = typename decltype(mass_data)::Type;
         for (amrex::MFIter mfi(S); mfi.isValid(); ++mfi) {
             const amrex::Box bx = mfi.validbox();
-            amrex::Array4<amrex::Real> const& U = S.array(mfi);
-            amrex::LoopOnCpu(bx, [&] (int i, int j, int k) noexcept
+            amrex::Array4<const amrex::Real> const& U = S.const_array(mfi);
+            mass_op.eval(bx, mass_data,
+            [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept -> MassTuple
             {
                 const amrex::Real r  = U(i,j,k, URHO);
                 const amrex::Real m1 = U(i,j,k, UM1RHO1);
                 const amrex::Real m2 = U(i,j,k, UM2RHO2);
                 const amrex::Real s  = m1 + m2;
                 // mass / specific-energy extrema: catch creation, not just drift
-                if (std::isfinite(s) && s > mmax) mmax = s;
+                const amrex::Real mc = (std::isfinite(s) && s > 0.0) ? s : 0.0;
+                amrex::Real e1c = 0.0, e2c = 0.0;
                 if (m1 > 0.0) { const amrex::Real e = std::abs(U(i,j,k, UE1)) / m1;
-                                if (std::isfinite(e) && e > e1max) e1max = e; }
+                                if (std::isfinite(e)) e1c = e; }
                 if (m2 > 0.0) { const amrex::Real e = std::abs(U(i,j,k, UE2)) / m2;
-                                if (std::isfinite(e) && e > e2max) e2max = e; }
-                if (!std::isfinite(r) || !std::isfinite(s) || std::abs(r) <= 0.0) return;
+                                if (std::isfinite(e)) e2c = e; }
+                if (!std::isfinite(r) || !std::isfinite(s) || std::abs(r) <= 0.0)
+                    return {0.0, mc, e1c, e2c, 0};
                 const amrex::Real rel = std::abs(r - s) / std::abs(r);
-                if (rel > worst) worst = rel;
-                if (rel > 1.0e-3) ++nbad;
+                return {rel, mc, e1c, e2c, (rel > 1.0e-3) ? 1 : 0};
             });
         }
+        const MassTuple mass_v = mass_data.value(mass_op);
+        //  max(0, .) restores the zero start value on a rank with no cells.
+        amrex::Real worst = amrex::max(amrex::Real(0.0), amrex::get<0>(mass_v));
+        amrex::Real mmax  = amrex::max(amrex::Real(0.0), amrex::get<1>(mass_v));
+        amrex::Real e1max = amrex::max(amrex::Real(0.0), amrex::get<2>(mass_v));
+        amrex::Real e2max = amrex::max(amrex::Real(0.0), amrex::get<3>(mass_v));
+        amrex::Long nbad  = amrex::get<4>(mass_v);
         amrex::ParallelDescriptor::ReduceRealMax(worst);
         amrex::ParallelDescriptor::ReduceRealMax(mmax);
         amrex::ParallelDescriptor::ReduceRealMax(e1max);

@@ -4,7 +4,10 @@
 //  the EOS callback contract (PsPhaseAPI), the coexistence-band test,
 //  the fold mechanics (fold_phase, the vanish and T-floor folds), the
 //  runtime and diagnostic dial accessors, and ps_state_from_cons.
-//  AMReX-free apart from amrex::Abort; host-only (std::function EOS).
+//  Every per-cell function is AMREX_GPU_HOST_DEVICE: the EOS is reached
+//  through PsPhaseAPI's member functions (the CAMR EOS, device-callable)
+//  and the numerical dials through PsPhaseAPI::dials, resolved on the
+//  host; the dial accessors themselves are host-only.
 //  Part of the hem_pelanti_shyue.H umbrella; the kernel headers
 //  (hem_relax_x3.H, hem_mass_transfer.H, hem_flash.H) include this one.
 //  docs/MODEL_AND_ALGORITHM.md ch. 4 (presence), §7.2 (EOS contract).
@@ -15,13 +18,15 @@
 #include <array>
 #include <cmath>
 #include <algorithm>
-#include <functional>
 #include <vector>
 #include <limits>
 #include <cstdlib>
 #include <cstring>
 #include <string>
 #include <AMReX.H>           // amrex::Abort (dial-contract violations)
+#include <AMReX_GpuQualifiers.H>
+#include "EOS.H"            // the CAMR EOS behind PsPhaseAPI
+#include "PS_util.H"        // ps_pure_species
 #include "PS_constants.H"   // ps_const:: shared numeric floors
 #include "PS_dials.H"       // ps_dial_int / ps_dial_real
 #include "PS_counters.H"    // PsCounters: the diagnostic-counter store
@@ -32,7 +37,9 @@ namespace hem {
 //  Runtime dials.  Every dial is a CAMR.* ParmParse key read once per
 //  process into a function-local static through ps_dial_* (PS_dials.H),
 //  which adds the resolved value back so the configuration lands in
-//  job_info.  Safe because every kernel here is host-only.
+//  job_info.  The accessors are host-only; a dial a per-cell kernel
+//  needs reaches it as a field of PsKernelDials (below), filled from
+//  the accessors by ps_kernel_dials().
 // ---------------------------------------------------------------------
 
 using V6 = std::array<double, 6>;
@@ -81,22 +88,100 @@ struct PsState {
 
 
 // ---------------------------------------------------------------------
-//  Per-phase EOS callback contract.  Both phases call the same EOS on
-//  different branches (slot 1 liquid, slot 2 vapour/supercritical); the
-//  branch is asserted by the slot, never inferred from the state.  See
-//  docs/MODEL_AND_ALGORITHM.md §7.2.
+//  The per-phase EOS query behind PsPhaseAPI::state_from_rho_e_phase:
+//  phase 1 liquid, phase 2 vapour, each branch-locked with its metastable
+//  extrapolation, because the relaxation Newton must see per-phase
+//  pressures on the phase's own branch; a mixture-root query walks off
+//  wherever a phase sits across the dome from its state.  No root is
+//  reported as ph.valid = false, never an abort
+//  (docs/MODEL_AND_ALGORITHM.md §7.2).  One state solve yields P, T, s
+//  together; the extra outputs are free by-products of the solve P needs,
+//  so callers wanting only P (the relaxation Newton) pay nothing.
+// ---------------------------------------------------------------------
+AMREX_GPU_HOST_DEVICE
+inline void ps_eos_phase_state(int phase, double rho, double e, PsPhase& ph)
+{
+    amrex::Real Y[NUM_SPECIES];
+    ps_pure_species(Y);
+    amrex::Real P, T, S;
+    const Phase3 ph3 = (phase == 1) ? Phase3::Liquid : Phase3::Vapor;
+    if (!EOS::REY2PTS_phase_try(amrex::Real(rho), amrex::Real(e), Y, ph3,
+                                P, T, S)) {
+        //  No root on this branch: report invalid per the PsPhaseAPI
+        //  contract; every consumer tests ph.valid.
+        ph.rho = rho; ph.e = e;
+        ph.P = 0.0; ph.T = 0.0; ph.c = 0.0;
+        ph.h = 0.0; ph.s = 0.0; ph.g = 0.0;
+        ph.valid = false;
+        return;
+    }
+    ph.rho   = rho;
+    ph.e     = e;
+    ph.P     = double(P);
+    ph.T     = double(T);
+    ph.h     = e + double(P) / rho;        // h = e + P/rho on the EOS energy scale
+    ph.s     = double(S);
+    ph.g     = ph.h - double(T) * double(S);   // Gibbs = h - T s
+    // Sound speed is always filled: ps_state_from_cons requires ph.c > 0.
+    amrex::Real Cs = amrex::Real(0);
+    EOS::REY2Cs_phase(amrex::Real(rho), amrex::Real(e), Y, ph3, Cs);
+    ph.c     = double(Cs);
+    ph.valid = std::isfinite(P) && P > 0.0 && std::isfinite(T) && T > 0.0;
+}
+
+// ---------------------------------------------------------------------
+//  The numerical dials the per-cell kernels read, resolved on the host
+//  by ps_kernel_dials() from their single-read accessors and carried to
+//  the kernels by value inside PsPhaseAPI.  The fields have no defaults
+//  of their own (a second default is a second source of truth): a
+//  PsPhaseAPI not built by ps_make_camr_eos_api is invalid anyway.
+//  Each key is documented at its accessor.
+// ---------------------------------------------------------------------
+struct PsKernelDials {
+    double single_phase_threshold = 0.0;   // CAMR.ps_single_phase_threshold
+    int    pr_fd1                 = 0;     // CAMR.ps_pr_fd1
+    int    mt_bootstrap           = 0;     // CAMR.ps_mt_bootstrap
+    double mt_step_frac           = 0.0;   // CAMR.ps_mt_step_frac
+    double mt_alpha_thr           = 0.0;   // CAMR.ps_mt_alpha_thr
+    int    mt_nest_pr             = 0;     // CAMR.ps_mt_nest_pr
+    int    mt_explicit            = 0;     // CAMR.ps_mt_explicit
+    int    mt_no_dome_gate        = 0;     // CAMR.ps_mt_no_dome_gate
+    int    mt_form                = 0;     // CAMR.ps_mt_form
+    double mt_srt_d               = 0.0;   // CAMR.ps_mt_srt_d
+    double mt_srt_delta           = 0.0;   // CAMR.ps_mt_srt_delta
+    double flash_alpha_thr        = 0.0;   // CAMR.ps_flash_alpha_thr
+    double flash_meta_margin      = 0.0;   // CAMR.ps_flash_metastable_margin
+    int    flash_h_mode           = 0;     // CAMR.ps_flash_h_mode (0 dom, 1 avg, 2 auto)
+};
+
+// ---------------------------------------------------------------------
+//  Per-phase EOS contract.  Both phases call the same EOS on different
+//  branches (slot 1 liquid, slot 2 vapour/supercritical); the branch is
+//  asserted by the slot, never inferred from the state.  A trivially
+//  copyable value type, captured by copy into the per-cell kernels.
+//  See docs/MODEL_AND_ALGORITHM.md §7.2.
 // ---------------------------------------------------------------------
 struct PsPhaseAPI {
+    // Set by ps_make_camr_eos_api; a default-constructed API is invalid.
+    bool has_eos  = false;
+    bool has_psat = false;   // the flash requires Psat and refuses without it
+
     // Query phase `k` (1 or 2) at (rho, e): on success fill ph and set
     // ph.valid = true; on failure (off-domain, no root on the requested
     // branch) set ph.valid = false.  ph.alpha is the caller's to set; the
-    // callback computes only the intensive properties.
-    std::function<void(int phase, double rho, double e, PsPhase& ph)>
-        state_from_rho_e_phase;
+    // query computes only the intensive properties.
+    AMREX_GPU_HOST_DEVICE
+    void state_from_rho_e_phase(int phase, double rho, double e, PsPhase& ph) const {
+        ps_eos_phase_state(phase, rho, e, ph);
+    }
 
-    // Saturation pressure P_sat(T) [Pa] from the fluid's own EOS.  The
-    // flash (ps_flash_source_cell) requires it and refuses when unset.
-    std::function<double(double T)> Psat_of_T;
+    // Saturation pressure P_sat(T) [Pa] from the fluid's own EOS, for
+    // the flash metastability window.
+    AMREX_GPU_HOST_DEVICE
+    double Psat_of_T(double T) const { return double(EOS::Psat(amrex::Real(T))); }
+
+    // Numerical dials of the kernels (host-resolved, see PsKernelDials).
+    PsKernelDials dials;
 
     // Fluid critical and triple-point data, set from the EOS so the
     // two-phase gates stay fluid-agnostic; <= 0 = unset, the accessors
@@ -113,29 +198,29 @@ struct PsPhaseAPI {
     // no barrier; CAMR sets these under presence (ps_make_camr_eos_api).
     double rho_dom_lo = 0.0;
     double rho_dom_hi = 0.0;
-    bool has_rho_dom() const { return rho_dom_lo > 0.0 && rho_dom_hi > rho_dom_lo; }
-    double t_crit()   const { return (T_crit_K   > 0.0) ? T_crit_K   : 304.13; }
-    double p_crit()   const { return (P_crit_Pa  > 0.0) ? P_crit_Pa  : 7.3773e6; }
-    double t_triple() const { return (T_triple_K > 0.0) ? T_triple_K : 216.6; }
-    double p_triple() const { return (P_triple_Pa > 0.0) ? P_triple_Pa : 5.1795e5; }
+    AMREX_GPU_HOST_DEVICE bool has_rho_dom() const { return rho_dom_lo > 0.0 && rho_dom_hi > rho_dom_lo; }
+    AMREX_GPU_HOST_DEVICE double t_crit()   const { return (T_crit_K   > 0.0) ? T_crit_K   : 304.13; }
+    AMREX_GPU_HOST_DEVICE double p_crit()   const { return (P_crit_Pa  > 0.0) ? P_crit_Pa  : 7.3773e6; }
+    AMREX_GPU_HOST_DEVICE double t_triple() const { return (T_triple_K > 0.0) ? T_triple_K : 216.6; }
+    AMREX_GPU_HOST_DEVICE double p_triple() const { return (P_triple_Pa > 0.0) ? P_triple_Pa : 5.1795e5; }
     //  Molar mass [kg/mol] for the SRT kinetic prefactor; set from
     //  EOS::Y2WBAR, CO2 fallback by the same convention.
     double M_kg_mol   = 0.0;
-    double molar_mass() const { return (M_kg_mol > 0.0) ? M_kg_mol : 0.04401; }
+    AMREX_GPU_HOST_DEVICE double molar_mass() const { return (M_kg_mol > 0.0) ? M_kg_mol : 0.04401; }
 
-    bool valid() const {
-        return static_cast<bool>(state_from_rho_e_phase);
-    }
+    AMREX_GPU_HOST_DEVICE bool valid() const { return has_eos; }
 };
 
 // Strict coexistence band of the fluid, T_triple < T < T_crit, from the
 // EOS metadata the kernels receive.  The one-phase form is the window
 // in which Psat(T) is defined; the two-phase form is the gate the
 // thermal leg, the mass transfer and the flash share.  Both strict.
+AMREX_GPU_HOST_DEVICE
 inline bool ps_T_in_band(double T, const PsPhaseAPI& eos)
 {
     return T > eos.t_triple() && T < eos.t_crit();
 }
+AMREX_GPU_HOST_DEVICE
 inline bool ps_in_coexistence_band(double T1, double T2, const PsPhaseAPI& eos)
 {
     return ps_T_in_band(T1, eos) && ps_T_in_band(T2, eos);
@@ -151,6 +236,7 @@ inline bool ps_in_coexistence_band(double T1, double T2, const PsPhaseAPI& eos)
 // and alpha_1 set to exact 0 (victim 1) or 1 (victim 2).  Mixture mass
 // and energy are invariant.  The single mechanics behind every phase
 // removal (vanish, T-floor, vacuum and the corridor reaps).
+AMREX_GPU_HOST_DEVICE
 inline void fold_phase(V6& U, int victim)
 {
     if (victim == 1) {
@@ -174,6 +260,7 @@ inline void fold_phase(V6& U, int victim)
 // phantom-density buildup where a phase exists only at round-off
 // (docs/MODEL_AND_ALGORITHM.md §4.4).  alpha_vanish comes from the
 // caller (the presence layer).  Returns true if a fold was applied.
+AMREX_GPU_HOST_DEVICE
 inline bool ps_apply_vanish_fold(V6& U, double alpha_vanish)
 {
     if (alpha_vanish <= 0.0) return false;
@@ -219,6 +306,95 @@ inline int    ps_dial_mt_form()           { static const int    v = ps_dial_int 
 inline int ps_diag_pres()       { static const int v = ps_dial_int("ps_pres_diag",     0); return v; }
 inline int ps_diag_mt()         { static const int v = ps_dial_int("ps_mt_diag",       0); return v; }
 
+//  Kernel numerics dials, one read each; the kernels see them through
+//  PsKernelDials.
+//  CAMR.ps_single_phase_threshold (5e-3): below this alpha_k the
+//    pressure and mass-transfer kernels skip the cell as single-phase.
+//    The minority phase's (rho_k, e_k) is then typically off its EOS
+//    domain, so its P_k and derivatives are meaningless and a Newton fed
+//    with them sees a wild slope; the minority contributes < threshold of
+//    the flux anyway, and the cell re-enters relaxation when it grows.
+//  CAMR.ps_pr_fd1 (0): ps_iso_pressure_relax_cell's slope is a central FD
+//    (4 inversions); 1 = one-sided difference reusing r (2 inversions),
+//    which changes the Newton trajectory but not the root.
+//  CAMR.ps_mt_bootstrap (1): sign-aware step caps in the Gibbs-target
+//    Newton -- evaporation is bounded by the donor m_1, condensation by
+//    m_2.  0 caps both signs by min(m1, m2), which makes an evaporation
+//    front starting from trace vapour crawl at step_frac * m_2 per step.
+//  CAMR.ps_mt_step_frac (-1 = use PsMassTransferParams::dm_step_frac):
+//    the cap fraction.
+//  CAMR.ps_mt_alpha_thr (5e-3): finite-rate transfer only in genuinely
+//    mixed cells, alpha_1 in (thr, 1 - thr); at trace alpha the
+//    fixed-alpha rho_k = m_k/alpha_k is hypersensitive to dm.
+//  CAMR.ps_mt_nest_pr (0): nested pressure relaxation inside the
+//    equilibrium-target solve.  0 off; 1 full nesting; N > 1 caps the
+//    inner Newton at N iterations, which makes the target solve fail
+//    almost always and silently disables the transfer -- do not use.
+//    Off is the default because the cell has just been mechanically
+//    relaxed and re-projecting inside every Gibbs iteration makes the
+//    outer residual non-smooth, which is both the cost and the failures.
+//  CAMR.ps_mt_explicit (0): 1 selects the explicit forward-Euler forms of
+//    the finite-rate step (comparison only; they overshoot at sharp fronts).
+//  CAMR.ps_flash_alpha_thr (0.10): flash dominance threshold; the flash
+//    acts only for alpha_dom > 1 - thr, mid-range cells belong to mass
+//    transfer.
+//  CAMR.ps_flash_metastable_margin (0.10): the required undershoot of the
+//    flash metastability window, so static contacts with both sides at
+//    saturation do not false-trigger from marginal numerical dissipation.
+//  CAMR.ps_flash_h_mode ("auto"): energy carried by flashed mass when a
+//    trace phase already exists (the projection path overrides it):
+//      "avg" : h = (h_dom + h_trace)/2, the interface enthalpy -- right
+//              subcritical where latent heat is real, but pushes a low-rho
+//              supercritical trace phase to absurd T;
+//      "dom" : h = h_dom, mass carries its own enthalpy (Joule-Thomson) --
+//              right supercritical, under-couples subcritical;
+//      "auto": avg below T_c - 30 K, dom above T_c + 30 K, linear between.
+inline double ps_single_phase_threshold_default() {
+    static const double t = ps_dial_real("ps_single_phase_threshold", 5.0e-3);
+    return t;
+}
+inline int    ps_dial_pr_fd1()          { static const int    v = ps_dial_int ("ps_pr_fd1",          0);    return v; }
+inline int    ps_dial_mt_bootstrap()    { static const int    v = ps_dial_int ("ps_mt_bootstrap",    1);    return v; }
+inline double ps_dial_mt_step_frac()    { static const double v = ps_dial_real("ps_mt_step_frac",   -1.0);  return v; }
+inline double ps_dial_mt_alpha_thr()    { static const double v = ps_dial_real("ps_mt_alpha_thr",   5.0e-3); return v; }
+inline int    ps_dial_mt_nest_pr()      { static const int    v = ps_dial_int ("ps_mt_nest_pr",      0);    return v; }
+inline int    ps_dial_mt_explicit()     { static const int    v = ps_dial_int ("ps_mt_explicit",     0);    return v; }
+inline double ps_dial_flash_alpha_thr() { static const double v = ps_dial_real("ps_flash_alpha_thr", 0.10); return v; }
+inline double ps_dial_flash_meta_margin() {
+    static const double v = ps_dial_real("ps_flash_metastable_margin", 0.10);
+    return v;
+}
+inline int ps_dial_flash_h_mode() {
+    static const int v = []{
+        const std::string s = ps_dial_string("ps_flash_h_mode", "auto");
+        if (s == "avg") return 1;
+        if (s == "dom") return 0;
+        return 2;   // "auto" default
+    }();
+    return v;
+}
+
+//  The kernels' copy of the dials, from the accessors above.
+inline PsKernelDials ps_kernel_dials()
+{
+    PsKernelDials d;
+    d.single_phase_threshold = ps_single_phase_threshold_default();
+    d.pr_fd1            = ps_dial_pr_fd1();
+    d.mt_bootstrap      = ps_dial_mt_bootstrap();
+    d.mt_step_frac      = ps_dial_mt_step_frac();
+    d.mt_alpha_thr      = ps_dial_mt_alpha_thr();
+    d.mt_nest_pr        = ps_dial_mt_nest_pr();
+    d.mt_explicit       = ps_dial_mt_explicit();
+    d.mt_no_dome_gate   = ps_dial_mt_no_dome_gate();
+    d.mt_form           = ps_dial_mt_form();
+    d.mt_srt_d          = ps_dial_mt_srt_d();
+    d.mt_srt_delta      = ps_dial_mt_srt_delta();
+    d.flash_alpha_thr   = ps_dial_flash_alpha_thr();
+    d.flash_meta_margin = ps_dial_flash_meta_margin();
+    d.flash_h_mode      = ps_dial_flash_h_mode();
+    return d;
+}
+
 
 
 // T-floor fold: when a phase's temperature (branch-locked query) falls
@@ -231,6 +407,7 @@ inline int ps_diag_mt()         { static const int v = ps_dial_int("ps_mt_diag",
 // Runs after ps_apply_vanish_fold so the two do not double-count.
 // Returns true if a fold happened; false when both phases are bad (no
 // recovery exists; the caller decides).
+AMREX_GPU_HOST_DEVICE
 inline bool ps_apply_tfloor_fold(V6& U, const PsPhaseAPI& eos,
                                   double T_floor,
                                   double alpha_floor = ps_const::ALPHA_ROUNDOFF)
@@ -298,6 +475,7 @@ inline bool ps_apply_tfloor_fold(V6& U, const PsPhaseAPI& eos,
 //  Guards: alpha_1 clamped to [alpha_floor, 1 - alpha_floor];
 //  rho_k floored at rho_floor; a failed EOS query marks the state invalid.
 // ---------------------------------------------------------------------
+AMREX_GPU_HOST_DEVICE
 inline PsState ps_state_from_cons(const V6& U, const PsPhaseAPI& eos,
                                   double alpha_floor = ps_const::ALPHA_ROUNDOFF,
                                   double rho_floor   = 1.0e-6)
