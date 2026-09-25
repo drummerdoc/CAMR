@@ -447,6 +447,21 @@ inline State state_from_T_v(const PRFluid& f, amrex::Real T, amrex::Real v_m,
 }
 
 // =====================================================================
+//  e_from_T_v — specific internal energy only, bitwise equal to
+//  state_from_T_v(f, T, v_m, ...).e: e depends on (T, v_m) through the
+//  ideal-gas part and the (fenced) departure function, never on the
+//  spinodal extension, which only reshapes P and c.  For iterations that
+//  need only e; the full state_from_T_v runs the spinodal march below Tc.
+// =====================================================================
+AMREX_GPU_HOST_DEVICE
+inline amrex::Real e_from_T_v(const PRFluid& f, amrex::Real T, amrex::Real v_m)
+{
+    amrex::Real e_dep, s_dep, cv_dep;
+    departureFunctions(f, T, v_m, e_dep, s_dep, cv_dep);
+    return (e_ig_per_mole(f, T) + e_dep) / f.M;
+}
+
+// =====================================================================
 //  state_from_T_P -- solve cubic, pick requested phase root
 // =====================================================================
 AMREX_GPU_HOST_DEVICE
@@ -958,8 +973,7 @@ inline State state_from_rho_e(const PRFluid& f, amrex::Real rho, amrex::Real e_t
             amrex::Real c = (a*fb - b*fa)/(fb - fa);
             amrex::Real lo_ = (a < b) ? a : b, hi_ = (a < b) ? b : a;
             if (!(c > lo_ && c < hi_)) c = amrex::Real(0.5)*(a+b);
-            State m = state_from_T_v(f, c, v_m, ph);
-            amrex::Real fc = m.e - e_target;
+            amrex::Real fc = e_from_T_v(f, c, v_m) - e_target;
             T = c;
             if (std::abs(fc) <= amrex::Real(1e-12)*std::abs(e_target) + amrex::Real(1e-9) ||
                 std::abs(b - a) < amrex::Real(1e-13)*std::abs(c) + amrex::Real(1e-14)) break;
@@ -1048,8 +1062,7 @@ inline bool state_from_rho_e_phase_try(const PRFluid& f, amrex::Real rho,
         amrex::Real c = (a*fb - b*fa)/(fb - fa);
         amrex::Real lo_ = (a < b) ? a : b, hi_ = (a < b) ? b : a;
         if (!(c > lo_ && c < hi_)) c = amrex::Real(0.5)*(a+b);
-        State m = state_from_T_v(f, c, v_m, phase);
-        amrex::Real fc = m.e - e_target;
+        amrex::Real fc = e_from_T_v(f, c, v_m) - e_target;
         T = c;
         if (std::abs(fc) <= amrex::Real(1e-12)*std::abs(e_target) + amrex::Real(1e-9) ||
             std::abs(b - a) < amrex::Real(1e-13)*std::abs(c) + amrex::Real(1e-14)) break;
