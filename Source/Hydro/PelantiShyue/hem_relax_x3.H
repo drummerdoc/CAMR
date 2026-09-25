@@ -150,7 +150,6 @@ inline bool ps_pressure_relax_cell(V6& U, const PsPhaseAPI& eos,
         // domain (NaN) fall back to a one-sided difference against the
         // centre value, and when both do, shrink the probe and retry, so
         // the Newton keeps progressing at near-single-phase interface cells.
-        const double a_min = p.alpha_min;
         auto compute_P_diff = [&](double a_test) -> double {
             const double r1t = m1 / a_test;
             const double r2t = m2 / (1.0 - a_test);

@@ -327,6 +327,17 @@ public:
 
   static void enforce_min_density(amrex::MultiFab& S_new);
 
+  void reflux();
+
+  //  refresh_temp: also recompute the UTEMP diagnostic slot (computeTemp, a
+  //  per-cell EOS inversion over the grown box: one mixture (rho,e)->T plus
+  //  two branch-locked per-phase inversions in two-phase cells).  UTEMP
+  //  does not feed the conserved evolution, so the intermediate calls in an
+  //  advance pass false and only the final state is refreshed;
+  //  reset_internal_energy runs every time.  CAMR.lazy_temp = 0 makes the
+  //  refresh unconditional.
+  void clean_state(amrex::MultiFab& S, bool refresh_temp = true);
+
 protected:
 
 #ifdef AMREX_USE_EB
@@ -374,22 +385,12 @@ protected:
 
   CAMR& getLevel(int lev);
 
-  void reflux();
-
   //
   // Define error estimators
   //
   static void error_setup ();
 
   void expand_state(amrex::MultiFab& S, const amrex::Real time, const int ng);
-  //  refresh_temp: also recompute the UTEMP diagnostic slot (computeTemp, a
-  //  per-cell EOS inversion over the grown box: one mixture (rho,e)->T plus
-  //  two branch-locked per-phase inversions in two-phase cells).  UTEMP
-  //  does not feed the conserved evolution, so the intermediate calls in an
-  //  advance pass false and only the final state is refreshed;
-  //  reset_internal_energy runs every time.  CAMR.lazy_temp = 0 makes the
-  //  refresh unconditional.
-  void clean_state(amrex::MultiFab& S, bool refresh_temp = true);
 #ifdef CAMR_USE_MOVING_EB
   void ZeroingOutForPlotting(amrex::MultiFab& S);
 #endif

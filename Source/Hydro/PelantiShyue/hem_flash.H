@@ -219,7 +219,6 @@ inline bool ps_flash_source_cell(V6& U, const PsPhaseAPI& eos,
     static const double meta_margin =
         ps_dial_real("ps_flash_metastable_margin", 0.10);
     const bool flash_liq = liq_dominant;
-    const bool flash_vap = vap_dominant;
     const double bw_P = meta_margin * P_sat_here;   // pressure ramp band
     double w_meta;
     if (flash_liq) {

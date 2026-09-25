@@ -1669,7 +1669,6 @@ CAMR::clean_state(amrex::MultiFab& S, bool refresh_temp)
           if (a1 < amrex::Real(0.0)) a1 = amrex::Real(0.0);
           if (a1 > amrex::Real(1.0)) a1 = amrex::Real(1.0);
           Sa(i,j,k, UALPHA1) = a1;
-          const amrex::Real a2 = amrex::Real(1.0) - a1;
 
           amrex::Real m1 = Sa(i,j,k, UM1RHO1);
           if (!std::isfinite(m1)) {

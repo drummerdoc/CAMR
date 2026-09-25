@@ -91,10 +91,6 @@ CAMR_initdata( int i, int j, int k,
                ProbParmDevice const& prob_parm)
 {
     // Uniform low-pressure ambient CO2 fills the domain at t=0.
-    amrex::Real Y[NUM_SPECIES];
-    Y[0] = amrex::Real(1.0);
-    for (int n = 1; n < NUM_SPECIES; ++n) Y[n] = amrex::Real(0.0);
-
 #ifdef USE_PS_HYDRO
     // Phase identity matters for the flash source (phase 1 = liquid branch,
     // phase 2 = vapor branch): a single-phase GAS ambient lives on the VAPOR
@@ -108,6 +104,9 @@ CAMR_initdata( int i, int j, int k,
                               prob_parm.amb_vapor != 0, prob_parm.alpha_trace);
     for (int n = 0; n < NVAR; ++n) state(i,j,k,n) = s[n];
 #else
+    amrex::Real Y[NUM_SPECIES];
+    Y[0] = amrex::Real(1.0);
+    for (int n = 1; n < NUM_SPECIES; ++n) Y[n] = amrex::Real(0.0);
     amrex::Real rho0, e0;
     EOS::PYT2RE(prob_parm.p0, Y, prob_parm.T0, rho0, e0);
 
@@ -368,9 +367,6 @@ bcnormal(
 #endif
             {
                 // ---- SINGLE-PHASE reservoir (original) with soft-start ramp.
-                amrex::Real Y[NUM_SPECIES];
-                Y[0] = amrex::Real(1.0);
-                for (int n = 1; n < NUM_SPECIES; ++n) Y[n] = amrex::Real(0.0);
                 amrex::Real P_res_t = prob_parm.p_res;
                 if (prob_parm.ramp_time > amrex::Real(0.0)) {
                     amrex::Real f = time / prob_parm.ramp_time;
@@ -382,6 +378,9 @@ bcnormal(
                                           amrex::Real(0.0), amrex::Real(0.0), amrex::Real(0.0),
                                           /*vapor_dominant=*/false, prob_parm.alpha_trace);
 #else
+                amrex::Real Y[NUM_SPECIES];
+                Y[0] = amrex::Real(1.0);
+                for (int n = 1; n < NUM_SPECIES; ++n) Y[n] = amrex::Real(0.0);
                 amrex::Real rho_r, e_r;
                 EOS::PYT2RE(P_res_t, Y, prob_parm.T_res, rho_r, e_r);
                 R[URHO]  = rho_r;
