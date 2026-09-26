@@ -23,6 +23,18 @@ extern "C" {
         pp.query("gap_yc",    CAMR::h_prob_parm->gap_yc);
         pp.query("gap_half",  CAMR::h_prob_parm->gap_half);
         pp.query("gap_taper", CAMR::h_prob_parm->gap_taper);
+        pp.query("gap_zc",    CAMR::h_prob_parm->gap_zc);
+        pp.query("jet_noise_amp",  CAMR::h_prob_parm->jet_noise_amp);
+        pp.query("jet_noise_tamp", CAMR::h_prob_parm->jet_noise_tamp);
+        pp.query("jet_noise_len",  CAMR::h_prob_parm->jet_noise_len);
+        pp.query("jet_noise_time", CAMR::h_prob_parm->jet_noise_time);
+        pp.query("jet_noise_seed", CAMR::h_prob_parm->jet_noise_seed);
+        if ((CAMR::h_prob_parm->jet_noise_amp > amrex::Real(0.0)
+             || CAMR::h_prob_parm->jet_noise_tamp > amrex::Real(0.0))
+            && (!(CAMR::h_prob_parm->jet_noise_len > amrex::Real(0.0))
+                || !(CAMR::h_prob_parm->jet_noise_time > amrex::Real(0.0)))) {
+            amrex::Abort("prob.jet_noise_len and prob.jet_noise_time must be > 0");
+        }
         pp.query("gap_bell",  CAMR::h_prob_parm->gap_bell);
         pp.query("ramp_time", CAMR::h_prob_parm->ramp_time);
         pp.query("res_alpha1", CAMR::h_prob_parm->res_alpha1);

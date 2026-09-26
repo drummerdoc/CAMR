@@ -117,6 +117,25 @@ struct ProbParmDevice
     // craters the corner pressure to vacuum (dt collapse).  0 = hard top-hat.
     amrex::Real gap_taper = 0.02; // m
 
+    // 3-D: the gap is a CIRCULAR jet.  The window, taper and bell are
+    // radial in the distance from (gap_yc, gap_zc), with gap_half the jet
+    // radius.  gap_zc is unused in 2-D, where the gap is the slot above.
+    amrex::Real gap_zc   = 0.5;   // m    jet centre (z), 3-D only
+
+    // Inlet fluctuations (the dome-consistent reservoir inlet,
+    // res_dome_taper=1): the inflow velocity is seeded with a random field so
+    // the jet shear layer is not left to round-off to break symmetry.  The
+    // field is deterministic lattice value noise in [-1, 1] (hashed from
+    // lattice indices, smooth across cells, linear in time), so a run is
+    // reproducible and independent of box layout and rank count.
+    //   un -> un (1 + jet_noise_amp f_x);  u_t = jet_noise_tamp un f_t
+    // per transverse direction.  Both 0 (default) = off, bit-identical.
+    amrex::Real jet_noise_amp  = 0.0;     // relative axial-velocity amplitude
+    amrex::Real jet_noise_tamp = 0.0;     // transverse amplitude, fraction of un
+    amrex::Real jet_noise_len  = 0.01;    // m  spatial correlation length
+    amrex::Real jet_noise_time = 1.0e-5;  // s  temporal correlation time
+    int         jet_noise_seed = 1;
+
     // Bell-mouth orifice lip (task #60 follow-on).  The jet issuing from a
     // sharp-edged orifice separates at the corner (vena contracta), leaving a
     // cold low-pressure recirculation cell just outside the lip.  A real

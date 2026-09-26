@@ -1,0 +1,156 @@
+# =====================================================================
+#  CO2_PipeBreak — 3-D circular saturated two-phase CO2 jet (demo3_3d)
+#
+#  inputs.satjet_demo3 extruded to 3-D: the same saturated 280 K
+#  reservoir, 20 bar ambient, scheme, relaxation and tagging, with
+#   (1) a CIRCULAR jet on the x-lo face: radius gap_half = 0.05 m about
+#       (y, z) = (gap_yc, gap_zc) = (0.5, 0.5); window, lip taper and bell
+#       are radial (prob.H);
+#   (2) z-lo / z-hi exactly as y-lo / y-hi: bcnormal "Inflow" type with
+#       per-face characteristic (NSCBC) outflow;
+#   (3) the inflow seeded with random fluctuations (prob.jet_noise_*):
+#       5 % axial and 5 % transverse velocity, correlation length 1 cm
+#       (a fifth of the radius) and time 10 us, deterministic in (y,z,t);
+#   (4) a 2 x 1 x 1 m box at 128 x 64 x 64 base (dx = 1/64, half demo3's
+#       resolution), 3 levels.  GPU scaling runs override amr.n_cell, e.g.
+#       64 32 32 / 128 64 64 / 256 128 128, and max_step.
+#  Output prefixes plt_sj3d_ / chk_sj3d_.
+# =====================================================================
+amrex.fpe_trap_invalid = 0
+max_step  = 20000
+stop_time = 2.5e-3
+
+geometry.is_periodic = 0 0 0
+geometry.coord_sys   = 0
+geometry.prob_lo     = 0.0  0.0  0.0
+geometry.prob_hi     = 2.0  1.0  1.0
+amr.n_cell           = 128  64  64         # base; 3 levels -> 512x256x256 finest
+
+CAMR.lo_bc = Inflow Inflow Inflow
+CAMR.hi_bc = Inflow Inflow Inflow
+
+CAMR.cfl = 0.3
+CAMR.fixed_dt = 0
+CAMR.allow_negative_energy = 1
+CAMR.do_mol = 0
+CAMR.ppm_type = 1
+
+CAMR.ps_hydro    = 1
+CAMR.ps_flux     = wp
+CAMR.ps_wp_order = 2
+CAMR.ps_bc_use_nscbc = 0    # global switch off: the x-lo reservoir inlet stays on bcnormal
+CAMR.ps_bc_nscbc_xhi = 1    # per-face NSCBC outflow: downstream far field
+CAMR.ps_bc_nscbc_ylo = 1    # per-face NSCBC outflow: lower edge of the full plane
+CAMR.ps_bc_nscbc_yhi = 1    # per-face NSCBC outflow: upper edge of the full plane
+CAMR.ps_bc_nscbc_zlo = 1    # z-lo as y-lo
+CAMR.ps_bc_nscbc_zhi = 1    # z-hi as y-hi
+CAMR.ps_lw_skip_contact = 2 # the default, pinned: the deck cannot silently run mode 0 on a stale executable
+CAMR.ps_wp_transverse = 0   # directionally split (no transverse term); the shear
+                            # layer is resolved by ps_mu instead.  1 = contact-only
+                            # transverse term.
+CAMR.ps_bl_reflux     = 2   # consistent two-phase C-F reflux (alpha co-moves); required for two-phase AMR
+CAMR.ps_mu            = 2.0 # effective Newtonian viscosity [Pa s]: resolves the orifice shear layer
+
+CAMR.ps_do_relax  = 1
+CAMR.ps_relax_mode = 2        # pressure relaxation plus finite-rate thermal relaxation:
+                              # the phases keep T_liq != T_vap instead of being pinned on
+                              # the saturation dome, so the finite-rate mass transfer keeps
+                              # a Gibbs driving force.  theta -> 0 is mode 1 (instantaneous
+                              # P + T equilibrium); theta -> inf is mode 0.
+CAMR.ps_theta_tau = 1.0e-3    # thermal relaxation time [s] (mode 2 only)
+CAMR.ps_mt_tau    = 1.0e-3    # finite mass-transfer time [s]: flashing is spread over
+                              # ~tau/dt steps and is continuous in flash_rate; tau << dt
+                              # makes it near-instantaneous and bursty.
+CAMR.ps_mt_gref   = 5.0e4
+CAMR.ps_flash_tau = 0.0       # flash OFF (saturated reservoir; no nucleation)
+CAMR.ps_pres_floor = 1.0e5
+CAMR.ps_temp_floor = 216.6
+
+# --- GERG / GERGTab builds: CAMR.gerg_ext_c (default 1) keeps the sound
+# speed continuous past the guard's branch edge (0 = the legacy 50 m/s
+# floor, a 3.5-7x discontinuity that drives a 2-dx pressure oscillation in
+# the lip shear layer).  Leave it at the default; see
+# Source/EOS/GERG/gerg_co2_guard.H and docs/RUNNING.md.  Not read by a PR
+# build.
+
+CAMR.v = 1
+amr.v = 1
+CAMR.sum_interval = -1
+CAMR.redistribution_type = StateRedist
+amr.loadbalance_with_workestimates = 0
+
+amr.max_level       = 2
+amr.ref_ratio       = 2 2 2 2
+amr.regrid_int      = 2 2 2 2
+amr.blocking_factor = 16
+amr.max_grid_size   = 64
+amr.grid_eff        = 0.9
+
+amr.refinement_indicators = ldtag atag pgtag
+
+amr.ldtag.field_name = logden 
+amr.ldtag.adjacent_difference_greater = 0.15
+amr.ldtag.max_level = 2
+
+amr.atag.field_name = ps_alpha1
+amr.atag.adjacent_difference_greater = 0.01    # 10x tighter than demo2 (0.1)
+amr.atag.max_level = 2
+
+amr.pgtag.field_name = pressure
+amr.pgtag.adjacent_difference_greater = 3.0e5
+amr.pgtag.max_level = 2
+
+amr.n_error_buf = 4 4 4 4 
+
+DistributionMapping.strategy = KNAPSACK
+amr.checkpoint_files_output = 1
+amr.check_file              = chk_sj3d_
+amr.check_int               = 50
+amr.plot_files_output = 1
+amr.plot_file         = plt_sj3d_
+amr.plot_int          = 10
+amr.derive_plot_vars  = x_velocity y_velocity z_velocity pressure flash_rate
+
+# --- Problem state: saturated two-phase reservoir -> vapour ambient ----
+# Ambient 20 bar: at 10 bar the under-expanded jet's troughs fall below
+# ~5 bar (Psat at the CO2 triple point) and the plume cools onto the 216.6 K
+# floor, where the coexistence-T gate disables mass transfer.  20 bar keeps
+# the expansion endpoint above the triple point so flashing stays visible
+# and the solid regime the liquid-vapour PR EOS cannot model is avoided.
+# With a saturated reservoir (res_alpha1 > 0) the inlet pressure is
+# Psat(T_res) ~ 41.6 bar; p_res is read only by the single-phase reservoir path.
+prob.p0       = 2.0e6
+prob.T0       = 280.0
+prob.u0       = 0.0
+prob.p_amb    = 2.0e6
+prob.p_res    = 4.0e6
+prob.T_res    = 280.0
+prob.res_alpha1 = 0.05        # vapour-rich saturated two-phase reservoir (on the dome)
+prob.res_dome_taper = 1       # dome-consistent lip taper
+prob.res_u      = 0.0
+prob.res_char_inflow = 1      # subsonic characteristic (non-reflecting) inlet:
+                              # P=Psat + composition fixed, u from the outgoing
+                              # (u-c) invariant.  res_u is ignored.
+prob.res_mach_max = 1.0       # choked-inlet cap on that invariant velocity, in
+                              # units of the reservoir mixture (Wood) sound
+                              # speed printed by probinit (~185 m/s here).  The
+                              # invariant relation holds only at M < 1, and with
+                              # the boundary pressure pinned at Psat the
+                              # correction (Psat - P_int) is one-signed, so an
+                              # uncapped inlet ratchets supersonic.  0 = no cap;
+                              # ~0.83 caps at the equilibrium sound speed
+                              # (154 vs 185 m/s frozen).
+prob.amb_vapor  = 1
+prob.sym_ylo    = 0           # full plane (no centreline symmetry wall)
+prob.gap_yc   = 0.5
+prob.gap_zc   = 0.5           # jet axis (y, z) = (0.5, 0.5); gap_half is the radius
+prob.gap_half = 0.05
+prob.gap_taper = 0.02
+prob.ramp_time = 3.0e-4
+
+# Inflow fluctuations (prob.H jet_noise): seeds the 3-D shear layer.
+prob.jet_noise_amp  = 0.05     # axial velocity, relative
+prob.jet_noise_tamp = 0.05     # transverse velocity, fraction of the inflow speed
+prob.jet_noise_len  = 0.01     # m: correlation length (radius / 5)
+prob.jet_noise_time = 1.0e-5   # s: correlation time
+prob.jet_noise_seed = 1

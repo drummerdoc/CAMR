@@ -7,11 +7,13 @@
 //  Planar "guillotine" rupture WITHOUT embedded boundary.  The domain
 //  is the low-pressure AMBIENT region; the x-lo face is the rupture
 //  plane:
-//    * over the break gap  |y - gap_yc| <= gap_half  it is a dense-CO2
-//      RESERVOIR pressure-inlet (stagnation state p_res, T_res);
+//    * over the break gap  |y - gap_yc| <= gap_half  (2-D slot) or
+//      |(y,z) - (gap_yc,gap_zc)| <= gap_half  (3-D circular jet) it is a
+//      dense-CO2 RESERVOIR pressure-inlet (stagnation state p_res, T_res),
+//      optionally seeded with inflow fluctuations (prob.jet_noise_*);
 //    * elsewhere it is a reflecting SLIP WALL (intact pipe / plate).
-//  The other three faces are the linear-acoustic non-reflecting outflow
-//  inherited from CO2_TBlowdown.  The high reservoir/ambient pressure
+//  The other faces are the linear-acoustic non-reflecting outflow
+//  inherited from CO2_TBlowdown (z-lo/z-hi as y-lo/y-hi in 3-D).  The high reservoir/ambient pressure
 //  ratio vents a flashing under-expanded CO2 jet into the domain.
 //
 //  Runs on the legacy bcnormal BC path (CAMR.ps_bc_use_nscbc=0, the
@@ -25,6 +27,74 @@
 #include "prob_parm.H"
 #include "CAMR_params.H"
 #include "EOS.H"
+
+#include <cmath>
+#include <cstdint>
+
+// Inlet fluctuation field (prob.jet_noise_*): lattice value noise in
+// [-1, 1] over the inlet plane (y, z) and time.  Lattice spacing
+// jet_noise_len in space and jet_noise_time in time; the value at a
+// lattice point is a hash of its integer indices, the component and the
+// seed, and the field between lattice points is the smoothstep-weighted
+// (space) / linear (time) interpolation, so it is continuous, identical
+// on every box layout and rank count, and device-callable.  2-D uses the
+// z = 0 lattice row.
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+amrex::Real
+jet_lattice_value(int iy, int iz, int it, int comp, int seed) noexcept
+{
+    std::uint32_t h = static_cast<std::uint32_t>(seed) * 0x9E3779B1u
+                    + static_cast<std::uint32_t>(iy)   * 0x85EBCA77u
+                    + static_cast<std::uint32_t>(iz)   * 0xC2B2AE3Du
+                    + static_cast<std::uint32_t>(it)   * 0x27D4EB2Fu
+                    + static_cast<std::uint32_t>(comp) * 0x165667B1u;
+    h ^= h >> 16; h *= 0x85EBCA6Bu;          // murmur3 finaliser
+    h ^= h >> 13; h *= 0xC2B2AE35u;
+    h ^= h >> 16;
+    return amrex::Real(2.0) * (amrex::Real(h) / amrex::Real(4294967295.0))
+         - amrex::Real(1.0);
+}
+
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+amrex::Real
+jet_noise(amrex::Real y, amrex::Real z, amrex::Real time, int comp,
+          ProbParmDevice const& pp) noexcept
+{
+    const amrex::Real sy = (y - pp.gap_yc) / pp.jet_noise_len;
+    const amrex::Real st = time / pp.jet_noise_time;
+    const amrex::Real fy = std::floor(sy), ft = std::floor(st);
+    const int iy = static_cast<int>(fy), it = static_cast<int>(ft);
+    amrex::Real wy = sy - fy;
+    wy = wy * wy * (amrex::Real(3.0) - amrex::Real(2.0) * wy);
+    const amrex::Real wt = st - ft;
+#if (AMREX_SPACEDIM == 3)
+    const amrex::Real sz = (z - pp.gap_zc) / pp.jet_noise_len;
+    const amrex::Real fz = std::floor(sz);
+    const int iz = static_cast<int>(fz);
+    amrex::Real wz = sz - fz;
+    wz = wz * wz * (amrex::Real(3.0) - amrex::Real(2.0) * wz);
+    const int nz = 2;
+#else
+    amrex::ignore_unused(z);
+    const int iz = 0;
+    const amrex::Real wz = amrex::Real(0.0);
+    const int nz = 1;
+#endif
+    amrex::Real v = amrex::Real(0.0);
+    for (int dt = 0; dt < 2; ++dt) {
+        const amrex::Real ct = dt ? wt : amrex::Real(1.0) - wt;
+        for (int dz = 0; dz < nz; ++dz) {
+            const amrex::Real cz = dz ? wz : amrex::Real(1.0) - wz;
+            for (int dy = 0; dy < 2; ++dy) {
+                const amrex::Real cy = dy ? wy : amrex::Real(1.0) - wy;
+                v += ct * cz * cy
+                   * jet_lattice_value(iy + dy, iz + dz, it + dt, comp,
+                                       pp.jet_noise_seed);
+            }
+        }
+    }
+    return v;
+}
 
 // Fill a CONTIGUOUS NVAR vector with a single-phase state at (P, T) with
 // velocity u: the dominant phase (liquid, phase 1, unless vapor_dominant)
@@ -145,10 +215,18 @@ bcnormal(
     //  x-lo rupture plane (idir==0, sgn==+1): reservoir gap vs slip wall.
     // -----------------------------------------------------------------
     if (idir == 0 && sgn == 1) {
-        // Reservoir window swin(y): 1 in the gap core, smoothstep to 0 over
+        // Reservoir window swin: 1 in the gap core, smoothstep to 0 over
         // gap_taper OUTSIDE the gap edge (task #49 — soft orifice lip).
+        // dgap is the distance from the gap centre line (2-D slot) or the
+        // jet axis (3-D circular jet, radius gap_half).
 #if (AMREX_SPACEDIM >= 2)
+#if (AMREX_SPACEDIM == 3)
+        const amrex::Real dgy = x[1] - prob_parm.gap_yc;
+        const amrex::Real dgz = x[2] - prob_parm.gap_zc;
+        const amrex::Real dgap = std::sqrt(dgy * dgy + dgz * dgz);
+#else
         const amrex::Real dgap = std::abs(x[1] - prob_parm.gap_yc);
+#endif
         amrex::Real swin;
         const amrex::Real tp = prob_parm.gap_taper;
         if (dgap <= prob_parm.gap_half) {
@@ -316,13 +394,38 @@ bcnormal(
                 } else {
                     un = swin * prob_parm.res_u; // fixed inflow, taper->0
                 }
-                const amrex::Real ke  = amrex::Real(0.5) * rho_mix * un * un;
+                // Inflow fluctuations (prob.jet_noise_*): axial relative to
+                // the (tapered, capped) un, transverse as a fraction of it.
+                // Applied after the Mach cap so they stay two-signed on a
+                // choked inlet (peaks reach M = res_mach_max (1 + amp)).
+                amrex::Real ut1 = amrex::Real(0.0), ut2 = amrex::Real(0.0);
+                if (prob_parm.jet_noise_amp > amrex::Real(0.0)
+                    || prob_parm.jet_noise_tamp > amrex::Real(0.0)) {
+#if (AMREX_SPACEDIM == 3)
+                    const amrex::Real zc = x[2];
+#else
+                    const amrex::Real zc = amrex::Real(0.0);
+#endif
+                    const amrex::Real un0 = un;
+                    un = un0 * (amrex::Real(1.0) + prob_parm.jet_noise_amp
+                                * jet_noise(x[1], zc, time, 0, prob_parm));
+                    if (un < amrex::Real(0.0)) un = amrex::Real(0.0);
+                    ut1 = un0 * prob_parm.jet_noise_tamp
+                        * jet_noise(x[1], zc, time, 1, prob_parm);
+#if (AMREX_SPACEDIM == 3)
+                    ut2 = un0 * prob_parm.jet_noise_tamp
+                        * jet_noise(x[1], zc, time, 2, prob_parm);
+#endif
+                }
+                const amrex::Real ut2sq = ut1 * ut1 + ut2 * ut2;
+                const amrex::Real ke  = amrex::Real(0.5) * rho_mix * un * un
+                                      + amrex::Real(0.5) * rho_mix * ut2sq;
                 for (int n = 0; n < NVAR; ++n) s_ext[n] = amrex::Real(0.0);
                 s_ext[URHO]    = rho_mix;
                 s_ext[UMX]     = rho_mix * un;
-                s_ext[UMY]     = amrex::Real(0.0);
+                s_ext[UMY]     = rho_mix * ut1;
 #if (AMREX_SPACEDIM == 3)
-                s_ext[UMZ]     = amrex::Real(0.0);
+                s_ext[UMZ]     = rho_mix * ut2;
 #endif
                 s_ext[UEINT]   = rhoe;
                 s_ext[UEDEN]   = rhoe + ke;
@@ -338,7 +441,8 @@ bcnormal(
                 // -> a permanent one-cell state discontinuity at the inlet
                 // face (i=0 pressure offset), growing with un^2 and
                 // EOS-amplified (found with GERG; present for PR too).
-                const amrex::Real ke_sp = amrex::Real(0.5) * un * un;
+                const amrex::Real ke_sp = amrex::Real(0.5) * un * un
+                                        + amrex::Real(0.5) * ut2sq;
                 s_ext[UE1    ] = m1 * (prob_parm.res_eL + ke_sp);
                 s_ext[UE2    ] = m2 * (prob_parm.res_eV + ke_sp);
                 return;   // dome-consistent ghost is complete; skip R/W blend
