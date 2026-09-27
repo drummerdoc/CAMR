@@ -13,6 +13,8 @@
 
 #ifdef USE_PS_HYDRO
 
+#include <AMReX_Scan.H>
+#include <AMReX_GpuContainers.H>
 #include "IndexDefines.H"
 #include "EOS.H"
 #include "hem_pelanti_shyue.H"
@@ -437,12 +439,63 @@ ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
     xp.srt_delta      = hem::ps_dial_mt_srt_delta();
     xp.coexist_action = ps_coexist_action();
 
+    //  Compaction.  Only the cells that pass the relaxation entry gate (a
+    //  few percent: the genuinely two-phase ones) do real work, and each
+    //  does ~10^2 EOS inversions, so a launch over the whole box leaves most
+    //  GPU lanes idle behind one relaxing cell per warp.  Per box: the
+    //  corridor projection over every cell, the entry gate over every cell
+    //  into a flag, an order-preserving prefix sum of the flags into a list
+    //  of cell indices, and the relaxation kernel over that list only.
+    //  Every cell computes exactly what it did in the fused loop (the cells
+    //  are independent and the projection still precedes the relaxation),
+    //  so the result is bit-identical; a gate refusal is counted once, in
+    //  the flag pass (a flagged cell re-passes the same gate in its kernel).
+    //  Each box owns a slice of one flag/index buffer: boxes run on
+    //  different GPU streams.  The relaxing-cell count stays on the device
+    //  (the scan writes it; the relaxation launch covers the box and threads
+    //  past the count exit at once), so no box waits on a host sync and the
+    //  boxes keep overlapping across streams.
+    amrex::Vector<amrex::Long> box_off(S_new.local_size() + 1, 0);
+    for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
+        box_off[mfi.LocalIndex() + 1] = mfi.growntilebox(nghost).numPts();
+    }
+    for (int n = 0; n < S_new.local_size(); ++n) box_off[n + 1] += box_off[n];
+    amrex::Gpu::DeviceVector<int> relax_flag(box_off.back());
+    amrex::Gpu::DeviceVector<int> relax_list(box_off.back());
+    amrex::Gpu::DeviceVector<int> relax_count(S_new.local_size());
+
     for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
         const amrex::Box bx = mfi.growntilebox(nghost);
         amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
+        const auto lo  = amrex::lbound(bx);
+        const auto len = amrex::length(bx);
+        const int ncell = static_cast<int>(bx.numPts());
+        int* AMREX_RESTRICT flag = relax_flag.data() + box_off[mfi.LocalIndex()];
+        int* AMREX_RESTRICT list = relax_list.data() + box_off[mfi.LocalIndex()];
+        int* AMREX_RESTRICT count = relax_count.data() + mfi.LocalIndex();
+
         amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
         {
             ps_corridor_project(i, j, k, U, l_pres);
+            amrex::Real a1, m1, m2;
+            const int n = (i - lo.x) + len.x * ((j - lo.y) + len.y * (k - lo.z));
+            flag[n] = ps_relax_entry_gate(i, j, k, U, l_pres, a1, m1, m2) ? 1 : 0;
+        });
+        amrex::Scan::PrefixSum<int>(ncell,
+            [=] AMREX_GPU_DEVICE (int n) -> int { return flag[n]; },
+            [=] AMREX_GPU_DEVICE (int n, int const& pos) {
+                if (flag[n]) { list[pos] = n; }
+                if (n == ncell - 1) { *count = pos + flag[n]; }
+            },
+            amrex::Scan::Type::exclusive, amrex::Scan::noRetSum);
+
+        amrex::ParallelFor(ncell, [=] AMREX_GPU_DEVICE (int t) noexcept
+        {
+            if (t >= *count) { return; }
+            const int n = list[t];
+            const int i = lo.x + n % len.x;
+            const int j = lo.y + (n / len.x) % len.y;
+            const int k = lo.z + n / (len.x * len.y);
             if (relax_mode == 5) {
                 ps_x3_grid_relax_cell(i, j, k, U, eos, l_pres, xp, pres_diag, dt);
             } else if (relax_mode == 2) {
@@ -452,6 +505,7 @@ ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
             }
         });
     }
+    amrex::Gpu::streamSynchronize();   // the flag/list buffers are freed at scope exit
 
     // [PS-PRES] (ps_pres_diag): the post-thermal P1 != P2 residual by cause.
     if (ps_pres_diag() != 0) {
