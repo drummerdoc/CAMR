@@ -108,6 +108,17 @@ $$R = \frac{c_1}{c_2}.$$
 
 At mechanical equilibrium $R = \rho_2 c_2^2 / (\rho_1 c_1^2)$, the ratio of bulk moduli. The 0.25 bound is derived without any sound speed: at this state $\rho_1/\rho_2 = 10.6$, so even in the false limit $c_1 = c_2$ the bulk-modulus ratio is 10.6 and $R \le 0.094$; with a realistic liquid $c_1 \approx 416$ m/s, $R \approx 0.02$. The gate at 0.25 sits 2.7× above the already-conservative bound and 4× below $R = 1$, the value an equal-strain star state produces (both partial masses scaled by the one mixture contraction, imposing equal volumetric strain on a liquid and a vapour whose bulk moduli differ by ~45×). The margin is deliberate: a gate that fires on a legitimate case is worse than one that fires late. The measured value on the relaxed-α star state is 0.0097; a failure here is a regression of the star-state partition. The two reference-free invariants run first: $|P[0] - P[-1]| < 10^{-6} P_0$ (far field undisturbed) and $\max|P - P_{\mathrm{reversed}}| < 10^{-6} P[k]$ (mirror symmetry); the check also prints $\max|\alpha_1 - \alpha_1^0|$, which is zero when α is carried unchanged through the acoustic waves. Checks 2, 4 and 7b pin `ps_relax_mode` 4 or 2 and are re-baselined onto mode 5 if those modes are retired (§9); what each asserts survives the re-baseline.
 
+### 4.1 GERG builds: `verify_gerg.py`
+
+`verify_canonical.py`'s frozen numbers are PR outputs, so a GERG build is gated by `verify_gerg.py` instead (`CAMR_EXE=<1-D GERG build> python3 verify_gerg.py`; it refuses an executable whose name is not a GERG build). It runs the two cases with a GERG exact solution, B4 and B9, in the acceptance configuration of `exact_suite.py` (the code's defaults) and asserts that each completes to its stop time, that density, velocity and pressure are finite everywhere, and that the rel-L2 errors in (ρ, u, P) against `refs/exact/exact_{B4,B9}_gerg.csv` (HEM) are within 2e-3 (ρ, P) and 0.02 (u) of the values in `refs/verify_gerg_expect.json`, the tolerances of §4. `python3 verify_gerg.py record` rewrites that file from the build under test. `exact_suite.py` scores the same two cases with `EXACT_EOS=gerg`; its single-phase and frozen rows exist for PR only and print NOT SCORED there.
+
+| case | ρ | u | P | PR build against the PR solution (`exact_suite_BASE4.txt`) |
+|:--|:--|:--|:--|:--|
+| B4 | 0.0613 | 0.1159 | 0.0493 | 0.0648, 0.1262, 0.0493 |
+| B9 | 0.1005 | 0.7904 | 0.1896 | 0.0966, 0.7749, 0.1456 |
+
+Recorded 2026-09-28 at `cecbf4b` (llvm, `CAMR1d.llvm.TPROF.PS.GERG.ex`). The two EOS give errors of the same size against their own exact solutions; B9's large u error is the finite-rate model against the HEM limit, as for PR (§1). Two cases is a thin gate: it catches a broken GERG build, not a regression confined to single-phase states.
+
 ## 5. The acceptance table and the fingerprint
 
 ### 5.1 `exact_suite.py`
