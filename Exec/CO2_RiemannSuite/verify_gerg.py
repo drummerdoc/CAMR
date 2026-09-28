@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """verify_gerg.py -- the 1-D gate for GERG builds.
 
-    CAMR_EXE=<1-D GERG build> python3 verify_gerg.py          check
-    CAMR_EXE=<1-D GERG build> python3 verify_gerg.py record   write the expected values
+    CAMR_EXE=<1-D GERG or GERGTab build> python3 verify_gerg.py          check
+    CAMR_EXE=<1-D GERG build>            python3 verify_gerg.py record   write the expected values
 
 The GERG counterpart of verify_canonical.py, on the two cases with a GERG
 exact solution (refs/exact/exact_{B4,B9}_gerg.csv, HEM).  Each case is run in
@@ -12,6 +12,9 @@ the acceptance configuration of exact_suite.py (the code's defaults) and must
   2. have finite density, velocity and pressure everywhere;
   3. have rel-L2 errors in (rho, u, P) against the GERG exact solution within
      TOL of the values recorded in refs/verify_gerg_expect.json.
+
+A GERGTab build is checked against the same values: the table only seeds the
+GERG inversion, so it must reproduce GERG's results.  Recording is from GERG only.
 
 TOL follows verify_canonical.py: 0.02 on u (its HEM checks), 2e-3 on rho and P
 (its compiler-to-compiler allowance).  The expected values are outputs of this
@@ -67,8 +70,8 @@ def main():
     record = sys.argv[1:] == ['record']
     exe = os.path.basename(X.EXE)
     print('verify_gerg: %s' % X.EXE)
-    if '.GERG.' not in exe:
-        print('  [FAIL] executable is not a GERG build (%s)' % exe)
+    if not ('.GERG.' in exe or ('.GERGTab.' in exe and not record)):
+        print('  [FAIL] executable is not a GERG%s build (%s)' % ('' if record else ' or GERGTab', exe))
         sys.exit(1)
     if not record:
         if not os.path.exists(EXPECT_FILE):

@@ -117,7 +117,7 @@ At mechanical equilibrium $R = \rho_2 c_2^2 / (\rho_1 c_1^2)$, the ratio of bulk
 | B4 | 0.0613 | 0.1159 | 0.0493 | 0.0648, 0.1262, 0.0493 |
 | B9 | 0.1005 | 0.7904 | 0.1896 | 0.0966, 0.7749, 0.1456 |
 
-Recorded 2026-09-28 at `cecbf4b` (llvm, `CAMR1d.llvm.TPROF.PS.GERG.ex`). The two EOS give errors of the same size against their own exact solutions; B9's large u error is the finite-rate model against the HEM limit, as for PR (§1). Two cases is a thin gate: it catches a broken GERG build, not a regression confined to single-phase states.
+Recorded 2026-09-28 at `cecbf4b` (llvm, `CAMR1d.llvm.TPROF.PS.GERG.ex`). The two EOS give errors of the same size against their own exact solutions; B9's large u error is the finite-rate model against the HEM limit, as for PR (§1). Two cases is a thin gate: it catches a broken GERG build, not a regression confined to single-phase states. A GERGTab build is checked against the same values (the table only seeds the GERG inversion, so it must reproduce GERG); recording is from a GERG build only. A PRTab build is gated by `verify_canonical.py` like PR.
 
 ## 5. The acceptance table and the fingerprint
 
