@@ -119,6 +119,10 @@ At mechanical equilibrium $R = \rho_2 c_2^2 / (\rho_1 c_1^2)$, the ratio of bulk
 
 Recorded 2026-09-28 at `cecbf4b` (llvm, `CAMR1d.llvm.TPROF.PS.GERG.ex`). The two EOS give errors of the same size against their own exact solutions; B9's large u error is the finite-rate model against the HEM limit, as for PR (§1). Two cases is a thin gate: it catches a broken GERG build, not a regression confined to single-phase states. A GERGTab build is checked against the same values (the table only seeds the GERG inversion, so it must reproduce GERG); recording is from a GERG build only. A PRTab build is gated by `verify_canonical.py` like PR.
 
+### 4.2 Table backends against their error budget: `table_ab.py`
+
+A table backend is admitted by its parent's gate (§4, §4.1), whose tolerances are about a thousand times looser than a table error. `table_ab.py` (`CAMR_EXE=<1-D PRTab or GERGTab build> python3 table_ab.py [case ...]`) asks the sharper question: does the table change the predictions by more than a small fraction of the error they already carry? Every case is run twice in the same binary, `CAMR.eos_table=1` and `0`; per field $q \in \{\rho, u, P\}$ the table's effect $D = \mathrm{RMS}(q_{\mathrm{tab}} - q_{\mathrm{an}})$ must satisfy $D \le 0.1\,E$, with $E = \mathrm{RMS}(q_{\mathrm{an}} - q_{\mathrm{exact}})$ the analytic arm's error against the exact solution. Both are absolute RMS in field units, so no field is divided by its own value. A case whose analytic error is at round-off (E below $10^{-9}$ of the exact field's RMS, C1) has no budget and is printed unscored. PRTab is scored on every case with a PR reference, GERGTab on B4 and B9. It is a check, not a gate: a pass does not admit an executable to runs. For campaign results the same rule is applied by `camr-campaigns` (`cc tablecmp`), with the budget taken from a grid-refinement pair (the ECCSEL set at N = 640 and 1280) and $D$, $E$ the RMS sensor-pressure differences.
+
 ## 5. The acceptance table and the fingerprint
 
 ### 5.1 `exact_suite.py`
