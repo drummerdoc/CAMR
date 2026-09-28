@@ -8,8 +8,11 @@ computed exact solutions:
    A/C (single phase)  -> suite/profiles/<case>.csv   (frozen/exact Riemann)
    B   (two phase)     -> suite/exact_<short>_pr.csv  (HEM Riemann)
 
-Usage:  [EXE=...] [CO2_EXACT_REFS=...] python3 exact_suite.py [flux] [case ...]
-        flux defaults to 'wp'.
+Usage:  [EXE=...] [CO2_EXACT_REFS=...] [EXACT_EOS=pr|gerg] python3 exact_suite.py [flux] [case ...]
+        flux defaults to 'wp'.  EXACT_EOS (default pr) selects the EOS of the
+        two-phase references, exact_<short>_<eos>.csv; the single-phase
+        profiles and the frozen bracket exist for PR only, so under another
+        EOS those rows print NOT SCORED.
 """
 import os, sys, csv, subprocess
 import numpy as np
@@ -19,6 +22,7 @@ import ps_plotfile as R           # plotfile reader (was run_ac_suite)
 
 EXE  = os.environ.get('EXE', F.CAMR)
 REFS = F.REFS                 # vendored exact references (refs/exact)
+EOS  = os.environ.get('EXACT_EOS', 'pr')
 N     = int(os.environ.get('NCELL', '64'))
 
 SINGLE = ('A1-Sod-strong','A2-Sod-weak','A3-Lax-like','A4-Double-rare',
@@ -49,16 +53,18 @@ TWOPHASE = {'B1-Comp-L-expand':'B1',        'B2-Evap-wave':'B2',
 FROZEN_BRACKET = {'B2-Evap-wave':'B2', 'B9-Deep-Expansion':'B9'}
 
 def load_profile(name):
+    if EOS != 'pr': raise IOError('single-phase profiles exist for PR only')
     rows=[l for l in open('%s/profiles/%s.csv'%(REFS,name)) if not l.startswith('#') and l.strip()]
     h=[c.strip() for c in rows[0].split(',')]; d=list(csv.reader(rows[1:]))
     col={k:np.array([float(r[i]) for r in d]) for i,k in enumerate(h)}
     return dict(x=col['x[m]'], rho=col['rho[kg/m^3]'], u=col['u[m/s]'], P=col['P[bar]']*1e5)
 
 def load_hem(short):
-    d=np.loadtxt('%s/exact_%s_pr.csv'%(REFS,short))
+    d=np.loadtxt('%s/exact_%s_%s.csv'%(REFS,short,EOS))
     return dict(x=d[:,0], rho=d[:,1], u=d[:,2], P=d[:,3])
 
 def load_frozen(short):
+    if EOS != 'pr': raise IOError('frozen references exist for PR only')
     d=np.loadtxt('%s/exact_%s_pr_frozen.csv'%(REFS,short))
     return dict(x=d[:,0], rho=d[:,1], u=d[:,2], P=d[:,3])
 
@@ -211,4 +217,5 @@ def main():
                      fmt(ef['P']), fmtv(ef['rho']), fmtv(ef['u']),
                      fmtv(ef['P'])))
 
-main()
+if __name__ == '__main__':
+    main()
