@@ -14,7 +14,8 @@ at the end.  No friction, heat transfer or disk-opening model: compare levels
 and inter-sensor delays, not absolute times (Test 19's disk needs 3.3 ms).
 
 Env: EXE (default newest ../CO2_RiemannSuite/CAMR1d.*.ex), NCELL (640),
-LPIPE (4.0 m), TSTOP (6e-3 s), DTPLOT (2.5e-5 s), RERUN=0 to reuse a run,
+LPIPE (4.0 m), TSTOP (6e-3 s), DTPLOT (2.5e-5 s), RUNDIR (default runs/<TAG>),
+RERUN=0 to reuse a run,
 WALL (s; wall cap per invocation, checkpoints every 0.5 ms) and RESUME=1 to
 continue a capped run from its last checkpoint."""
 import os, sys, glob, time, subprocess, numpy as np
@@ -29,7 +30,7 @@ p0, T0 = TESTS[test]
 N = int(os.environ.get('NCELL', '640')); L = float(os.environ.get('LPIPE', '4.0'))
 tstop = float(os.environ.get('TSTOP', '6e-3')); dtp = float(os.environ.get('DTPLOT', '2.5e-5'))
 EXE = os.environ.get('EXE') or sorted(glob.glob(os.path.join(RS, 'CAMR1d.*.ex')), key=os.path.getmtime)[-1]
-d = os.path.join(HERE, 'runs', tag); os.makedirs(d, exist_ok=True)
+d = os.environ.get('RUNDIR') or os.path.join(HERE, 'runs', tag); os.makedirs(d, exist_ok=True)
 RESUME = os.environ.get('RESUME', '0') == '1'; WALL = float(os.environ.get('WALL', '0'))
 if os.environ.get('RERUN', '1') != '0':
     if not RESUME:
