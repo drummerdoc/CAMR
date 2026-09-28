@@ -43,6 +43,7 @@ CAMR.ps_bc_use_nscbc = 0    # global switch off: the x-lo reservoir inlet stays 
 CAMR.ps_bc_nscbc_xhi = 1    # per-face NSCBC outflow: downstream far field
 CAMR.ps_bc_nscbc_ylo = 1    # per-face NSCBC outflow: lower edge of the full plane
 CAMR.ps_bc_nscbc_yhi = 1    # per-face NSCBC outflow: upper edge of the full plane
+CAMR.ps_bc_nscbc_sigma = 0   # full Hedstrom far-field invariant: sigma > 0 is a partial reflection, not a restoring pull (DESIGN_DECISIONS B-4)
 CAMR.ps_lw_skip_contact = 2 # the default, pinned: the deck cannot silently run mode 0 on a stale executable
 CAMR.ps_wp_transverse = 0   # directionally split (no transverse term); the shear
                             # layer is resolved by ps_mu instead.  1 = contact-only
