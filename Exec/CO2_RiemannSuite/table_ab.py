@@ -17,8 +17,10 @@ against the exact solution
 and must satisfy D <= F E with F = 0.1: the table may add at most a tenth of the
 error the scheme already makes.  Both are absolute RMS in field units, so no
 field is normalised by its own value (u and e can be zero or negative).
-A case whose analytic error is at round-off (E below 1e-9 of the exact field's
-RMS, e.g. C1) has no budget to spend: it is printed, not scored.
+A field whose analytic error is at round-off (E below 1e-9 of the exact field's
+RMS; for a fluid at rest, of sqrt(P/rho)) has no budget to spend: the scheme
+preserves that solution exactly (C1, B3), so the row is printed, not scored,
+and its D is the table's departure from exact preservation.
 References: PR exact solutions for PRTab (A/C profiles and B HEM), GERG for
 GERGTab (B4, B9 only).  Exits 1 on any FAIL.
 """
@@ -86,6 +88,8 @@ def main():
             D = float(np.sqrt(np.mean((t[k] - a[k])**2)))
             E = float(np.sqrt(np.mean((np.interp(ex['x'], a['x'], a[k]) - ex[k])**2)))
             scale = float(np.sqrt(np.mean(ex[k]**2)))
+            if k == 'u' and scale == 0.0:            # fluid at rest (B3, C1): the case's own velocity scale
+                scale = float(np.sqrt(np.mean(ex['P'] / ex['rho'])))
             if E <= ROUNDOFF * max(scale, 1e-300):
                 print('%-22s %5s %11.3e %11.3e %9s  not scored (analytic error at round-off)' % (case, k, D, E, '-'))
                 continue
