@@ -415,7 +415,19 @@ O-27  KNOWN LIMITATION (accepted 2026-10-14): the second-order correction can pu
   - It is at the vent column for steps 1–3, then rides the rarefaction head inward at ~250 m/s (i = 252 → 201).
   - About 15–18 % of sweeps are affected; the AMR deck shows 146 flagged lines.
   - Size: α₁ = 1 + 1.4e-5 over a 1e-6 trace vapour.
-  - The floor stage repairs it before any operator reads the state, and the step-300 sweep the reference records is clean. It has been present since e888488 (bisected).
+  - The repair is the vanish fold, not a floor. α₂ < 0 classifies the vapour as Absent, and at the next `B post floor/fold/clean` stage `ps_apply_vanish_fold` moves its m₂ and E₂ into the liquid and sets α₁ = 1. Measured with `ps_diag_mass=1` on `inputs-sym-x-lo`: every flagged step (14 of 14 in 120 steps) shows `[PS-FOLD] vanish n=32`, moving 0.025–0.23 kg/m³ per step. It is conservative, and no flux sees the bad state. The step-300 sweep the reference records is clean. It has been present since e888488 (bisected).
+- **Why the corridor (§2.4, MODEL §4.2) does not make it a non-issue.**
+  - The corridor denies a trace phase thermodynamic authority, but it is transport-only: α_k, m_k and E_k still go through the same hydro update, and the overshoot happens there, before any presence logic runs.
+  - The corridor admits traces down to α_vanish = 1e-8, far below the correction's α increment (~1e-5), so corridor traces are exactly the cells that can be overdrawn.
+    - Absent phases are safe: at α₁ ∈ {0, 1} the relaxed solve is skipped and the waves carry no α component.
+    - Independent phases are safe: α ≥ α_cond leaves far more room.
+  - The repair is the numerically forced phase conversion the corridor exists to avoid: a numerical overshoot, not physics, triggers the fold, and the trace's mass identity is lost in every cell the front passes.
+  - α₂ < 0 is in no presence regime; the fold repairs an inadmissible state downstream.
+- **Why it is accepted.**
+  - It is conservative and folded before any flux reads it.
+  - A lost trace does not block vapour birth, which goes through the flash nucleator.
+  - T-Blowdown's 1e-6 trace is an initialisation seed in a rarefaction that stays single-phase.
+  - It would matter where the small phase is physical and thins below ~1e-5, e.g. the 3-D jet's dilute droplets at plume edges, which the fold would erase at fronts.
 - **Cause.** It is not a time-step (CFL) violation: at CFL 0.25 / 0.125 / 0.0625 the same physical span is flagged (46/300, 103/602, 218/1205 sweeps), and first order (`ps_wp_order=1`) gives zero.
   - The LeVeque correction scales each wave by one φ from a weighted product dominated by pressure and momentum.
   - The relaxed star state (MODEL §2.3) gives the acoustic waves an α component.
