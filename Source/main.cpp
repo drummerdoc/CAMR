@@ -12,6 +12,7 @@
 #include "CAMR.H"
 #ifdef USE_PS_HYDRO
 #include "PS_zerod_test.H"
+#include "PS_nscbc_probe.H"
 #endif
 
 std::string inputs_name;
@@ -134,6 +135,13 @@ main(int argc, char* argv[])
     pp_ps.query("ps_relax_sweep", ps_relax_sweep);
     int ps_x3_test = 0;                    // X3 fixed-point acceptance harness
     pp_ps.query("ps_x3_test", ps_x3_test);
+    std::string ps_nscbc_probe_plt;        // x-hi NSCBC ghost probe on a plotfile
+    pp_ps.query("ps_nscbc_probe", ps_nscbc_probe_plt);
+    if (!ps_nscbc_probe_plt.empty()) {
+      amrex::Real p_amb = 5.0e5;
+      amrex::ParmParse("prob").query("p_amb", p_amb);
+      ps_zerod_exit = ps_nscbc_probe(ps_nscbc_probe_plt, p_amb);
+    } else
     if (ps_ptg_selftest || ps_relax_sweep || ps_x3_test) {
       // CI gate: nonzero exit on any failure so ctest/CI can fail the
       // build.  Only IOProcessor runs the serial, deterministic checks.

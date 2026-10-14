@@ -15,7 +15,7 @@ Legs
         ps_bc_nscbc_v2 key aborts); its 2.1022 (-7.6%) pin stays in the
         table for provenance and is not run.
   v2s   tube with the shipped NSCBC outflow (choked-fan ghost, HEM along
-        the fan): vents 2.2474.  The frozen-fan construction (1.4936) is
+        the fan): vents 2.4081 (2.2474 before B-5).  The frozen-fan construction (1.4936) is
         retired; a set ps_bc_nscbc_flash key aborts.
   v2e   HISTORICAL: NSCBC with a deleted linearisation bound raised to
         0.5 via a probe-only exe (FLASH_V2E_EXE); pin 1.4838, normally
@@ -41,7 +41,7 @@ OUT  = os.environ.get('FLASH_OUT', './flash_red_runs')
 os.makedirs(OUT, exist_ok=True)
 
 T_SCORE = 8.0e-5           # scoring time (the reference dies just past it)
-RED = {'ref': 2.3428, 'leg': 2.1022, 'v2e': 1.4838, 'v2s': 2.2474}
+RED = {'ref': 2.3428, 'leg': 2.1022, 'v2e': 1.4838, 'v2s': 2.4081}   # v2s re-pinned at B-5 (was 2.2474)
 
 COMMON = ['inputs', 'CAMR.cfl=0.25', 'prob.alpha_trace=1.0e-6',
           'prob.u_L=0', 'prob.u_R=0', 'stop_time=2.5e-4',

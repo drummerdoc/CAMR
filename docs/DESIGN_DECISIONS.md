@@ -124,7 +124,39 @@ B-2  Per-face NSCBC selection. LANDED. Decision: `ps_bc_nscbc_{x,y,z}{lo,hi}` (s
 
 B-3  Boundary ghost copy is a `CAMR.` key. LANDED. Decision: `ps_bc_copy_interior` (default 1 for PS builds) replaced the last environment-variable knob. Argument: an exported variable silently changed every battery row's boundary fill with nothing in `job_info`; the rule is one `CAMR.` accessor per dial, resolved value recorded. Lives in: `Exec/CO2_RiemannSuite/prob.H` and the other PS `prob.H` files.
 
-B-4  The NSCBC σ term is a partial reflection, not a restoring term; production runs σ = 0. MEASURED, deck change made, code retirement OPEN ([DECIDE-27]). Finding: the ghost in `PS_nscbc.H` is $P_g = \tfrac12[\rho c\, u_N + (1+\sigma)P_N + (1-\sigma)P_\infty]$, so σ = 0 is the full Hedstrom far-field invariant and σ > 0 holds back a fraction σ of the outflow; the steady face obeys $u = (1-\sigma)(P - P_\infty)/\rho c$, measured on the demo3 xhi column as a ratio of 0.76 at σ = 0.25 and 1.01 at σ = 0 at every probe time. The pressure above $P_\infty$ before the jet arrives is therefore the piston precursor of the jet (physics), not boundary drift. What no boundary setting changes: the core reaches the face overexpanded (12.7 bar, M 1.55, in gas at 20–28 bar) and recompresses at the outlet plane with 60–70 % of the face in reversed flow — the Mach-disk structure placed at the domain edge because the domain ends first. The supersonic-branch hypothesis was refuted ($u_n/c_N < 0.9$ on the face in every variant); `bcnormal` on xhi aborts at arrival. Decisions still to take: retire `ps_bc_nscbc_sigma` and its code (a deletion, the measured optimum is the term's absence); extend the domain in x so the shock-cell structure sits inside, or accept the outlet plane as the recompression location. Lives in: `PS_nscbc.H`; evidence `PLAN_cleanup_for_sharing.md` §3.12 (`nscbc_xhi_test.sh`, variants A–F).
+B-4  The NSCBC σ term is a partial reflection, not a restoring term; production runs σ = 0. MEASURED, deck change made, code retirement OPEN ([DECIDE-27]). Finding: the ghost in `PS_nscbc.H` is $P_g = \tfrac12[\rho c\, u_N + (1+\sigma)P_N + (1-\sigma)P_\infty]$, so σ = 0 is the full Hedstrom far-field invariant and σ > 0 holds back a fraction σ of the outflow; the steady face obeys $u = (1-\sigma)(P - P_\infty)/\rho c$, measured on the demo3 xhi column as a ratio of 0.76 at σ = 0.25 and 1.01 at σ = 0 at every probe time. The pressure above $P_\infty$ before the jet arrives is therefore the piston precursor of the jet (physics), not boundary drift. What no boundary setting changes: the core reaches the face overexpanded (12.7 bar, M 1.55, in gas at 20–28 bar) and recompresses at the outlet plane with 60–70 % of the face in reversed flow — the Mach-disk structure placed at the domain edge because the domain ends first. The supersonic-branch hypothesis was refuted ($u_n/c_N < 0.9$ on the face in every variant); `bcnormal` on xhi aborts at arrival. Decisions still to take: retire `ps_bc_nscbc_sigma` and its code (a deletion, the measured optimum is the term's absence); extend the domain in x so the shock-cell structure sits inside, or accept the outlet plane as the recompression location. Lives in: `PS_nscbc.H`; evidence `PLAN_cleanup_for_sharing.md` §3.12 (`nscbc_xhi_test.sh`, variants A–F). The 60–70 % reversed flow was partly B-5's defect: with B-5 in, the 2-D level-0 face reads 47–56 %.
+
+B-5  NSCBC: the invariants take the frozen mixture pressure; the cell's equilibrium pressure decides the fan and starts it. LANDED (2026-10-14).
+
+Decision: `PS_nscbc.H` uses two pressures, each in one role.
+- The acoustic invariants and the small-signal pack use $P_N = \alpha_1P_1+\alpha_2P_2$ (`ps_cell_state`, the flux's and the plotfile's pressure).
+- The single-fluid equilibrium inversion $P_{\mathrm{eq}} = $ `EOS::REY2P`$(\rho, e)$ has two roles:
+  - It triggers the choked fan when the flash potential $P_{\mathrm{eq}} - P_N$ exceeds the one-substep cap $\eta\rho_kc_k^2$. The existing $|P_g - P_N|$ trigger is kept.
+  - It is the fan's starting state, an isochoric equilibration before the expansion.
+
+Argument: $P_{\mathrm{eq}}$ used to be the invariants' pressure. It is the pressure after the cell equilibrates, not the one it has.
+- **Vapour carrying superheated droplets**: on the 3-D demo3 jet's faces, $\alpha_1 \approx 2$–$4\times10^{-3}$, $P_{\mathrm{eq}}$ reads 1.2 bar below $P_N$, i.e. at $P_\infty$.
+  - The ghost then held the face closed: on the 4 m domain at 55 ms, 37 % of the x-hi face was in return flow, mean $u = 1.3$ m/s, and $P - P_\infty = 1.16$ bar.
+  - The side faces drifted 0.15 bar high; in 2-D they pumped mass in, −5450 kg/s/m by 25 ms.
+- **Superheated liquid at a flashing vent**: the sign is reversed; $P_{\mathrm{eq}} \approx 46$–65 bar against $P_N \approx 8$–52 bar.
+  - That gap always made $|P_g - P_N|$ large, which is why the fan was taken, and why the vent scored well by accident.
+  - With the frozen pressure alone, a flashing cell sits in frozen acoustic balance with the far field ($u_N = (P_N - P_\infty)/\rho c$ at the liquid's stiff impedance). The jump is small, the linear step pins the vent cell at 51 bar, and the vented mass falls 39 %.
+  - Hence the flash-potential trigger. Only the positive sign is a flash; the droplet-laden vapour stays on the acoustic solve, with the trigger firing on 0 % of the jet's face cells.
+
+Evidence:
+- **4 m 3-D jet, x-hi at 55 ms** (GPU rerun from 28.6 ms, before liquid reaches any face; frozen invariants, the fan trigger never fires on its faces):
+  - return flow 37 → 0 %, mean $u$ 1.3 → 5.9 m/s, $P - P_\infty$ 1.16 → 0.64 bar, consistent with $u = (P-P_\infty)/\rho c$;
+  - side faces within 0.006 bar of $P_\infty$.
+- **Plotfile probe** (`CAMR.ps_nscbc_probe=<plt>`) on the 55 ms face: liquid-bearing cells get ghost $u$ 4.69 m/s against the order-1 Hedstrom target 4.93, where the legacy ghost gave −0.45.
+- **`flashing_front.py`**: vented mass +1.8 % against the reference (2.4081 vs 2.3644; legacy −5.1 % on the same machine; frozen pressure without the trigger −39.3 %); zero refusals; `v2s` re-pinned.
+- **1-D**: `verify_canonical.py` and `exact_suite.py wp` identical at every digit; NSCBC is off in the suite.
+- **T-Blowdown**: four orientations agree to 1.2e-13; step 300 at 0.8653 ms against 0.8667.
+- **2-D demo3 at `max_level=0` to 25 ms**:
+  - identical to three or four digits until liquid reaches the face (~16 ms);
+  - afterwards the y faces vent instead of pumping in, and the domain mass levels at 117 kg/m against 139;
+  - x-hi return flow 64–73 → 47–56 %.
+
+Lives in: `PS_nscbc.H` (`_cell_primitives`, the dispatch, the fan start); `PS_nscbc_probe.H` and `main.cpp`.
 
 ### 2.7 EOS backends
 

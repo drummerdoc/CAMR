@@ -7,7 +7,8 @@
 //  Algorithm: the characteristic-invariant form of the Poinsot-Lele
 //  NSCBC (JCP 101, 1992), which fits the FillPatch ghost pattern without
 //  persistent boundary state.  With u_out the outward normal velocity and
-//  ρc the Wallis frozen impedance of the boundary cell (as the flux):
+//  ρc the Wallis frozen impedance of the boundary cell (as the flux) and
+//  P the mixture pressure α₁P₁ + α₂P₂ (as the flux):
 //      R+ = u_out + P/(ρc)  leaves; extrapolated (minmod slope, 3 cells)
 //      R- = u_out − P/(ρc)  enters; set from the far field (u=0, P_amb)
 //                           with the restoring pull −σ(P_N − P_amb)/(ρc)
@@ -63,10 +64,15 @@ _zero_gradient_ghost(const amrex::Real s_N[NVAR],
     for (int n = 0; n < NVAR; ++n) s_ghost[n] = s_N[n];
 }
 
-// Mixture primitives and species Y[] of one cell; P is the stock
-// single-fluid inversion, used only inside the acoustic invariants as a
-// consistent stencil quantity (the pack never reads it).  A failed or
-// sub-1 Pa inversion returns P = 1 Pa and is counted (nscbc pmix_fail).
+// Mixture primitives and species Y[] of one cell; P is the scheme's
+// frozen mixture pressure alpha1 P1 + alpha2 P2 (ps_cell_state, the
+// pressure the flux and the plotfile use), paired in the invariants with
+// the frozen impedance and the reference of the per-phase pack.  Not the
+// single-fluid equilibrium EOS::REY2P(rho, e): in a vapour carrying a
+// little superheated liquid that reads ~1 bar low (the liquid evaporated)
+// and the face stops venting (docs/DESIGN_DECISIONS.md B-5).  REY2P is
+// the fan's starting point only (section 5).  A non-finite or sub-1 Pa
+// value returns P = 1 Pa and is counted (nscbc pmix_fail).
 AMREX_GPU_HOST_DEVICE
 AMREX_FORCE_INLINE
 void
@@ -77,7 +83,8 @@ _cell_primitives(const amrex::Real s[NVAR],
                  amrex::Real& u_z,
                  amrex::Real& e_spec,
                  amrex::Real& P,
-                 amrex::Real  Y[NUM_SPECIES]) noexcept
+                 amrex::Real  Y[NUM_SPECIES],
+                 PsPres const& pres) noexcept
 {
     using amrex::Real;
     rho = amrex::max(ps_finite_or(s[URHO], Real(ps_const::RHO_MIX_MIN)), Real(ps_const::RHO_MIX_MIN));
@@ -97,7 +104,7 @@ _cell_primitives(const amrex::Real s[NVAR],
     for (int n = 0; n < NUM_SPECIES; ++n) {
         Y[n] = ps_finite_or(s[UFS + n], Real(0.0)) * inv_rho;
     }
-    EOS::REY2P(rho, e_spec, Y, P);
+    P = ps_cell_state(s, pres).P_mix;
     if (!std::isfinite(P) || P < ps_guard::P_FLOOR_PA) {
         P = ps_guard::P_FLOOR_PA;
         ps_guard::count_nscbc_pmix_fail();
@@ -211,9 +218,9 @@ outflow_face(const amrex::Real s_N  [NVAR],
     Real rho_Nm1, ux_Nm1, uy_Nm1, uz_Nm1, e_Nm1, P_Nm1;
     Real rho_Nm2, ux_Nm2, uy_Nm2, uz_Nm2, e_Nm2, P_Nm2;
     Real Y_N[NUM_SPECIES], Y_Nm1[NUM_SPECIES], Y_Nm2[NUM_SPECIES];
-    _cell_primitives(s_N,   rho_N,   ux_N,   uy_N,   uz_N,   e_N,   P_N,   Y_N);
-    _cell_primitives(s_Nm1, rho_Nm1, ux_Nm1, uy_Nm1, uz_Nm1, e_Nm1, P_Nm1, Y_Nm1);
-    _cell_primitives(s_Nm2, rho_Nm2, ux_Nm2, uy_Nm2, uz_Nm2, e_Nm2, P_Nm2, Y_Nm2);
+    _cell_primitives(s_N,   rho_N,   ux_N,   uy_N,   uz_N,   e_N,   P_N,   Y_N, p.pres);
+    _cell_primitives(s_Nm1, rho_Nm1, ux_Nm1, uy_Nm1, uz_Nm1, e_Nm1, P_Nm1, Y_Nm1, p.pres);
+    _cell_primitives(s_Nm2, rho_Nm2, ux_Nm2, uy_Nm2, uz_Nm2, e_Nm2, P_Nm2, Y_Nm2, p.pres);
 
     auto pick_un = [idir] (Real ux, Real uy, Real uz) -> Real {
         if      (idir == 0) return ux;
@@ -353,7 +360,32 @@ outflow_face(const amrex::Real s_N  [NVAR],
     Real alpha1_g = ph.alpha1;
     Real rho_g;
 
-    if (std::abs(P_g - P_N) <= cap0) {
+    //  The cell's equilibrium (HEM) pressure at its own (rho, e), the
+    //  single-fluid EOS::REY2P.  P_eq - P_N > 0 is a superheated liquid's
+    //  flashing potential: isochoric equilibration would raise P by that
+    //  much.  When it exceeds one linearisation substep the cell flashes
+    //  inside the boundary expansion and the frozen-impedance solve does
+    //  not apply, however small |P_g - P_N| is: a flashing cell can sit in
+    //  frozen acoustic balance with the far field (u = (P - P_amb)/rho c
+    //  at the liquid's stiff impedance), which pins the vent tens of bar
+    //  above the reference (flashing_front.py, -39 %).  The opposite sign
+    //  (a vapour carrying superheated droplets, P_eq < P_N) is not a
+    //  flash and stays on the acoustic solve (DESIGN_DECISIONS B-5).  A
+    //  non-finite or sub-floor inversion falls back to P_N, counted.
+    Real P_eq = P_N;
+    {
+        Real Pe;
+        EOS::REY2P(rho_N, e_N, Y_N, Pe);
+        if (std::isfinite(Pe) && Pe >= ps_guard::P_FLOOR_PA) {
+            P_eq = Pe;
+        } else {
+            ps_guard::count_nscbc_pmix_fail();
+        }
+    }
+    const bool small_signal = (std::abs(P_g - P_N) <= cap0)
+                           && (P_eq - P_N <= cap0);
+
+    if (small_signal) {
         // ---- Small-signal branch: one linearised isentropic step. ----
         const Real dP = P_g - P_N;
         if (p1_present) {
@@ -381,11 +413,14 @@ outflow_face(const amrex::Real s_N  [NVAR],
         Real r2 = ph.rho2, ee2 = ph.e2, Pk2 = ph.P2, ck2 = ph.c2;
         Real fm1 = ph.m1, fm2 = ph.m2, fal1 = ph.alpha1;
         Real u_out = un_out_N;
-        Real P_cur = P_N;
+        //  The fan is an equilibrium path, so it starts from P_eq: a
+        //  metastable cell first equilibrates isochorically (no velocity
+        //  change), then expands.
+        Real P_cur = P_eq;
         //  Full choked fan toward the face ambient.
         const Real P_t =
             amrex::max(p.P_amb, amrex::max(Real(1.0e-3) * p.P_amb, Real(ps_guard::P_FLOOR_PA)));
-        const bool expanding = (P_t < P_N);
+        const bool expanding = (P_t < P_cur);
         bool fan_ok = true;
         int  steps  = 0;
         // Previous-substep snapshot for the G-max revert.

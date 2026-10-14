@@ -351,7 +351,8 @@ these go into Phase 3/4, which are physics questions):
 - `PS_nscbc.H`: `_cell_primitives` gets the invariants' pressure from the
   single-fluid `EOS::REY2P(rho_mix, e_mix)` — the mixture query the flux path
   avoids; a failed inversion silently yields P = 1 Pa (uncounted) inside R±
-  (rule 17). The fan loop terminates on exact floating-point equality.
+  (rule 17).  RESOLVED 2026-10-14 (DESIGN_DECISIONS B-5): the invariants use
+  the mixture pressure; the 1 Pa floor is counted (`nscbc pmix_fail`). The fan loop terminates on exact floating-point equality.
 - `PS_umeth.cpp`: `ps_wp_order` maps any value ≠2 to 1 and `ps_wp_transverse`
   clamps out-of-range values silently (rule 20 says abort).
 - `PS_guards.H`: the GPU `#else` branch defines no stubs for
