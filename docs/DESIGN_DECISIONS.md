@@ -262,6 +262,26 @@ X-31  Rejected: three forms of the Corridor saturation projection. Unconditional
 
 X-32  Refuted: the NSCBC supersonic-outflow branch as the cause of the demo3 xhi stagnation, and σ as a Poinsot–Lele restoring rate. Why: the face is never supersonic in the frozen sense the code uses, and the σ term has the opposite sign to the restoring term it is named after (B-4). The mirror-symmetry rung as a mode-5 diagnostic is likewise retired: the round-off seed at step 2 is common to both modes (y-sweep order at the inlet jet edge) and mode 5's SRT birth rate ∝ $\alpha_1$ amplifies it ×~1.4 per step (O-22); under AMR the rung was already invalid.
 
+X-33  Rejected: α in the per-wave limiter, φ = min(φ_wave, φ_α), as the cure for O-27.
+- Why: in a uniform trace region the waves' α components are round-off. Their ratio θ_α is arbitrary, so φ_α randomly drops whole-wave corrections.
+- Measured:
+  - the 1-D single-phase battery (1e-6 trace) degrades from 0.0350 to 0.0377 (A1–A3, A5, A6 and C3 fail);
+  - B4 goes from 0.126 to 0.133;
+  - T-Blowdown's orientations disagree at 2.6e-2;
+  - the AMR deck fills with `massid`/`m_neg` flags.
+
+X-34  Rejected: flux-corrected transport (Zalesak) on the correction, in three forms, as the cure for O-27.
+- All three compute fluxes and corrections on bx grown by one cell, so each face's factor is box-independent and conservative.
+- (a) **The whole correction vector scaled per face** under α ∈ [0, 1] and m_k ≥ 0. A round-off α push (1e-14) against a cell near its bound vetoed an O(1) mass correction: 2.8e3 cut by 92 % in one orientation only. T-Blowdown's mirror pair disagreed at 1.1e-2.
+- (b) **The α correction alone.**
+  - It removed every α_oob (184 → 0 orientation, 146 → 0 AMR).
+  - It kept the 1-D gate (only B2 moves, 0.1524 → 0.1532), symmetry (1.6e-13) and the vent (+1.8 %).
+  - But with the trace mass correction intact, m₂/α₂ left the EOS domain more often: AMR `rho_domain trace` 23 → 104 lines.
+- (c) **One factor per phase on α_k, m_k, E_k**, with the mixture slots recomposed: a round-off α push again vetoed the trace phase's mass and energy corrections.
+  - T-Blowdown orientations disagreed at 9.1e-6.
+  - 170 trace density-domain flags appeared in the orientation decks.
+- The bounds FCT can enforce are not the trace phase's admissible set (O-27).
+
 ## 4. Alternatives considered: invariant-domain preservation vs presence-discrete
 
 The trace-phase failure class (pole-adjacent liquid densities in vapour cells, ~15 000 rejected EOS evaluations per step, 28 bad cells at step 0) was evaluated against two structural directions before either was coded. The test both had to pass: does it prevent the undefined state from being created, or only bound it?
@@ -389,6 +409,23 @@ O-24  [DECIDE-29b] Physical promotion test. `ps_regime_reach` promotes on reacha
 O-25  Bound-limited coarse–fine fill. A `CellConservativeProtected` analogue with the physical bound and piecewise-constant fallback would be a complete backstop for the fill (zero cases offline) and would remove the up-to-5 % energy-identity defects the fill still produces (G-5); it is downstream of R-14/R-15 and not needed for the abort. The offline test bed (`Exec/CO2_PipeBreak/harvest/`, `harvest.py` reproduces AMReX `cell_cons_interp` in numpy) scores any candidate before a run.
 
 O-26  [DECIDE-27] NSCBC domain length and the σ deletion (B-4). The jet's recompression sits at the outlet plane because the domain ends first; extend the domain in x or accept the plane as the recompression location. Retire `ps_bc_nscbc_sigma` (decks run 0 now).
+
+O-27  KNOWN LIMITATION (accepted 2026-10-14): the second-order correction can push α out of [0, 1] at a trace phase.
+- **Symptom.** On T-Blowdown, one α_oob column (32 cells) appears at the `H post-hydro (pre-floor)` validator stage.
+  - It is at the vent column for steps 1–3, then rides the rarefaction head inward at ~250 m/s (i = 252 → 201).
+  - About 15–18 % of sweeps are affected; the AMR deck shows 146 flagged lines.
+  - Size: α₁ = 1 + 1.4e-5 over a 1e-6 trace vapour.
+  - The floor stage repairs it before any operator reads the state, and the step-300 sweep the reference records is clean. It has been present since e888488 (bisected).
+- **Cause.** It is not a time-step (CFL) violation: at CFL 0.25 / 0.125 / 0.0625 the same physical span is flagged (46/300, 103/602, 218/1205 sweeps), and first order (`ps_wp_order=1`) gives zero.
+  - The LeVeque correction scales each wave by one φ from a weighted product dominated by pressure and momentum.
+  - The relaxed star state (MODEL §2.3) gives the acoustic waves an α component.
+  - Where P and u are smooth that α part goes unlimited and removes more than a trace cell holds.
+- **Rejected fixes** (X-33, X-34).
+  - A trace phase's admissible set is the ratio condition ρ_min ≤ m_k/α_k ≤ ρ_max.
+  - Per-quantity bounds on α or m (all FCT can enforce) do not contain it.
+  - A limiter that would contain it is the invariant-domain line search rejected in §4.
+- **Open direction.** Limit the α part of the acoustic waves in the wave decomposition itself, rather than in the correction. That is a change to the relaxed star state touching B12 and the 2-D production results, so it needs a design note first.
+- **Lives in:** `PS_umeth.cpp` (Pass 2); the limiter variants are kept in `/media/datastore/marcusd/CO2_PipeBreak/limiter_variants/`.
 
 ## 8. Lessons-embodied checklist
 
