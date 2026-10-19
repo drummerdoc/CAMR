@@ -46,7 +46,7 @@ def load_shards(pattern):
     files = sorted(glob.glob(pattern))
     if not files:
         sys.exit(f'no shards matching {pattern!r}')
-    merged = {}   # bucket -> [rho,e,alpha,T,phase,valid,count]
+    merged = {}   # bucket -> [rho,e,alpha,T,phase,valid,count,presence]
     ndrop = 0
     for f in files:
         with open(f) as fh:
@@ -55,15 +55,17 @@ def load_shards(pattern):
                 rho = float(row['rho']); e = float(row['e']); ph = int(row['phase'])
                 if not (rho > 0 and math.isfinite(e)):
                     continue
-                if float(row['alpha']) < MINALPHA:   # drop degenerate trace-phase record
+                cnt = int(row['count']); pres = int(row.get('presence', 2))
+                # drop a degenerate trace-phase quotient record; a collapsed corridor
+                # record (presence 1) carries the HOST state and is kept whatever its alpha
+                if pres != 1 and float(row['alpha']) < MINALPHA:
                     ndrop += 1; continue
-                b = bucket(rho, e, ph)
-                cnt = int(row['count'])
+                b = bucket(rho, e, ph) + (pres,)
                 if b in merged:
                     merged[b][6] += cnt
                 else:
                     merged[b] = [rho, e, float(row['alpha']),
-                                 float(row['T']), ph, int(row['valid']), cnt]
+                                 float(row['T']), ph, int(row['valid']), cnt, pres]
     return files, merged, ndrop
 
 def regime(rec):
@@ -103,11 +105,11 @@ def main():
     # write the reusable cloud (one representative per bucket + visit count)
     cloud = f'{OUT}_cloud.csv'
     with open(cloud, 'w') as fh:
-        fh.write('phase,rho,e,alpha,T,valid,count,regime\n')
+        fh.write('phase,rho,e,alpha,T,valid,presence,count,regime\n')
         for b, rec in sorted(merged.items()):
-            rho, e, alpha, T, ph, valid, cnt = rec
+            rho, e, alpha, T, ph, valid, cnt, pres = rec
             fh.write(f'{ph},{rho:.9e},{e:.9e},{alpha:.6e},{T:.6e},'
-                     f'{valid},{cnt},{regime(rec)}\n')
+                     f'{valid},{pres},{cnt},{regime(rec)}\n')
     print(f'# wrote {cloud}')
 
     # regime breakdown

@@ -13,7 +13,13 @@
 //  Exec/CO2_RiemannSuite/characterize.py).  One CSV shard per rank,
 //  <ps_harvest_file>_r<rank>.csv (phase,rho,e,alpha,T,valid,count),
 //  flushed at teardown and optionally every ps_harvest_flush calls.
-//  Host-only (std::unordered_map, ofstream); compiled out on device
+//  Presence-aware: an Independent phase is recorded at its own quotient
+//  (rho_k, e_k); a Corridor phase is host-slaved (its own quotient is
+//  never branch-queried except as a has-root test, PS_corridor.H,
+//  PS_promote.H), so by default it is not recorded at all, and with
+//  ps_harvest_corridor = 1 it is recorded once per HOST bucket (rho, e of
+//  the host, phase = the corridor branch, presence = 1), so two cells that
+//  differ only in corridor-phase noise share one slot.  Host-only (std::unordered_map, ofstream); compiled out on device
 //  builds.  Fluid-agnostic.  Aggregate the shards with
 //  Exec/CO2_RiemannSuite/harvest_aggregate.py.
 //
@@ -55,9 +61,21 @@ inline amrex::Real ps_harvest_afloor()
     return v;
 }
 
+// CAMR.ps_harvest_corridor (0): what to do with a Corridor phase
+// (PS_presence.H regime): 0 = skip (its quotient is host-slaved, not an
+// EOS input), 1 = record it collapsed onto the host's (rho, e) bucket with
+// presence = 1, 2 = record the raw quotient (audit of the pre-presence
+// behaviour; the trace audit ps_harvest_trace implies 2 for Absent too).
+inline int ps_harvest_corridor()
+{
+    static const int v = ps_dial_int("ps_harvest_corridor", 0);
+    return v;
+}
+
 struct PsHarvestReservoir
 {
-    struct Rec { double rho, e, alpha, T; int phase; int valid; long count; };
+    struct Rec { double rho, e, alpha, T; int phase; int valid; int presence; long count; };
+    long n_corridor_skipped = 0;   // Corridor records dropped (mode 0)
     std::unordered_map<std::uint64_t, Rec> buckets;
     double dlr = 0.05;      // CAMR.ps_harvest_dlr: log10(rho) bucket width
     double de  = 2.0e3;     // CAMR.ps_harvest_de: e bucket width [J/kg]
@@ -79,7 +97,9 @@ struct PsHarvestReservoir
         configured = true;
     }
 
-    void add(int phase, double rho, double e, double alpha, double T, int valid)
+    // presence: 2 = Independent (own quotient), 1 = Corridor collapsed onto
+    // the host state, 0 = raw audit record of a non-Independent phase.
+    void add(int phase, double rho, double e, double alpha, double T, int valid, int presence = 2)
     {
         if (!(rho > 0.0) || !std::isfinite(rho) || !std::isfinite(e)) return;
         const std::int32_t ilr = (std::int32_t)std::floor(std::log10(rho) / dlr);
@@ -87,10 +107,11 @@ struct PsHarvestReservoir
         const std::uint64_t key =
             ((std::uint64_t)(std::uint32_t)ilr << 33) ^
             ((std::uint64_t)(std::uint32_t)ie  << 1) ^
+            ((std::uint64_t)(std::uint32_t)presence << 62) ^
             (std::uint64_t)(phase == 1 ? 0u : 1u);
         auto it = buckets.find(key);
         if (it == buckets.end()) {
-            buckets.emplace(key, Rec{rho, e, alpha, T, phase, valid, 1L});
+            buckets.emplace(key, Rec{rho, e, alpha, T, phase, valid, presence, 1L});
         } else {
             ++(it->second.count);
         }
@@ -102,13 +123,17 @@ struct PsHarvestReservoir
         const std::string fn = base + "_r" + std::to_string(rank) + ".csv";
         std::ofstream os(fn);
         if (!os) return;
-        os << "phase,rho,e,alpha,T,valid,count\n";
+        os << "phase,rho,e,alpha,T,valid,presence,count\n";
         os.setf(std::ios::scientific); os.precision(9);
         for (auto const& kv : buckets) {
             Rec const& r = kv.second;
             os << r.phase << ',' << r.rho << ',' << r.e << ',' << r.alpha
-               << ',' << r.T << ',' << r.valid << ',' << r.count << '\n';
+               << ',' << r.T << ',' << r.valid << ',' << r.presence << ',' << r.count << '\n';
         }
+        // Sidecar: what the mode dropped, so the shard's coverage is auditable.
+        std::ofstream om(base + "_r" + std::to_string(rank) + ".meta");
+        if (om) om << "buckets " << buckets.size() << "\ncorridor_skipped " << n_corridor_skipped
+                   << "\ncalls " << ncalls << '\n';
     }
 
     ~PsHarvestReservoir() { if (!buckets.empty()) flush(); }
@@ -130,6 +155,8 @@ ps_harvest_states(amrex::MultiFab& S_new, int nghost = 0)
     const hem::PsPhaseAPI eos = ps_make_camr_eos_api();
     const bool trace = (ps_harvest_trace() != 0);
     const Real afloor = ps_harvest_afloor();
+    const int  cmode = ps_harvest_corridor();
+    const PsPres pr = ps_presence_params();
     for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
         const amrex::Box bx = mfi.growntilebox(nghost);
         amrex::Array4<const amrex::Real> const& U = S_new.const_array(mfi);
@@ -145,21 +172,38 @@ ps_harvest_states(amrex::MultiFab& S_new, int nghost = 0)
             const Real rho1 = m1/a1, rho2 = m2/a2;
             const Real e1 = U(i,j,k, UE1)/m1 - ke;
             const Real e2 = U(i,j,k, UE2)/m2 - ke;
-            if (trace || a1 >= afloor) {
-                hem::PsPhase p1{}; p1.alpha = a1;
-                eos.state_from_rho_e_phase(1, double(rho1), double(e1), p1);
-                R.add(1, double(rho1), double(e1), double(a1),
-                      p1.valid ? double(p1.T) : std::nan(""), p1.valid ? 1 : 0);
-            }
-            if (trace || a2 >= afloor) {
-                hem::PsPhase p2{}; p2.alpha = a2;
-                eos.state_from_rho_e_phase(2, double(rho2), double(e2), p2);
-                R.add(2, double(rho2), double(e2), double(a2),
-                      p2.valid ? double(p2.T) : std::nan(""), p2.valid ? 1 : 0);
+            const PsRegime r1 = ps_regime(a1, m1, pr), r2 = ps_regime(a2, m2, pr);
+            const Real rk[3] = {0, rho1, rho2}, ek[3] = {0, e1, e2}, ak[3] = {0, a1, a2};
+            const PsRegime rg[3] = {PsRegime::Absent, r1, r2};
+            for (int ph = 1; ph <= 2; ++ph) {
+                const int host = 3 - ph;
+                if (rg[ph] == PsRegime::Independent) {
+                    hem::PsPhase p{}; p.alpha = ak[ph];
+                    eos.state_from_rho_e_phase(ph, double(rk[ph]), double(ek[ph]), p);
+                    R.add(ph, double(rk[ph]), double(ek[ph]), double(ak[ph]),
+                          p.valid ? double(p.T) : std::nan(""), p.valid ? 1 : 0, 2);
+                } else if (rg[ph] == PsRegime::Corridor && cmode == 1
+                           && rg[host] == PsRegime::Independent) {
+                    // Slaved to the host: one slot per host bucket.
+                    hem::PsPhase h{}; h.alpha = ak[host];
+                    eos.state_from_rho_e_phase(host, double(rk[host]), double(ek[host]), h);
+                    R.add(ph, double(rk[host]), double(ek[host]), double(ak[ph]),
+                          h.valid ? double(h.T) : std::nan(""), h.valid ? 1 : 0, 1);
+                } else if (rg[ph] == PsRegime::Corridor && cmode == 0) {
+                    ++R.n_corridor_skipped;
+                } else if (cmode == 2 || trace) {
+                    // Raw audit record of a non-Independent phase's quotient.
+                    if (!(trace || ak[ph] >= afloor)) continue;
+                    hem::PsPhase p{}; p.alpha = ak[ph];
+                    eos.state_from_rho_e_phase(ph, double(rk[ph]), double(ek[ph]), p);
+                    R.add(ph, double(rk[ph]), double(ek[ph]), double(ak[ph]),
+                          p.valid ? double(p.T) : std::nan(""), p.valid ? 1 : 0, 0);
+                }
             }
         });
     }
-    if (R.flush_stride > 0 && (++R.ncalls % R.flush_stride) == 0) R.flush();
+    ++R.ncalls;
+    if (R.flush_stride > 0 && (R.ncalls % R.flush_stride) == 0) R.flush();
 #endif
 }
 

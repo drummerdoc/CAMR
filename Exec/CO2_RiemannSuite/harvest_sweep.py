@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run the two-phase battery with the EOS harvester on and aggregate the shards.
 
-Usage: python3 harvest_sweep.py [N] [trace]   (default N=256, trace=0)
+Usage: python3 harvest_sweep.py [N] [trace] [corridor]   (default N=256, trace=0, corridor=0)
 Writes hv_<case>_r0.csv per case and runs harvest_aggregate.py over them
 into harvest_sweep_<tag>_cloud.csv.
 """
@@ -9,9 +9,10 @@ import os, sys, glob, subprocess
 sys.argv_saved = list(sys.argv)
 N = int(sys.argv[1]) if len(sys.argv) > 1 else 256
 TRACE = int(sys.argv[2]) if len(sys.argv) > 2 else 0
+CORR = int(sys.argv[3]) if len(sys.argv) > 3 else 0
 import full_suite as fs
 EXE = sorted(glob.glob('./CAMR1d.*.PS.*.ex'), key=os.path.getmtime)[-1]
-tag = f'N{N}_trace{TRACE}'
+tag = f'N{N}_trace{TRACE}_corr{CORR}'
 cases = [c for c in fs.CASES if c[0].startswith('B')]
 for c in cases:
     name, tf = c[0], c[3]
@@ -21,7 +22,7 @@ for c in cases:
           'CAMR.do_mol':0,'CAMR.ps_do_relax':1,'stop_time':tf}
     cc,_,_ = fs.case_cfg(name); ov.update(cc)
     ov.update(fs.camr_side(c[1],'L')); ov.update(fs.camr_side(c[2],'R'))
-    ov.update({'CAMR.ps_harvest':1, 'CAMR.ps_harvest_trace':TRACE,
+    ov.update({'CAMR.ps_harvest':1, 'CAMR.ps_harvest_trace':TRACE, 'CAMR.ps_harvest_corridor':CORR,
                'CAMR.ps_harvest_file':f'hv_{tag}_{name}'})
     cmd = [EXE,'inputs']+[f'{k}={v}' for k,v in ov.items()]+['amr.plot_int=-1','amr.plot_files_output=0','amr.v=0','CAMR.v=0']
     r = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=300)
