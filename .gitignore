@@ -65,3 +65,5 @@ Exec/CO2_PipeBreak/harvest/*.npz
 Exec/CO2_RiemannSuite/hv_*_r[0-9]*.csv
 Exec/CO2_RiemannSuite/hv_*_r[0-9]*.meta
 Exec/CO2_RiemannSuite/harvest_sweep_*.csv
+Exec/CO2_PipeBreak/runs/sweep/
+Exec/CO2_PipeBreak/runs/sweep_*.log
