@@ -10,20 +10,28 @@
 //  ρc the Wallis frozen impedance of the boundary cell (as the flux) and
 //  P the mixture pressure α₁P₁ + α₂P₂ (as the flux):
 //      R+ = u_out + P/(ρc)  leaves; extrapolated (minmod slope, 3 cells)
-//      R- = u_out − P/(ρc)  enters; set from the far field (u=0, P_amb)
-//                           with the restoring pull −σ(P_N − P_amb)/(ρc)
+//      R- = u_out − P/(ρc)  enters; modelled, selected by Params::form:
+//        value: R- = −P_amb/ρc − σ(P_N − P_amb)/ρc   (σ is a reflected
+//               fraction: σ=0 is the far-field pin, σ=1 zero-gradient P)
+//        pin:   R- = −P_amb/ρc                        (Hedstrom far field)
+//        rate:  R- = R-_N + ℓ·dx·K(P_N − P_amb)/((c − u_out)ρc),
+//               K = σ(1 − M²)c/L_ref       (Poinsot–Lele; σ as in the
+//               literature, a relaxation rate, mesh-independent)
 //      u_g = ½(R+ + R-),  P_g = ½ρc(R+ − R-).
 //  Ghost thermodynamics never inverts (ρ, P): each present phase moves
 //  along its own isentrope by the common dP, in one linearised step or
 //  as a sub-stepped choked expansion fan with HEM re-closure inside the
-//  dome.  See docs/MODEL_AND_ALGORITHM.md §6.3.
+//  dome.  The fan dispatch reads the far-field (pinned) jump and the
+//  flash potential P_eq − P_N under every form, so a blowdown and a
+//  flashing vent take the fan whichever model the small-signal ghost
+//  uses.  See docs/MODEL_AND_ALGORITHM.md §6.3.
 //
 //  Contract: input the three-cell inward stencil of conserved states;
 //  output the conserved ghost state with ρ_g = m1_g + m2_g exactly.
 //  Supersonic outflow copies; supersonic inflow, a non-finite impedance,
 //  inconsistent six-equation slots and an unresolvable fan refuse to a
 //  counted zero-gradient copy ([PS-GUARD] nscbc_zg *).  No state is
-//  manufactured.  Dials (ps_bc_nscbc_sigma, _order, p_amb) are
+//  manufactured.  Dials (ps_bc_nscbc_form, _sigma, _order, p_amb) are
 //  read in Utils/BCfill.cpp and arrive through Params.
 // =====================================================================
 
@@ -41,10 +49,15 @@
 
 namespace PS_NSCBC {
 
+// Incoming-invariant model (file header): value, pin, rate.
+enum Form : int { FORM_VALUE = 0, FORM_PIN = 1, FORM_RATE = 2 };
+
 // Runtime tunables, resolved in BCfill.cpp (dials documented there).
 struct Params {
     amrex::Real P_amb   = amrex::Real(1.01325e5);   // Pa, far-field pressure of this face
-    amrex::Real sigma   = amrex::Real(0.25);        // Poinsot-Lele restoring pull on R-
+    amrex::Real sigma   = amrex::Real(0.25);        // value: reflected fraction; rate: Poinsot-Lele coefficient
+    int         form    = FORM_VALUE;               // incoming-invariant model
+    amrex::Real L_ref   = amrex::Real(1.0);         // m, domain extent along the face normal (rate form)
     PsPres      pres{};                              // presence params (by value)
     // R+ extrapolation: 1 = copy R+_N (reproduces the standalone driver's
     // NONREFLECTING fill bit-for-bit); 2 = minmod slope over three cells.
@@ -211,7 +224,6 @@ outflow_face(const amrex::Real s_N  [NVAR],
              amrex::Real       s_ghost[NVAR]) noexcept
 {
     using amrex::Real;
-    amrex::ignore_unused(dx_normal);   // the invariant form needs no length
 
     // ---- 1. Mixture primitives at N, N-1, N-2 ---------------------
     Real rho_N,   ux_N,   uy_N,   uz_N,   e_N,   P_N;
@@ -300,13 +312,35 @@ outflow_face(const amrex::Real s_N  [NVAR],
     const Real Rp_ghost = Rp_N
                         + static_cast<Real>(layer_offset) * dRp_scaled;
 
-    Real Rm_target = -p.P_amb / rho_c;
-    if (p.sigma > Real(0.0)) {
-        Rm_target -= p.sigma * (P_N - p.P_amb) / rho_c;
+    // Incoming invariant R-, by form (file header).  The pinned value is
+    // kept beside the form's own because the fan dispatch in section 5
+    // reads the far-field jump whichever model the small-signal ghost
+    // uses.  In the rate form 1 - M² and c - u_out are both strictly
+    // positive here (the supersonic branches returned above).
+    const Real Rm_pin = -p.P_amb / rho_c;
+    Real Rm_target;
+    if (p.form == FORM_RATE) {
+        const Real Rm_N      = un_out_N - P_N / rho_c;
+        const Real lambda_in = c_N - un_out_N;
+        const Real K = p.sigma * (Real(1.0) - Mach_N * Mach_N) * c_N / p.L_ref;
+        Rm_target = Rm_N + static_cast<Real>(layer_offset) * dx_normal
+                           * K * (P_N - p.P_amb) / (lambda_in * rho_c);
+    } else if (p.form == FORM_PIN) {
+        Rm_target = Rm_pin;
+    } else {
+        Rm_target = Rm_pin;
+        if (p.sigma > Real(0.0)) {
+            Rm_target -= p.sigma * (P_N - p.P_amb) / rho_c;
+        }
     }
 
     Real un_out_g = Real(0.5) * (Rp_ghost + Rm_target);
     Real P_g      = Real(0.5) * rho_c * (Rp_ghost - Rm_target);
+    // Far-field jump for the fan dispatch: the form's own ghost pressure
+    // except under the rate form, whose per-fill increment is O(dx/L_ref)
+    // of the jump and would never reach the fan on a blowdown.
+    const Real P_disp = (p.form == FORM_RATE)
+                      ? Real(0.5) * rho_c * (Rp_ghost - Rm_pin) : P_g;
 
     // Ghost pressure floor max(1e-3 P_amb, 1 Pa).
     const Real P_floor = amrex::max(Real(1.0e-3) * p.P_amb, Real(ps_guard::P_FLOOR_PA));
@@ -382,7 +416,7 @@ outflow_face(const amrex::Real s_N  [NVAR],
             ps_guard::count_nscbc_pmix_fail();
         }
     }
-    const bool small_signal = (std::abs(P_g - P_N) <= cap0)
+    const bool small_signal = (std::abs(P_disp - P_N) <= cap0)
                            && (P_eq - P_N <= cap0);
 
     if (small_signal) {

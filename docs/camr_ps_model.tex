@@ -720,15 +720,21 @@ not yet taken.
 
 Subsonic characteristic outflow (\code{CAMR.ps\_bc\_use\_nscbc}$=1$;
 construction in \code{PS\_nscbc.H}) builds the ghost state from the
-outgoing invariant $R^+$ (minmod-extrapolated) and an ambient-encoding
-target $R^-_{\mathrm{targ}}=-P_{\mathrm{amb}}/\rho c$ and an optional
-term $-\sigma(P_N-P_{\mathrm{amb}})/\rho c$ (\code{CAMR.ps\_bc\_nscbc\_sigma},
-default 0.25).  Measured on the pipe-break outlet, the $\sigma$ term is a
-\emph{partial reflection}, not the Poinsot--Lele restoring rate it is named
-after: the steady face obeys $u=(1-\sigma)(P-P_{\mathrm{amb}})/\rho c$, and
-$\sigma=0$ places the face exactly on the outgoing simple wave of a far
-field at rest.  Production decks run $\sigma=0$; the key is a retirement
-candidate (\code{DESIGN\_DECISIONS.md} B-4).  The ambient pressure is \code{prob.p\_amb}, overridable
+outgoing invariant $R^+$ (minmod-extrapolated) and a modelled incoming
+invariant selected by \code{CAMR.ps\_bc\_nscbc\_form}: \code{value}
+(default), $R^-_{\mathrm{targ}}=-P_{\mathrm{amb}}/\rho c
+-\sigma(P_N-P_{\mathrm{amb}})/\rho c$, in which $\sigma$ is a
+\emph{reflected fraction} (the steady face obeys
+$u=(1-\sigma)(P-P_{\mathrm{amb}})/\rho c$ and $\sigma=0$ is the Hedstrom
+pin; production decks run $\sigma=0$); \code{pin},
+$R^-_{\mathrm{targ}}=-P_{\mathrm{amb}}/\rho c$; and \code{rate}, the
+Poinsot--Lele relaxation as a per-layer gradient increment,
+$R^-_{\mathrm{targ}}=R^-_N+\ell\,\Delta x\,K(P_N-P_{\mathrm{amb}})
+/((c-u_{\mathrm{out}})\rho c)$ with $K=\sigma(1-M^2)c/L_{\mathrm{ref}}$,
+in which $\sigma$ has its literature meaning
+(\code{CAMR.ps\_bc\_nscbc\_sigma}, default 0.25;
+\code{DESIGN\_DECISIONS.md} B-4).  The fan dispatch reads the pinned
+far-field jump under every form.  The ambient pressure is \code{prob.p\_amb}, overridable
 \emph{per face} via \code{CAMR.ps\_bc\_p\_amb\_\{x,y,z\}\{lo,hi\}}
 (sentinel $-1$ inherits).  The per-phase repack integrates the isentrope
 adaptively in pressure sub-steps capped at

@@ -61,14 +61,21 @@ inline int ps_nscbc_probe(const std::string& plt, amrex::Real p_amb_global)
         amrex::ParmParse pp("CAMR");
         pp.query("ps_bc_nscbc_sigma", prm.sigma);
         pp.query("ps_bc_nscbc_order", prm.nscbc_order);
+        std::string fm = "value";
+        pp.query("ps_bc_nscbc_form", fm);
+        prm.form = (fm == "pin") ? PS_NSCBC::FORM_PIN
+                 : (fm == "rate") ? PS_NSCBC::FORM_RATE : PS_NSCBC::FORM_VALUE;
+        prm.L_ref = pf.probHi()[0] - pf.probLo()[0];
         Real pa = Real(-1.0);
         pp.query("ps_bc_p_amb_xhi", pa);
         prm.P_amb = (pa > Real(0.0)) ? pa : p_amb_global;
     }
     const Real Pinf = prm.P_amb;
+    const Real dx0  = (pf.probHi()[0] - pf.probLo()[0]) / pf.probDomain(0).length(0);
     const bool verbose = (pf.probDomain(0).numPts() / pf.probDomain(0).length(0) == 1);   // 1-D: print the cell
     amrex::Print() << "[nscbc-probe] " << plt << "  t = " << pf.time()
-                   << "  P_amb = " << Pinf << "  sigma = " << prm.sigma
+                   << "  P_amb = " << Pinf << "  form = " << prm.form
+                   << "  sigma = " << prm.sigma
                    << "  order = " << prm.nscbc_order << "\n";
 
     // Accumulators per class (0 single-phase / trace, 1 two-phase).
@@ -133,7 +140,7 @@ inline int ps_nscbc_probe(const std::string& plt, amrex::Real p_amb_global)
                 if (ph.m2 > ps_const::M_TINY) cap0 = amrex::min(cap0, Real(0.05) * ph.rho2 * ph.c2 * ph.c2);
                 const bool flashing = (Prey - cs.P_mix > cap0);
                 Real g[NVAR];
-                PS_NSCBC::outflow_face(s[0], s[1], s[2], Real(1.0), 0, -1, 1, prm, g);
+                PS_NSCBC::outflow_face(s[0], s[1], s[2], dx0, 0, -1, 1, prm, g);
                 bool zg = true;
                 for (int n = 0; n < NVAR; ++n) if (g[n] != s[0][n]) { zg = false; break; }
                 const Real Pg = ps_cell_state(g, prm.pres).P_mix;

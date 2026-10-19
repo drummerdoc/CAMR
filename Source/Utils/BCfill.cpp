@@ -22,6 +22,7 @@ struct PCHypFillExtDir
   // global switch would replace wholesale.
   amrex::GpuArray<int, 2*AMREX_SPACEDIM> use_nscbc_face;
   amrex::Real nscbc_sigma;
+  int         nscbc_form;     // PS_NSCBC::Form: incoming-invariant model.
   int         nscbc_order;    // 1 or 2: R+ extrapolation order.
   // Per-face ambient pressure targets, indexed [2*idir + (0=lo,1=hi)];
   // a value <= 0 inherits prob.p_amb at fill time.
@@ -34,6 +35,7 @@ struct PCHypFillExtDir
   explicit PCHypFillExtDir(const ProbParmDevice* d_prob_parm,
                            const amrex::GpuArray<int, 2*AMREX_SPACEDIM>& use_nscbc_face_,
                            amrex::Real nscbc_sigma_,
+                           int         nscbc_form_,
                            int         nscbc_order_,
                            const amrex::GpuArray<amrex::Real, 2*AMREX_SPACEDIM>& p_amb_face_
 #ifdef USE_PS_HYDRO
@@ -43,6 +45,7 @@ struct PCHypFillExtDir
     : lprobparm(d_prob_parm)
     , use_nscbc_face(use_nscbc_face_)
     , nscbc_sigma(nscbc_sigma_)
+    , nscbc_form(nscbc_form_)
     , nscbc_order(nscbc_order_)
     , p_amb_face(p_amb_face_)
 #ifdef USE_PS_HYDRO
@@ -145,6 +148,11 @@ struct PCHypFillExtDir
           params.P_amb = (pf > amrex::Real(0.0)) ? pf : lprobparm->p_amb;
         }
         params.sigma        = nscbc_sigma;
+        params.form         = nscbc_form;
+        // Rate form: the relaxation rate is referenced to the domain
+        // extent along the face normal, so sigma keeps its literature
+        // meaning and only sigma/L_ref is physical.
+        params.L_ref        = geomdata.ProbHi(idir) - geomdata.ProbLo(idir);
         params.nscbc_order  = nscbc_order;
         amrex::Real s_ghost[NVAR];
         PS_NSCBC::outflow_face(s_N, s_Nm1, s_Nm2, dx[idir],
@@ -209,8 +217,13 @@ CAMR_bcfill_hyp(
   // fixed after startup).  This is the single accessor for the boundary
   // dials (docs/MODEL_AND_ALGORITHM.md §6.5):
   //   CAMR.ps_bc_use_nscbc (0): global NSCBC outflow switch.
-  //   CAMR.ps_bc_nscbc_sigma (0.25): Poinsot-Lele restoring pull on R-
-  //     toward the ambient pressure.
+  //   CAMR.ps_bc_nscbc_form (value): incoming-invariant model, one of
+  //     value (R- pinned to the far field minus a reflected fraction
+  //     sigma of the pressure excess), pin (R- pinned, sigma ignored),
+  //     rate (Poinsot-Lele relaxation, K = sigma (1 - M^2) c / L_ref with
+  //     L_ref the domain extent along the normal).  The default is the
+  //     historical form; see PS_nscbc.H for the three expressions.
+  //   CAMR.ps_bc_nscbc_sigma (0.25): the coefficient of the chosen form.
   //   CAMR.ps_bc_nscbc_order (2): R+ extrapolation order, 1 or 2.
   //   CAMR.ps_bc_p_amb_{x,y,z}{lo,hi} (-1 = inherit prob.p_amb): per-face
   //     ambient pressure, for problems whose two ends see different far
@@ -220,17 +233,33 @@ CAMR_bcfill_hyp(
   // The resolved values (after the no-USE_PS_HYDRO force-off and the
   // order forcing) are added back to the table so job_info records the BC
   // path that actually ran even when the deck was silent.
-  struct NscbcCfg { int use; amrex::Real sigma; int order;
+  struct NscbcCfg { int use; amrex::Real sigma; int form; int order;
+                    std::string form_name;
                     amrex::GpuArray<amrex::Real, 2*AMREX_SPACEDIM> pamb;
                     amrex::GpuArray<int, 2*AMREX_SPACEDIM> uface; };
   static const NscbcCfg nscbc_cfg = []() -> NscbcCfg {
     int u = 0;
     amrex::Real sg = amrex::Real(0.25);
     int od = 2;
+    std::string fm = "value";
+    int fi = 0;
     amrex::ParmParse pp("CAMR");
     pp.query("ps_bc_use_nscbc",   u);
     pp.query("ps_bc_nscbc_sigma", sg);
+    pp.query("ps_bc_nscbc_form",  fm);
     pp.query("ps_bc_nscbc_order", od);
+#ifdef USE_PS_HYDRO
+    if      (fm == "value") { fi = PS_NSCBC::FORM_VALUE; }
+    else if (fm == "pin")   { fi = PS_NSCBC::FORM_PIN; }
+    else if (fm == "rate")  { fi = PS_NSCBC::FORM_RATE; }
+    else {
+      amrex::Abort("CAMR.ps_bc_nscbc_form: accepts value, pin or rate "
+                   "(got '" + fm + "').");
+    }
+    if (sg < amrex::Real(0.0)) {
+      amrex::Abort("CAMR.ps_bc_nscbc_sigma must be >= 0.");
+    }
+#endif
     // Per-face ambient targets; -1 = inherit prob.p_amb at fill time.
     amrex::GpuArray<amrex::Real, 2*AMREX_SPACEDIM> pa;
     for (int f = 0; f < 2*AMREX_SPACEDIM; ++f) pa[f] = amrex::Real(-1.0);
@@ -280,6 +309,7 @@ CAMR_bcfill_hyp(
     }
     pp.add("ps_bc_use_nscbc",   u);
     pp.add("ps_bc_nscbc_sigma", sg);
+    pp.add("ps_bc_nscbc_form",  fm);
     pp.add("ps_bc_nscbc_order", od);
     // Resolved per-face NSCBC enables -> job_info (0/1, after inheritance).
     pp.add("ps_bc_nscbc_xlo", uf[0]);
@@ -303,9 +333,10 @@ CAMR_bcfill_hyp(
     pp.add("ps_bc_p_amb_zlo", pa[4]);
     pp.add("ps_bc_p_amb_zhi", pa[5]);
 #endif
-    return NscbcCfg{u, sg, od, pa, uf};
+    return NscbcCfg{u, sg, fi, od, fm, pa, uf};
   }();
   const amrex::Real nscbc_sigma = nscbc_cfg.sigma;
+  const int         nscbc_form  = nscbc_cfg.form;
   const int         nscbc_order = nscbc_cfg.order;
 
   // One-time banner so run logs record which outflow BC path is in play.
@@ -321,6 +352,7 @@ CAMR_bcfill_hyp(
         amrex::Print() << ' ' << fnm[f] << '=' << nscbc_cfg.uface[f];
       }
       amrex::Print()
+          << ",  R- form = " << nscbc_cfg.form_name
           << ",  σ = " << nscbc_sigma
           << ",  R+ order = " << nscbc_order << "\n";
       banner_shown = true;
@@ -328,8 +360,8 @@ CAMR_bcfill_hyp(
   }
 
   amrex::GpuBndryFuncFab<PCHypFillExtDir> hyp_bndry_func(
-    PCHypFillExtDir{lprobparm, nscbc_cfg.uface, nscbc_sigma, nscbc_order,
-                    nscbc_cfg.pamb
+    PCHypFillExtDir{lprobparm, nscbc_cfg.uface, nscbc_sigma, nscbc_form,
+                    nscbc_order, nscbc_cfg.pamb
 #ifdef USE_PS_HYDRO
                     , ps_presence_params()   // host-side read
 #endif
