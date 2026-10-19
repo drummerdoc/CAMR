@@ -1,0 +1,22 @@
+# Small-signal vent: the closed pipe at 105 bar relaxes to a 100 bar far
+# field through the characteristic face.  Every fill stays on the linear
+# (small-signal) branch, which is the only regime where the three forms of
+# CAMR.ps_bc_nscbc_form differ (the blowdown decks take the fan on every
+# fill).  Run once per form:
+#     mpiexec -np 4 ./CAMR2d.gnu.MPI.PS.PR.ex inputs-smallsignal CAMR.ps_bc_nscbc_form=pin
+# and read the x-hi column and the domain mean of pressure from the
+# plotfiles (docs/MODEL_AND_ALGORITHM.md section 6.3 records the result).
+FILE = inputs.base
+
+amr.n_cell           =   128   16   16
+geometry.prob_hi     =   1.0    0.125  0.125
+
+CAMR.lo_bc       =  SlipWall   SlipWall   SlipWall
+CAMR.hi_bc       =  Inflow     SlipWall   SlipWall
+
+prob.p0    = 1.05e7
+prob.p_amb = 1.0e7
+stop_time  = 1.1e-2
+max_step   = 100000
+amr.plot_int  = 50
+amr.plot_file = plt_ss_
