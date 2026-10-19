@@ -14,5 +14,6 @@
 #include "PS_floors.H"     // ps_apply_floor, ps_resync_mixture_mass, ps_resync_phase_energy
 #include "PS_folds.H"      // ps_apply_vanish_fold, ps_apply_tfloor_fold, PsFoldAudit
 #include "PS_diag.H"       // ps_diag_alpha
+#include "PS_harvest.H"    // ps_harvest_states (CAMR.ps_harvest, host-only)
 #endif // USE_PS_HYDRO
 #endif // PS_RELAXATION_H

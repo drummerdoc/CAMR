@@ -60,3 +60,7 @@ Source/EOS/GERG/tools/gerg_edge_cliff
 Exec/CO2_PipeBreak/harvest/out/
 Exec/CO2_PipeBreak/harvest/eos_valid
 Exec/CO2_PipeBreak/harvest/*.npz
+
+# EOS harvester shards and sweep outputs (Exec/CO2_RiemannSuite/harvest_sweep.py; regenerate in seconds)
+Exec/CO2_RiemannSuite/hv_*_r[0-9]*.csv
+Exec/CO2_RiemannSuite/harvest_sweep_*.csv

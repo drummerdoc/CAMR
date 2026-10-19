@@ -6,6 +6,9 @@
 set -u
 cd "$(dirname "$0")" || exit 1   # -> Exec/CO2_RiemannSuite
 
+echo "[0/2] EOS harvester shards and sweep outputs (harvest_sweep.py) ..."
+rm -f hv_*_r[0-9]*.csv harvest_sweep_*.csv
+
 echo "[1/2] harness run directories ..."
 #   vc_ vc4_ vcrp0_ vcrp1_ vp_ vz_ v4_ vcb12_   verify_canonical.py
 #   ex_wp_                                    exact_suite.py

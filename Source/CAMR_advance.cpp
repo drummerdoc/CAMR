@@ -485,6 +485,7 @@ CAMR::CAMR_advance (Real time,
         diag_mass(S, "C post relaxation (P/T/MT)");
         PS_CELL_PROBE(S, "C  post relaxation     ");
         diag_a1(S, "reaction post-relax");  // jump here => MT/relaxation is the driver
+        ps_harvest_states(S, ng);            // CAMR.ps_harvest: EOS-input harvest (read-only, host builds)
         ps_apply_sources(S, dt_r, ng);
         diag_mass(S, "D post sources (flash)");
 #ifdef CAMR_PS_DIAG

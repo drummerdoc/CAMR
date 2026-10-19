@@ -15,6 +15,7 @@ CEXE_headers += PS_relax.H
 CEXE_headers += PS_floors.H
 CEXE_headers += PS_folds.H
 CEXE_headers += PS_diag.H
+CEXE_headers += PS_harvest.H
 CEXE_headers += PS_sources.H
 CEXE_headers += PS_hllc.H
 CEXE_headers += PS_validate.H
