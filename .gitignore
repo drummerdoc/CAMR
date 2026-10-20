@@ -70,3 +70,6 @@ Exec/CO2_PipeBreak/runs/sweep_*.log
 Exec/EOS_Surrogate/pr_eval
 Exec/EOS_Surrogate/data/
 Exec/EOS_Surrogate/results/
+Exec/EOS_Surrogate/cuda_shim/
+Exec/EOS_Surrogate/gpu_bench
+Exec/EOS_Surrogate/gpu_bench_build.log
