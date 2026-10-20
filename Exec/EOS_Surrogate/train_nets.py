@@ -15,6 +15,19 @@ Peng-Robinson surface (truth from ./pr_eval):
   M4 domeres  as M3, but the net predicts T - T_sat(rho) on its branch: the
               dome kink is subtracted from the target instead of being
               learned.  Knowledge in the output parametrisation.
+  M5 experts  domeres inputs and target, but one net per (branch, region)
+              with the region decided from the inputs alone by the loci:
+              far (|d_sat| >= 0.2e5 J/kg outside the dome), near (within
+              0.2e5 J/kg of saturation), ext (inside the dome past the branch
+              edge).  Each expert trains on its region plus a margin band so
+              the seams nearly match; the seam mismatch is measured.  The net
+              analogue of the table's branch tables + dome patch.
+
+Loss weighting: --weight-power p multiplies each row's loss by count^p
+normalised to mean 1 (count = the harvested visit count of its bucket; the
+static grid has count 1), so p = 0 is the plain fit and p = 1 is the
+deployment frequency.  Scores report both the unweighted and the
+visit-weighted T RMS.
 
 Training sets:  static (the naive forward grid) or deploy (the harvested
 deployment distribution, split by bucket so a held-out bucket is unseen).
@@ -71,6 +84,23 @@ class Loci:
         theta = math.sqrt(max(0.0, 1.0 - T_sat / T_C))
         return [(e - e_sat) / E_SCALE, (e - e_edge) / E_SCALE, theta, clamp]
 
+    def region(self, b, lr, e):
+        """Input-only router for the experts: far | near | ext."""
+        d_sat, d_edge, _, _ = self.features(b, lr, e)
+        inside = (d_sat < 0) if b == 2 else (d_sat > 0)
+        past_edge = (d_edge < 0) if b == 2 else (d_edge > 0)
+        if inside and past_edge: return 'ext'
+        if abs(d_sat) < 0.2: return 'near'
+        return 'far'
+
+    def in_margin(self, b, lr, e, region, margin):
+        """True if the input lies within `margin` (units of 1e5 J/kg) of the given region."""
+        d_sat, d_edge, _, _ = self.features(b, lr, e)
+        inside = (d_sat < 0) if b == 2 else (d_sat > 0)
+        if region == 'near': return abs(d_sat) < 0.2 + margin
+        if region == 'ext':  return inside and abs(d_edge) < margin or self.region(b, lr, e) == 'ext'
+        return abs(d_sat) > 0.2 - margin   # far
+
     def regime(self, b, lr, e, T):
         """far | near | ext | sub : outside the dome, within 0.2e5 J/kg of saturation,
         past the branch edge (metastable continuation), or sub-triple."""
@@ -105,13 +135,13 @@ def inputs(model, rows, loci):
     for r in rows:
         x = [r['lr'] / 3.0, r['e'] / E_SCALE]
         if model == 'mono': x.append(1.0 if r['b'] == 1 else -1.0)
-        if model in ('dome', 'domeres'): x += loci.features(r['b'], r['lr'], r['e'])
+        if model in ('dome', 'domeres', 'experts'): x += loci.features(r['b'], r['lr'], r['e'])
         X.append(x)
     return torch.tensor(X, dtype=torch.float64)
 
 def t_base(kind, rows, loci):
-    """Reference temperature subtracted from the target: T_sat(rho) on the branch for domeres, else 0."""
-    if kind != 'domeres':
+    """Reference temperature subtracted from the target: T_sat(rho) on the branch for domeres/experts, else 0."""
+    if kind not in ('domeres', 'experts'):
         return torch.zeros(len(rows), dtype=torch.float64)
     return torch.tensor([loci._interp(loci.tab[r['b']][0], r['lr'], 2)[0] for r in rows], dtype=torch.float64)
 
@@ -127,30 +157,53 @@ def mlp(nin, width, depth):
     layers.append(nn.Linear(n, 1))
     return nn.Sequential(*layers).double()
 
+REGIONS = ('far', 'near', 'ext')
+
 class Surrogate:
-    def __init__(self, kind, width, depth, loci):
-        self.kind, self.loci = kind, loci
-        nin = {'mono': 3, 'split': 2, 'dome': 6, 'domeres': 6}[kind]
-        self.nets = {0: mlp(nin, width, depth)} if kind == 'mono' else {1: mlp(nin, width, depth), 2: mlp(nin, width, depth)}
-    def _parts(self, rows):
-        if self.kind == 'mono': return {0: rows}
-        return {b: [r for r in rows if r['b'] == b] for b in (1, 2)}
+    def __init__(self, kind, width, depth, loci, weight_power=0.0, margin=0.05):
+        self.kind, self.loci, self.wp, self.margin = kind, loci, weight_power, margin
+        nin = {'mono': 3, 'split': 2, 'dome': 6, 'domeres': 6, 'experts': 6}[kind]
+        if kind == 'mono':
+            self.nets = {0: mlp(nin, width, depth)}
+        elif kind == 'experts':
+            self.nets = {(b, g): mlp(nin, width, depth) for b in (1, 2) for g in REGIONS}
+        else:
+            self.nets = {1: mlp(nin, width, depth), 2: mlp(nin, width, depth)}
+    def _key(self, r):
+        if self.kind == 'mono': return 0
+        if self.kind == 'experts': return (r['b'], self.loci.region(r['b'], r['lr'], r['e']))
+        return r['b']
+    def _parts(self, rows, train=False):
+        """Rows per net.  For training the experts, a row also joins every
+        neighbouring expert whose margin band contains it (seam matching)."""
+        parts = {k: [] for k in self.nets}
+        for r in rows:
+            if self.kind == 'experts' and train:
+                for g in REGIONS:
+                    if self.loci.region(r['b'], r['lr'], r['e']) == g or self.loci.in_margin(r['b'], r['lr'], r['e'], g, self.margin):
+                        parts[(r['b'], g)].append(r)
+            else:
+                parts[self._key(r)].append(r)
+        return parts
     def fit(self, rows, epochs, lr, log):
-        for key, sub in self._parts(rows).items():
+        for key, sub in self._parts(rows, train=True).items():
             if not sub: continue
             X, Y = inputs(self.kind, sub, self.loci), targets(self.kind, sub, self.loci)
+            W = torch.tensor([[float(r['count']) ** self.wp] for r in sub], dtype=torch.float64)
+            W = W / W.mean()
             net = self.nets[key]
             opt = torch.optim.Adam(net.parameters(), lr=lr)
             sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, epochs)
             for ep in range(epochs):
-                opt.zero_grad(); loss = ((net(X) - Y) ** 2).mean(); loss.backward(); opt.step(); sched.step()
+                opt.zero_grad(); loss = (W * (net(X) - Y) ** 2).mean(); loss.backward(); opt.step(); sched.step()
                 if log and (ep % max(1, epochs // 5) == 0 or ep == epochs - 1):
                     print(f'    {self.kind}[{key}] ep {ep:5d} rmsT {math.sqrt(loss.item()) * T_SCALE:9.4f} K', flush=True)
-    def predict(self, rows, grad=False):
+    def predict(self, rows, grad=False, force_key=None):
         T = torch.zeros(len(rows), dtype=torch.float64); dTde = torch.zeros(len(rows), dtype=torch.float64)
-        for key, sub in self._parts(rows).items():
+        parts = {force_key: list(rows)} if force_key is not None else self._parts(rows)
+        for key, sub in parts.items():
             if not sub: continue
-            idx = [i for i, r in enumerate(rows) if (self.kind == 'mono' or r['b'] == key)]
+            idx = [i for i, r in enumerate(rows) if force_key is not None or self._key(r) == key]
             X = inputs(self.kind, sub, self.loci)
             if grad:
                 X.requires_grad_(True)
@@ -158,7 +211,7 @@ class Surrogate:
                 G = torch.autograd.grad(out.sum(), X)[0]
                 # dT/de through every input that carries e: x_e = e/E_SCALE, and for
                 # 'dome' also d_sat and d_edge (both e - e_locus(rho), so de/de = 1).
-                g = G[:, 1] + (G[:, 2] + G[:, 3] if self.kind in ('dome', 'domeres') else 0.0)
+                g = G[:, 1] + (G[:, 2] + G[:, 3] if self.kind in ('dome', 'domeres', 'experts') else 0.0)
                 dTde[idx] = (g / E_SCALE * T_SCALE).detach()   # T_sat depends on rho only
                 T[idx] = out.detach() * T_SCALE + t_base(self.kind, sub, self.loci)
             else:
@@ -201,12 +254,14 @@ def score(name, model, rows, loci, nd=2000, seed=0):
     def agg(idx, label):
         if not idx: return
         errT = [abs(float(T[i]) - rows[i]['T']) for i in idx]
+        wts = [float(rows[i]['count']) for i in idx]
+        rmsT_w = math.sqrt(sum(w * x * x for w, x in zip(wts, errT)) / sum(wts))
         # pressure error relative to max(|P|, 1 bar): the liquid branch sits on the
         # 1e3 Pa floor over much of its metastable range, where a relative error
         # against P itself only measures the floor
         errP = [abs(Pp[i] - rows[i]['P']) / max(abs(rows[i]['P']), 1e5) for i in idx if math.isfinite(Pp[i])]
         errP.sort()
-        out[label] = dict(n=len(idx), rmsT=math.sqrt(sum(x * x for x in errT) / len(errT)), maxT=max(errT),
+        out[label] = dict(n=len(idx), rmsT=math.sqrt(sum(x * x for x in errT) / len(errT)), maxT=max(errT), rmsT_w=rmsT_w,
                           relP_rms=math.sqrt(sum(x * x for x in errP) / max(len(errP), 1)),
                           relP_p95=errP[int(0.95 * (len(errP) - 1))] if errP else float('nan'))
     agg(list(range(len(rows))), 'all')
@@ -218,7 +273,23 @@ def score(name, model, rows, loci, nd=2000, seed=0):
     rel.sort()
     out['all']['dTde_med'] = rel[len(rel) // 2] if rel else float('nan')
     out['all']['dTde_p90'] = rel[int(0.9 * (len(rel) - 1))] if rel else float('nan')
+    if model.kind == 'experts':
+        out['all']['seam'] = seam_mismatch(model, rows, loci)
     return out
+
+def seam_mismatch(model, rows, loci, band=0.02):
+    """RMS difference in T between the two experts adjacent to a seam, evaluated on
+    hold-out points within `band` (1e5 J/kg) of the seam: far|near at |d_sat| = 0.2,
+    near|ext at d_edge = 0.  A table clamps this to zero; a routed net does not."""
+    diffs = []
+    for b in (1, 2):
+        for ga, gb, pick in (('far', 'near', lambda d: abs(abs(d[0]) - 0.2) < band),
+                             ('near', 'ext', lambda d: abs(d[1]) < band)):
+            pts = [r for r in rows if r['b'] == b and pick(loci.features(b, r['lr'], r['e']))]
+            if not pts: continue
+            Ta, _ = model.predict(pts, force_key=(b, ga)); Tb, _ = model.predict(pts, force_key=(b, gb))
+            diffs += [float(x) for x in (Ta - Tb)]
+    return math.sqrt(sum(x * x for x in diffs) / len(diffs)) if diffs else float('nan')
 
 def locus_flag(loci, b, lr, e):
     """The free refusal test from the traced loci: the density lies outside the
@@ -240,7 +311,9 @@ def refusal_test(rows_ref, rows_ok, loci):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--data', default='data'); ap.add_argument('--train', choices=['static', 'deploy'], default='deploy')
-    ap.add_argument('--models', default='mono,split,dome,domeres'); ap.add_argument('--width', type=int, default=64)
+    ap.add_argument('--models', default='mono,split,dome,domeres,experts')
+    ap.add_argument('--weight-power', type=float, default=0.0, help='loss weight = count^p (0 = unweighted)')
+    ap.add_argument('--margin', type=float, default=0.05, help='experts: training margin band around each region [1e5 J/kg]'); ap.add_argument('--width', type=int, default=64)
     ap.add_argument('--depth', type=int, default=3); ap.add_argument('--epochs', type=int, default=3000)
     ap.add_argument('--lr', type=float, default=3e-3); ap.add_argument('--holdout', type=float, default=0.3)
     ap.add_argument('--threads', type=int, default=8); ap.add_argument('--seed', type=int, default=1)
@@ -263,26 +336,27 @@ def main():
     os.makedirs(os.path.join(HERE, 'results'), exist_ok=True)
     res_path = os.path.join(HERE, 'results', f'{a.tag}.csv')
     with open(res_path, 'w') as fh:
-        fh.write('model,train,evalset,regime,n,rmsT_K,maxT_K,relP_rms,relP_p95,dTde_med,dTde_p90,fit_s\n')
+        fh.write('model,train,wpow,evalset,regime,n,rmsT_K,rmsT_w_K,maxT_K,relP_rms,relP_p95,dTde_med,dTde_p90,seam_K,fit_s\n')
         for kind in a.models.split(','):
             t0 = time.time()
-            m = Surrogate(kind, a.width, a.depth, loci)
+            m = Surrogate(kind, a.width, a.depth, loci, a.weight_power, a.margin)
             m.fit(train_rows, a.epochs, a.lr, log=not a.quiet)
             fit_s = time.time() - t0
             for evalset, rows in (('deploy-holdout', dho), ('static-holdout', sho)):
                 sc = score(kind, m, rows, loci)
                 for reg, v in sc.items():
-                    fh.write(f"{kind},{a.train},{evalset},{reg},{v['n']},{v['rmsT']:.4f},{v['maxT']:.3f},"
+                    fh.write(f"{kind},{a.train},{a.weight_power},{evalset},{reg},{v['n']},{v['rmsT']:.4f},{v['rmsT_w']:.4f},{v['maxT']:.3f},"
                              f"{v['relP_rms']:.4e},{v['relP_p95']:.4e},{v.get('dTde_med', float('nan')):.4f},"
-                             f"{v.get('dTde_p90', float('nan')):.4f},{fit_s:.0f}\n")
+                             f"{v.get('dTde_p90', float('nan')):.4f},{v.get('seam', float('nan')):.4f},{fit_s:.0f}\n")
                 v = sc['all']
-                print(f"{kind:5s} train={a.train:6s} eval={evalset:14s} rmsT={v['rmsT']:8.3f} K maxT={v['maxT']:8.2f} K "
-                      f"relP_rms={v['relP_rms']:.3e} relP_p95={v['relP_p95']:.3e} dTde_med={v['dTde_med']:.3f} "
-                      f"p90={v['dTde_p90']:.3f}  [fit {fit_s:.0f}s]", flush=True)
+                print(f"{kind:7s} train={a.train:6s} wpow={a.weight_power:g} eval={evalset:14s} rmsT={v['rmsT']:8.3f} K "
+                      f"rmsT_w={v['rmsT_w']:8.3f} K maxT={v['maxT']:8.2f} K relP_rms={v['relP_rms']:.3e} relP_p95={v['relP_p95']:.3e} "
+                      f"dTde_med={v['dTde_med']:.3f} p90={v['dTde_p90']:.3f}"
+                      + (f" seam={v['seam']:.3f} K" if 'seam' in v else '') + f"  [fit {fit_s:.0f}s]", flush=True)
                 for reg in ('far', 'near', 'ext', 'sub'):
                     if reg in sc:
                         w = sc[reg]
-                        print(f"      {reg:4s} n={w['n']:6d} rmsT={w['rmsT']:8.3f} maxT={w['maxT']:8.2f} relP_rms={w['relP_rms']:.3e}")
+                        print(f"      {reg:4s} n={w['n']:6d} rmsT={w['rmsT']:8.3f} rmsT_w={w['rmsT_w']:8.3f} maxT={w['maxT']:8.2f} relP_rms={w['relP_rms']:.3e}")
     print(f'# results -> {os.path.relpath(res_path, HERE)}')
 
 if __name__ == '__main__':
