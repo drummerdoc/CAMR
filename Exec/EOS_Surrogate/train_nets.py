@@ -12,6 +12,9 @@ Peng-Robinson surface (truth from ./pr_eval):
               signed energy distance to the saturation curve and to the
               branch edge at this density, and the saturation theta.  The
               dome and the metastable edge, handed to the net as coordinates.
+  M4 domeres  as M3, but the net predicts T - T_sat(rho) on its branch: the
+              dome kink is subtracted from the target instead of being
+              learned.  Knowledge in the output parametrisation.
 
 Training sets:  static (the naive forward grid) or deploy (the harvested
 deployment distribution, split by bucket so a held-out bucket is unseen).
@@ -102,12 +105,19 @@ def inputs(model, rows, loci):
     for r in rows:
         x = [r['lr'] / 3.0, r['e'] / E_SCALE]
         if model == 'mono': x.append(1.0 if r['b'] == 1 else -1.0)
-        if model == 'dome': x += loci.features(r['b'], r['lr'], r['e'])
+        if model in ('dome', 'domeres'): x += loci.features(r['b'], r['lr'], r['e'])
         X.append(x)
     return torch.tensor(X, dtype=torch.float64)
 
-def targets(rows):
-    return torch.tensor([[r['T'] / T_SCALE] for r in rows], dtype=torch.float64)
+def t_base(kind, rows, loci):
+    """Reference temperature subtracted from the target: T_sat(rho) on the branch for domeres, else 0."""
+    if kind != 'domeres':
+        return torch.zeros(len(rows), dtype=torch.float64)
+    return torch.tensor([loci._interp(loci.tab[r['b']][0], r['lr'], 2)[0] for r in rows], dtype=torch.float64)
+
+def targets(kind, rows, loci):
+    base = t_base(kind, rows, loci)
+    return torch.tensor([[(r['T'] - float(b0)) / T_SCALE] for r, b0 in zip(rows, base)], dtype=torch.float64)
 
 # ---------------------------------------------------------------- models
 def mlp(nin, width, depth):
@@ -120,7 +130,7 @@ def mlp(nin, width, depth):
 class Surrogate:
     def __init__(self, kind, width, depth, loci):
         self.kind, self.loci = kind, loci
-        nin = {'mono': 3, 'split': 2, 'dome': 6}[kind]
+        nin = {'mono': 3, 'split': 2, 'dome': 6, 'domeres': 6}[kind]
         self.nets = {0: mlp(nin, width, depth)} if kind == 'mono' else {1: mlp(nin, width, depth), 2: mlp(nin, width, depth)}
     def _parts(self, rows):
         if self.kind == 'mono': return {0: rows}
@@ -128,7 +138,7 @@ class Surrogate:
     def fit(self, rows, epochs, lr, log):
         for key, sub in self._parts(rows).items():
             if not sub: continue
-            X, Y = inputs(self.kind, sub, self.loci), targets(sub)
+            X, Y = inputs(self.kind, sub, self.loci), targets(self.kind, sub, self.loci)
             net = self.nets[key]
             opt = torch.optim.Adam(net.parameters(), lr=lr)
             sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, epochs)
@@ -148,11 +158,11 @@ class Surrogate:
                 G = torch.autograd.grad(out.sum(), X)[0]
                 # dT/de through every input that carries e: x_e = e/E_SCALE, and for
                 # 'dome' also d_sat and d_edge (both e - e_locus(rho), so de/de = 1).
-                g = G[:, 1] + (G[:, 2] + G[:, 3] if self.kind == 'dome' else 0.0)
-                dTde[idx] = (g / E_SCALE * T_SCALE).detach()
-                T[idx] = out.detach() * T_SCALE
+                g = G[:, 1] + (G[:, 2] + G[:, 3] if self.kind in ('dome', 'domeres') else 0.0)
+                dTde[idx] = (g / E_SCALE * T_SCALE).detach()   # T_sat depends on rho only
+                T[idx] = out.detach() * T_SCALE + t_base(self.kind, sub, self.loci)
             else:
-                with torch.no_grad(): T[idx] = self.nets[key](X)[:, 0] * T_SCALE
+                with torch.no_grad(): T[idx] = self.nets[key](X)[:, 0] * T_SCALE + t_base(self.kind, sub, self.loci)
         return T, dTde
 
 # ---------------------------------------------------------------- truth helpers
@@ -230,7 +240,7 @@ def refusal_test(rows_ref, rows_ok, loci):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--data', default='data'); ap.add_argument('--train', choices=['static', 'deploy'], default='deploy')
-    ap.add_argument('--models', default='mono,split,dome'); ap.add_argument('--width', type=int, default=64)
+    ap.add_argument('--models', default='mono,split,dome,domeres'); ap.add_argument('--width', type=int, default=64)
     ap.add_argument('--depth', type=int, default=3); ap.add_argument('--epochs', type=int, default=3000)
     ap.add_argument('--lr', type=float, default=3e-3); ap.add_argument('--holdout', type=float, default=0.3)
     ap.add_argument('--threads', type=int, default=8); ap.add_argument('--seed', type=int, default=1)
