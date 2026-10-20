@@ -11,12 +11,12 @@
 //  P the mixture pressure α₁P₁ + α₂P₂ (as the flux):
 //      R+ = u_out + P/(ρc)  leaves; extrapolated (minmod slope, 3 cells)
 //      R- = u_out − P/(ρc)  enters; modelled, selected by Params::form:
-//        value: R- = −P_amb/ρc − σ(P_N − P_amb)/ρc   (σ is a reflected
-//               fraction: σ=0 is the far-field pin, σ=1 zero-gradient P)
-//        pin:   R- = −P_amb/ρc                        (Hedstrom far field)
+//        pin:   R- = −P_amb/ρc                        (Hedstrom far field;
+//               the production form: a face onto a quiescent far field)
 //        rate:  R- = R-_N + ℓ·dx·K(P_N − P_amb)/((c − u_out)ρc),
 //               K = σ(1 − M²)c/L_ref       (Poinsot–Lele; σ as in the
-//               literature, a relaxation rate, mesh-independent)
+//               literature, a relaxation rate, mesh-independent; an
+//               alternative for through-flow faces, not yet validated)
 //      u_g = ½(R+ + R-),  P_g = ½ρc(R+ − R-).
 //  Ghost thermodynamics never inverts (ρ, P): each present phase moves
 //  along its own isentrope by the common dP, in one linearised step or
@@ -49,14 +49,14 @@
 
 namespace PS_NSCBC {
 
-// Incoming-invariant model (file header): value, pin, rate.
-enum Form : int { FORM_VALUE = 0, FORM_PIN = 1, FORM_RATE = 2 };
+// Incoming-invariant model (file header): pin, rate.
+enum Form : int { FORM_PIN = 1, FORM_RATE = 2 };
 
 // Runtime tunables, resolved in BCfill.cpp (dials documented there).
 struct Params {
     amrex::Real P_amb   = amrex::Real(1.01325e5);   // Pa, far-field pressure of this face
-    amrex::Real sigma   = amrex::Real(0.25);        // value: reflected fraction; rate: Poinsot-Lele coefficient
-    int         form    = FORM_VALUE;               // incoming-invariant model
+    amrex::Real sigma   = amrex::Real(0.25);        // rate form: Poinsot-Lele coefficient (pin ignores it)
+    int         form    = FORM_PIN;                 // incoming-invariant model
     amrex::Real L_ref   = amrex::Real(1.0);         // m, domain extent along the face normal (rate form)
     PsPres      pres{};                              // presence params (by value)
     // R+ extrapolation: 1 = copy R+_N (reproduces the standalone driver's
@@ -325,13 +325,8 @@ outflow_face(const amrex::Real s_N  [NVAR],
         const Real K = p.sigma * (Real(1.0) - Mach_N * Mach_N) * c_N / p.L_ref;
         Rm_target = Rm_N + static_cast<Real>(layer_offset) * dx_normal
                            * K * (P_N - p.P_amb) / (lambda_in * rho_c);
-    } else if (p.form == FORM_PIN) {
-        Rm_target = Rm_pin;
     } else {
         Rm_target = Rm_pin;
-        if (p.sigma > Real(0.0)) {
-            Rm_target -= p.sigma * (P_N - p.P_amb) / rho_c;
-        }
     }
 
     Real un_out_g = Real(0.5) * (Rp_ghost + Rm_target);

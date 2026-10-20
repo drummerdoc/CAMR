@@ -97,8 +97,8 @@ The table below is built from the read sites in `Source/` (`pp.query`, `pp.conta
 | `ps_promote_checked` | 1 | Checked promotion Corridor → Independent; 0 = unchecked (A/B, disables an abort-prevention fix). | production; 0 retire-candidate [DECIDE-2] |
 | `ps_floor_indep` | 1 | `ps_apply_floor`'s per-phase leg only on Independent phases; 0 floors corridor phases too. | production; 0 retire-candidate [DECIDE-2] |
 | `ps_bc_use_nscbc` | 0 | Global characteristic (NSCBC) outflow on `Inflow`-typed faces; 0 = `bcnormal` interior-copy/reservoir path. The ghost construction is always the choked fan with HEM flash along the fan. Force-added. | production |
-| `ps_bc_nscbc_form` | `value` | NSCBC incoming-invariant model: `value` (σ a reflected fraction; 0 = far-field pin), `pin`, `rate` (Poinsot–Lele rate, σ as in the literature). Force-added. | production (`value`) |
-| `ps_bc_nscbc_sigma` | 0.25 | NSCBC coefficient of the chosen form. | production |
+| `ps_bc_nscbc_form` | `pin` | NSCBC incoming-invariant model: `pin` (far-field pin) or `rate` (Poinsot–Lele rate, σ as in the literature; not validated on the jet). `value` is retired and aborts. Force-added. | production (`pin`); `rate` alternative |
+| `ps_bc_nscbc_sigma` | 0.25 | The rate form's coefficient; ignored by `pin`. | alternative |
 | `ps_bc_nscbc_order` | 2 | Extrapolation order of the outgoing invariant (1 or 2). | production |
 | `ps_bc_nscbc_{x,y,z}{lo,hi}` | −1 | Per-face NSCBC enable: 0, 1, or unset (inherits `ps_bc_use_nscbc`). Resolved values force-added. | production |
 | `ps_bc_p_amb_{x,y,z}{lo,hi}` | −1 | Per-face far-field pressure [Pa]; unset inherits `prob.p_amb`. Force-added. | production |

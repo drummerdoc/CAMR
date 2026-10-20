@@ -217,13 +217,13 @@ CAMR_bcfill_hyp(
   // fixed after startup).  This is the single accessor for the boundary
   // dials (docs/MODEL_AND_ALGORITHM.md §6.5):
   //   CAMR.ps_bc_use_nscbc (0): global NSCBC outflow switch.
-  //   CAMR.ps_bc_nscbc_form (value): incoming-invariant model, one of
-  //     value (R- pinned to the far field minus a reflected fraction
-  //     sigma of the pressure excess), pin (R- pinned, sigma ignored),
+  //   CAMR.ps_bc_nscbc_form (pin): incoming-invariant model, pin (R-
+  //     pinned to the far field, sigma ignored; the production form) or
   //     rate (Poinsot-Lele relaxation, K = sigma (1 - M^2) c / L_ref with
-  //     L_ref the domain extent along the normal).  The default is the
-  //     historical form; see PS_nscbc.H for the three expressions.
-  //   CAMR.ps_bc_nscbc_sigma (0.25): the coefficient of the chosen form.
+  //     L_ref the domain extent along the normal; an alternative for
+  //     through-flow faces).  The retired value form (sigma as a reflected
+  //     fraction) aborts: DESIGN_DECISIONS.md B-4.
+  //   CAMR.ps_bc_nscbc_sigma (0.25): the rate form's coefficient.
   //   CAMR.ps_bc_nscbc_order (2): R+ extrapolation order, 1 or 2.
   //   CAMR.ps_bc_p_amb_{x,y,z}{lo,hi} (-1 = inherit prob.p_amb): per-face
   //     ambient pressure, for problems whose two ends see different far
@@ -241,19 +241,22 @@ CAMR_bcfill_hyp(
     int u = 0;
     amrex::Real sg = amrex::Real(0.25);
     int od = 2;
-    std::string fm = "value";
-    int fi = 0;
+    std::string fm = "pin";
+    int fi = 1;
     amrex::ParmParse pp("CAMR");
     pp.query("ps_bc_use_nscbc",   u);
     pp.query("ps_bc_nscbc_sigma", sg);
     pp.query("ps_bc_nscbc_form",  fm);
     pp.query("ps_bc_nscbc_order", od);
 #ifdef USE_PS_HYDRO
-    if      (fm == "value") { fi = PS_NSCBC::FORM_VALUE; }
-    else if (fm == "pin")   { fi = PS_NSCBC::FORM_PIN; }
+    if      (fm == "pin")   { fi = PS_NSCBC::FORM_PIN; }
     else if (fm == "rate")  { fi = PS_NSCBC::FORM_RATE; }
-    else {
-      amrex::Abort("CAMR.ps_bc_nscbc_form: accepts value, pin or rate "
+    else if (fm == "value") {
+      amrex::Abort("CAMR.ps_bc_nscbc_form=value is retired: sigma as a "
+                   "reflected fraction is a partial reflection (B-4).  Use "
+                   "pin (its sigma=0 limit, the production form) or rate.");
+    } else {
+      amrex::Abort("CAMR.ps_bc_nscbc_form: accepts pin or rate "
                    "(got '" + fm + "').");
     }
     if (sg < amrex::Real(0.0)) {

@@ -721,19 +721,19 @@ not yet taken.
 Subsonic characteristic outflow (\code{CAMR.ps\_bc\_use\_nscbc}$=1$;
 construction in \code{PS\_nscbc.H}) builds the ghost state from the
 outgoing invariant $R^+$ (minmod-extrapolated) and a modelled incoming
-invariant selected by \code{CAMR.ps\_bc\_nscbc\_form}: \code{value}
-(default), $R^-_{\mathrm{targ}}=-P_{\mathrm{amb}}/\rho c
--\sigma(P_N-P_{\mathrm{amb}})/\rho c$, in which $\sigma$ is a
-\emph{reflected fraction} (the steady face obeys
-$u=(1-\sigma)(P-P_{\mathrm{amb}})/\rho c$ and $\sigma=0$ is the Hedstrom
-pin; production decks run $\sigma=0$); \code{pin},
-$R^-_{\mathrm{targ}}=-P_{\mathrm{amb}}/\rho c$; and \code{rate}, the
+invariant selected by \code{CAMR.ps\_bc\_nscbc\_form}: \code{pin}
+(default), $R^-_{\mathrm{targ}}=-P_{\mathrm{amb}}/\rho c$, the Hedstrom
+far field (the retired \code{value} form added $-\sigma(P_N-P_{\mathrm{amb}})/\rho c$,
+in which $\sigma$ is a \emph{reflected fraction}: the steady face obeys
+$u=(1-\sigma)(P-P_{\mathrm{amb}})/\rho c$, so production ran $\sigma=0$,
+which is the pin); and \code{rate}, the
 Poinsot--Lele relaxation as a per-layer gradient increment,
 $R^-_{\mathrm{targ}}=R^-_N+\ell\,\Delta x\,K(P_N-P_{\mathrm{amb}})
 /((c-u_{\mathrm{out}})\rho c)$ with $K=\sigma(1-M^2)c/L_{\mathrm{ref}}$,
 in which $\sigma$ has its literature meaning
-(\code{CAMR.ps\_bc\_nscbc\_sigma}, default 0.25;
-\code{DESIGN\_DECISIONS.md} B-4).  The fan dispatch reads the pinned
+(\code{CAMR.ps\_bc\_nscbc\_sigma}, default 0.25), an alternative for
+through-flow faces that at $\sigma=0.25$ let the 3-D jet's outlet reverse
+(\code{DESIGN\_DECISIONS.md} B-4).  The fan dispatch reads the pinned
 far-field jump under every form.  The ambient pressure is \code{prob.p\_amb}, overridable
 \emph{per face} via \code{CAMR.ps\_bc\_p\_amb\_\{x,y,z\}\{lo,hi\}}
 (sentinel $-1$ inherits).  The per-phase repack integrates the isentrope

@@ -50,7 +50,6 @@ CAMR.ps_hydro = 1
 #  records the scheme it runs; ps_wp_order stays at its default (1).
 CAMR.ps_flux  = wp
 CAMR.ps_bc_use_nscbc = 1
-CAMR.ps_bc_nscbc_sigma = 0.25
 
 CAMR.v = 1
 amr.v = 1

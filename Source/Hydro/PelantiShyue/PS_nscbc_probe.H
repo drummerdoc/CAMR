@@ -61,10 +61,12 @@ inline int ps_nscbc_probe(const std::string& plt, amrex::Real p_amb_global)
         amrex::ParmParse pp("CAMR");
         pp.query("ps_bc_nscbc_sigma", prm.sigma);
         pp.query("ps_bc_nscbc_order", prm.nscbc_order);
-        std::string fm = "value";
+        std::string fm = "pin";
         pp.query("ps_bc_nscbc_form", fm);
-        prm.form = (fm == "pin") ? PS_NSCBC::FORM_PIN
-                 : (fm == "rate") ? PS_NSCBC::FORM_RATE : PS_NSCBC::FORM_VALUE;
+        if (fm != "pin" && fm != "rate") {
+            amrex::Abort("CAMR.ps_bc_nscbc_form: accepts pin or rate (got '" + fm + "').");
+        }
+        prm.form = (fm == "rate") ? PS_NSCBC::FORM_RATE : PS_NSCBC::FORM_PIN;
         prm.L_ref = pf.probHi()[0] - pf.probLo()[0];
         Real pa = Real(-1.0);
         pp.query("ps_bc_p_amb_xhi", pa);
