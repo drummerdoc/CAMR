@@ -2,3 +2,8 @@
 # tools/gen_gergtab.cpp via `make gergtab-tables`, git-ignored).
 CEXE_headers += EOS.H gergtab_bicubic.H gergtab_table_params.H
 CEXE_sources += gergtab_table_data.cpp
+# GERG physics is included by path; its one GPU-build source (coefficient arrays) is compiled here too.
+VPATH_LOCATIONS += $(CAMR_HOME)/Source/EOS/GERG
+CEXE_sources += gerg_coeffs.cpp
+# Device copies of the tables/masks and the host/device pointer struct (FUTURE_WORK §9).
+CEXE_sources += gergtab_device.cpp

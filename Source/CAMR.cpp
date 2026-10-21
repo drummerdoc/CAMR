@@ -82,6 +82,14 @@ CAMR::read_params()
   // Source/EOS/GERG/gerg_co2_guard.H.
   EOS::gerg_ext_c_init();
 #endif
+#ifdef USE_PRTAB_EOS
+  // Copy the bicubic tables to the device once (no-op on host builds);
+  // the device lookups read them through prtab::tables().  FUTURE_WORK §9.
+  prtab::device_init();
+#endif
+#ifdef USE_GERGTAB_EOS
+  gergtab::device_init();
+#endif
 
   // ---------------------------------------------------------------------
   //  Pelanti-Shyue dispatch check.  CAMR.ps_hydro (0) is a runtime flag

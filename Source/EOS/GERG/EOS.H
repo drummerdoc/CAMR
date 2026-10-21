@@ -75,13 +75,14 @@ namespace EOS {
 #endif
 #endif
 
-#if !defined(__CUDA_ARCH__) && !defined(__HIP_DEVICE_COMPILE__) && !defined(__SYCL_DEVICE_ONLY__)
   // CAMR.gerg_ext_c (1): continuous extension sound speed; 0 = 50 m/s
   // throughout the extension (reproduction and bisection only).  The
   // guard header is AMReX-free, so the read lives here and is pushed
   // down; the resolved value is added to the ParmParse table so every
   // job_info records which surface produced the plotfile.  Called once
-  // from CAMR::read_params(), before any hydro.
+  // from CAMR::read_params(), before any hydro.  A plain host function:
+  // not guarded on __CUDA_ARCH__, because nvcc's device pass still parses
+  // the host call in CAMR.cpp and needs the declaration.
   inline void gerg_ext_c_init()
   {
       int v = 1;
@@ -94,7 +95,6 @@ namespace EOS {
                                 : "LEGACY sqrt(CSQ_FLOOR)=50 m/s (CAMR.gerg_ext_c=0)")
                      << std::endl;
   }
-#endif
 
   // Name-compatibility constant for prob.H files spelling et = P/(gamma-1).
   static constexpr amrex::Real gamma = 1.4;
@@ -649,6 +649,27 @@ namespace EOS {
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void PYT2RE_vapor(amrex::Real P, amrex::Real*, amrex::Real T, amrex::Real& R, amrex::Real& E)
   { PYT2RE(P, nullptr, T, R, E); }
+
+  //  Checked (T,P) -> (rho, e, c) on the requested branch, the entry the
+  //  Corridor saturation projection uses (PS_corridor.H; PR/pr_contract.H
+  //  has the PR form).  The guarded branch is total and monotone in rho,
+  //  so g_rho_from_T_P always returns a density; "no root" is the case
+  //  where P lies outside the branch's pressure range on the validity
+  //  box, detected by the residual of the bisection.  Refusal, not repair.
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  void PYT2REc_phase_checked(amrex::Real P, amrex::Real T, bool want_liquid,
+                             amrex::Real& R, amrex::Real& E, amrex::Real& C,
+                             bool& has_root)
+  {
+      const gerg::Phase ph = want_liquid ? gerg::Phase::Liquid : gerg::Phase::Vapor;
+      const double r = g_rho_from_T_P(double(T), double(P), ph);
+      const gerg::State s = gerg::state_TR_phase(double(T), r, ph);
+      has_root = std::isfinite(s.P) && std::isfinite(s.e) && std::isfinite(s.c)
+              && std::abs(s.P - double(P)) <= 1.0e-6 * std::max(std::abs(double(P)), 1.0e3)
+              && r > 1.000001 * gerg::RHO_MIN && r < 0.999999 * gerg::RHO_MAX;
+      if (!has_root) { R = E = C = amrex::Real(0.0); return; }
+      R = amrex::Real(s.rho); E = amrex::Real(s.e); C = amrex::Real(s.c);
+  }
 
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void PYT2R(amrex::Real P, amrex::Real*, amrex::Real T, amrex::Real& R)

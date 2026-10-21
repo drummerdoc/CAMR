@@ -12,11 +12,20 @@
 //  extern declarations and the lookups.  A build without tables fails
 //  at the $(error) guard in Exec/Make.CAMR.
 //
+//  Device access: the generated arrays are host globals, so every lookup
+//  reads them through prtab::tables() — host pointers on the host, a
+//  __constant__ struct of device-copy pointers on the device, filled once
+//  by prtab::device_init() (prtab_device.cpp, called from
+//  CAMR::read_params).  No managed memory; docs/FUTURE_WORK.md §9.
+//
 //  prtab_fwd       — auto-detect table (ctoprim / REY2T).
 //  prtab_fwd_phase — branch-locked (1 = liquid, 2 = vapour): the PS
 //                    metastable calls; the auto/branch choice is
 //                    CAMR.eos_table_branch, read in EOS.H.
 // =====================================================================
+#ifdef AMREX_USE_GPU
+#include <AMReX_GpuQualifiers.H>   // AMREX_GPU_CONSTANT, AMREX_IF_ON_DEVICE: this header is
+#endif                             // the first include of the generated data TU
 #include <cmath>
 #include "prtab_table_params.H"   // GENERATED: NLR, NE, LR0.., RHO_M.., etc.
 #ifdef AMREX_GPU_HOST_DEVICE
@@ -40,6 +49,26 @@ namespace prtab {
   // bicubic -> C0+C1 across the seam.
   extern const double PTL_F[NP*NP], PTL_FX[NP*NP], PTL_FY[NP*NP], PTL_FXY[NP*NP];
   extern const double PTV_F[NP*NP], PTV_FX[NP*NP], PTV_FY[NP*NP], PTV_FXY[NP*NP];
+
+  // Pointers to the fourteen arrays, host or device.
+  struct Tables {
+    const double *T, *S, *TL, *SL, *TV, *SV;
+    const double *PLF, *PLFX, *PLFY, *PLFXY, *PVF, *PVFX, *PVFY, *PVFXY;
+  };
+  extern const Tables h_tables;            // the generated host arrays (prtab_device.cpp)
+#ifdef AMREX_USE_GPU
+  extern AMREX_GPU_CONSTANT Tables d_tables;   // device copies, set by device_init()
+#endif
+  void device_init();                      // host, once, before any hydro (no-op on host builds)
+
+  PRTAB_HD inline const Tables& tables() {
+#if defined(AMREX_USE_GPU)
+    AMREX_IF_ON_DEVICE((return d_tables;))
+    AMREX_IF_ON_HOST((return h_tables;))
+#else
+    return h_tables;
+#endif
+  }
 }
 
 PRTAB_HD inline double prtab_cr(double p0,double p1,double p2,double p3,double t){
@@ -69,7 +98,8 @@ PRTAB_HD inline void prtab_bicubic(const double* TT,const double* SS,
 }
 // Auto-detect (physical root).
 PRTAB_HD inline void prtab_fwd(double rho,double e,double& T,double& s){
-  prtab_bicubic(prtab::TBL_T,prtab::TBL_S,rho,e,T,s);
+  const prtab::Tables& tb=prtab::tables();
+  prtab_bicubic(tb.T,tb.S,rho,e,T,s);
 }
 // 1D cubic Hermite: value at t in [0,1] from endpoint values f0,f1 and
 // index-unit derivatives d0,d1.
@@ -106,13 +136,14 @@ PRTAB_HD inline bool prtab_in_patch(double lr,double e){
 // Branch-locked (phase 1=liquid, 2=vapor); anything else = auto.  s always from
 // the base bicubic; T from the clamped patch inside the dome box, else base.
 PRTAB_HD inline void prtab_fwd_phase(double rho,double e,int phase,double& T,double& s){
-  const double* TT=(phase==1)?prtab::TBL_TL:(phase==2)?prtab::TBL_TV:prtab::TBL_T;
-  const double* SS=(phase==1)?prtab::TBL_SL:(phase==2)?prtab::TBL_SV:prtab::TBL_S;
+  const prtab::Tables& tb=prtab::tables();
+  const double* TT=(phase==1)?tb.TL:(phase==2)?tb.TV:tb.T;
+  const double* SS=(phase==1)?tb.SL:(phase==2)?tb.SV:tb.S;
   double Tb; prtab_bicubic(TT,SS,rho,e,Tb,s);
   double lr=std::log10(rho<1e-3?1e-3:rho);
   if((phase==1||phase==2) && prtab_in_patch(lr,e))
-    T=(phase==1)?prtab_patchT(prtab::PTL_F,prtab::PTL_FX,prtab::PTL_FY,prtab::PTL_FXY,rho,e)
-                :prtab_patchT(prtab::PTV_F,prtab::PTV_FX,prtab::PTV_FY,prtab::PTV_FXY,rho,e);
+    T=(phase==1)?prtab_patchT(tb.PLF,tb.PLFX,tb.PLFY,tb.PLFXY,rho,e)
+                :prtab_patchT(tb.PVF,tb.PVFX,tb.PVFY,tb.PVFXY,rho,e);
   else
     T=Tb;
 }

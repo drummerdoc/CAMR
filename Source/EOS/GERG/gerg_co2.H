@@ -19,12 +19,33 @@
 //  s J/kg/K, c m/s); internal per-mole.
 // =====================================================================
 
+#ifdef AMREX_USE_GPU
+#include <AMReX_GpuQualifiers.H>   // AMREX_GPU_CONSTANT, AMREX_IF_ON_DEVICE: this header is
+#endif                             // the first include of the generated data TU
 #include <cmath>
 
 #if defined(AMREX_GPU_HOST_DEVICE)
 #define GERG_HD AMREX_GPU_HOST_DEVICE inline
 #else
 #define GERG_HD inline
+#endif
+//  Coefficient arrays indexed at run time must live in device constant
+//  memory on a GPU build (a namespace-scope constexpr array is "undefined
+//  in device code" to nvcc); host builds keep them constexpr.  A header-
+//  defined const array has internal linkage, so every translation unit
+//  carries its own (small) copy.  docs/FUTURE_WORK.md §9.
+//  On a GPU build the arrays are DEFINED once, in gerg_coeffs.cpp (which
+//  sets GERG_DEFINE_COEFFS before including this header), and declared
+//  extern everywhere else: one __constant__ copy per array.  A copy per
+//  translation unit (header-defined __constant__ arrays) crashed nvlink
+//  (SIGFPE, CUDA 13.4) on the GERG and GERGTab builds.
+#if defined(AMREX_USE_GPU) && !defined(GERG_DEFINE_COEFFS)
+#define GERG_CONST extern AMREX_GPU_CONSTANT const
+#define GERG_COEFF_DECL_ONLY 1
+#elif defined(AMREX_USE_GPU)
+#define GERG_CONST extern AMREX_GPU_CONSTANT const   // extern + initializer = a definition with EXTERNAL linkage (a plain const array would be internal)
+#else
+#define GERG_CONST constexpr
 #endif
 
 namespace gerg {
@@ -45,7 +66,9 @@ constexpr double P_max  = 800.0e6;         // Pa
 constexpr double RR     = R_star / Rgas;
 
 constexpr int NTERM = 22, NPOL = 4;
-constexpr double A_EOS[NTERM] = {
+GERG_CONST double A_EOS[NTERM]
+#ifndef GERG_COEFF_DECL_ONLY
+    = {
      0.52646564804653,    -0.14995725042592e1,   0.27329786733782,
      0.12949500022786,     0.15404088341841,    -0.58186950946814,
     -0.18022494838296,    -0.95389904072812e-1, -0.80486819317679e-2,
@@ -53,19 +76,49 @@ constexpr double A_EOS[NTERM] = {
      0.10832427979006e-1, -0.67073993161097e-2, -0.46827907600524e-2,
     -0.28359911832177e-1,  0.19500174744098e-1, -0.21609137507166,
      0.43772794926972,    -0.22130790113593,     0.15190189957331e-1,
-    -0.15380948953300e-1 };
-constexpr double T_EOS[NTERM] = {
+    -0.15380948953300e-1 }
+#endif
+;
+GERG_CONST double T_EOS[NTERM]
+#ifndef GERG_COEFF_DECL_ONLY
+    = {
     0.00,1.25,1.625,0.375,0.375,1.375,1.125,1.375,0.125,1.625,
-    3.75,3.5,7.5,8.0,6.0,16.0,11.0,24.0,26.0,28.0,24.0,26.0 };
-constexpr int D_EOS[NTERM] = {1,1,2,3,3,3,4,5,6,6,1,4,1,1,3,3,4,5,5,5,5,5};
-constexpr int L_EOS[NTERM] = {0,0,0,0,1,1,1,1,1,1,2,2,3,3,3,3,3,5,5,5,6,6};
+    3.75,3.5,7.5,8.0,6.0,16.0,11.0,24.0,26.0,28.0,24.0,26.0 }
+#endif
+;
+GERG_CONST int D_EOS[NTERM]
+#ifndef GERG_COEFF_DECL_ONLY
+    = {1,1,2,3,3,3,4,5,6,6,1,4,1,1,3,3,4,5,5,5,5,5}
+#endif
+;
+GERG_CONST int L_EOS[NTERM]
+#ifndef GERG_COEFF_DECL_ONLY
+    = {0,0,0,0,1,1,1,1,1,1,2,2,3,3,3,3,3,5,5,5,6,6}
+#endif
+;
 
 // ideal-gas alpha0 (thermopack layout: cosh terms 4:5, sinh terms 6:7)
 constexpr double N1 = 11.925152758, N2 = -16.118762264, N3 = 2.50002;
-constexpr double V_COSH[2] = {1.06044, -0.01393};
-constexpr double B_COSH[2] = {-2.844425476, 1.12159609};
-constexpr double V_SINH[2] = {2.04452,  2.03366};
-constexpr double B_SINH[2] = {3.022758166, 1.589964364};
+GERG_CONST double V_COSH[2]
+#ifndef GERG_COEFF_DECL_ONLY
+    = {1.06044, -0.01393}
+#endif
+;
+GERG_CONST double B_COSH[2]
+#ifndef GERG_COEFF_DECL_ONLY
+    = {-2.844425476, 1.12159609}
+#endif
+;
+GERG_CONST double V_SINH[2]
+#ifndef GERG_COEFF_DECL_ONLY
+    = {2.04452,  2.03366}
+#endif
+;
+GERG_CONST double B_SINH[2]
+#ifndef GERG_COEFF_DECL_ONLY
+    = {3.022758166, 1.589964364}
+#endif
+;
 
 struct State {
     double T, P, rho;          // K, Pa, kg/m3

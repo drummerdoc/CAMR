@@ -12,7 +12,16 @@
 //  tools/gen_gergtab.cpp (`make gergtab-tables`) and git-ignored.
 //  Domain: log10 rho in [LR0,LR1], e in [E0,E1]; outside, GERG/EOS.H
 //  falls back to the identical analytic bisection (no accuracy cliff).
+//
+//  Device access: the generated arrays are host globals; the lookups read
+//  them through gergtab::tables() — host pointers on the host, a
+//  __constant__ struct of device-copy pointers on the device, filled once
+//  by gergtab::device_init() (gergtab_device.cpp, from CAMR::read_params).
+//  No managed memory; docs/FUTURE_WORK.md §9.
 // =====================================================================
+#ifdef AMREX_USE_GPU
+#include <AMReX_GpuQualifiers.H>   // AMREX_GPU_CONSTANT, AMREX_IF_ON_DEVICE: this header is
+#endif                             // the first include of the generated data TU
 #include <cmath>
 #include "gergtab_table_params.H"
 
@@ -23,6 +32,23 @@
 #endif
 
 namespace gergtab {
+
+// Pointers to the three T tables and their accuracy masks, host or device.
+struct Tables { const double *TA, *TL, *TV; const unsigned char *OKA, *OKL, *OKV; };
+extern const Tables h_tables;                 // the generated host arrays (gergtab_device.cpp)
+#ifdef AMREX_USE_GPU
+extern AMREX_GPU_CONSTANT Tables d_tables;    // device copies, set by device_init()
+#endif
+void device_init();                           // host, once, before any hydro (no-op on host builds)
+
+GERGTAB_HD inline const Tables& tables() {
+#if defined(AMREX_USE_GPU)
+    AMREX_IF_ON_DEVICE((return d_tables;))
+    AMREX_IF_ON_HOST((return h_tables;))
+#else
+    return h_tables;
+#endif
+}
 
 GERGTAB_HD inline bool in_domain(double rho, double e)
 {
@@ -66,11 +92,11 @@ GERGTAB_HD inline bool lookup(const double* A, const unsigned char* OK,
 }
 
 GERGTAB_HD inline bool T_auto(double rho, double e, double& T)
-{ return lookup(GT_TA, GT_OKA, rho, e, T); }
+{ const Tables& t = tables(); return lookup(t.TA, t.OKA, rho, e, T); }
 GERGTAB_HD inline bool T_liq (double rho, double e, double& T)
-{ return lookup(GT_TL, GT_OKL, rho, e, T); }
+{ const Tables& t = tables(); return lookup(t.TL, t.OKL, rho, e, T); }
 GERGTAB_HD inline bool T_vap (double rho, double e, double& T)
-{ return lookup(GT_TV, GT_OKV, rho, e, T); }
+{ const Tables& t = tables(); return lookup(t.TV, t.OKV, rho, e, T); }
 
 // ---- Seed-only lookups: the same bicubic with the accuracy mask ignored.
 //  The mask keeps table values away from the seam/dome kink, but the
@@ -79,11 +105,11 @@ GERGTAB_HD inline bool T_vap (double rho, double e, double& T)
 //  guard, so a masked node is still a good seed.  in_domain() is still
 //  required: outside the tabulated box there is no data.
 GERGTAB_HD inline bool T_auto_seed(double rho, double e, double& T)
-{ return in_domain(rho, e) && lookup(GT_TA, nullptr, rho, e, T); }
+{ return in_domain(rho, e) && lookup(tables().TA, nullptr, rho, e, T); }
 GERGTAB_HD inline bool T_liq_seed (double rho, double e, double& T)
-{ return in_domain(rho, e) && lookup(GT_TL, nullptr, rho, e, T); }
+{ return in_domain(rho, e) && lookup(tables().TL, nullptr, rho, e, T); }
 GERGTAB_HD inline bool T_vap_seed (double rho, double e, double& T)
-{ return in_domain(rho, e) && lookup(GT_TV, nullptr, rho, e, T); }
+{ return in_domain(rho, e) && lookup(tables().TV, nullptr, rho, e, T); }
 
 } // namespace gergtab
 #endif

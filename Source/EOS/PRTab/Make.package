@@ -17,3 +17,5 @@ CEXE_headers += hem_saturation_amrex.H
 # Table data (bicubic PR EOS) compiled ONCE here; prtab_bicubic.H only
 # declares the arrays extern, so the widely-included header stays small.
 CEXE_sources += prtab_table_data.cpp
+# Device copies of the tables and the host/device pointer struct (FUTURE_WORK §9).
+CEXE_sources += prtab_device.cpp
