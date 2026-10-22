@@ -66,3 +66,33 @@ Readings for the platform question:
 - The fixed-count bisection (GERG's divergence-free design) costs 4.3× the bracketed solve for the same accuracy at 64 steps; the table seed + 2 Newton steps gives the same accuracy at 0.42× the bracketed solve. On a full-rate FP64 part (H100) the arithmetic kernels (K1, K2, K4) should gain far more than the gather-bound K3; this is the measurement to repeat on Olivia.
 - Divergence: harvest order vs sorted made no difference here (1.75 vs 1.74 ns), but the deployment file is written branch by branch so this test is not yet a real mixed-warp test; a per-cell field order from a plotfile is needed.
 - **The CAMR table backends do not build for CUDA today.** `make DIM=1 USE_CUDA=TRUE Eos_Model=PRTab` fails with "identifier prtab::TBL_T is undefined in device code": the generated arrays are host `extern const double` globals, and the device lookups in `prtab_bicubic.H` reference them directly. The fix is mechanical (device copies with pointers passed in a params struct, as `gpu_bench.cu` does, or `AMREX_GPU_DEVICE_MANAGED` arrays), but until it lands the "on device the table is always on" note in the PRTab/GERGTab READMEs describes an untested path, and GERGTab has the same structure.
+
+## Pipe-break deck, four backends, CPU vs GPU — 2026-10-22 (`Exec/CO2_PipeBreak/bench/backend_bench.sh`, tag `L0_200`)
+
+`inputs.satjet_demo3` at level 0 only (256 × 128 = 32 768 cells), 200 steps, same commit (063bc1c, TinyProfiler on). CPU: 8 MPI ranks pinned to cores 64–125 (peart, EPYC). GPU: one rank, RTX PRO 6000 Blackwell (FP64 derated). Wall time excludes init.
+
+| backend | CPU 8 ranks, s | s/step | GPU 1 rank, s | s/step | GPU / CPU | GPU profile: relaxation / mass transfer / hydro |
+|---|--:|--:|--:|--:|--:|---|
+| PR (analytic Peng–Robinson, Illinois bracket) | 26.2 | 0.131 | 21.5 | 0.107 | 0.82 | 34 % / 11 % / 30 % (BC fill 18 %) |
+| PRTab (bicubic T table, analytic reconstruction) | 20.6 | 0.103 | 18.9 | 0.094 | 0.92 | 62 % / 15 % / 11 % |
+| GERG (Helmholtz, 64-step fixed bisection) | 342.0 | 1.71 | 1658.0 | 8.29 | 4.85 | 47 % / 20 % / 18 % |
+| GERGTab (table seed + 2 Newton on GERG) | 50.9 | 0.254 | 166.8 | 0.834 | 3.28 | 45 % / 22 % / 18 % |
+
+Agreement at step 200 (max |a−b| / max |b| over level 0; density / pressure / T / α₁):
+
+| pair | values |
+|---|---|
+| GPU vs CPU, PR | 5e-5 / 2e-5 / 4e-5 / 1e-4 |
+| GPU vs CPU, PRTab | 1.5e-4 / 1.4e-4 / 2.3e-4 / 2.5e-4 |
+| GPU vs CPU, GERG | 5e-7 / 2e-7 / 3e-7 / 1e-6 |
+| GPU vs CPU, GERGTab | 2.5e-6 / 7e-7 / 1.5e-6 / 5e-6 |
+| PRTab vs PR (CPU / GPU) | 2.2e-4 / 3.6e-5 / 6.5e-5 / 4.2e-4 and 2.2e-4 / 1.2e-4 / 2.5e-4 / 3.7e-4 |
+| GERGTab vs GERG (CPU / GPU) | 1.7e-6 / 4e-7 / 1e-6 / 3.5e-6 and 1.2e-6 / 2e-7 / 7e-7 / 2.3e-6 |
+| GERG vs PR (two fluid models) | 6e-2 / 1.5e-1 / 6e-2 / 1.1e-1 |
+
+Readings:
+- **The platform decides the ranking, not the table.** On the CPU the tables buy 21 % (PR → PRTab) and 6.7× (GERG → GERGTab), and GERGTab lands within 2× of analytic PR. On the derated-FP64 GPU the Helmholtz backends collapse: GERG is 77× slower than PR on the same card and 4.8× slower than 8 CPU cores; GERGTab recovers 10× of that but still runs 3.3× slower than its own CPU run. PR and PRTab are the only backends that are faster on this GPU than on 8 cores, and only barely, because 32 k cells is launch-bound (profile: BC fills and the relaxation launch sequence dominate, not arithmetic).
+- **The table does not change what the GPU does to the relaxation.** In every GPU run the relaxation operator takes 34–62 % and the mass-transfer source 11–22 %: the per-cell Newton iteration of X3 with its branch-locked EOS calls inside is the GPU hot spot for all four backends. For PRTab it is 62 % because everything else got cheap. That is where the FP32-seed + FP64-polish idea (gpu_bench K5+N) would act.
+- **Fixed-count arithmetic reproduces across platforms; bracketed iteration does not.** The GERG family agrees between GPU and CPU at 1e-6 to 1e-7, the PR family only at 1e-4 to 1e-5: the Illinois bracket exits at different iterations on the device, and the table seeds inherit the difference through the dt history. For reproducibility arguments the fixed-count design wins even where it loses on speed.
+- **Table-vs-analytic is platform-independent.** PRTab–PR ≈ 2e-4 and GERGTab–GERG ≈ 1e-6 on both platforms, the same magnitudes as the 1-D gates of FUTURE_WORK §9.
+- Caveat for the slide: this is a 32 k-cell level-0 run. The GPU numbers for PR and PRTab measure launch overhead, not throughput; a 1024 × 512 level-0 run (16× cells, a few minutes for PR/PRTab on the GPU) is the right size for the PR-family GPU/CPU ratio, while GERG at that size is hours on this card and should be measured on the H100, where full-rate FP64 is expected to move exactly the two Helmholtz rows.
