@@ -96,3 +96,17 @@ Readings:
 - **Fixed-count arithmetic reproduces across platforms; bracketed iteration does not.** The GERG family agrees between GPU and CPU at 1e-6 to 1e-7, the PR family only at 1e-4 to 1e-5: the Illinois bracket exits at different iterations on the device, and the table seeds inherit the difference through the dt history. For reproducibility arguments the fixed-count design wins even where it loses on speed.
 - **Table-vs-analytic is platform-independent.** PRTab–PR ≈ 2e-4 and GERGTab–GERG ≈ 1e-6 on both platforms, the same magnitudes as the 1-D gates of FUTURE_WORK §9.
 - Caveat for the slide: this is a 32 k-cell level-0 run. The GPU numbers for PR and PRTab measure launch overhead, not throughput; a 1024 × 512 level-0 run (16× cells, a few minutes for PR/PRTab on the GPU) is the right size for the PR-family GPU/CPU ratio, while GERG at that size is hours on this card and should be measured on the H100, where full-rate FP64 is expected to move exactly the two Helmholtz rows.
+
+### Same deck at 1024 × 512 (524 288 cells), level 0, 200 steps, `MAXGRID=128` — tag `L0big_200`
+
+| backend | CPU 8 ranks, s | Mcell-upd/s | GPU 1 rank, s | Mcell-upd/s | GPU / CPU speed-up | GPU profile: hydro / relaxation / BC fill |
+|---|--:|--:|--:|--:|--:|---|
+| PR | 260.9 | 0.40 | 47.2 | 2.22 | 5.5× | 56 % / 10 % / 16 % |
+| PRTab | 220.0 | 0.48 | 22.6 | 4.64 | 9.7× | 28 % / 36 % / 9 % |
+
+Agreement at step 200 (same t = 2.515e-4 s on all four): GPU vs CPU 0.7–1.4 % in ρ/P/T, 2–3 % in α₁, for both backends; PRTab vs PR the same 0.5–2 % on either platform — the chaotic-divergence level of the resolved shear layer (ch. 7.4), not a bias.
+
+Readings:
+- **At production size the GPU is 5.5× (PR) and 9.7× (PRTab) faster than 8 EPYC ranks**, where at 32 k cells both ratios were ~1: the 32 k-cell numbers were launch overhead, as suspected. Per cell update the GPU table backend reaches 4.6 Mcell/s against 2.2 for analytic PR.
+- **The table pays twice on the GPU, in opposite directions.** The hydro stage (ctoprim and the Riemann solver, where every cell calls the EOS) drops from 26.3 to 6.3 s (4.2×) — the bicubic replacing the Illinois bracket in the throughput-bound kernels. The relaxation stage rises from 4.7 to 8.1 s (1.7×; also at 32 k cells, 7.3 → 11.8 s). The relaxation queries trace and metastable per-phase states, where the table's guards (whitened 4σ, T range, dome gate) route a fraction of the cells to the analytic fallback: a warp then executes both paths, so the guard that makes the table safe costs divergence exactly where the states are hard. On the CPU the same stage is unchanged (30.3 → 27.2 s): no warps to diverge. This is the GPU-implementation point for the slide — on a GPU a guarded surrogate is only as fast as its fallback rate lets a warp be, so the guard geometry (how often and how clustered the fallbacks are) is a design quantity, and the regime-partitioned experts with their seams face the same issue.
+- Net for the PR family on this card: table 2.1× over analytic at production size; GERG family not run at this size here (hours on a derated-FP64 card; the H100 rows are the Olivia items).

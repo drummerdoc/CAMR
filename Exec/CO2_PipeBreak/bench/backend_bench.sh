@@ -20,9 +20,12 @@ TAG=${TAG:-L0_200}; MAX_LEVEL=${MAX_LEVEL:-0}; STEPS=${STEPS:-200}
 RANKS=${RANKS:-8}; CORES=${CORES:-64-125}; GPU_CORE=${GPU_CORE:-100}
 PLATFORMS=${PLATFORMS:-"cpu gpu"}; EOS=${EOS:-"PR PRTab GERG GERGTab"}
 DECK=${DECK:-inputs.satjet_demo3}
+NCELL=${NCELL:-}; MAXGRID=${MAXGRID:-}      # optional grid overrides, e.g. NCELL="1024 512" MAXGRID=128
 ROOT=runs/bench/$TAG; mkdir -p "$ROOT"
 COMMON="$DECK amr.max_level=$MAX_LEVEL max_step=$STEPS stop_time=1.0 amr.checkpoint_files_output=0 amr.plot_int=-1 amr.plot_per=-1 amr.v=1 CAMR.v=0"
-echo "# $(date -u +%FT%TZ) commit $(git -C ../.. rev-parse --short HEAD) deck $DECK max_level $MAX_LEVEL steps $STEPS ranks $RANKS" | tee "$ROOT/README.txt"
+[ -n "$NCELL" ] && COMMON="$COMMON amr.n_cell=$NCELL"
+[ -n "$MAXGRID" ] && COMMON="$COMMON amr.max_grid_size=$MAXGRID"
+echo "# $(date -u +%FT%TZ) commit $(git -C ../.. rev-parse --short HEAD) deck $DECK max_level $MAX_LEVEL steps $STEPS ranks $RANKS ncell ${NCELL:-deck} max_grid ${MAXGRID:-deck} host $(hostname) gpu $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)" | tee "$ROOT/README.txt"
 for plat in $PLATFORMS; do
   for eos in $EOS; do
     if [ "$plat" = gpu ]; then exe=CAMR2d.gnu.TPROF.MPI.CUDA.PS.$eos.ex; else exe=CAMR2d.gnu.TPROF.MPI.PS.$eos.ex; fi
@@ -31,10 +34,13 @@ for plat in $PLATFORMS; do
     if [ -s "$d/run.log" ] && grep -q 'Run time w/o init' "$d/run.log"; then echo "$eos $plat: done already"; continue; fi
     rm -rf "$d"/plt_*
     echo "== $eos $plat  ($(date +%T))"
+    # CORES / GPU_CORE empty = no taskset (inside a SLURM allocation let the scheduler bind)
     if [ "$plat" = gpu ]; then
-      ( cd "$d" && taskset -c "$GPU_CORE" mpirun --bind-to none -np 1 ../../../../$exe ../../../../$COMMON amr.plot_file=plt_ amr.plot_int=$STEPS > run.log 2>&1 )
+      PIN=(); [ -n "$GPU_CORE" ] && PIN=(taskset -c "$GPU_CORE")
+      ( cd "$d" && "${PIN[@]}" mpirun --bind-to none -np 1 ../../../../$exe ../../../../$COMMON amr.plot_file=plt_ amr.plot_int=$STEPS > run.log 2>&1 )
     else
-      ( cd "$d" && taskset -c "$CORES" mpirun --bind-to none -np "$RANKS" ../../../../$exe ../../../../$COMMON amr.plot_file=plt_ amr.plot_int=$STEPS > run.log 2>&1 )
+      PIN=(); [ -n "$CORES" ] && PIN=(taskset -c "$CORES")
+      ( cd "$d" && "${PIN[@]}" mpirun --bind-to none -np "$RANKS" ../../../../$exe ../../../../$COMMON amr.plot_file=plt_ amr.plot_int=$STEPS > run.log 2>&1 )
     fi
     echo "   exit $?  $(grep -E 'Run time w/o init' "$d/run.log" | tail -1)"
   done
