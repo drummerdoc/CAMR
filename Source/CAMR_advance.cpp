@@ -457,6 +457,9 @@ CAMR::CAMR_advance (Real time,
     };
     auto apply_ps_reaction = [&](amrex::MultiFab& S, amrex::Real dt_r,
                                  int ng, bool do_print) {
+#if defined(USE_PRTAB_EOS) && !defined(AMREX_USE_GPU)
+        EOS::prtab_diag::stage() = 1;   // PRTab guard census: calls below belong to the reaction operator
+#endif
         diag_mass(S, "A enter (post-hydro/C-F)");
         PS_CELL_PROBE(S, "A  enter (post-hydro)   ");
         ps_resync_mixture_mass(S, ng);  // URHO == UM1RHO1 + UM2RHO2 after hydro/C-F
@@ -510,6 +513,9 @@ CAMR::CAMR_advance (Real time,
 #endif
         PS_CELL_PROBE(S, "D  post sources        ");
         diag_a1(S, "reaction post-sources");// jump here => flash/source is the driver
+#if defined(USE_PRTAB_EOS) && !defined(AMREX_USE_GPU)
+        EOS::prtab_diag::stage() = 0;
+#endif
     };
     // Strang pre-hydro half step, applied to the old-time data in place so
     // that the expand_state FillPatch carries it into the Sborder ghost

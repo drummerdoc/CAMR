@@ -60,34 +60,37 @@
       static amrex::Real e_cache  [NSLOTS] = {amrex::Real(0), amrex::Real(0),
                                               amrex::Real(0), amrex::Real(0)};
       static hem::State  state_cache[NSLOTS];
+      static int         reason_cache[NSLOTS] = {0, 0, 0, 0};   // PRTab guard census (a hit replays its solve's reason)
       static int         next_slot = 0;
 
       // Bit-exact hit against any slot.
       hem::State st;
-      bool hit = false;
+      bool hit = false; int reason = 0;
       for (int s = 0; s < NSLOTS; ++s) {
           if (rho == rho_cache[s] && e == e_cache[s] && rho_cache[s] > amrex::Real(0)) {
-              st = state_cache[s]; hit = true; break;
+              st = state_cache[s]; reason = reason_cache[s]; hit = true; break;
           }
       }
       if (!hit) {
 #ifdef USE_PRTAB_EOS
           st = prtab_state_from_rho_e(rho, e);
+          reason = prtab_diag::last_reason();
 #else
           st = co2_solve_rho_e(rho, e);
 #endif
           rho_cache  [next_slot] = rho;
           e_cache    [next_slot] = e;
           state_cache[next_slot] = st;
+          reason_cache[next_slot] = reason;
           next_slot = (next_slot + 1) % NSLOTS;
       }
 #ifdef USE_PRTAB_EOS
       if (prtab_diag_enabled()) {                       // read-only diagnostic
           const hem::State pr = hem::state_from_rho_e(co2_fluid(), rho, e);
-          prtab_diag::record(site, 0 /*auto*/, rho, e, st, pr);
+          prtab_diag::record(site, 0 /*auto*/, rho, e, st, pr, reason);
       }
 #else
-      amrex::ignore_unused(site);
+      amrex::ignore_unused(site, reason);
 #endif
       return st;
 #endif
@@ -123,35 +126,38 @@
           {{amrex::Real(0), amrex::Real(0), amrex::Real(0), amrex::Real(0)},
            {amrex::Real(0), amrex::Real(0), amrex::Real(0), amrex::Real(0)}};
       static hem::State  state_cache[2][NSLOTS];
+      static int         reason_cache[2][NSLOTS] = {{0,0,0,0},{0,0,0,0}};   // PRTab guard census
       static int         next_slot [2] = {0, 0};
 
       hem::State st;
-      bool hit = false;
+      bool hit = false; int reason = 0;
       for (int s = 0; s < NSLOTS; ++s) {
           if (rho == rho_cache[p][s] && e == e_cache[p][s]
               && rho_cache[p][s] > amrex::Real(0)) {
-              st = state_cache[p][s]; hit = true; break;
+              st = state_cache[p][s]; reason = reason_cache[p][s]; hit = true; break;
           }
       }
       if (!hit) {
 #ifdef USE_PRTAB_EOS
           st = prtab_state_from_rho_e_phase(rho, e, phase);
+          reason = prtab_diag::last_reason();
 #else
           st = co2_solve_rho_e_phase(rho, e, phase);
 #endif
           rho_cache  [p][next_slot[p]] = rho;
           e_cache    [p][next_slot[p]] = e;
           state_cache[p][next_slot[p]] = st;
+          reason_cache[p][next_slot[p]] = reason;
           next_slot  [p] = (next_slot[p] + 1) % NSLOTS;
       }
 #ifdef USE_PRTAB_EOS
       if (prtab_diag_enabled()) {                       // read-only diagnostic
           const hem::State pr = hem::state_from_rho_e_phase(
               co2_fluid(), rho, e, phase, amrex::Real(-1.0));
-          prtab_diag::record(site, (p == 0) ? 1 : 2 /*branchL/V*/, rho, e, st, pr);
+          prtab_diag::record(site, (p == 0) ? 1 : 2 /*branchL/V*/, rho, e, st, pr, reason);
       }
 #else
-      amrex::ignore_unused(site);
+      amrex::ignore_unused(site, reason);
 #endif
       return st;
 #endif

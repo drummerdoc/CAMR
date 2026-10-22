@@ -138,10 +138,32 @@ namespace EOS {
     };
     static constexpr int  NB  = 24;         // hist bins per whitened axis
     static constexpr int  NW  = 16;         // worst-sample slots
+    // Why a call left the table path (guard census, CAMR.eos_diag): the
+    // first five are analytic fallbacks (a device warp holding one of them
+    // next to a table cell runs both paths), the last two are table paths
+    // that took a different route inside the table solve.
+    enum Reason : int { R_TABLE = 0, R_DISABLED, R_OOD_WHITE, R_LOW_RHO, R_T_RANGE, R_SAT_DEGEN,
+                        R_INDOME, R_BRANCH_T_FB, R_PATCH, NREASON };
+    inline const char* reason_name(int r) {
+        static const char* n[NREASON] = {"table","disabled","ood-whitened","low-rho","T-range",
+                                         "sat-degenerate","in-dome-lever","branchT->autoT","table-patch"};
+        return (r >= 0 && r < NREASON) ? n[r] : "?";
+    }
+    inline bool is_fallback(int r) { return r >= R_DISABLED && r <= R_SAT_DEGEN; }
+    inline int& last_reason() { static int r = R_TABLE; return r; }   // set by the table solves
+    // Which solver stage is calling: 0 = hydro and everything else, 1 = the
+    // Pelanti-Shyue reaction operator (relaxation, mass transfer, flash);
+    // set around apply_ps_reaction in CAMR_advance.cpp (host builds).
+    inline int& stage() { static int s = 0; return s; }
+    inline const char* stage_name(int s) { return s == 1 ? "reaction" : "hydro"; }
+    static constexpr int  WDIV = 32;        // divergence proxy: window of consecutive calls per site (a warp)
+    struct Seq { long n = 0, nfb = 0, trans = 0, nwin = 0, nmixed = 0; int prev = -1, wn = 0, wfb = 0; };
     struct Tbl {
         static constexpr long WIN = 32768;  // call-order window size
         long ncalls = 0, nzero = 0;
         Cell spr[NSITES][3][4];
+        long reason[NSITES][3][2][NREASON] = {};
+        Seq  seq[NSITES][3][2];
         Cell hist[3][NB][NB];
         Worst worst[NW];
         std::vector<double> wmean, wmax;
@@ -174,6 +196,22 @@ namespace EOS {
                          c.sc/double(c.n), c.mxc, c.mr, c.me);
         }
 
+        std::fprintf(f, "\n## guard fallbacks by site x path: n, analytic fallbacks (%%), then per reason; "
+                        "seq = fraction of consecutive calls that switch table<->fallback, "
+                        "mixed%d = fraction of %d-call windows holding both (warp-divergence proxy)\n", WDIV, WDIV);
+        std::fprintf(f, "%-9s %-14s %-8s %10s %10s %7s", "stage","site","path","n","fallback","fb%");
+        for (int r = 0; r < NREASON; ++r) std::fprintf(f, " %14s", reason_name(r));
+        std::fprintf(f, " %8s %8s\n", "seq%", "mixed%");
+        for (int g = 0; g < 2; ++g)
+        for (int s = 0; s < NSITES; ++s)
+        for (int p = 0; p < 3; ++p) {
+            const Seq& q = t.seq[s][p][g]; if (!q.n) continue;
+            std::fprintf(f, "%-9s %-14s %-8s %10ld %10ld %7.3f", stage_name(g), site_name(s), path_name(p), q.n, q.nfb, 100.0*q.nfb/double(q.n));
+            for (int r = 0; r < NREASON; ++r) std::fprintf(f, " %14ld", t.reason[s][p][g][r]);
+            std::fprintf(f, " %8.3f %8.3f\n", q.n > 1 ? 100.0*q.trans/double(q.n-1) : 0.0,
+                         q.nwin ? 100.0*q.nmixed/double(q.nwin) : 0.0);
+        }
+
         std::fprintf(f, "\n## worst-%d samples by relP\n", NW);
         for (int w = 0; w < NW; ++w) {
             const Worst& x = t.worst[w]; if (x.err < 0) continue;
@@ -203,9 +241,23 @@ namespace EOS {
     }
 
     inline void record(int site, int path, amrex::Real rho, amrex::Real e,
-                       const hem::State& m, const hem::State& p)
+                       const hem::State& m, const hem::State& p, int reason = R_TABLE)
     {
         Tbl& t = tbl();
+        if (site < 0 || site >= NSITES) site = S_OTHER;
+        if (path < 0 || path > 2)       path = 0;
+        if (reason < 0 || reason >= NREASON) reason = R_TABLE;
+        {   // guard census and the call-sequence divergence proxy
+            const int g = (stage() == 1) ? 1 : 0;
+            ++t.reason[site][path][g][reason];
+            Seq& q = t.seq[site][path][g];
+            const int fb = is_fallback(reason) ? 1 : 0;
+            ++q.n; q.nfb += fb;
+            if (q.prev >= 0 && q.prev != fb) ++q.trans;
+            q.prev = fb;
+            ++q.wn; q.wfb += fb;
+            if (q.wn == WDIV) { ++q.nwin; if (q.wfb > 0 && q.wfb < WDIV) ++q.nmixed; q.wn = 0; q.wfb = 0; }
+        }
         const double Pp = double(p.P), Pm = double(m.P);
         const double dP = std::abs(Pm - Pp) / std::max(std::abs(Pp), 1.0e5);
         const double dT = std::abs(double(m.T) - double(p.T))
@@ -278,32 +330,41 @@ namespace EOS {
   //  exactly as the PR auto-detect does; single-phase re-reads T from
   //  the detected branch's table, whose surface carries no dome kink.
   // ================================================================
+  // Host-only note of which guard a table solve took (the eos_diag census);
+  // nothing on the device.
+#if !defined(__CUDA_ARCH__) && !defined(__HIP_DEVICE_COMPILE__) && !defined(__SYCL_DEVICE_ONLY__)
+#define PRTAB_NOTE(r) (prtab_diag::last_reason() = (r))
+#else
+#define PRTAB_NOTE(r) ((void)0)
+#endif
+
   AMREX_GPU_HOST_DEVICE
   AMREX_FORCE_INLINE
   hem::State
   prtab_state_from_rho_e(amrex::Real rho, amrex::Real e)
   {
       const hem::PRFluid f = co2_fluid();
+      PRTAB_NOTE(prtab_diag::R_TABLE);
 #if !defined(__CUDA_ARCH__) && !defined(__HIP_DEVICE_COMPILE__) && !defined(__SYCL_DEVICE_ONLY__)
-      if (!prtab_enabled()) return hem::state_from_rho_e(f, rho, e);  // A/B: pure PR
-      if (!prtab_auto_enabled()) return hem::state_from_rho_e(f, rho, e); // split A/B
+      if (!prtab_enabled()) { PRTAB_NOTE(prtab_diag::R_DISABLED); return hem::state_from_rho_e(f, rho, e); }  // A/B: pure PR
+      if (!prtab_auto_enabled()) { PRTAB_NOTE(prtab_diag::R_DISABLED); return hem::state_from_rho_e(f, rho, e); } // split A/B
 #endif
       // Out-of-distribution guard on the whitened (rho,e).
       const double xr = (double(rho) - prtab::RHO_M) / prtab::RHO_S;
       const double xu = (double(e)   - prtab::U_M)   / prtab::U_S;
       if (std::abs(xr) > 4.0 || std::abs(xu) > 4.0)
-          return hem::state_from_rho_e(f, rho, e);
+      {   PRTAB_NOTE(prtab_diag::R_OOD_WHITE); return hem::state_from_rho_e(f, rho, e); }
       // The whitened guard never rejects low densities (xr > -0.79 for all
       // rho > 0) while the table's log10-rho axis starts at LR0; below it
       // the lookup would clamp and serve flat edge extrapolation.
       if (!(double(rho) > 0.0) ||
           std::log10(double(rho)) < double(prtab::LR0))
-          return hem::state_from_rho_e(f, rho, e);
+      {   PRTAB_NOTE(prtab_diag::R_LOW_RHO); return hem::state_from_rho_e(f, rho, e); }
       // Auto table: inside the dome it approximates the equilibrium T(rho,e).
       double T_pred, s_pred;
       prtab_fwd(double(rho), double(e), T_pred, s_pred);
       if (!std::isfinite(T_pred) || T_pred < 150.0 || T_pred > 1200.0)
-          return hem::state_from_rho_e(f, rho, e);                    // guard -> PR
+      {   PRTAB_NOTE(prtab_diag::R_T_RANGE); return hem::state_from_rho_e(f, rho, e); }  // guard -> PR
       const amrex::Real v_m = hem::v_PR_from_rho(f, rho);
 
       // Supercritical: single real root, one algebraic PR state.
@@ -318,9 +379,10 @@ namespace EOS {
       const hem::State satV = hem::satStateV(f, amrex::Real(T_pred), satL.P);
       if (!(std::isfinite(double(satL.rho)) && std::isfinite(double(satV.rho))
             && satL.rho > satV.rho))
-          return hem::state_from_rho_e(f, rho, e);        // degenerate near Tc -> PR
+      {   PRTAB_NOTE(prtab_diag::R_SAT_DEGEN); return hem::state_from_rho_e(f, rho, e); }  // degenerate near Tc -> PR
 
       if (rho < satL.rho && rho > satV.rho) {
+          PRTAB_NOTE(prtab_diag::R_INDOME);
           // In-dome: the only residual against PR is the table's T error
           // through dPsat/dT, not liquid stiffness.
           const amrex::Real x = (amrex::Real(1.0)/rho - amrex::Real(1.0)/satL.rho)
@@ -334,7 +396,7 @@ namespace EOS {
       double T_br, s_br;
       prtab_fwd_phase(double(rho), double(e), liq ? 1 : 2, T_br, s_br);
       if (!std::isfinite(T_br) || T_br < 150.0 || T_br > 1200.0)
-          T_br = T_pred;                                   // fall back to auto T
+      {   T_br = T_pred; PRTAB_NOTE(prtab_diag::R_BRANCH_T_FB); }   // fall back to auto T
       return hem::state_from_T_v(f, amrex::Real(T_br), v_m,
                                  liq ? hem::Phase3::Liquid : hem::Phase3::Vapor);
   }
@@ -354,18 +416,19 @@ namespace EOS {
                                hem::Phase3 phase)
   {
       const hem::PRFluid f = co2_fluid();
+      PRTAB_NOTE(prtab_diag::R_TABLE);
 #if !defined(__CUDA_ARCH__) && !defined(__HIP_DEVICE_COMPILE__) && !defined(__SYCL_DEVICE_ONLY__)
       if (!prtab_enabled())
-          return hem::state_from_rho_e_phase(f, rho, e, phase, amrex::Real(-1.0));
+      {   PRTAB_NOTE(prtab_diag::R_DISABLED); return hem::state_from_rho_e_phase(f, rho, e, phase, amrex::Real(-1.0)); }
 #endif
       const double xr = (double(rho) - prtab::RHO_M) / prtab::RHO_S;
       const double xu = (double(e)   - prtab::U_M)   / prtab::U_S;
       if (std::abs(xr) > 4.0 || std::abs(xu) > 4.0)
-          return hem::state_from_rho_e_phase(f, rho, e, phase, amrex::Real(-1.0));
+      {   PRTAB_NOTE(prtab_diag::R_OOD_WHITE); return hem::state_from_rho_e_phase(f, rho, e, phase, amrex::Real(-1.0)); }
       //  Low-rho in-domain check (see the auto entry).
       if (!(double(rho) > 0.0) ||
           std::log10(double(rho)) < double(prtab::LR0))
-          return hem::state_from_rho_e_phase(f, rho, e, phase, amrex::Real(-1.0));
+      {   PRTAB_NOTE(prtab_diag::R_LOW_RHO); return hem::state_from_rho_e_phase(f, rho, e, phase, amrex::Real(-1.0)); }
       const int ph_lv = (phase == hem::Phase3::Liquid) ? 1 : 2;
 #if !defined(__CUDA_ARCH__) && !defined(__HIP_DEVICE_COMPILE__) && !defined(__SYCL_DEVICE_ONLY__)
       const int ph = prtab_table_branch() ? ph_lv : 0;  // 0 -> auto table
@@ -375,7 +438,13 @@ namespace EOS {
       double T_pred, s_pred;
       prtab_fwd_phase(double(rho), double(e), ph, T_pred, s_pred);
       if (!std::isfinite(T_pred) || T_pred < 150.0 || T_pred > 1200.0)
-          return hem::state_from_rho_e_phase(f, rho, e, phase, amrex::Real(-1.0));
+      {   PRTAB_NOTE(prtab_diag::R_T_RANGE); return hem::state_from_rho_e_phase(f, rho, e, phase, amrex::Real(-1.0)); }
+#if !defined(__CUDA_ARCH__) && !defined(__HIP_DEVICE_COMPILE__) && !defined(__SYCL_DEVICE_ONLY__)
+      // Census only: the branch T came from the clamped Hermite dome patch
+      // rather than the base bicubic (a second code path inside the table).
+      if ((ph == 1 || ph == 2) && prtab_in_patch(std::log10(double(rho)), double(e)))
+          PRTAB_NOTE(prtab_diag::R_PATCH);
+#endif
       const amrex::Real v_m = hem::v_PR_from_rho(f, rho);
       return hem::state_from_T_v(f, amrex::Real(T_pred), v_m, phase);
   }

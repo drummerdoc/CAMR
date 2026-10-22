@@ -110,3 +110,26 @@ Readings:
 - **At production size the GPU is 5.5× (PR) and 9.7× (PRTab) faster than 8 EPYC ranks**, where at 32 k cells both ratios were ~1: the 32 k-cell numbers were launch overhead, as suspected. Per cell update the GPU table backend reaches 4.6 Mcell/s against 2.2 for analytic PR.
 - **The table pays twice on the GPU, in opposite directions.** The hydro stage (ctoprim and the Riemann solver, where every cell calls the EOS) drops from 26.3 to 6.3 s (4.2×) — the bicubic replacing the Illinois bracket in the throughput-bound kernels. The relaxation stage rises from 4.7 to 8.1 s (1.7×; also at 32 k cells, 7.3 → 11.8 s). The relaxation queries trace and metastable per-phase states, where the table's guards (whitened 4σ, T range, dome gate) route a fraction of the cells to the analytic fallback: a warp then executes both paths, so the guard that makes the table safe costs divergence exactly where the states are hard. On the CPU the same stage is unchanged (30.3 → 27.2 s): no warps to diverge. This is the GPU-implementation point for the slide — on a GPU a guarded surrogate is only as fast as its fallback rate lets a warp be, so the guard geometry (how often and how clustered the fallbacks are) is a design quantity, and the regime-partitioned experts with their seams face the same issue.
 - Net for the PR family on this card: table 2.1× over analytic at production size; GERG family not run at this size here (hours on a derated-FP64 card; the H100 rows are the Olivia items).
+
+### Why the table slows the relaxation stage on the GPU — measured 2026-10-22
+
+Two instruments, both on the `L0_200` deck (256 × 128, 200 steps). (1) `CAMR.eos_diag=1` now also records, per solver stage × call site × branch, which guard each PRTab call took (analytic fallbacks: table disabled, whitened 4σ, low density, T range, degenerate saturation; table-internal routes: in-dome lever rule, branch-T→auto-T, dome patch) and two divergence proxies on the call sequence (fraction of consecutive calls that switch table↔fallback; fraction of 32-call windows holding both). Serial host run, 177 M branch-locked calls. (2) ptxas register/spill counts of the reaction-operator kernels in the PR and PRTab CUDA builds (`CAMR_advance.cpp`, recompiled alone with `-Xptxas -v`).
+
+| census | hydro stage | reaction stage |
+|---|--:|--:|
+| branch-locked calls | 160.8 M (93 % vapour branch) | 16.3 M (73 % liquid branch) |
+| analytic fallbacks (any guard) | 0 | 0 |
+| dome-patch route | 0 | 0 |
+| consecutive-call switches / mixed 32-windows | 0 / 0 | 0 / 0 |
+
+| kernel | PR build | PRTab build |
+|---|--:|--:|
+| `ps_apply_relaxation` (X3 Newton) | 212 registers, 952 B spills | **255 registers**, 872 B spills |
+| `ps_apply_sources` (mass transfer, flash) | 213 registers, 200 B spills | **250 registers**, 760 B spills (+ a 130-register variant with 640 B) |
+| `ps_apply_floor` | 228, 0 | 228, 0 |
+
+Readings:
+- **The divergence hypothesis is refuted for this deck.** Not one of 177 M table calls left the table path over 200 steps, in either stage; the guards never fire, so no warp holds a fallback. (The dome patch is never entered either: its box, log₁₀ρ 3.15–3.30, is the compressed liquid of the 1-D B-cases, denser than the 851 kg/m³ saturated liquid of this reservoir.) The RESULTS entry above that attributed the relaxation slowdown to guard fallbacks is wrong and is superseded here.
+- **The cause is register pressure.** The table lookup — a 4 × 4 bicubic stencil, the in-patch test and the Hermite patch, then the analytic reconstruction — is inlined into the per-cell X3 Newton kernel, which is already at 212 registers with spills for analytic PR; with the table it hits the 255-register cap. At 255 registers a Blackwell SM holds 8 warps, so the gathers' latency (two dependent global loads per node) is not hidden, and the table's lighter arithmetic buys nothing. In the hydro kernels (40–154 registers) the same lookup has occupancy to spare and wins 4.2×. The CPU has no occupancy to lose: the relaxation stage is unchanged there.
+- **Consequences for the GPU slide and the surrogate design.** (a) An EOS surrogate's device cost is not a property of the surrogate alone but of the kernel it is inlined into; the same bicubic is a win in ctoprim and a loss in X3. (b) The remedy is structural, not a smaller table: hoist the EOS out of the Newton loop (seed from the table once, iterate on the analytic surface — the GERGTab design, which is exactly what `gpu_bench` K3+N measured at 0.74 ns/state), or split the relaxation kernel so the EOS evaluation is a separate, lighter launch. (c) The register budget rules out a 128×4 net inside X3 outright (255 registers for the net alone, `gpu_bench` K4); only a seed-sized net with FP64 polish could live there.
+- **The call census itself is a design input**: 93 % of hydro-stage calls are vapour-branch, 73 % of reaction-stage calls are liquid-branch (the relaxation iterates on the trace liquid), and the reaction stage makes 9 % of all EOS calls but takes 36–62 % of GPU time — the per-call cost in X3 is 7–15× the hydro per-call cost.
