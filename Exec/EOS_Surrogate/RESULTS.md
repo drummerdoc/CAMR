@@ -148,3 +148,26 @@ Node c1-18, AMD EPYC 9745 (zen5, 128 cores), 8 MPI ranks, SLURM-bound, commit 1f
 | L0big_200 PRTab | 231.4 | 1.16 | 220.0 | 1.05 |
 
 Readings: the two EPYC generations agree within ±15 % on every row, the arithmetic-heavy GERG family running 20–25 % faster on zen5 and the table-bound PRTab slightly slower; the profiles are the same shape (clean_state / floor / relaxation / estTimeStep). The CPU ranking is therefore robust across machines: GERGTab 6.6× over GERG (6.7× on peart), PRTab 1.04–1.07× over PR (1.19–1.27× on peart) — the table's CPU benefit for the PR family is smaller on zen5, where the Illinois bracket is cheap enough that the lookup's memory traffic offsets most of its arithmetic saving.
+
+## Olivia GPU half — NVIDIA GH200 (H100, full-rate FP64), one rank, 2026-10-23
+
+Node gpu-1-38, commit eab77ee, same deck and tags. The complete cross-platform matrix (seconds for 200 steps):
+
+| tag / backend | peart CPU 8 EPYC | Olivia CPU 8 EPYC 9745 | peart GPU RTX PRO 6000 | Olivia GPU GH200 | H100 / RTX speed-up | GH200 vs 8 zen5 ranks |
+|---|--:|--:|--:|--:|--:|--:|
+| L0_200 PR | 26.2 | 24.5 | 21.5 | 5.1 | 4.2× | 4.8× faster |
+| L0_200 PRTab | 20.6 | 23.5 | 18.9 | 4.6 | 4.1× | 5.1× faster |
+| L0_200 GERG | 342.0 | 263.1 | 1658.0 | 397.0 | 4.2× | 1.5× slower |
+| L0_200 GERGTab | 50.9 | 40.1 | 166.8 | 43.8 | 3.8× | parity |
+| L0big_200 PR | 260.9 | 247.2 | 47.2 | 10.1 | 4.7× | 24× faster |
+| L0big_200 PRTab | 220.0 | 231.4 | 22.6 | 7.0 | 3.2× | 33× faster |
+
+Cell-update throughput at 524 k cells: GH200 PR 10.4 Mcell/s, PRTab 14.9 Mcell/s (RTX: 2.2 and 4.6; zen5 8 ranks: 0.42 and 0.45).
+
+Readings — several of them against the expectation written before the runs:
+- **The H100 gives the same ~4× to every backend.** GERG gains 4.2×, PR 4.2×, PRTab 4.1×, GERGTab 3.8×. Full-rate FP64 did not single out the Helmholtz backends: GERG is 78× slower than PR on the H100 exactly as it was 77× slower on the RTX. The prediction that the two Helmholtz rows would move disproportionately is refuted. The reason is in the profiles: 60 % of GERG's GPU time is the relaxation kernel, 18 % the mass-transfer kernel — the per-cell X3 Newton with a 64-step bisection inside, a register-bound kernel with long dependent chains and few resident warps. Such a kernel is latency-bound, not FP64-throughput-bound, so a 30× richer FP64 pipe buys it the same ~4× that the faster SMs and HBM give everything else. On the GPU the Helmholtz backends are expensive because of *where* the EOS is called (inside a Newton iteration inside a register-capped kernel), not because of the FP64 rate — the same mechanism found for the PRTab relaxation slowdown.
+- **GERG on a GPU is still slower than 8 CPU cores**, on both machines (1.5× on Olivia, 4.8× on peart); GERGTab reaches parity with 8 zen5 ranks on the GH200. The table seed brings GERG within 8.6× of PR on the H100 and 7.8× on the RTX — the seed-plus-polish design is the one Helmholtz configuration a GPU can carry, and its gain (9×) is platform-independent.
+- **For the PR family the GPU advantage over 8 cores is 24–33× on the GH200 at production size**, against 5.5–9.7× on the RTX against peart's EPYC. The table's GPU benefit shrank with the better card: PRTab is 1.44× over PR at 524 k cells on the H100 (2.1× on the RTX; 1.07× on zen5 CPU; 1.19× on peart CPU) — the cheaper the analytic bracket gets, the less the gather-bound lookup can give back.
+- **The register-pressure effect reproduces on the H100**: at 524 k cells the table cuts the hydro stage 2.2× (4.46 → 1.99 s) and raises the relaxation stage 1.7× (1.32 → 2.19 s), the same two signs as on the RTX (4.2× and 1.7×). This is a property of the kernel structure, confirmed across two GPU generations.
+- **The platform slide, as the data actually came out:** the *ordering* of EOS strategies is the same on CPU, workstation GPU and datacenter GPU — table-seeded analytic (PRTab/GERGTab) ≥ analytic PR ≫ analytic Helmholtz — and what the platform changes is the *spread*: GERG/PR is 13× on CPU and 78× on either GPU; the GPU-over-8-core gain is 5× (RTX) to 30× (H100) for the PR family and ≤ 1× for analytic GERG. The device does not reorder the strategies; it decides how badly the wrong kernel structure is punished, and it punishes the EOS-inside-Newton structure, not the EOS arithmetic. That reframes the GPU work item (O-28): hoisting the EOS out of the relaxation Newton is worth more than any choice of EOS surface.
+- Not run on Olivia: the per-state microbenchmark (`gpu_bench`, needs `data/` copied) and the 2048 × 1024 saturation check; both are optional now that the 524 k-cell GH200 run shows 10–15 Mcell/s, 5× the RTX, i.e. the GPU was not launch-bound at that size.
