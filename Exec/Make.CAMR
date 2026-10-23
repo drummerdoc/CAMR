@@ -141,6 +141,9 @@ clean-gergtab-tables:
 ifeq ($(Eos_Model),$(filter $(Eos_Model),GERGTab))
    DEFINES += -DUSE_GERGTAB_EOS
    EOS_DIR = GERGTab
+   ifeq ($(USE_CUDA),TRUE)
+     CXXFLAGS += -diag-suppress 20091      # see the GERG block
+   endif
    # Physics lives in Source/EOS/GERG (included by path); this dir owns the
    # bicubic module + generated tables.  Fail early if tables are absent.
    ifeq (,$(filter gergtab-tables clean-gergtab-tables,$(MAKECMDGOALS)))
@@ -152,6 +155,11 @@ endif
 ifeq ($(Eos_Model),$(filter $(Eos_Model),GERG))
    DEFINES += -DUSE_GERG_EOS
    EOS_DIR = GERG
+   ifeq ($(USE_CUDA),TRUE)
+     # The GERG coefficient arrays are __constant__ on a GPU build (gerg_co2.H); host code reads their
+     # statically initialised host shadow, which is well defined but draws nvcc's #20091-D once per use.
+     CXXFLAGS += -diag-suppress 20091
+   endif
    # (suffix added below, after all backends have been selected)
    # GERG-2008 pure-CO2 backend (analytic stage; guarded evaluator +
    # generated saturation/edge splines, all committed headers -- no
