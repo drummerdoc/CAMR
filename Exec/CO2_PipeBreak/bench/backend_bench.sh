@@ -46,7 +46,7 @@ for plat in $PLATFORMS; do
   done
 done
 echo; echo "== summary"
-python3 runs/tools/throughput.py $(for plat in $PLATFORMS; do for eos in $EOS; do [ -s "$ROOT/${eos}_$plat/run.log" ] && echo "$ROOT/${eos}_$plat/run.log"; done; done) | tee "$ROOT/summary.txt"
+python3 bench/throughput.py $(for plat in $PLATFORMS; do for eos in $EOS; do [ -s "$ROOT/${eos}_$plat/run.log" ] && echo "$ROOT/${eos}_$plat/run.log"; done; done) | tee "$ROOT/summary.txt"
 echo; echo "== TinyProfiler: top exclusive entries per run"
 for plat in $PLATFORMS; do for eos in $EOS; do
   f=$ROOT/${eos}_$plat/run.log; [ -s "$f" ] || continue

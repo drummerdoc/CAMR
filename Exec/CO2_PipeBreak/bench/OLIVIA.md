@@ -142,7 +142,7 @@ tar czf olivia_bench_$(date +%F).tgz \
     Exec/CO2_PipeBreak/runs/bench/*/*/job_info 2>/dev/null
 ```
 
-Per run the `run.log` carries everything used in `RESULTS.md`: `Run time w/o init`, the `STEP =` lines (step count), the regrid summary (cells per level, for `runs/tools/throughput.py`) and the TinyProfiler table at the end. The plotfiles are not needed; if agreement across machines is wanted as well, keep `plt_00200` of the `L0_200` runs (level 0 only, ~30 MB each) and compare with `Exec/fingerprint_plt.py` against peart's.
+Per run the `run.log` carries everything used in `RESULTS.md`: `Run time w/o init`, the `STEP =` lines (step count), the regrid summary (cells per level, for `bench/throughput.py`) and the TinyProfiler table at the end. The plotfiles are not needed; if agreement across machines is wanted as well, keep `plt_00200` of the `L0_200` runs (level 0 only, ~30 MB each) and compare with `Exec/fingerprint_plt.py` against peart's.
 
 ## 9. What the comparison is for
 
