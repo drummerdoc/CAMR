@@ -35,6 +35,18 @@ make tables            # PRTab: builds tools/gen_table (g++) and runs build_tabl
 make gergtab-tables    # GERGTab: builds and runs tools/gen_gergtab 256 (g++), ~10 s
 ```
 
+If `make tables` dies with `Illegal instruction (core dumped)` before printing `compiling gen_table ...`, the site's Python stack (e.g. `SciPy-bundle/...`) is built for the compute nodes' instruction set and the login node's CPU lacks it; the sampler itself is plain `-O2` and is not the cause. Confirm with `python3 -c "import numpy, scipy.ndimage"` (same crash). Then either:
+
+- copy the generated tables from peart — they are deterministic text generated from the same sources, so this is exactly equivalent to generating them:
+  ```bash
+  scp marcusd@peart:src/CAMR/Source/EOS/PRTab/prtab_table_{data.cpp,params.H} $HOME/src/CAMR/Source/EOS/PRTab/
+  scp marcusd@peart:src/CAMR/Source/EOS/GERGTab/gergtab_table_{data.cpp,params.H} $HOME/src/CAMR/Source/EOS/GERGTab/
+  ```
+- or generate on a compute node, where the module's ISA is supported: `srun --partition=PARTITION --account=ACCOUNT --ntasks=1 --time=00:10:00 make tables`
+- or use a venv with generic wheels instead of the module (unload it first): `module purge; module load Python/3; python3 -m venv $HOME/camr_py; source $HOME/camr_py/bin/activate; pip install numpy scipy; make tables`.
+
+`make gergtab-tables` needs only g++ and is unaffected.
+
 ## 4. Executables (eight; build on a node of the target architecture, or with `CUDA_ARCH` set)
 
 ```bash
