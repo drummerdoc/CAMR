@@ -13,7 +13,9 @@
 # Runs from the aarch64 (GH200) checkout, which holds the CUDA executables:
 #   CAMR2d.gnu.TPROF.MPI.CUDA.PS.<eos>.ex, built on an accel node with CUDA_ARCH=90.
 set -euo pipefail
-module purge
+# Lmod here is hierarchical: the NRIS/<stack> module exposes the neoverse_v2 software, so never `module purge`.
+# The accel nodes' default init loads the GPU stack; if `module load GCC/13.3.0` fails here, add that stack module
+# (see `module list` in an accel allocation) in front of it, as the CPU script does with NRIS/CPU.
 module load GCC/13.3.0 OpenMPI/5.0.3-GCC-13.3.0 CUDA/12.6.0
 export AMREX_HOME=${AMREX_HOME:-$HOME/src/amrex}
 cd "${CAMR_GPU_TREE:-$HOME/src/CAMR-gh200}/Exec/CO2_PipeBreak"

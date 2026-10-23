@@ -5,14 +5,21 @@ The same measurements as `RESULTS.md` (Exec/EOS_Surrogate) made on peart (RTX PR
 1. `bench/backend_bench.sh` — the pipe-break deck, four EOS backends, CPU and GPU, fixed step count, TinyProfiler on. Tags to reproduce: `L0_200` (256×128, 200 steps, all four backends) and `L0big_200` (1024×512, `MAXGRID=128`, PR and PRTab).
 2. `Exec/EOS_Surrogate/gpu_bench.cu` — the per-state EOS kernels (analytic inversion, fixed bisection, bicubic table, MLPs) on the harvested deployment states.
 
-Everything below assumes a SLURM cluster; partition, account and module names are placeholders — check them with `sinfo`, `sacctmgr show assoc user=$USER` and `module avail`. Olivia's accelerated nodes are expected to be GH200 (Grace ARM host + H100, `CUDA_ARCH=90`, aarch64 toolchain); its CPU partition is x86 (AMD EPYC). Set the architecture explicitly: AMReX's default is `CUDA_ARCH=70` when it cannot probe a GPU, and login nodes usually cannot.
+Olivia is a SLURM cluster. Account `nn12019k`. Partitions: `small` (default; x86 AMD EPYC zen5, up to one node, billed per core and GiB), `large` (whole x86 nodes, 256 cores, up to 9 nodes), `accel` (GH200: Grace ARM host + H100, `CUDA_ARCH=90`, aarch64 toolchain; `--gpus=N` required). `--qos=devel` combines with any of them: 2 h limit, high priority, 2 running jobs per user. The login nodes are x86 and see no GPU, so set `CUDA_ARCH=90` explicitly: AMReX's default is `CUDA_ARCH=70` when it cannot probe one.
 
 ## 0. Layout that works on Olivia (learned 2026-10-23)
 
 - **Use bash.** The interactive shells there may start in tcsh; `backend_bench.sh`, the build loops and every command below are bash. Type `bash` first.
 - **One checkout per architecture.** The build directory and the executable names do not encode the CPU architecture, and both node types see the same filesystem, so a tree touched by both ends in `ld: ... file in wrong format`. Keep `~/src/CAMR` for the x86 (zen5) CPU executables, built in a CPU allocation, and `~/src/CAMR-gh200` for the CUDA executables, built in an `accel` allocation on a GH200 node. Both trees need the four generated table files (section 3).
 - **The zen5 GCCcore/13.3.0 module cannot compile `<mutex>` under `-pthread`**: its `include-fixed/pthread.h` is a fixincludes copy from an older glibc than the node's, and AMReX always passes `-pthread`. Workaround without admin rights: `mkdir -p ~/fixinc && ln -sf /usr/include/pthread.h ~/fixinc/pthread.h && export CPATH=$HOME/fixinc${CPATH:+:$CPATH}` (the CPU sbatch does this when `~/fixinc` exists). Worth reporting to the site. The `neoverse_v2` GCC is fine.
-- Confirmed modules: CPU `GCC/13.3.0 OpenMPI/5.0.3-GCC-13.3.0`; GPU the same plus `CUDA/12.6.0`. Account `nn12019k`; partitions `small` (CPU, used with `--qos=devel` interactively) and `accel` (GPU).
+- Confirmed modules: CPU `NRIS/CPU GCC/13.3.0 OpenMPI/5.0.3-GCC-13.3.0`; GPU `GCC/13.3.0 OpenMPI/5.0.3-GCC-13.3.0 CUDA/12.6.0` on top of the accel nodes' default stack. Lmod is hierarchical: `module purge` removes the `NRIS/<stack>` module and with it the visibility of `GCC/13.3.0`, so the sbatch scripts do not purge. Account `nn12019k`; partitions `small` (CPU, used with `--qos=devel` interactively) and `accel` (GPU).
+- **Interactive allocations for building** (`devel` QOS: 2 h, high priority). `salloc` opens a shell on the node; if the prompt still shows a login node, `srun --pty bash`. Run `bash` once there. The allocation dies with the login shell, so start it inside `tmux`.
+  ```bash
+  # x86 CPU build, in ~/src/CAMR
+  salloc --account=nn12019k --partition=small --qos=devel --ntasks=1 --cpus-per-task=16 --mem=32G --time=02:00:00
+  # GH200 CUDA build, in ~/src/CAMR-gh200 (a GPU must be requested on accel; it also lets AMReX probe the arch)
+  salloc --account=nn12019k --partition=accel --qos=devel --nodes=1 --ntasks=1 --cpus-per-task=16 --mem=64G --gpus=1 --time=02:00:00
+  ```
 
 ## 1. Sources
 
@@ -26,10 +33,10 @@ git clone git@github.com:drummerdoc/CAMR.git && (cd CAMR && git checkout co2-eos
 
 ```bash
 module purge
-module load GCC/13            # anything with C++20; peart uses gcc 15.2
-module load OpenMPI           # plain MPI is enough (one rank per GPU; no CUDA-aware MPI needed)
-module load CUDA/12           # peart: CUDA 13.4; any 12.x works, nvcc + nvlink needed for -rdc
-module load Python/3          # for `make tables` (numpy + scipy) and the analysis scripts
+module load GCC/13.3.0 OpenMPI/5.0.3-GCC-13.3.0     # both trees; plain MPI is enough (one rank per GPU; no CUDA-aware MPI needed)
+module load CUDA/12.6.0                            # GH200 tree only; nvcc + nvlink needed for -rdc
+[ -d "$HOME/fixinc" ] && export CPATH=$HOME/fixinc${CPATH:+:$CPATH}   # x86 only; the include-fixed/pthread.h workaround of section 0
+module load Python/3          # for `make tables` (numpy + scipy) and the analysis scripts; see section 3 if it dies on the login node
 python3 -m venv $HOME/camr_py && source $HOME/camr_py/bin/activate && pip install numpy scipy
 export AMREX_HOME=$HOME/src/amrex
 ```
@@ -49,23 +56,34 @@ If `make tables` dies with `Illegal instruction (core dumped)` before printing `
   scp marcusd@peart:src/CAMR/Source/EOS/PRTab/prtab_table_{data.cpp,params.H} $HOME/src/CAMR/Source/EOS/PRTab/
   scp marcusd@peart:src/CAMR/Source/EOS/GERGTab/gergtab_table_{data.cpp,params.H} $HOME/src/CAMR/Source/EOS/GERGTab/
   ```
-- or generate on a compute node, where the module's ISA is supported: `srun --partition=PARTITION --account=ACCOUNT --ntasks=1 --time=00:10:00 make tables`
+- or generate on a compute node, where the module's ISA is supported: `srun --account=nn12019k --partition=small --qos=devel --ntasks=1 --mem=8G --time=00:10:00 make tables`
 - or use a venv with generic wheels instead of the module (unload it first): `module purge; module load Python/3; python3 -m venv $HOME/camr_py; source $HOME/camr_py/bin/activate; pip install numpy scipy; make tables`.
 
 `make gergtab-tables` needs only g++ and is unaffected.
 
 ## 4. Executables (eight; build on a node of the target architecture, or with `CUDA_ARCH` set)
 
+Inside the `small` allocation of section 0 (x86 tree):
+
 ```bash
 cd $HOME/src/CAMR/Exec/CO2_PipeBreak
 for eos in PR PRTab GERG GERGTab; do
   make -j16 DIM=2 USE_CUDA=FALSE TINY_PROFILE=TRUE Eos_Model=$eos
-  make -j16 DIM=2 USE_CUDA=TRUE  CUDA_ARCH=90 TINY_PROFILE=TRUE Eos_Model=$eos
 done
-ls CAMR2d.gnu.TPROF.MPI*.ex          # expect 8: ...MPI.PS.<eos>.ex and ...MPI.CUDA.PS.<eos>.ex
+ls CAMR2d.gnu.TPROF.MPI.PS.*.ex      # expect 4
 ```
 
-The CPU executables must be built on (or for) the node type they run on: once on the x86 CPU partition, and once on a GH200 node if the Grace CPUs are to be timed as well (keep the two trees or the two build directories apart; `make clean` between them).
+Inside the `accel` allocation (GH200 tree, `CUDA/12.6.0` loaded):
+
+```bash
+cd $HOME/src/CAMR-gh200/Exec/CO2_PipeBreak
+for eos in PR PRTab GERG GERGTab; do
+  make -j16 DIM=2 USE_CUDA=TRUE CUDA_ARCH=90 TINY_PROFILE=TRUE Eos_Model=$eos
+done
+ls CAMR2d.gnu.TPROF.MPI.CUDA.PS.*.ex # expect 4
+```
+
+Never build both in one tree (section 0: `file in wrong format`). If the Grace CPUs are to be timed as well, build `USE_CUDA=FALSE` in the GH200 tree after a `make clean`, or in a third tree.
 
 ## 5. Runs
 
@@ -86,7 +104,24 @@ TAGSUFFIX=_fullnode sbatch --ntasks=<cores on the node> ~/src/CAMR/Exec/CO2_Pipe
 
 Expected costs from peart, for sizing the time limits: `L0_200` CPU 8 ranks: PR 26 s, PRTab 21 s, GERG 342 s, GERGTab 51 s; GPU: PR 22 s, PRTab 19 s, GERG 1658 s (derated FP64 — expect a large improvement on H100), GERGTab 167 s. `L0big_200` is 16× the cells: PR/PRTab a few minutes; GERG at that size was not run on peart.
 
-## 6. The EOS microbenchmark
+## 6. Watching the queue
+
+```bash
+squeue --me                                            # pending (PD) and running (R) jobs; gone = finished
+squeue --me -o '%.10i %.14j %.9P %.2t %.10M %.6D %R'   # adds the pending reason (Priority, Resources, QOSMax...)
+scontrol show job <jobid> | grep -E 'JobState|Reason|StartTime|StdOut'
+```
+
+A job has completed when it has left `squeue` and `sacct` shows `COMPLETED` with exit code `0:0`:
+
+```bash
+sacct --starttime today -X --format=JobID,JobName%14,Partition,State,ExitCode,Elapsed,End
+sacct -j <jobid> -X --format=JobID,State,ExitCode,Elapsed,MaxRSS
+```
+
+Both sbatch scripts run under `set -euo pipefail`, so any failing step ends the job as `FAILED` with a non-zero exit code; `TIMEOUT` means the time limit hit (GERG is the slow backend). The job's stdout is `camr_eos_{cpu,gpu}_<jobid>.out` in the directory `sbatch` was run from; its last lines are the `summary.txt` of the second tag, and each finished run has `runs/bench/<tag>/<platform>_<eos>/run.log` ending in the TinyProfiler table. For a mail at the end: `sbatch --mail-type=END,FAIL --mail-user=<address> ...`. To follow live: `watch -n 60 squeue --me`, or `tail -f` the `.out` file.
+
+## 7. The EOS microbenchmark
 
 Needs the harvested deployment states, which are generated files; copy them from peart rather than regenerating:
 
@@ -94,10 +129,10 @@ Needs the harvested deployment states, which are generated files; copy them from
 scp -r marcusd@peart:src/CAMR/Exec/EOS_Surrogate/data $HOME/src/CAMR/Exec/EOS_Surrogate/
 cd $HOME/src/CAMR/Exec/EOS_Surrogate
 ARCH=sm_90 ./build_gpu_bench.sh                       # on a node with nvcc; needs the PRTab tables of step 3
-srun --partition=PARTITION --gpus=1 --time=00:10:00 ./gpu_bench 2097152 data/deploy.csv | tee results/gpu_bench_h100.txt
+srun --account=nn12019k --partition=accel --qos=devel --gpus=1 --mem=16G --time=00:10:00 ./gpu_bench 2097152 data/deploy.csv | tee results/gpu_bench_h100.txt
 ```
 
-## 7. What to bring back
+## 8. What to bring back
 
 ```bash
 cd $HOME/src/CAMR
@@ -109,6 +144,6 @@ tar czf olivia_bench_$(date +%F).tgz \
 
 Per run the `run.log` carries everything used in `RESULTS.md`: `Run time w/o init`, the `STEP =` lines (step count), the regrid summary (cells per level, for `runs/tools/throughput.py`) and the TinyProfiler table at the end. The plotfiles are not needed; if agreement across machines is wanted as well, keep `plt_00200` of the `L0_200` runs (level 0 only, ~30 MB each) and compare with `Exec/fingerprint_plt.py` against peart's.
 
-## 8. What the comparison is for
+## 9. What the comparison is for
 
 The three rows that should move on a full-rate-FP64 part are GERG, GERGTab and the FP64 net of the microbenchmark; the bicubic table row (gather-bound) and the PR rows (branchy, launch-bound at 32 k cells) should move much less. That contrast — the same code, the same inputs, the ranking of EOS strategies flipping with the arithmetic-to-bandwidth ratio of the device — is the platform slide.
