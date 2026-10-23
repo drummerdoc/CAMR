@@ -13,6 +13,7 @@
 #   CAMR2d.gnu.TPROF.MPI.PS.<eos>.ex.  RANKS follows --ntasks.
 set -euo pipefail
 # Lmod here is hierarchical: NRIS/CPU exposes the zen5 stack, so never `module purge` (it hides GCC/13.3.0).
+export LMOD_PAGER=none PAGER=cat GIT_PAGER=cat   # no pager: the module stack's libtinfo breaks the system `more`/`less`
 module load NRIS/CPU GCC/13.3.0 OpenMPI/5.0.3-GCC-13.3.0
 # zen5 GCCcore/13.3.0 ships a stale include-fixed/pthread.h (glibc mismatch): put the node's own
 # pthread.h first.  Set up once with:  mkdir -p ~/fixinc && ln -sf /usr/include/pthread.h ~/fixinc/pthread.h

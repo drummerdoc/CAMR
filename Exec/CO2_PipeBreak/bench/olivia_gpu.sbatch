@@ -15,6 +15,7 @@
 set -euo pipefail
 # Lmod here is hierarchical: NRIS/GPU exposes the neoverse_v2 stack (loaded by default on accel nodes, explicit
 # here so the job does not depend on that); never `module purge`.
+export LMOD_PAGER=none PAGER=cat GIT_PAGER=cat   # no pager: the module stack's libtinfo breaks the system `more`/`less`
 module load NRIS/GPU GCC/13.3.0 OpenMPI/5.0.3-GCC-13.3.0 CUDA/12.6.0
 export AMREX_HOME=${AMREX_HOME:-$HOME/src/amrex}
 cd "${CAMR_GPU_TREE:-$HOME/src/CAMR-gh200}/Exec/CO2_PipeBreak"
