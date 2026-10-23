@@ -17,7 +17,7 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 TAG=${TAG:-L0_200}; MAX_LEVEL=${MAX_LEVEL:-0}; STEPS=${STEPS:-200}
-RANKS=${RANKS:-8}; CORES=${CORES:-64-125}; GPU_CORE=${GPU_CORE:-100}
+RANKS=${RANKS:-8}; CORES=${CORES-64-125}; GPU_CORE=${GPU_CORE-100}   # unset = peart defaults; empty (SLURM) = no taskset
 PLATFORMS=${PLATFORMS:-"cpu gpu"}; EOS=${EOS:-"PR PRTab GERG GERGTab"}
 DECK=${DECK:-inputs.satjet_demo3}
 NCELL=${NCELL:-}; MAXGRID=${MAXGRID:-}      # optional grid overrides, e.g. NCELL="1024 512" MAXGRID=128
