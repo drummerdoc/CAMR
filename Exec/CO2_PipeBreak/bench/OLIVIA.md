@@ -7,6 +7,13 @@ The same measurements as `RESULTS.md` (Exec/EOS_Surrogate) made on peart (RTX PR
 
 Everything below assumes a SLURM cluster; partition, account and module names are placeholders — check them with `sinfo`, `sacctmgr show assoc user=$USER` and `module avail`. Olivia's accelerated nodes are expected to be GH200 (Grace ARM host + H100, `CUDA_ARCH=90`, aarch64 toolchain); its CPU partition is x86 (AMD EPYC). Set the architecture explicitly: AMReX's default is `CUDA_ARCH=70` when it cannot probe a GPU, and login nodes usually cannot.
 
+## 0. Layout that works on Olivia (learned 2026-10-23)
+
+- **Use bash.** The interactive shells there may start in tcsh; `backend_bench.sh`, the build loops and every command below are bash. Type `bash` first.
+- **One checkout per architecture.** The build directory and the executable names do not encode the CPU architecture, and both node types see the same filesystem, so a tree touched by both ends in `ld: ... file in wrong format`. Keep `~/src/CAMR` for the x86 (zen5) CPU executables, built in a CPU allocation, and `~/src/CAMR-gh200` for the CUDA executables, built in an `accel` allocation on a GH200 node. Both trees need the four generated table files (section 3).
+- **The zen5 GCCcore/13.3.0 module cannot compile `<mutex>` under `-pthread`**: its `include-fixed/pthread.h` is a fixincludes copy from an older glibc than the node's, and AMReX always passes `-pthread`. Workaround without admin rights: `mkdir -p ~/fixinc && ln -sf /usr/include/pthread.h ~/fixinc/pthread.h && export CPATH=$HOME/fixinc${CPATH:+:$CPATH}` (the CPU sbatch does this when `~/fixinc` exists). Worth reporting to the site. The `neoverse_v2` GCC is fine.
+- Confirmed modules: CPU `GCC/13.3.0 OpenMPI/5.0.3-GCC-13.3.0`; GPU the same plus `CUDA/12.6.0`. Account `nn12019k`; partitions `small` (CPU, used with `--qos=devel` interactively) and `accel` (GPU).
+
 ## 1. Sources
 
 ```bash
@@ -64,17 +71,17 @@ The CPU executables must be built on (or for) the node type they run on: once on
 
 `bench/backend_bench.sh` takes its settings from the environment (see its header). `CORES` is passed to `taskset`; inside a SLURM allocation leave it empty (`CORES=""`) and let SLURM bind. `GPU_CORE` likewise.
 
-GPU job (one rank, one GPU; each tag in its own job or both in one):
+GPU job (one rank, one GPU, both tags), submitted from anywhere; it runs in `~/src/CAMR-gh200` (override with `CAMR_GPU_TREE`):
 
 ```bash
-sbatch bench/olivia_gpu.sbatch         # edit ACCOUNT / PARTITION first
+sbatch ~/src/CAMR-gh200/Exec/CO2_PipeBreak/bench/olivia_gpu.sbatch
 ```
 
-CPU jobs (8 ranks, to compare with peart's 8 EPYC ranks; and one full node for the "all cores" number):
+CPU jobs, run in `~/src/CAMR` (override with `CAMR_CPU_TREE`): 8 ranks to compare with peart's 8 EPYC ranks, and one full node for the "all cores" number:
 
 ```bash
-sbatch bench/olivia_cpu.sbatch         # RANKS=8
-RANKS=$(nproc) TAGSUFFIX=_fullnode sbatch bench/olivia_cpu.sbatch
+sbatch ~/src/CAMR/Exec/CO2_PipeBreak/bench/olivia_cpu.sbatch
+TAGSUFFIX=_fullnode sbatch --ntasks=<cores on the node> ~/src/CAMR/Exec/CO2_PipeBreak/bench/olivia_cpu.sbatch
 ```
 
 Expected costs from peart, for sizing the time limits: `L0_200` CPU 8 ranks: PR 26 s, PRTab 21 s, GERG 342 s, GERGTab 51 s; GPU: PR 22 s, PRTab 19 s, GERG 1658 s (derated FP64 — expect a large improvement on H100), GERGTab 167 s. `L0big_200` is 16× the cells: PR/PRTab a few minutes; GERG at that size was not run on peart.
