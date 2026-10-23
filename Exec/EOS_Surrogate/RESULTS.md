@@ -133,3 +133,18 @@ Readings:
 - **The cause is register pressure.** The table lookup — a 4 × 4 bicubic stencil, the in-patch test and the Hermite patch, then the analytic reconstruction — is inlined into the per-cell X3 Newton kernel, which is already at 212 registers with spills for analytic PR; with the table it hits the 255-register cap. At 255 registers a Blackwell SM holds 8 warps, so the gathers' latency (two dependent global loads per node) is not hidden, and the table's lighter arithmetic buys nothing. In the hydro kernels (40–154 registers) the same lookup has occupancy to spare and wins 4.2×. The CPU has no occupancy to lose: the relaxation stage is unchanged there.
 - **Consequences for the GPU slide and the surrogate design.** (a) An EOS surrogate's device cost is not a property of the surrogate alone but of the kernel it is inlined into; the same bicubic is a win in ctoprim and a loss in X3. (b) The remedy is structural, not a smaller table: hoist the EOS out of the Newton loop (seed from the table once, iterate on the analytic surface — the GERGTab design, which is exactly what `gpu_bench` K3+N measured at 0.74 ns/state), or split the relaxation kernel so the EOS evaluation is a separate, lighter launch. (c) The register budget rules out a 128×4 net inside X3 outright (255 registers for the net alone, `gpu_bench` K4); only a seed-sized net with FP64 polish could live there.
 - **The call census itself is a design input**: 93 % of hydro-stage calls are vapour-branch, 73 % of reaction-stage calls are liquid-branch (the relaxation iterates on the trace liquid), and the reaction stage makes 9 % of all EOS calls but takes 36–62 % of GPU time — the per-call cost in X3 is 7–15× the hydro per-call cost.
+
+## Olivia (Sigma2), same tags, same commit family — CPU half, 2026-10-23
+
+Node c1-18, AMD EPYC 9745 (zen5, 128 cores), 8 MPI ranks, SLURM-bound, commit 1feaed6. GPU half (GH200, H100) pending. peart's 8 EPYC ranks in the right-hand columns for reference.
+
+| tag / backend | Olivia, s | Olivia s/step | peart, s | Olivia / peart |
+|---|--:|--:|--:|--:|
+| L0_200 PR | 24.5 | 0.12 | 26.2 | 0.94 |
+| L0_200 PRTab | 23.5 | 0.12 | 20.6 | 1.14 |
+| L0_200 GERG | 263.1 | 1.32 | 342.0 | 0.77 |
+| L0_200 GERGTab | 40.1 | 0.20 | 50.9 | 0.79 |
+| L0big_200 PR | 247.2 | 1.24 | 260.9 | 0.95 |
+| L0big_200 PRTab | 231.4 | 1.16 | 220.0 | 1.05 |
+
+Readings: the two EPYC generations agree within ±15 % on every row, the arithmetic-heavy GERG family running 20–25 % faster on zen5 and the table-bound PRTab slightly slower; the profiles are the same shape (clean_state / floor / relaxation / estTimeStep). The CPU ranking is therefore robust across machines: GERGTab 6.6× over GERG (6.7× on peart), PRTab 1.04–1.07× over PR (1.19–1.27× on peart) — the table's CPU benefit for the PR family is smaller on zen5, where the Illinois bracket is cheap enough that the lookup's memory traffic offsets most of its arithmetic saving.
