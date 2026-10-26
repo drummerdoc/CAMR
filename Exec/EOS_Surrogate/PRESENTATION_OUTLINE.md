@@ -1,6 +1,6 @@
-# Short version (≈ 18 min, 11 slides) — technical but broad audience
+# Short version (≈ 18 min, 12 slides) — technical but broad audience
 
-The long outline below is the reference; this is the cut to give. One message: **a surrogate is only as good as the system knowledge built into it — and the platform decides how much a wrong structure costs.** Figures are in `figures/` (`make_figures.py`).
+The long outline below is the reference; this is the cut to give. One message: **ML alone can be improved considerably by incorporating system knowledge — and that is what makes it the route to practical, multi-component problems, where tables stop scaling.** Second message: the platform decides how much a wrong kernel structure costs. Figures are in `figures/` (`make_figures.py`).
 
 1. **Title and the one-line claim.** Real-fluid two-phase CO₂ (pipe break, blowdown); the EOS is called a billion times per run; we tried tables, machine learning and the analytic forms on CPUs, a workstation GPU and a datacenter GPU.
 
@@ -16,13 +16,15 @@ The long outline below is the reference; this is the cut to give. One message: *
 
 7. **The fully structured surrogate is a table.** `fig4_accuracy_cost.png`. Table one smooth quantity + analytic reconstruction: 0.0015 K and 0.17 ns/state; the best net 0.12 K and 80 ns. The net's place: a seed for two Newton polishes. Point: the table is what you get when all the knowledge is structure.
 
-8. **Now the platform: the same four backends on four machines.** `fig5_cost_matrix.png`. The ranking never changes (table-seeded ≥ analytic PR ≫ analytic Helmholtz); the spread does: 13× on CPU, 78× on either GPU; the datacenter GPU gives every backend the same 4×, not a rescue for the FP64-heavy ones.
+8. **Why pursue ML at all, if the table wins?** Because the table wins in two dimensions. A pure fluid is $(\rho, e)$; a practical CCS stream is CO₂ with N₂, O₂, CH₄, H₂S…, and every impurity adds a composition axis. PRTab is 3 MB at 256²; one composition axis at 64 points makes it 200 MB, two make it 12 GB — past the GPU's constant and cache memory and past the generation budget (every node is a flash calculation). A 50 k-parameter net is 400 KB in any dimension; what grows is the *data* it needs, and that is exactly what the harvester and the novelty ledger target. Point: tables are the right answer for the pure fluid; the ML route is the one that scales to practical problems — *if* the system knowledge that made it accurate in 2-D comes along.
 
-9. **Why: the cost belongs to the kernel, not the EOS.** `fig6_stage_split.png`. The same table makes the hydro stage 2–4× faster and the relaxation stage 1.7× slower on both GPUs, nothing on CPUs — the lookup inlined into a register-capped Newton kernel; 0 guard fallbacks in 177 M calls (the divergence story we expected was wrong). Point: on a GPU, *where* the EOS is called decides more than what it computes.
+9. **Now the platform: the same four backends on four machines.** `fig5_cost_matrix.png`. The ranking never changes (table-seeded ≥ analytic PR ≫ analytic Helmholtz); the spread does: 13× on CPU, 78× on either GPU; the datacenter GPU gives every backend the same 4×, not a rescue for the FP64-heavy ones.
 
-10. **Outlook: mixtures.** The phase-envelope figure from `PHASE_ENVELOPE_PLAN.md` if ready, else one slide of text: everything shown is fluid-agnostic except the backend; composition is one more coordinate for the loci.
+10. **Why: the cost belongs to the kernel, not the EOS.** `fig6_stage_split.png`. The same table makes the hydro stage 2–4× faster and the relaxation stage 1.7× slower on both GPUs, nothing on CPUs — the lookup inlined into a register-capped Newton kernel; 0 guard fallbacks in 177 M calls (the divergence story we expected was wrong). Point: on a GPU, *where* the EOS is called decides more than what it computes.
 
-11. **Takeaways.** (i) Harvest the deployment distribution before training anything; the system tells you where it lives. (ii) Put knowledge in as structure — branches, loci, regions — not as features; the limit of that is a table with analytic reconstruction. (iii) On GPUs, hoist the EOS out of the Newton loop; the device punishes structure, not arithmetic. (iv) Three predictions we wrote down were refuted by the measurements; the instrumentation that refuted them is the part worth keeping.
+11. **Outlook: mixtures, where the two messages meet.** The phase-envelope figure (`PHASE_ENVELOPE_PLAN.md`, `fig7_phase_envelopes.png` if ready): the saturation loci move continuously with composition, so the knowledge the net needs is one more coordinate, not a new method; the harvester, the novelty ledger and the seed-plus-polish structure carry over unchanged; the table does not. What remains to build is the mixture backend itself (GERG-2008 is the pure-fluid limit of the mixture model).
+
+12. **Takeaways.** (i) Harvest the deployment distribution before training anything; the system tells you where it lives. (ii) ML alone is a weak surrogate here; ML with the system's structure built in — branches, traced loci, regions — is a strong one, and in two dimensions its limit is a table with analytic reconstruction. (iii) The reason to take the ML route anyway is dimension: composition axes make tables impractical, and the structure transfers while the table does not. (iv) On GPUs, hoist the EOS out of the Newton loop; the device punishes structure, not arithmetic. (v) Three predictions we wrote down were refuted by the measurements; the instrumentation that refuted them is the part worth keeping.
 
 Cut from the long version to fit: the microbenchmark kernel table, the weighted-loss and seam details, the refusal test (fold one sentence into slide 6), the Olivia build lessons, and the design-rules slide (now takeaway iii).
 
@@ -35,7 +37,7 @@ Drafted 2026-10-26 from `RESULTS.md` (this directory), `docs/DESIGN_DECISIONS.md
 Two threads, one thesis:
 
 1. **The platform decides the spread, not the ranking.** Table-seeded analytic ≥ analytic PR ≫ analytic Helmholtz on every machine; what the device changes is how hard the wrong *kernel structure* is punished.
-2. **Machine learning earns its place here only with the system's structure built in.** Where you sample is worth 4×, knowledge of the C1 geometry 2× on average and 6–10× where it matters, structure (routing) another 10× in pressure — and the fully structured limit of that programme is the table, which is still 100× more accurate and 400× faster than the best net.
+2. **ML alone can be improved considerably by incorporating system knowledge.** Where you sample is worth 4×, knowledge of the C1 geometry 2× on average and 6–10× where it matters, structure (routing) another 10× in pressure — and the fully structured limit of that programme is the table, which is still 100× more accurate and 400× faster than the best net. The reason to take the ML route at all is dimension: tables stop scaling when composition axes appear, the structure transfers.
 
 ---
 
@@ -69,7 +71,7 @@ Two threads, one thesis:
 
 **12. The free refusal test.** The density-range locus flags **1778 / 1778** no-root deployment inputs before any net is asked, at 3 % false positives (the analytic-fallback price). Message: the traced geometry also tells you when not to answer.
 
-**13. Against the table.** PRTab inside its guard: **0.0015 K rms, max 0.010 K, on 94.7 % of deployment states; exact C1**; best net 0.12–0.15 K, 0.1–0.2 % derivative noise. Microbenchmark: table 0.17 ns/state vs 128×4 FP64 net 80 ns (255 registers + spills), FP32 8.4 ns. Message: the fully structured surrogate is a table; the net's room is as a *seed* (FP32 net + 2 FP64 Newton = analytic accuracy at 9.6 ns).
+**13. Against the table — and why ML anyway.** PRTab inside its guard: **0.0015 K rms, max 0.010 K, on 94.7 % of deployment states; exact C1**; best net 0.12–0.15 K, 0.1–0.2 % derivative noise. Microbenchmark: table 0.17 ns/state vs 128×4 FP64 net 80 ns (255 registers + spills), FP32 8.4 ns. Message: the fully structured surrogate is a table; the net's room is as a *seed* (FP32 net + 2 FP64 Newton = analytic accuracy at 9.6 ns). Then the turn: the table wins in two state dimensions; each impurity species in a practical stream adds a composition axis, and PRTab's 3 MB becomes 200 MB with one axis at 64 points and 12 GB with two — past device memory and past the generation budget, since every node is a flash calculation. A 50 k-parameter net stays 400 KB; its appetite for data grows instead, which is what the harvester and the ledger feed. The structure (loci as coordinates, seed + polish) transfers; the table does not.
 
 ## Part 3 — The platform (7 slides)
 
