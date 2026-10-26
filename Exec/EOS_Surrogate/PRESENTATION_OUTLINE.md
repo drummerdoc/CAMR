@@ -4,7 +4,8 @@ The long outline below is the reference; this is the cut to give. One message: *
 
 1. **Title and the one-line claim.** Real-fluid two-phase CO₂ (pipe break, blowdown); the EOS is called a billion times per run; we tried tables, machine learning and the analytic forms on CPUs, a workstation GPU and a datacenter GPU.
 
-2. **The EOS the solver needs is not the textbook one.** One picture of the branch-locked contract: $(ho, e)$ → T on a named branch, metastable continuation, "no root" as an answer. Two numbers: the reaction operator makes 9 % of the calls and takes up to 60 % of GPU time. *No table.*
+2. **The EOS the solver needs is not the textbook one.** One picture of the branch-locked contract: $(
+ho, e)$ → T on a named branch, metastable continuation, "no root" as an answer. Two numbers: the reaction operator makes 9 % of the calls and takes up to 60 % of GPU time. *No table.*
 
 3. **Where the solver actually goes.** `fig1_deployment_cloud.png`. A third of the visited states are below the triple point, 1 778 inputs have no root on their branch; the "hard" states of a naive harvest turned out to be noise from phases that are not EOS inputs at all. Point: system knowledge starts before the first training sample.
 
