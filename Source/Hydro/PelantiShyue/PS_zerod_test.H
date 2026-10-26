@@ -26,6 +26,14 @@
 // ---------------------------------------------------------------------
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <chrono>
+#include <fstream>
+#include <sstream>
+#include <string>
+#include <vector>
+#include <algorithm>
+#include <limits>
 #include <AMReX_Print.H>
 #include "hem_pelanti_shyue.H"
 #include "PS_relaxation.H"
@@ -378,6 +386,206 @@ inline int ps_relax_corner_sweep()
     return total_unsafe;
 }
 
+
+
+// ---------------------------------------------------------------------
+//  ps_x3_replay_bench (CAMR.ps_x3_replay=<cells.csv>): replay the X3
+//  relaxation operator, off-line and serially, on the cell inputs a run
+//  harvested (CAMR.ps_harvest_cells, PS_harvest.H).  The development loop
+//  of docs/DESIGN_DECISIONS.md O-28: change the operator, replay the same
+//  cells, compare outcome and cost without re-running the deck.
+//    Per cell: ps_x3_relax_cell on the harvested V6 with the harvested dt
+//    (CAMR.ps_x3_replay_dt > 0 overrides), the operator dials as the run
+//    had them (ps_x3_params_from_dials), the outcome class from the
+//    PsX3Stats deltas, sub-steps, Newton iterations, path evaluations,
+//    band-exit code, wall time (best of CAMR.ps_x3_replay_reps, 1), and
+//    the exit state's T_k, P_k.  A cell file written by the same code
+//    carries the in-situ outcome; the replay must reproduce it exactly
+//    (the operator is deterministic and history-free), and every cell
+//    that does not is counted and fails the gate, so an operator change
+//    shows up as a deliberate mismatch, never as noise.
+//    Written: CAMR.ps_x3_replay_out (default <cells.csv>.replay.csv), one
+//    row per cell; printed: the outcome census, visit-weighted and
+//    unweighted, the cost percentiles, and the fidelity check.
+//  Returns the number of fidelity failures (0 when the file carries no
+//  in-situ outcome), or 1 when the file cannot be read.
+// ---------------------------------------------------------------------
+inline int ps_x3_replay_bench(const std::string& file)
+{
+    const hem::PsPhaseAPI eos = ps_make_camr_eos_api();
+    if (!eos.valid()) { amrex::Print() << "[ps-X3] EOS API invalid\n"; return 1; }
+
+    struct Cell { double U[6], dt; long count; int has_ref, ok_ref; double a1_ref, E1_ref, E2_ref; long nsub_ref, nit_ref; };
+    std::vector<Cell> cells;
+    {
+        std::ifstream is(file);
+        if (!is) { amrex::Print() << "[ps-X3] replay: cannot open " << file << "\n"; return 1; }
+        std::string line;
+        while (std::getline(is, line)) {
+            if (line.empty() || line[0] == '#' || line[0] == 'a') continue;   // header: alpha1,...
+            std::vector<double> v;
+            std::string tok; std::istringstream ls(line);
+            while (std::getline(ls, tok, ',')) { if (!tok.empty()) v.push_back(std::strtod(tok.c_str(), nullptr)); }
+            if (v.size() < 8) continue;
+            Cell c{};
+            for (int n = 0; n < 6; ++n) c.U[n] = v[n];
+            c.dt = v[6]; c.count = (long)v[7];
+            c.has_ref = (v.size() >= 18) ? 1 : 0;
+            if (c.has_ref) { c.ok_ref = (int)v[12]; c.a1_ref = v[13]; c.E1_ref = v[14]; c.E2_ref = v[15];
+                             c.nsub_ref = (long)v[16]; c.nit_ref = (long)v[17]; }
+            cells.push_back(c);
+        }
+    }
+    if (cells.empty()) { amrex::Print() << "[ps-X3] replay: no cells in " << file << "\n"; return 1; }
+
+    const hem::PsX3Params xp0 = ps_x3_params_from_dials();
+    const double dt_override = double(ps_dial_real("ps_x3_replay_dt", amrex::Real(0.0)));
+    const int    reps        = std::max(1, ps_dial_int("ps_x3_replay_reps", 1));
+    const std::string out    = ps_dial_string("ps_x3_replay_out", (file + ".replay.csv").c_str());
+
+    amrex::Print() << "\n===== PS X3 replay bench: " << cells.size() << " cells from " << file
+                   << "  (theta=" << xp0.theta << " h_w=" << xp0.h_w << " srt_D=" << xp0.srt_D
+                   << " srt_delta=" << xp0.srt_delta << " dt=" << (dt_override > 0.0 ? "override" : "harvested")
+                   << " reps=" << reps << ") =====\n";
+
+    //  Outcome classes, from the PsX3Stats deltas of the one call.
+    enum { K_OK = 0, K_REFUSED, K_STOOD, K_PROJ_ENTRY, K_NEWTON, K_DEAD, K_SUBCAP, K_FAIL_OTHER, K_N };
+    const char* KNM[K_N] = { "ok", "entry_refused", "gate_stood", "proj_entry", "newton", "dead", "subcap", "fail_other" };
+    long   kcount[K_N] = {0}, kweight[K_N] = {0};
+    long   n_tiny = 0, n_proj_path = 0;
+    std::vector<long>   nits, nsubs, npaths;
+    std::vector<double> ns_cell;
+    double ns_total = 0.0, ns_weighted = 0.0;
+    long   n_fid_checked = 0, n_fid_fail = 0, n_cost_diff = 0;
+    double fid_da1_max = 0.0, fid_dE_max = 0.0;
+
+    std::ofstream os(out);
+    if (os) {
+        os << "idx,ok,class,exit,nsub,nit,npath,ns,count,a1_in,a1_out,dE1rel,dE2rel,T1,T2,P1,P2,dT_pre,dT_post,ref_match\n";
+        os.setf(std::ios::scientific); os.precision(10);
+    }
+    nits.reserve(cells.size()); nsubs.reserve(cells.size()); npaths.reserve(cells.size()); ns_cell.reserve(cells.size());
+
+    for (std::size_t ic = 0; ic < cells.size(); ++ic) {
+        const Cell& c = cells[ic];
+        const double dt = (dt_override > 0.0) ? dt_override : c.dt;
+        hem::V6 W; bool ok = false; int exit_code = 0; double dT_pre = -1.0, dT_post = -1.0;
+        hem::PsX3Stats d{};
+        double best_ns = std::numeric_limits<double>::infinity();
+        for (int r = 0; r < reps; ++r) {
+            for (int n = 0; n < 6; ++n) W[n] = c.U[n];
+            hem::PsX3Params xp = xp0;
+            exit_code = 0; dT_pre = dT_post = -1.0;
+            xp.exit_code = &exit_code; xp.dT_pre = &dT_pre; xp.dT_post = &dT_post;
+            const hem::PsX3Stats s0 = hem::ps_x3_stats();
+            const auto t0 = std::chrono::steady_clock::now();
+            ok = hem::ps_x3_relax_cell(W, eos, dt, xp);
+            const auto t1 = std::chrono::steady_clock::now();
+            const hem::PsX3Stats s1 = hem::ps_x3_stats();
+            const double ns = std::chrono::duration<double, std::nano>(t1 - t0).count();
+            if (ns < best_ns) best_ns = ns;
+            d.n_entry_refused = s1.n_entry_refused - s0.n_entry_refused;
+            d.n_gate_stood    = s1.n_gate_stood    - s0.n_gate_stood;
+            d.n_proj_entry    = s1.n_proj_entry    - s0.n_proj_entry;
+            d.n_proj_path     = s1.n_proj_path     - s0.n_proj_path;
+            d.n_newton        = s1.n_newton        - s0.n_newton;
+            d.n_dead          = s1.n_dead          - s0.n_dead;
+            d.n_subcap        = s1.n_subcap        - s0.n_subcap;
+            d.n_tiny_nonconv  = s1.n_tiny_nonconv  - s0.n_tiny_nonconv;
+            d.n_sub = s1.n_sub - s0.n_sub; d.n_nit = s1.n_nit - s0.n_nit; d.n_path = s1.n_path - s0.n_path;
+        }
+        int kl;
+        if      (ok && d.n_gate_stood > 0) kl = K_STOOD;
+        else if (ok)                       kl = K_OK;
+        else if (d.n_entry_refused > 0)    kl = K_REFUSED;
+        else if (d.n_proj_entry > 0)       kl = K_PROJ_ENTRY;
+        else if (d.n_subcap > 0)           kl = K_SUBCAP;
+        else if (d.n_dead > 0)             kl = K_DEAD;
+        else if (d.n_newton > 0)           kl = K_NEWTON;
+        else                               kl = K_FAIL_OTHER;
+        ++kcount[kl]; kweight[kl] += c.count;
+        n_tiny += d.n_tiny_nonconv; n_proj_path += d.n_proj_path;
+        nits.push_back(d.n_nit); nsubs.push_back(d.n_sub); npaths.push_back(d.n_path);
+        ns_cell.push_back(best_ns); ns_total += best_ns; ns_weighted += best_ns * double(c.count);
+
+        // Fidelity against the in-situ outcome.
+        int match = -1;
+        if (c.has_ref) {
+            ++n_fid_checked;
+            const double da1 = std::abs(W[0] - c.a1_ref);
+            const double dE  = std::max(std::abs(W[4] - c.E1_ref) / std::max(std::abs(c.E1_ref), 1.0),
+                                        std::abs(W[5] - c.E2_ref) / std::max(std::abs(c.E2_ref), 1.0));
+            fid_da1_max = std::max(fid_da1_max, da1); fid_dE_max = std::max(fid_dE_max, dE);
+            match = ((ok ? 1 : 0) == c.ok_ref && da1 == 0.0 && dE == 0.0) ? 1 : 0;
+            if (!match) ++n_fid_fail;
+            if (d.n_sub != c.nsub_ref || d.n_nit != c.nit_ref) ++n_cost_diff;
+        }
+
+        if (os) {
+            const hem::PsState s = hem::ps_state_from_cons(W, eos);
+            const double nan = std::numeric_limits<double>::quiet_NaN();
+            os << ic << ',' << (ok ? 1 : 0) << ',' << KNM[kl] << ',' << exit_code << ','
+               << d.n_sub << ',' << d.n_nit << ',' << d.n_path << ',' << best_ns << ',' << c.count << ','
+               << c.U[0] << ',' << W[0] << ','
+               << (W[4] - c.U[4]) / std::max(std::abs(c.U[4]), 1.0) << ','
+               << (W[5] - c.U[5]) / std::max(std::abs(c.U[5]), 1.0) << ','
+               << (s.valid ? s.p1.T : nan) << ',' << (s.valid ? s.p2.T : nan) << ','
+               << (s.valid ? s.p1.P : nan) << ',' << (s.valid ? s.p2.P : nan) << ','
+               << dT_pre << ',' << dT_post << ',' << match << '\n';
+        }
+    }
+
+    //  Census and cost.
+    long wtotal = 0; for (const auto& c : cells) wtotal += c.count;
+    char line[700];
+    amrex::Print() << "  outcome            cells   (share)     visits   (share)\n";
+    for (int kl = 0; kl < K_N; ++kl) {
+        if (kcount[kl] == 0) continue;
+        std::snprintf(line, sizeof line, "  %-16s %8ld  (%6.2f%%)  %9ld  (%6.2f%%)\n", KNM[kl],
+                      kcount[kl], 100.0 * double(kcount[kl]) / double(cells.size()),
+                      kweight[kl], 100.0 * double(kweight[kl]) / double(std::max(wtotal, 1L)));
+        amrex::Print() << line;
+    }
+    amrex::Print() << "  tiny-increment commits " << n_tiny << ", path projection failures " << n_proj_path << "\n";
+    auto pct = [](std::vector<long> v, double q) -> long {
+        if (v.empty()) return 0L; std::sort(v.begin(), v.end());
+        return v[std::min(v.size() - 1, (std::size_t)(q * double(v.size())))]; };
+    auto pctd = [](std::vector<double> v, double q) -> double {
+        if (v.empty()) return 0.0; std::sort(v.begin(), v.end());
+        return v[std::min(v.size() - 1, (std::size_t)(q * double(v.size())))]; };
+    long nit_sum = 0, nsub_sum = 0, npath_sum = 0;
+    for (std::size_t i = 0; i < nits.size(); ++i) { nit_sum += nits[i]; nsub_sum += nsubs[i]; npath_sum += npaths[i]; }
+    const double nc = double(cells.size());
+    std::snprintf(line, sizeof line,
+        "  cost per cell        mean      p50      p90      p99      max\n"
+        "    sub-steps      %8.2f %8ld %8ld %8ld %8ld\n"
+        "    Newton its     %8.2f %8ld %8ld %8ld %8ld\n"
+        "    path evals     %8.2f %8ld %8ld %8ld %8ld\n"
+        "    wall [us]      %8.2f %8.2f %8.2f %8.2f %8.2f\n",
+        double(nsub_sum) / nc,  pct(nsubs, 0.5),  pct(nsubs, 0.9),  pct(nsubs, 0.99),  pct(nsubs, 1.0),
+        double(nit_sum) / nc,   pct(nits, 0.5),   pct(nits, 0.9),   pct(nits, 0.99),   pct(nits, 1.0),
+        double(npath_sum) / nc, pct(npaths, 0.5), pct(npaths, 0.9), pct(npaths, 0.99), pct(npaths, 1.0),
+        ns_total / nc * 1.0e-3, pctd(ns_cell, 0.5) * 1.0e-3, pctd(ns_cell, 0.9) * 1.0e-3,
+        pctd(ns_cell, 0.99) * 1.0e-3, pctd(ns_cell, 1.0) * 1.0e-3);
+    amrex::Print() << line;
+    std::snprintf(line, sizeof line,
+        "  total wall %.3f ms over %zu cells; visit-weighted mean %.2f us/cell over %ld visits\n",
+        ns_total * 1.0e-6, cells.size(), ns_weighted / double(std::max(wtotal, 1L)) * 1.0e-3, wtotal);
+    amrex::Print() << line;
+    if (n_fid_checked > 0) {
+        std::snprintf(line, sizeof line,
+            "  fidelity vs in-situ: %ld/%ld cells reproduce the run's outcome exactly"
+            " (max |d alpha1| %.3e, max rel |dE_k| %.3e; %ld differ in cost) -> %s\n",
+            n_fid_checked - n_fid_fail, n_fid_checked, fid_da1_max, fid_dE_max, n_cost_diff,
+            n_fid_fail == 0 ? "PASS" : "FAIL");
+        amrex::Print() << line;
+    } else {
+        amrex::Print() << "  (no in-situ outcome in the file: fidelity not checked)\n";
+    }
+    if (os) amrex::Print() << "  per-cell rows: " << out << "\n";
+    amrex::Print() << "===== X3 replay: " << n_fid_fail << " fidelity failures =====\n\n";
+    return int(n_fid_fail);
+}
 
 #endif // USE_PS_HYDRO
 #endif // PS_ZEROD_TEST_H

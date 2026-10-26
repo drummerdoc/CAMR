@@ -171,3 +171,23 @@ Readings — several of them against the expectation written before the runs:
 - **The register-pressure effect reproduces on the H100**: at 524 k cells the table cuts the hydro stage 2.2× (4.46 → 1.99 s) and raises the relaxation stage 1.7× (1.32 → 2.19 s), the same two signs as on the RTX (4.2× and 1.7×). This is a property of the kernel structure, confirmed across two GPU generations.
 - **The platform slide, as the data actually came out:** the *ordering* of EOS strategies is the same on CPU, workstation GPU and datacenter GPU — table-seeded analytic (PRTab/GERGTab) ≥ analytic PR ≫ analytic Helmholtz — and what the platform changes is the *spread*: GERG/PR is 13× on CPU and 78× on either GPU; the GPU-over-8-core gain is 5× (RTX) to 30× (H100) for the PR family and ≤ 1× for analytic GERG. The device does not reorder the strategies; it decides how badly the wrong kernel structure is punished, and it punishes the EOS-inside-Newton structure, not the EOS arithmetic. That reframes the GPU work item (O-28): hoisting the EOS out of the relaxation Newton is worth more than any choice of EOS surface.
 - Not run on Olivia: the per-state microbenchmark (`gpu_bench`, needs `data/` copied) and the 2048 × 1024 saturation check; both are optional now that the 524 k-cell GH200 run shows 10–15 Mcell/s, 5× the RTX, i.e. the GPU was not launch-bound at that size.
+
+## X3 cell harvest and replay bench — 2026-10-26 (`CAMR.ps_harvest_cells`, `CAMR.ps_x3_replay`)
+
+The off-line development loop for the relaxation operator (`DESIGN_DECISIONS.md` O-28): the harvester now records, before the relaxation sweep, every cell the X3 operator would enter — the packed six-equation state, the relaxation Δt, the two phase quotients — with the operator's own outcome on that input (run on a copy, the run's dials), bucketed in the two quotients' (log₁₀ρ, e) × the decade of the smaller volume fraction; the replay bench replays the operator on that file serially, with the harvested or an overridden Δt, and checks the outcome against the run's.
+
+Harvest: 2-D demo3 restart (`runs/b5_demo3_L0/chk_06258`, 256 × 128 level 0, 20 steps, 8 ranks, PR host build), `ps_relax_mode` 2 and 5; replay with `ps_x3_replay_reps=3` (best-of-3 wall time), one rank, EPYC core.
+
+| cell set | cells | visits | ok | gate_stood | sub-steps / cell | Newton its / cell (p50 / p99 / max) | path evals / cell | wall µs / cell (mean / p50 / p99 / max) | fidelity vs run |
+|---|---|---|---|---|---|---|---|---|---|
+| mode 5, harvested Δt (≈ 4 µs) | 3649 | 224 688 | 91.2 % (88.7 % of visits) | 8.8 % (11.3 %) | 0.91 | 1.9 (2 / 3 / 3) | 3.9 | 260 / 270 / 450 / 640 | 3649/3649 exact, cost identical |
+| mode 2, harvested Δt | 3406 | 225 327 | 91.0 % | 9.0 % | 0.91 | 1.9 (2 / 3 / 3) | 3.9 | 257 / 270 / 451 / 647 | 3406/3406 exact |
+| mode 5, Δt overridden to 4e-5 (10×) | 3649 | 224 688 | 91.2 % | 8.8 % | 0.96 (max 20) | 2.9 (3 / 3 / 48) | 7.0 (max 238) | 577 / 610 / 645 / 15 623 | 320/3649 (only the stood cells), 3029 differ in cost |
+
+Readings:
+- **The bench is exact.** The replay reproduces the run's outcome bit for bit on every cell in both modes, with the same sub-step and iteration counts, so an operator change shows up as a counted mismatch and not as noise; the 10× Δt replay demonstrates the detection (every integrated cell moves, the stood cells do not, as they must — a stand is Δt-independent).
+- **The baseline cost of the operator is 260 µs per cell on one EPYC core** for a typical cell that integrates in one sub-step with two Newton iterations and four path evaluations: ≈ 65 µs per path evaluation, each one a P₁ = P₂ projection carrying its own Newton over branch-locked EOS inversions. This is the quantity a flattened single-Newton solve (O-28) has to beat, and the file it will be measured on.
+- **The run's cells are easy cells**: no Newton failures, no dead rates, no sub-step cap, no tiny-increment commits at the harvested Δt (≈ 4 µs). At 10× Δt the tail appears (20 sub-steps, 48 iterations, 238 path evaluations, 15.6 ms on the worst cell, 17 tiny-increment commits), which is where a replay set for robustness work should be built from: a Δt ladder on the same cells, and the seed-sweep decks for the states this deck does not produce.
+- Harvested in mode 2 or mode 5 the cell sets are the same within 7 %: the states entering the operator are set by the hydro, not by which operator ran the previous step, so a mode-2 production restart is a valid source of X3 development cells.
+- Read-only: the 20-step restart checkpoint is byte-identical with the cell harvest off and on (every file except `CPUtime`).
+

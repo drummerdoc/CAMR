@@ -397,6 +397,26 @@ inline amrex::Real ps_theta_tau()
 }
 
 // -----------------------------------------------------------------
+//  ps_x3_params_from_dials — the mode-5 operator settings as the sweep
+//  runs them.  Rate and carrier dials are the mass-transfer family, so a
+//  configuration means the same thing at every mode; ps_mt_tau has no
+//  meaning here (the SRT source carries no relaxation time).  Shared by
+//  the sweep, the cell harvester (PS_harvest.H) and the replay bench
+//  (PS_zerod_test.H), so a replayed cell sees the dials the run saw.
+// -----------------------------------------------------------------
+inline hem::PsX3Params
+ps_x3_params_from_dials()
+{
+    hem::PsX3Params xp;
+    xp.theta          = double(ps_theta_tau());
+    xp.h_w            = hem::ps_dial_mt_h_weight();
+    xp.srt_D          = hem::ps_dial_mt_srt_d();
+    xp.srt_delta      = hem::ps_dial_mt_srt_delta();
+    xp.coexist_action = ps_coexist_action();
+    return xp;
+}
+
+// -----------------------------------------------------------------
 //  ps_apply_relaxation — the relaxation sweep.  Builds the EOS callback
 //  once, resets the per-sweep counters, dispatches every cell to the
 //  kernel for ps_relax_mode, then prints the gated reports ([PS-PRES],
@@ -426,16 +446,8 @@ ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
     const amrex::Real theta = ps_theta_tau();
     const int pres_diag = ps_pres_diag();
 
-    //  Mode-5 operator settings.  Rate and carrier dials are the
-    //  mass-transfer family, so a configuration means the same thing at
-    //  every mode.  ps_mt_tau has no meaning here: the SRT source carries
-    //  no relaxation time.
-    hem::PsX3Params xp;
-    xp.theta          = double(theta);
-    xp.h_w            = hem::ps_dial_mt_h_weight();
-    xp.srt_D          = hem::ps_dial_mt_srt_d();
-    xp.srt_delta      = hem::ps_dial_mt_srt_delta();
-    xp.coexist_action = ps_coexist_action();
+    //  Mode-5 operator settings, resolved once from the dials.
+    const hem::PsX3Params xp = ps_x3_params_from_dials();
 
     for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
         const amrex::Box bx = mfi.growntilebox(nghost);

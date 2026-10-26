@@ -481,6 +481,7 @@ CAMR::CAMR_advance (Real time,
         diag_mass(S, "B post floor/fold/clean");
         PS_CELL_PROBE(S, "B  post clean_state    ");
         diag_a1(S, "reaction pre-relax");   // entering: reflects hydro/advection/C-F
+        ps_harvest_cells(S, ng, dt_r);       // CAMR.ps_harvest_cells: the operator's cell inputs (read-only, host builds)
         if (ps_do_relax_cached != 0) {
             ps_apply_relaxation(S, dt_r, ng, do_print);   // dt_r for the finite-rate legs
             clean_state(S, false); // intermediate: skip the UTEMP diagnostic sweep

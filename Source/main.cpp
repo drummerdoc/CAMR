@@ -135,6 +135,8 @@ main(int argc, char* argv[])
     pp_ps.query("ps_relax_sweep", ps_relax_sweep);
     int ps_x3_test = 0;                    // X3 fixed-point acceptance harness
     pp_ps.query("ps_x3_test", ps_x3_test);
+    std::string ps_x3_replay;              // X3 replay bench on a harvested cell file
+    pp_ps.query("ps_x3_replay", ps_x3_replay);
     std::string ps_nscbc_probe_plt;        // x-hi NSCBC ghost probe on a plotfile
     pp_ps.query("ps_nscbc_probe", ps_nscbc_probe_plt);
     if (!ps_nscbc_probe_plt.empty()) {
@@ -142,7 +144,7 @@ main(int argc, char* argv[])
       amrex::ParmParse("prob").query("p_amb", p_amb);
       ps_zerod_exit = ps_nscbc_probe(ps_nscbc_probe_plt, p_amb);
     } else
-    if (ps_ptg_selftest || ps_relax_sweep || ps_x3_test) {
+    if (ps_ptg_selftest || ps_relax_sweep || ps_x3_test || !ps_x3_replay.empty()) {
       // CI gate: nonzero exit on any failure so ctest/CI can fail the
       // build.  Only IOProcessor runs the serial, deterministic checks.
       int fail = 0;
@@ -150,6 +152,7 @@ main(int argc, char* argv[])
         if (ps_ptg_selftest) fail += ps_ptg_zerod_selftest();
         if (ps_relax_sweep)  fail += ps_relax_corner_sweep();
         if (ps_x3_test)      fail += ps_x3_fixedpoint_test();
+        if (!ps_x3_replay.empty()) fail += ps_x3_replay_bench(ps_x3_replay);
       }
       amrex::ParallelDescriptor::Bcast(&fail, 1,
                                        amrex::ParallelDescriptor::IOProcessorNumber());
