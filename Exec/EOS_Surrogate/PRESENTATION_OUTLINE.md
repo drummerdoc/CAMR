@@ -1,6 +1,6 @@
 # Short version (≈ 18 min, 11 slides) — technical but broad audience
 
-The long outline below is the reference; this is the cut to give. One message: **deep knowledge of the system beats blind use of ML — and the platform decides how much a wrong structure costs.** Figures are in `figures/` (`make_figures.py`).
+The long outline below is the reference; this is the cut to give. One message: **a surrogate is only as good as the system knowledge built into it — and the platform decides how much a wrong structure costs.** Figures are in `figures/` (`make_figures.py`).
 
 1. **Title and the one-line claim.** Real-fluid two-phase CO₂ (pipe break, blowdown); the EOS is called a billion times per run; we tried tables, machine learning and the analytic forms on CPUs, a workstation GPU and a datacenter GPU.
 
@@ -10,7 +10,7 @@ The long outline below is the reference; this is the cut to give. One message: *
 
 4. **Convergence of the training cloud is measurable.** `fig2_novelty_ledgers.png`. Each new run's novelty against the union; six runs to zero; resolution adds rare states, physics adds common ones. Point: an active-learning loop you can stop with a number.
 
-5. **Blind ML: what you get.** Half of `fig3_regime_errors.png` (the "one net, no knowledge" bars) and the headline: a net trained on a textbook grid is 4× worse on deployment than one trained on the harvested cloud, and 40–90 K off where it has never been. Sampling is worth 4×.
+5. **The generic starting point: a surrogate without the system's structure.** Half of `fig3_regime_errors.png` (the "one net, no knowledge" bars) and the headline: a net trained on a textbook grid is 4× worse on deployment than one trained on the harvested cloud, and 40–90 K off where it has never been. Sampling is worth 4×.
 
 6. **Each layer of system knowledge, one bar at a time.** Full `fig3_regime_errors.png`: traced loci as inputs (2× overall, 6–10× in the metastable region), the saturation temperature as the target, one net per traced region (10× in pressure; buys a seam). Point: knowledge pays exactly where the surface is non-smooth, and the more *structural* the knowledge, the more it pays.
 
@@ -22,7 +22,7 @@ The long outline below is the reference; this is the cut to give. One message: *
 
 10. **Outlook: mixtures.** The phase-envelope figure from `PHASE_ENVELOPE_PLAN.md` if ready, else one slide of text: everything shown is fluid-agnostic except the backend; composition is one more coordinate for the loci.
 
-11. **Takeaways.** (i) Harvest the deployment distribution before training anything. (ii) Put knowledge in as structure — branches, loci, regions — not as features; the limit of that is a table with analytic reconstruction. (iii) On GPUs, hoist the EOS out of the Newton loop; the device punishes structure, not arithmetic. (iv) Three predictions we wrote down were refuted by the measurements; the instrumentation that refuted them is the part worth keeping.
+11. **Takeaways.** (i) Harvest the deployment distribution before training anything; the system tells you where it lives. (ii) Put knowledge in as structure — branches, loci, regions — not as features; the limit of that is a table with analytic reconstruction. (iii) On GPUs, hoist the EOS out of the Newton loop; the device punishes structure, not arithmetic. (iv) Three predictions we wrote down were refuted by the measurements; the instrumentation that refuted them is the part worth keeping.
 
 Cut from the long version to fit: the microbenchmark kernel table, the weighted-loss and seam details, the refusal test (fold one sentence into slide 6), the Olivia build lessons, and the design-rules slide (now takeaway iii).
 
@@ -35,7 +35,7 @@ Drafted 2026-10-26 from `RESULTS.md` (this directory), `docs/DESIGN_DECISIONS.md
 Two threads, one thesis:
 
 1. **The platform decides the spread, not the ranking.** Table-seeded analytic ≥ analytic PR ≫ analytic Helmholtz on every machine; what the device changes is how hard the wrong *kernel structure* is punished.
-2. **You cannot just throw ML at an EOS.** Where you sample is worth 4×, knowledge of the C1 geometry 2× on average and 6–10× where it matters, structure (routing) another 10× in pressure — and the fully structured limit of that programme is the table, which is still 100× more accurate and 400× faster than the best net.
+2. **Machine learning earns its place here only with the system's structure built in.** Where you sample is worth 4×, knowledge of the C1 geometry 2× on average and 6–10× where it matters, structure (routing) another 10× in pressure — and the fully structured limit of that programme is the table, which is still 100× more accurate and 400× faster than the best net.
 
 ---
 
@@ -55,9 +55,9 @@ Two threads, one thesis:
 
 **6. The seed sweep and the novelty ledger.** Latin-hypercube over reservoir T, quality, ambient P, ambient T, orifice; per-run novelty vs the union. *Figure:* the two ledgers (seedA 6 runs at 128×64: novelty 100 → 0 %; seedB 8 runs at 256×128). Resolution adds **608 buckets but 0.8 % of visits**. The blowdown adds 18 buckets carrying **95 % of its visits** (the near-critical dense fluid nothing else reaches). Message: convergence of the deployment cloud is measurable; refinement adds rare states, physics adds common ones.
 
-**7. The union, and the hard classes a surrogate must face.** 3694 buckets, 317 M visits: 665 sub-triple, **222 Independent-phase inputs with no root on their branch**, T down to 1.7 K (PR bracket floor). A surrogate trained on the valid surface would answer 6 % of the distinct states it meets with no data. Message: "throw ML at it" means training on the valid surface; deployment is neither static nor confined to it.
+**7. The union, and the hard classes a surrogate must face.** 3694 buckets, 317 M visits: 665 sub-triple, **222 Independent-phase inputs with no root on their branch**, T down to 1.7 K (PR bracket floor). A surrogate trained on the valid surface would answer 6 % of the distinct states it meets with no data. Message: a generic surrogate is trained on the valid surface; deployment is neither static nor confined to it.
 
-## Part 2 — You cannot just throw ML at it (6 slides)
+## Part 2 — Machine learning with and without the system's structure (6 slides)
 
 **8. The experiment.** Truth = CAMR's own PR (`pr_eval`). Two training sets: the naive static (T, ρ) grid vs the harvested deployment set (hold-out by bucket). Five models: `mono` (one net, branch flag), `split` (per branch), `dome` (+ traced loci as inputs: distance to saturation, to the branch edge, θ), `domeres` (target $T - T_{sat}(\rho)$), `experts` (one net per branch × region, routed by the loci). Metrics: T, reconstructed P, dT/de, per regime (far / near / metastable / sub-triple).
 

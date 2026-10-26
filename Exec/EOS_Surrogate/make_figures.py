@@ -114,7 +114,7 @@ def fig3_regime_errors():
         for r in rs:
             if r['model'] == model and r['evalset'] == 'deploy-holdout' and r['regime'] == reg: return float(r['rmsT_K'])
         return float('nan')
-    models = ['mono', 'dome', 'domeres', 'experts']; names = {'mono': 'one net, no knowledge', 'dome': '+ traced loci as inputs',
+    models = ['mono', 'dome', 'domeres', 'experts']; names = {'mono': 'one net, no system structure', 'dome': '+ traced loci as inputs',
                                                              'domeres': '+ T − T$_{sat}$ target', 'experts': '+ one net per region'}
     regs = ['far', 'near', 'ext', 'sub']
     fig, ax = plt.subplots(figsize=(10, 4.2)); w = 0.19; x = np.arange(len(regs))
