@@ -331,8 +331,9 @@ inline bool ps_x3f_relax_cell(V6& U, const PsPhaseAPI& eos, double dt,
                 a_hi = std::min(a_hi, 1.0 - m2 / eos.rho_dom_hi);
             }
             if (a_lo < a_hi) { if (zz[0] < a_lo) zz[0] = a_lo; if (zz[0] > a_hi) zz[0] = a_hi; }
-            if (zz[1] < 1.0) zz[1] = 1.0; if (zz[1] > 5000.0) zz[1] = 5000.0;
-            if (zz[2] < 1.0) zz[2] = 1.0; if (zz[2] > 5000.0) zz[2] = 5000.0;
+            const double Tlo = double(EOS::fwd_T_min()), Thi = double(EOS::fwd_T_max());
+            if (zz[1] < Tlo) zz[1] = Tlo; if (zz[1] > Thi) zz[1] = Thi;
+            if (zz[2] < Tlo) zz[2] = Tlo; if (zz[2] > Thi) zz[2] = Thi;
         };
         clamp(z);
         double F[5] = {0, 0, 0, 0, 0};

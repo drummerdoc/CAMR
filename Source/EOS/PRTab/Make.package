@@ -19,3 +19,5 @@ CEXE_headers += hem_saturation_amrex.H
 CEXE_sources += prtab_table_data.cpp
 # Device copies of the tables and the host/device pointer struct (FUTURE_WORK §9).
 CEXE_sources += prtab_device.cpp
+# The PR branch-edge table (EOS/PR/pr_edge.H), compiled once here as in PR/.
+CEXE_sources += pr_edge.cpp

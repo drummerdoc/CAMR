@@ -160,6 +160,7 @@ GERG_HD State state_TR_phase(double T, double rho, Phase ph)
     s.h = s.e + P/rho;
     s.g = s.h - T*s.s;
     s.dPdrho_T = CSQ_FLOOR;
+    s.dedrho_T = dedr;              // the continuation's own slope
     // Sound speed of the constructed extension surface (see c_extension).
     s.c = ext_c_enabled() ? c_extension(es, rho) : std::sqrt(CSQ_FLOOR);
     return s;                       // cv, dPdT_rho: edge values (smooth in T)
@@ -201,6 +202,7 @@ GERG_HD State state_from_T_x(double T, double x)
     st.cp = st.cv;                                    // cp undefined in dome; report cv
     st.dPdrho_T = 0.0;                                // isothermal dome: P=Psat(T)
     st.dPdT_rho = dPs;
+    st.dedrho_T = 0.0;
     return st;
 }
 

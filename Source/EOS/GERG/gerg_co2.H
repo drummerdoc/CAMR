@@ -126,6 +126,8 @@ struct State {
     double cv, cp, c;          // J/kg/K, J/kg/K, m/s
     double dPdrho_T;           // Pa/(kg/m3) at const T
     double dPdT_rho;           // Pa/K at const rho
+    double dedrho_T;           // J/kg per (kg/m3) at const T: (P - T dP/dT|rho)/rho^2 on the raw
+                               //   surface, the frozen edge value on the C1 extension (guard)
 };
 
 // alpha0 and tau-scaled derivatives: a0, tau*d(a0)/dtau, tau^2*d2(a0)/dtau2
@@ -204,6 +206,7 @@ GERG_HD State state_TR(double T, double rho_kg)
     st.c   = (w2M > 0.0) ? std::sqrt(w2M / M) : 0.0;
     st.dPdrho_T = (RT/M)*(1.0 + 2.0*ar_d + ar_dd);
     st.dPdT_rho = rho_m*Rgas*kk;       // kk = 1 + d*ar_d - d*t*ar_dt
+    st.dedrho_T = (st.P - T*st.dPdT_rho)/(rho_kg*rho_kg);
     return st;
 }
 

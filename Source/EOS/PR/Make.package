@@ -1,3 +1,5 @@
 CEXE_headers += EOS.H pr_base.H pr_contract.H
 CEXE_headers += hem_pr_state.H
 CEXE_headers += hem_saturation_amrex.H
+CEXE_headers += pr_edge.H pr_edge_impl.H
+CEXE_sources += pr_edge.cpp

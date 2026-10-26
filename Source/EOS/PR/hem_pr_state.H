@@ -26,6 +26,7 @@
 // =====================================================================
 #pragma once
 
+#include "pr_edge.H"   // the branch-edge table (startup), read by state_from_T_v
 #include "hem_saturation_amrex.H"
 #if defined(CAMR_PS_DIAG) && !defined(HEM_NO_AMREX)
 #include <AMReX_ParmParse.H>
@@ -288,6 +289,57 @@ inline void departureFunctions(const PRFluid& f, amrex::Real T, amrex::Real v_m,
 }
 
 // =====================================================================
+//  pr_edge_march — the spinodal edge of the requested branch at T: the
+//  volume where (dP/drho)_T first falls to csq_floor marching up from
+//  the deep liquid (first crossing: liquid edge; second crossing, coming
+//  back above the floor: vapour edge).  Query-independent, fluid-agnostic
+//  (the local cubic only).  Returns -1 when no edge is found.  Called on
+//  every forward evaluation until the startup table (pr_edge.H) is
+//  filled, and by that table's fill.
+// =====================================================================
+AMREX_GPU_HOST_DEVICE
+inline amrex::Real pr_edge_march(const PRFluid& f, amrex::Real T, amrex::Real a, amrex::Real b,
+                                 bool want_liq)
+{
+    const amrex::Real csq_floor = amrex::Real(2500.0);
+    auto dpdv_at = [&](amrex::Real vv) {
+        amrex::Real Dv = vv*vv + amrex::Real(2)*b*vv - b*b;
+        return -R_gas*T/((vv-b)*(vv-b)) + amrex::Real(2)*a*(vv+b)/(Dv*Dv);
+    };
+    auto dPdrho_at = [&](amrex::Real vv) {                 // (dP/drho)_T, Peneloux-aware
+        amrex::Real vr = vv + f.c_shift;
+        return -vr*vr / f.M * dpdv_at(vv);
+    };
+    amrex::Real vprev = b * amrex::Real(1.05);
+    bool above_prev   = (dPdrho_at(vprev) > csq_floor);    // true (deep liquid stiff)
+    amrex::Real v_edge = amrex::Real(-1.0);
+    bool have_liq_edge = false;
+    for (int it = 0; it < 200; ++it) {
+        amrex::Real vn    = vprev * amrex::Real(1.25);
+        bool above        = (dPdrho_at(vn) > csq_floor);
+        if (above_prev && !above && !have_liq_edge) {      // 1st crossing: liquid edge
+            amrex::Real lo = vprev, hi = vn;
+            for (int b2 = 0; b2 < 34; ++b2) {
+                amrex::Real m = amrex::Real(0.5)*(lo+hi);
+                if (dPdrho_at(m) > csq_floor) lo = m; else hi = m;
+            }
+            have_liq_edge = true;
+            if (want_liq) { v_edge = hi; break; }          // liquid: done
+        } else if (!above_prev && above && have_liq_edge) {// 2nd crossing: vapor edge
+            amrex::Real lo = vprev, hi = vn;
+            for (int b2 = 0; b2 < 34; ++b2) {
+                amrex::Real m = amrex::Real(0.5)*(lo+hi);
+                if (dPdrho_at(m) > csq_floor) hi = m; else lo = m;
+            }
+            if (!want_liq) { v_edge = hi; }                // vapor: this is the edge
+            break;
+        }
+        vprev = vn; above_prev = above;
+    }
+    return v_edge;
+}
+
+// =====================================================================
 //  state_from_T_v — closed-form single-phase PR state at (T, v_m) on the
 //  requested branch; no iteration.  c^2 = -v^2 gamma (dP/dv)_T / M.
 //  Past the branch's spinodal edge the pressure is continued monotonically
@@ -336,46 +388,20 @@ inline State state_from_T_v(const PRFluid& f, amrex::Real T, amrex::Real v_m,
     //  used: fluid-agnostic.
     if (T < f.pr.Tc) {                       // no loop above Tc
         const amrex::Real csq_floor = amrex::Real(2500.0);     // (dP/drho)_T floor, (m/s)^2
-        auto dpdv_at = [&](amrex::Real vv) {
-            amrex::Real Dv = vv*vv + amrex::Real(2)*b*vv - b*b;
-            return -R_gas*T/((vv-b)*(vv-b)) + amrex::Real(2)*a*(vv+b)/(Dv*Dv);
-        };
-        auto dPdrho_at = [&](amrex::Real vv) {                 // (dP/drho)_T, Peneloux-aware
-            amrex::Real vr = vv + f.c_shift;
-            return -vr*vr / f.M * dpdv_at(vv);
-        };
+        const bool want_liq = (phase == Phase3::Liquid);
+        //  The branch edge: from the startup table (pr_edge.H) when it is
+        //  initialised, else by the march below (the same function fills
+        //  the table).
+        amrex::Real v_edge = amrex::Real(-1.0);
+        {
+            double ve = 0.0;
+            if (pr_edge::lookup(double(T), want_liq, ve)) v_edge = amrex::Real(ve);
+            else v_edge = pr_edge_march(f, T, a, b, want_liq);
+        }
         auto p_at = [&](amrex::Real vv) {
             amrex::Real Dv = vv*vv + amrex::Real(2)*b*vv - b*b;
             return R_gas*T/(vv-b) - a/Dv;
         };
-        const bool want_liq = (phase == Phase3::Liquid);
-        // March up from deep liquid to locate the requested phase's edge.
-        amrex::Real vprev = b * amrex::Real(1.05);
-        bool above_prev   = (dPdrho_at(vprev) > csq_floor);    // true (deep liquid stiff)
-        amrex::Real v_edge = amrex::Real(-1.0);
-        bool have_liq_edge = false;
-        for (int it = 0; it < 200; ++it) {
-            amrex::Real vn    = vprev * amrex::Real(1.25);
-            bool above        = (dPdrho_at(vn) > csq_floor);
-            if (above_prev && !above && !have_liq_edge) {      // 1st crossing: liquid edge
-                amrex::Real lo = vprev, hi = vn;
-                for (int b2 = 0; b2 < 34; ++b2) {
-                    amrex::Real m = amrex::Real(0.5)*(lo+hi);
-                    if (dPdrho_at(m) > csq_floor) lo = m; else hi = m;
-                }
-                have_liq_edge = true;
-                if (want_liq) { v_edge = hi; break; }          // liquid: done
-            } else if (!above_prev && above && have_liq_edge) {// 2nd crossing: vapor edge
-                amrex::Real lo = vprev, hi = vn;
-                for (int b2 = 0; b2 < 34; ++b2) {
-                    amrex::Real m = amrex::Real(0.5)*(lo+hi);
-                    if (dPdrho_at(m) > csq_floor) hi = m; else lo = m;
-                }
-                if (!want_liq) { v_edge = hi; }                // vapor: this is the edge
-                break;
-            }
-            vprev = vn; above_prev = above;
-        }
         // Extend only if the query lies PAST the requested phase's edge.
         if (v_edge > amrex::Real(0.0)) {
             const bool past = want_liq ? (v_m > v_edge)        // liquid: lower density

@@ -87,6 +87,11 @@ CAMR::read_params()
   // the device lookups read them through prtab::tables().  FUTURE_WORK §9.
   prtab::device_init();
 #endif
+#if defined(USE_PR_EOS) || defined(USE_PRTAB_EOS)
+  // The PR branch-edge table (pr_edge.H): filled by the march once, read
+  // by every forward evaluation on host and device.  FUTURE_WORK §10.
+  pr_edge::init();
+#endif
 #ifdef USE_GERGTAB_EOS
   gergtab::device_init();
 #endif

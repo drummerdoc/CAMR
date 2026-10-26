@@ -582,6 +582,12 @@ namespace EOS {
                    hem::Phase3 phase, amrex::Real& E)
   { E = gerg::state_TR_phase(double(T), double(R), g_phase(phase)).e; }
 
+  //  The forward (rho, T) window of this backend: the guard layer clamps T
+  //  to [T_trip, T_max] (a flat surface beyond), so the flattened operator
+  //  must keep its T unknowns inside it.
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE amrex::Real fwd_T_min() { return amrex::Real(gerg::T_trip); }
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE amrex::Real fwd_T_max() { return amrex::Real(gerg::T_max); }
+
   //  Forward branch-locked (rho, T) -> {P, e, s, c, cv} and {e, cv}: the
   //  Helmholtz surface evaluated directly (gerg::state_TR_phase, with the
   //  guard layer's branch extension), for the flattened relaxation
@@ -593,21 +599,21 @@ namespace EOS {
                        amrex::Real* dPdrho_T = nullptr, amrex::Real* dPdT_rho = nullptr,
                        amrex::Real* dedrho_T = nullptr)
   {
-      if (!(T >= amrex::Real(1.0)) || !(T <= amrex::Real(5000.0)) || !(R > amrex::Real(0.0)))
+      if (!(T >= fwd_T_min()) || !(T <= fwd_T_max()) || !(R > amrex::Real(0.0)))
           return false;
       const gerg::State s = gerg::state_TR_phase(double(T), double(R), g_phase(phase));
       P = amrex::Real(s.P); E = amrex::Real(s.e); S = amrex::Real(s.s);
       Cs = amrex::Real(s.c); Cv = amrex::Real(s.cv);
       if (dPdrho_T) *dPdrho_T = amrex::Real(s.dPdrho_T);
       if (dPdT_rho) *dPdT_rho = amrex::Real(s.dPdT_rho);
-      if (dedrho_T) *dedrho_T = amrex::Real(-(double(T) * s.dPdT_rho - s.P) / (double(R) * double(R)));
+      if (dedrho_T) *dedrho_T = amrex::Real(s.dedrho_T);   // the guard's own slope past the edge
       return std::isfinite(s.P) && std::isfinite(s.e) && std::isfinite(s.cv);
   }
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   bool RTY2ECv_phase(amrex::Real R, amrex::Real T, hem::Phase3 phase,
                      amrex::Real& E, amrex::Real& Cv)
   {
-      if (!(T >= amrex::Real(1.0)) || !(T <= amrex::Real(5000.0)) || !(R > amrex::Real(0.0)))
+      if (!(T >= fwd_T_min()) || !(T <= fwd_T_max()) || !(R > amrex::Real(0.0)))
           return false;
       const gerg::State s = gerg::state_TR_phase(double(T), double(R), g_phase(phase));
       E = amrex::Real(s.e); Cv = amrex::Real(s.cv);

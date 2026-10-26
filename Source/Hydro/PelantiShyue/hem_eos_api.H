@@ -187,8 +187,8 @@ inline bool ps_eos_T_seeded(int phase, double rho, double e, double T_seed,
         const bool step_ok = std::abs(dT) < 1.0e-12 * T + 1.0e-10;
         if (res_ok && step_ok) return true;
         T += dT;
-        if (T < 1.0) T = 1.0;
-        if (T > 5000.0) T = 5000.0;
+        if (T < double(EOS::fwd_T_min())) T = double(EOS::fwd_T_min());
+        if (T > double(EOS::fwd_T_max())) T = double(EOS::fwd_T_max());
     }
     return false;
 }

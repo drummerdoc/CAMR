@@ -258,6 +258,11 @@
       E = s.e;
   }
 
+  //  The forward (rho, T) window of this backend: the T bracket of the
+  //  (rho, e) inversion.  The flattened operator keeps its T unknowns inside.
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE amrex::Real fwd_T_min() { return amrex::Real(1.0); }
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE amrex::Real fwd_T_max() { return amrex::Real(5000.0); }
+
   //  Forward branch-locked (rho, T) -> {P, e, s, c, cv}: the closed-form
   //  PR state on the requested branch (hem::state_from_T_v, with its
   //  spinodal continuation and pressure floor) plus the real-fluid c_v

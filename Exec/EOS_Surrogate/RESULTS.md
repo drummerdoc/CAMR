@@ -289,3 +289,49 @@ Readings:
 
 The same bench with the GERG executable, on cells harvested from the same restart under GERG (`runs/harvest_2d/cells_gerg`, 15 858 cells). Two facts, both expected and both now measured. (1) Under GERG the forward call is the whole cost: 1 330 ns per (ρ, T) evaluation whether the full state or only (e, c_v) is asked for (the Helmholtz derivatives come together), 40× the PR (e, c_v) entry and 3–4× the PR full state with its march; the bracketed inversion is 2.8 µs, only 2× a forward call, so the seeded inversion (5.4 µs, ~4 forward calls) buys nothing there, and an X3F sub-step costs ≈ 10 forward pairs ≈ 27 µs against PR's 2 µs. (2) The analytic Jacobian is not usable with GERG as it stands: `gerg::State` reports the raw Helmholtz (∂P/∂ρ)_T and (∂P/∂T)_ρ (`gerg_co2.H`), and the guard layer's C1 branch extension and softplus floor modify P without them, so past a branch edge the Jacobian disagrees with the residual; the analytic solve fails the entry projection on 71 % of these cells where the FD solve fails on 12 %. The restart itself is a PR state: re-read on the GERG surface 95 % of its two-phase cells sit outside the coexistence band and X3 stands on them, so this set measures costs, not outcomes; a GERG replay set needs a GERG-run deck. The fix for (2) is the PR treatment (the extension-aware (∂P/∂T)_ρ) applied in the GERG guard; the fix for (1) is the subject of the thermotabulation note (`docs/FUTURE_WORK.md` §10).
 
+## The PR branch-edge table — 2026-10-26 (`Source/EOS/PR/pr_edge.H`)
+
+The spinodal edge of each PR branch, v_edge(T), is now a startup table (8192 points over [1 K, T_c), linear interpolation in ln v, filled by the same march that used to run on every forward call; host and device, FUTURE_WORK §10 item 2). Forward evaluation on one EPYC core: full state 312 / 514 → 124 / 126 ns (liquid / vapour); the (e, c_v) entry unchanged at 30 ns; the bracketed inversion 1 860 → 1 690 ns. The surface before the edge is untouched; past it the continuation anchors at the interpolated edge. On the sweep replay set the X3 operator reproduces the march build's outcomes exactly on 17 740 of 20 462 cells and within |Δα₁| 2e-13, |ΔE_k|/E 3e-10 on the rest (the cells with a phase on the continuation); on the production restart's cells exactly on all 3 649.
+
+CPU, one EPYC core, per cell (mean µs; sweep / demo3), edge table in both operators:
+
+| dt × | X3 nested | X3F analytic | X3F fixed-4 | X3F / X3 | X3F before the table |
+|---|---|---|---|---|---|
+| 1 | 197 / 212 | **3.9 / 3.5** | 4.4 / 4.9 | 51× / 61× | 16.1 / 17.4 |
+| 3 | 276 / 288 | 4.1 / 3.7 | 4.5 / 4.9 | 67× / 78× | 17.0 / 18.2 |
+| 10 | 381 / 410 | 4.5 / 4.1 | 4.4 / 5.0 | 85× / 100× | 19.0 / 19.8 |
+| 30 | 1 232 / 739 | 6.2 / 5.2 | 4.4 / 4.9 | 199× / 142× | 26.4 / 24.5 |
+| 100 | 3 614 / 3 764 | 14.3 / 10.7 | 4.3 / 5.0 | 253× / 352× | 64.1 / 47.1 |
+
+Outcome classes, iteration counts and exit states are those of the march build (the table only moves the extension anchor). X3 itself gains 25–30 % (its inversions marched three times per call). The flattened operator with the analytic Jacobian and the edge table costs 3.5–3.9 µs per cell at the production step, 50–60× below the nested operator it replaces and 70–80× below where the nested operator stood at the start of the study; its remaining cost is ≈ 8.6 forward pairs at 2 × 125 ns plus the entry inversion and the 5×5 solves.
+
+**Production run with the edge table** (`bench/backend_bench.sh`, tag `edge_L0_200`, PR, 256 × 128 level 0, 200 steps, 8 EPYC ranks): 26.2 → 20.8 s (1.26×), and the step-200 plotfile is **bitwise identical** to the march build's (`runs/tools/pfcmp.py`): in 200 steps of the production deck no state reaches a branch continuation, so the table changes the arithmetic of nothing and the cost of everything that marched (every inversion in the hydro stage marched three times per call). The relaxation stage of that run is still X3 (the X3F production hook is pending): 7.5 s of 20.8 exclusive.
+
+**Development GPU (RTX PRO 6000) with the edge table**, ns per cell-visit, harvested order / sorted by cost (`edge_gpu_*` logs):
+
+| dt × | set | X3 nested | X3F analytic | X3F fixed-4 | X3F / X3 | X3F before the table |
+|---|---|---|---|---|---|---|
+| 1 | demo3 | 515 / 477 | **19** / 18 | 25 / 25 | 27× | 114 |
+| 1 | sweep | 701 / 536 | **129** / 111 | 42 / 26 | 5.4× | 398 |
+| 10 | demo3 | 2 181 / 2 000 | 200 / 145 | 25 / 25 | 11× | 669 |
+| 10 | sweep | 3 555 / 5 085 | 274 / 302 | 42 / 26 | 13× | 1 027 |
+| 100 | demo3 | 51 001 / 36 690 | 1 021 / 437 | 25 / 25 | 50× | 4 348 |
+| 100 | sweep | 58 890 / 61 862 | 1 291 / 934 | 41 / 26 | 46× | 5 675 |
+
+ptxas with the table: the X3 and both X3F kernels at 242 registers with **no spills** (the march's loop state is gone; before: 255 registers, 1–3 KB of spills). The outcome classes and exit states are those of the march build.
+
+**Production run on the GPU** (tag `edge_L0_200`, PR, one RTX rank): 21.2 → **12.1 s** (1.75×); exclusive stages relaxation 7.23 → 2.48 s, mass transfer 2.41 → 0.73 s, hydro 6.34 → 4.78 s. The step-200 plotfile differs from the march build's GPU run at 1e-4 and from its own CPU twin at 1e-4, the known GPU-vs-CPU level of the bracketed PR inversion (the march builds' GPU-vs-CPU difference is 1.4e-4); the CPU twin is bitwise identical to the march CPU run.
+
+**The GERG-run deck** (`bench/gerg_deck.sh`): the pipe-break deck integrated on the Helmholtz surface by GERGTab from t = 0 (1e-6 from GERG, 7× cheaper), checkpoint every 50 steps, to step 390 (1.70 ms); under the GERG contract the deck is refused at step 398, where a vapour cell sits 0.1 % below the triple-point energy (sub-triple is out of domain for GERG, B6; PR brackets it to 1 K). Cells harvested under GERG from step 350 for 20 steps: 1 102 distinct, 9 797 visits, every one two-phase inside the band. Replay on the GERG backend, one EPYC core:
+
+| operator | integrated | Newton its | EOS work per cell | wall µs mean / p99 / max |
+|---|---|---|---|---|
+| X3 nested | 100 % | 2.6 | 5.7 path evals | 8 811 / 11 777 / 12 029 |
+| X3F analytic | 100 % | 5.1 | 10.1 forward pairs | **39.7** / 43.8 / 48.8 |
+| X3F fixed-4 | 100 % | 8.0 | 13.0 | 47.3 / 51.1 / 70.0 |
+| X3F FD Jacobian | 100 % | 5.1 | 31.1 | 93.2 / 107.1 / 132.7 |
+
+X3F agrees with X3 on every cell to |ΔP₁|/P₁ 1.1e-4 (X3's projector tolerance), |Δα₁| 5e-7, |ΔT_k| 1.3 mK, and the analytic Jacobian reproduces the FD one to 1e-10 now that the GERG state carries the guard layer's own energy slope past the branch edge and the operator keeps its temperatures inside the backend's forward window [T_trip, T_max] (the earlier failure was both). Under GERG the flattened operator is 222× cheaper than the nested one per cell, and 11× dearer than under PR (39.7 vs 3.5 µs), the forward Helmholtz call (1.25 µs; the (e, c_v) entry costs the same, the derivatives come together) being 10 of its 12 µs-equivalents: the thermotabulation item 1 of `FUTURE_WORK.md` §10 is the lever there. The GERG X3 replay reproduces the run's outcomes exactly (1 102 / 1 102).
+
+**Where this leaves the relaxation operator** (production step, per entering cell): CPU PR 3.5–3.9 µs (nested at the start of the study: 264–285 µs, 70×); development GPU PR 19 ns on the production restart's cells (nested: 843, 44×) and 129 ns on the sweep set (nested: 1 298, 10×); CPU GERG 40 µs (nested: 8 800, 222×). Production-GPU (H100) estimate, same method as above: ≈ 5 ns per entering cell-visit on production cells; the run-level gain from the relaxation stage alone ≈ 1.15× at 524 k cells and ≈ 1.5× at 32 k cells, and the edge table alone, measured on the RTX at 32 k cells, gives 1.75× on the whole run (every stage calls the EOS), which should transfer as the same ratio.
+
