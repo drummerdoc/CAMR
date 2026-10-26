@@ -148,14 +148,14 @@ def fig4_accuracy_cost():
         ax.annotate(name, (ns, err), xytext=off, textcoords='offset points', fontsize=8.5, ha=ha, va=va, color=INK)
     ax.axhspan(5e-5, 2e-4, color=GRID, zorder=0); ax.text(0.11, 6.5e-5, 'analytic accuracy (exact)', fontsize=8.5, color=INK2, va='center')
     ax.set_xscale('log'); ax.set_yscale('log'); ax.set_xlim(0.1, 400); ax.set_ylim(5e-5, 6)
-    ax.set_xlabel('cost per EOS call on the GPU  [ns / state, RTX PRO 6000, one thread per state]'); ax.set_ylabel('temperature error on deployment states  [K rms]')
+    ax.set_xlabel('cost per EOS call on the development GPU  [ns / state, RTX PRO 6000, one thread per state]'); ax.set_ylabel('temperature error on deployment states  [K rms]')
     ax.set_title('Accuracy against cost, one point per strategy: the structured table beats every net on both axes')
     ax.grid(True, axis='x')
     save(fig, 'fig4_accuracy_cost.png')
 
 # =============================================================================
 def fig5_cost_matrix():
-    plat = ['peart CPU\n8 EPYC ranks', 'Olivia CPU\n8 EPYC ranks', 'peart GPU\nRTX PRO 6000', 'Olivia GPU\nGH200 (H100)']
+    plat = ['development CPU\n8 EPYC ranks', 'production CPU\n8 EPYC ranks', 'development GPU\nRTX PRO 6000', 'production GPU\nGH200 (H100)']
     small = {'PR': [26.2, 24.5, 21.5, 5.1], 'PRTab': [20.6, 23.5, 18.9, 4.6], 'GERG': [342.0, 263.1, 1658.0, 397.0], 'GERGTab': [50.9, 40.1, 166.8, 43.8]}
     big = {'PR': [260.9, 247.2, 47.2, 10.1], 'PRTab': [220.0, 231.4, 22.6, 7.0]}
     fig, axes = plt.subplots(1, 2, figsize=(13, 4.6), gridspec_kw={'width_ratios': [2, 1.5]}, sharey=True)
@@ -185,15 +185,15 @@ def parse_profile(log):
     return tot, react
 
 def fig6_stage_split():
-    logs = {('peart CPU\n8 ranks', 'PR'): os.path.join(PB, 'runs/bench/L0big_200/PR_cpu/run.log'),
-            ('peart CPU\n8 ranks', 'PRTab'): os.path.join(PB, 'runs/bench/L0big_200/PRTab_cpu/run.log'),
-            ('Olivia CPU\n8 ranks', 'PR'): os.path.join(PB, 'runs/bench/olivia_cpu/Exec/CO2_PipeBreak/runs/bench/L0big_200/PR_cpu/run.log'),
-            ('Olivia CPU\n8 ranks', 'PRTab'): os.path.join(PB, 'runs/bench/olivia_cpu/Exec/CO2_PipeBreak/runs/bench/L0big_200/PRTab_cpu/run.log'),
-            ('RTX PRO 6000', 'PR'): os.path.join(PB, 'runs/bench/L0big_200/PR_gpu/run.log'),
-            ('RTX PRO 6000', 'PRTab'): os.path.join(PB, 'runs/bench/L0big_200/PRTab_gpu/run.log'),
-            ('GH200 (H100)', 'PR'): os.path.join(PB, 'runs/bench/olivia_gpu/Exec/CO2_PipeBreak/runs/bench/L0big_200/PR_gpu/run.log'),
-            ('GH200 (H100)', 'PRTab'): os.path.join(PB, 'runs/bench/olivia_gpu/Exec/CO2_PipeBreak/runs/bench/L0big_200/PRTab_gpu/run.log')}
-    plats = ['peart CPU\n8 ranks', 'Olivia CPU\n8 ranks', 'RTX PRO 6000', 'GH200 (H100)']
+    logs = {('development CPU\n8 EPYC ranks', 'PR'): os.path.join(PB, 'runs/bench/L0big_200/PR_cpu/run.log'),
+            ('development CPU\n8 EPYC ranks', 'PRTab'): os.path.join(PB, 'runs/bench/L0big_200/PRTab_cpu/run.log'),
+            ('production CPU\n8 EPYC ranks', 'PR'): os.path.join(PB, 'runs/bench/olivia_cpu/Exec/CO2_PipeBreak/runs/bench/L0big_200/PR_cpu/run.log'),
+            ('production CPU\n8 EPYC ranks', 'PRTab'): os.path.join(PB, 'runs/bench/olivia_cpu/Exec/CO2_PipeBreak/runs/bench/L0big_200/PRTab_cpu/run.log'),
+            ('development GPU\nRTX PRO 6000', 'PR'): os.path.join(PB, 'runs/bench/L0big_200/PR_gpu/run.log'),
+            ('development GPU\nRTX PRO 6000', 'PRTab'): os.path.join(PB, 'runs/bench/L0big_200/PRTab_gpu/run.log'),
+            ('production GPU\nGH200 (H100)', 'PR'): os.path.join(PB, 'runs/bench/olivia_gpu/Exec/CO2_PipeBreak/runs/bench/L0big_200/PR_gpu/run.log'),
+            ('production GPU\nGH200 (H100)', 'PRTab'): os.path.join(PB, 'runs/bench/olivia_gpu/Exec/CO2_PipeBreak/runs/bench/L0big_200/PRTab_gpu/run.log')}
+    plats = ['development CPU\n8 EPYC ranks', 'production CPU\n8 EPYC ranks', 'development GPU\nRTX PRO 6000', 'production GPU\nGH200 (H100)']
     fig, ax = plt.subplots(figsize=(11, 4.6)); w = 0.19; x = np.arange(len(plats))
     series = [('PR', 'rest', 'PR: hydro and everything else', 0.45), ('PR', 'react', 'PR: relaxation + mass transfer', 1.0),
               ('PRTab', 'rest', 'PRTab: hydro and everything else', 0.45), ('PRTab', 'react', 'PRTab: relaxation + mass transfer', 1.0)]

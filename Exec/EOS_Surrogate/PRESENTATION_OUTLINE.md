@@ -2,7 +2,7 @@
 
 The long outline below is the reference; this is the cut to give. One message: **ML alone can be improved considerably by incorporating system knowledge — and that is what makes it the route to practical, multi-component problems, where tables stop scaling.** Second message: the platform decides how much a wrong kernel structure costs. Figures are in `figures/` (`make_figures.py`).
 
-1. **Title and the one-line claim.** Real-fluid two-phase CO₂ (pipe break, blowdown); the EOS is called a billion times per run; we tried tables, machine learning and the analytic forms on CPUs, a workstation GPU and a datacenter GPU.
+1. **Title and the one-line claim.** Real-fluid two-phase CO₂ (pipe break, blowdown); the EOS is called a billion times per run; we tried tables, machine learning and the analytic forms on CPUs, a local development GPU and a production GPU.
 
 2. **The EOS the solver needs is not the textbook one.** One picture of the branch-locked contract: $(\rho, e)$ → T on a named branch, metastable continuation, "no root" as an answer. Two numbers: the reaction operator makes 9 % of the calls and takes up to 60 % of GPU time. *No table.*
 
@@ -18,7 +18,7 @@ The long outline below is the reference; this is the cut to give. One message: *
 
 8. **Why pursue ML at all, if the table wins?** Because the table wins in two dimensions. A pure fluid is $(\rho, e)$; a practical CCS stream is CO₂ with N₂, O₂, CH₄, H₂S…, and every impurity adds a composition axis. PRTab is 3 MB at 256²; one composition axis at 64 points makes it 200 MB, two make it 12 GB — past the GPU's constant and cache memory and past the generation budget (every node is a flash calculation). A 50 k-parameter net is 400 KB in any dimension; what grows is the *data* it needs, and that is exactly what the harvester and the novelty ledger target. Point: tables are the right answer for the pure fluid; the ML route is the one that scales to practical problems — *if* the system knowledge that made it accurate in 2-D comes along.
 
-9. **Now the platform: the same four backends on four machines.** `fig5_cost_matrix.png`. The ranking never changes (table-seeded ≥ analytic PR ≫ analytic Helmholtz); the spread does: 13× on CPU, 78× on either GPU; the datacenter GPU gives every backend the same 4×, not a rescue for the FP64-heavy ones.
+9. **Now the platform: the same four backends on four machines.** `fig5_cost_matrix.png`. The ranking never changes (table-seeded ≥ analytic PR ≫ analytic Helmholtz); the spread does: 13× on CPU, 78× on either GPU; the production GPU gives every backend the same 4×, not a rescue for the FP64-heavy ones.
 
 10. **Why: the cost belongs to the kernel, not the EOS.** `fig6_stage_split.png`. The same table makes the hydro stage 2–4× faster and the relaxation stage 1.7× slower on both GPUs, nothing on CPUs — the lookup inlined into a register-capped Newton kernel; 0 guard fallbacks in 177 M calls (the divergence story we expected was wrong). Point: on a GPU, *where* the EOS is called decides more than what it computes.
 
@@ -83,7 +83,7 @@ Two threads, one thesis:
 
 **17. Why — measured, and a hypothesis refuted.** Guard census: **0 analytic fallbacks in 177 M calls**, 0 dome-patch routes, in either stage (the divergence hypothesis is dead). ptxas: `ps_apply_relaxation` 212 → **255 registers (cap)**, `ps_apply_sources` 213 → 250 with the table inlined. At 255 registers an SM holds 8 warps; the gathers' latency is not hidden. Message: a surrogate's device cost belongs to the kernel it is inlined into — the same bicubic is a win in ctoprim and a loss in X3.
 
-**18. The datacenter GPU (Olivia GH200 / H100) — and a second prediction refuted.** The full matrix (4 columns: peart CPU, Olivia zen5 CPU, RTX, GH200). The H100 gives **every backend the same ~4×** (GERG 4.2, PR 4.2, PRTab 4.1, GERGTab 3.8): GERG stays **78× slower than PR** on either GPU and still slower than 8 CPU cores; full-rate FP64 did not single out the Helmholtz backends. 60 % of GERG's GPU time is the relaxation kernel. Message: the Helmholtz GPU cost is the EOS-inside-Newton structure, not the FP64 rate.
+**18. The production GPU (Olivia GH200 / H100) — and a second prediction refuted.** The full matrix (4 columns: peart CPU, Olivia zen5 CPU, RTX, GH200). The H100 gives **every backend the same ~4×** (GERG 4.2, PR 4.2, PRTab 4.1, GERGTab 3.8): GERG stays **78× slower than PR** on either GPU and still slower than 8 CPU cores; full-rate FP64 did not single out the Helmholtz backends. 60 % of GERG's GPU time is the relaxation kernel. Message: the Helmholtz GPU cost is the EOS-inside-Newton structure, not the FP64 rate.
 
 **19. The PR family on the GH200.** 24–33× over 8 zen5 ranks at 524 k cells (10–15 Mcell/s); the table's GPU benefit shrinks as the card improves (2.1× RTX → 1.44× H100 → 1.07× zen5 CPU): the cheaper the analytic bracket, the less a gather-bound lookup gives back. The hydro-faster / relaxation-slower signature reproduces on the H100 (2.2× / 1.7×).
 
