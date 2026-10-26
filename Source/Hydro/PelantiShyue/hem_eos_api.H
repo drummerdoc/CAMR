@@ -70,6 +70,7 @@ struct PsPhase {
     double h     = 0.0;    // per-phase specific enthalpy = e + P/rho [J/kg]
     double s     = 0.0;    // per-phase specific entropy [J/(kg*K)]
     double g     = 0.0;    // per-phase Gibbs free energy = h - T*s [J/kg]
+    double cv    = 0.0;    // per-phase c_v [J/(kg K)]; filled by the forward (rho,T) query only
     bool   valid = false;  // false if EOS query failed (safe default)
 };
 
@@ -130,6 +131,65 @@ inline void ps_eos_phase_state(int phase, double rho, double e, PsPhase& ph)
 }
 
 // ---------------------------------------------------------------------
+//  The forward per-phase query behind PsPhaseAPI::state_from_rho_T_phase:
+//  (rho, T) on the phase's own branch -> P, e, s, c, c_v, h, g, with no
+//  inversion.  What the flattened relaxation operator (hem_relax_x3f.H)
+//  iterates on.  Validity is the backend's forward window (T in
+//  [1, 5000] K) plus P > 0, T > 0, as for the inverse query.
+// ---------------------------------------------------------------------
+AMREX_GPU_HOST_DEVICE
+inline void ps_eos_phase_state_rT(int phase, double rho, double T, PsPhase& ph)
+{
+    amrex::Real P, E, S, Cs, Cv;
+    const Phase3 ph3 = (phase == 1) ? Phase3::Liquid : Phase3::Vapor;
+    ph.rho = rho; ph.T = T;
+    if (!EOS::RTY2PESCv_phase(amrex::Real(rho), amrex::Real(T), ph3, P, E, S, Cs, Cv)) {
+        ph.e = 0.0; ph.P = 0.0; ph.c = 0.0; ph.h = 0.0; ph.s = 0.0; ph.g = 0.0; ph.cv = 0.0;
+        ph.valid = false;
+        return;
+    }
+    ph.e  = double(E);
+    ph.P  = double(P);
+    ph.h  = ph.e + double(P) / rho;
+    ph.s  = double(S);
+    ph.g  = ph.h - T * ph.s;
+    ph.c  = double(Cs);
+    ph.cv = double(Cv);
+    ph.valid = std::isfinite(P) && P > 0.0 && std::isfinite(T) && T > 0.0 && Cv > 0.0;
+}
+
+//  Seeded T inversion on the forward surface: Newton on e(rho, T) = e
+//  with the real-fluid c_v as the slope, from T_seed, 30 % step cap,
+//  1 K floor.  Converged on both a step and a residual test (the
+//  residual scaled by R T / M, never |e|, as in the PR inversion).
+//  Returns false at the iteration cap or off the forward window; the
+//  caller falls back to the bracketed inversion.  `its` counts the
+//  iterations taken.
+AMREX_GPU_HOST_DEVICE
+inline bool ps_eos_T_seeded(int phase, double rho, double e, double T_seed,
+                            double R_over_M, double& T, int& its, int max_iter = 30)
+{
+    const Phase3 ph3 = (phase == 1) ? Phase3::Liquid : Phase3::Vapor;
+    T = T_seed; its = 0;
+    for (int it = 0; it < max_iter; ++it) {
+        ++its;
+        amrex::Real E, Cv;
+        if (!EOS::RTY2ECv_phase(amrex::Real(rho), amrex::Real(T), ph3, E, Cv)) return false;
+        if (!(Cv > amrex::Real(0.0))) return false;
+        const double r  = double(E) - e;
+        double dT = -r / double(Cv);
+        if (std::abs(dT) > 0.3 * T) dT = (dT > 0.0 ? 1.0 : -1.0) * 0.3 * T;
+        const bool res_ok  = std::abs(r)  < 1.0e-12 * (R_over_M * T);
+        const bool step_ok = std::abs(dT) < 1.0e-12 * T + 1.0e-10;
+        if (res_ok && step_ok) return true;
+        T += dT;
+        if (T < 1.0) T = 1.0;
+        if (T > 5000.0) T = 5000.0;
+    }
+    return false;
+}
+
+// ---------------------------------------------------------------------
 //  The numerical dials the per-cell kernels read, resolved on the host
 //  by ps_kernel_dials() from their single-read accessors and carried to
 //  the kernels by value inside PsPhaseAPI.  The fields have no defaults
@@ -177,6 +237,19 @@ struct PsPhaseAPI {
 
     // Saturation pressure P_sat(T) [Pa] from the fluid's own EOS, for
     // the flash metastability window.
+    AMREX_GPU_HOST_DEVICE
+    void state_from_rho_T_phase(int phase, double rho, double T, PsPhase& ph) const {
+        ps_eos_phase_state_rT(phase, rho, T, ph);
+    }
+
+    //  Seeded (rho, e) -> T on the forward surface (ps_eos_T_seeded); on
+    //  failure the bracketed inversion decides.
+    AMREX_GPU_HOST_DEVICE
+    bool T_from_rho_e_seeded(int phase, double rho, double e, double T_seed,
+                             double& T, int& its) const {
+        return ps_eos_T_seeded(phase, rho, e, T_seed, 8.314462618 / molar_mass(), T, its);
+    }
+
     AMREX_GPU_HOST_DEVICE
     double Psat_of_T(double T) const { return double(EOS::Psat(amrex::Real(T))); }
 

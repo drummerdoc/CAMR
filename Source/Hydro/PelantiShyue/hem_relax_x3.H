@@ -543,6 +543,19 @@ struct PsX3Params {
     //  at the manifold exit state, set only when the operator runs.
     double* dT_pre  = nullptr;
     double* dT_post = nullptr;
+    //  Per-cell cost and outcome out-params (device-safe, one cell each),
+    //  for the replay bench: Newton iterations, sub-steps, path
+    //  evaluations, and the outcome class (PsX3Status).
+    int* it_out   = nullptr;
+    int* sub_out  = nullptr;
+    int* path_out = nullptr;
+    int* status   = nullptr;
+};
+
+//  Outcome classes of one operator call, shared by X3 and X3F.
+enum PsX3Status : int {
+    X3_OK = 0, X3_ENTRY_REFUSED = 1, X3_STOOD = 2, X3_PROJ_ENTRY = 3,
+    X3_NEWTON = 4, X3_DEAD = 5, X3_SUBCAP = 6, X3_FIXED_NONCONV = 7
 };
 
 AMREX_GPU_HOST_DEVICE
@@ -553,6 +566,8 @@ inline bool ps_x3_relax_cell(V6& U, const PsPhaseAPI& eos, double dt,
     PsX3Stats& x3s = ps_x3_stats();
 #endif
     PS_COUNT(++x3s.n_calls);
+    auto set_status = [&](int st) { if (xp.status) *xp.status = st; };
+    set_status(X3_ENTRY_REFUSED);
     if (!eos.valid() || !(dt > 0.0)) { PS_COUNT(++x3s.n_entry_refused); return false; }
     constexpr double alpha_floor = ps_const::ALPHA_ROUNDOFF;
     if (!std::isfinite(U[0])) { PS_COUNT(++x3s.n_entry_refused); return false; }
@@ -587,6 +602,7 @@ inline bool ps_x3_relax_cell(V6& U, const PsPhaseAPI& eos, double dt,
     {
         int pr_why = PSR_OK;
         if (!constrain(W0, &pr_why)) {
+            set_status(X3_PROJ_ENTRY);
             PS_COUNT(++x3s.n_proj_entry);
             if      (pr_why == PSR_BAD_INPUT) PS_COUNT(++x3s.n_pr_input);
             else if (pr_why == PSR_BAD_EOS)   PS_COUNT(++x3s.n_pr_eos);
@@ -662,6 +678,7 @@ inline bool ps_x3_relax_cell(V6& U, const PsPhaseAPI& eos, double dt,
                                  "(CAMR.ps_coexist_action=1)");
                 }
                 PS_COUNT(++x3s.n_gate_stood);
+                set_status(X3_STOOD);
                 for (int n = 0; n < 6; ++n) U[n] = W0[n];
                 return true;
             }
@@ -750,6 +767,7 @@ inline bool ps_x3_relax_cell(V6& U, const PsPhaseAPI& eos, double dt,
         };
         auto path = [&](double q, double dm, V6& W, X3SS& s) -> bool {
             PS_COUNT(++x3s.n_path);
+            if (xp.path_out) ++*xp.path_out;
             W = Wb;
             const double m1p = Wb[1] - dm, m2p = Wb[2] + dm;
             if (!(m1p > 0.0) || !(m2p > 0.0)) return false;
@@ -784,6 +802,7 @@ inline bool ps_x3_relax_cell(V6& U, const PsPhaseAPI& eos, double dt,
         if (!rates(Wl, sl, rTc, rMc)) return 1;
         for (int it = 0; it < xp.max_newton; ++it) {
             PS_COUNT(++x3s.n_nit);
+            if (xp.it_out) ++*xp.it_out;
             const double R1 = q  - dtl * rTc;
             const double R2 = dm - dtl * rMc;
             if (std::abs(R1) <= tol_q && std::abs(R2) <= tol_m) {
@@ -867,9 +886,11 @@ inline bool ps_x3_relax_cell(V6& U, const PsPhaseAPI& eos, double dt,
     double t_done = 0.0, dt_try = dt;
     int  nsub = 0;
     bool ok   = true;
+    set_status(X3_OK);
     while (t_done < dt * (1.0 - 1.0e-12)) {
-        if (++nsub > 64) { ok = false; PS_COUNT(++x3s.n_subcap); break; }
+        if (++nsub > 64) { ok = false; PS_COUNT(++x3s.n_subcap); set_status(X3_SUBCAP); break; }
         PS_COUNT(++x3s.n_sub);
+        if (xp.sub_out) ++*xp.sub_out;
         const int rc = be_once(dt_try);
         if (rc == 1) PS_COUNT(++x3s.n_newton);
         else if (rc == 2) PS_COUNT(++x3s.n_dead);
@@ -879,10 +900,10 @@ inline bool ps_x3_relax_cell(V6& U, const PsPhaseAPI& eos, double dt,
             if (!(rem > 0.0)) break;
             dt_try = std::min(2.0 * dt_try, rem);
         } else if (rc == 2) {
-            ok = false; break;
+            ok = false; set_status(X3_DEAD); break;
         } else {
             dt_try *= 0.5;
-            if (dt_try < 1.0e-10 * dt) { ok = false; break; }
+            if (dt_try < 1.0e-10 * dt) { ok = false; set_status(X3_NEWTON); break; }
         }
     }
     // Write back the last admissible projected state (conservative and

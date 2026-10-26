@@ -582,6 +582,33 @@ namespace EOS {
                    hem::Phase3 phase, amrex::Real& E)
   { E = gerg::state_TR_phase(double(T), double(R), g_phase(phase)).e; }
 
+  //  Forward branch-locked (rho, T) -> {P, e, s, c, cv} and {e, cv}: the
+  //  Helmholtz surface evaluated directly (gerg::state_TR_phase, with the
+  //  guard layer's branch extension), for the flattened relaxation
+  //  operator (hem_relax_x3f.H).  Same validity window as the PR entry.
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  bool RTY2PESCv_phase(amrex::Real R, amrex::Real T, hem::Phase3 phase,
+                       amrex::Real& P, amrex::Real& E, amrex::Real& S,
+                       amrex::Real& Cs, amrex::Real& Cv)
+  {
+      if (!(T >= amrex::Real(1.0)) || !(T <= amrex::Real(5000.0)) || !(R > amrex::Real(0.0)))
+          return false;
+      const gerg::State s = gerg::state_TR_phase(double(T), double(R), g_phase(phase));
+      P = amrex::Real(s.P); E = amrex::Real(s.e); S = amrex::Real(s.s);
+      Cs = amrex::Real(s.c); Cv = amrex::Real(s.cv);
+      return std::isfinite(s.P) && std::isfinite(s.e) && std::isfinite(s.cv);
+  }
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  bool RTY2ECv_phase(amrex::Real R, amrex::Real T, hem::Phase3 phase,
+                     amrex::Real& E, amrex::Real& Cv)
+  {
+      if (!(T >= amrex::Real(1.0)) || !(T <= amrex::Real(5000.0)) || !(R > amrex::Real(0.0)))
+          return false;
+      const gerg::State s = gerg::state_TR_phase(double(T), double(R), g_phase(phase));
+      E = amrex::Real(s.e); Cv = amrex::Real(s.cv);
+      return std::isfinite(s.e) && std::isfinite(s.cv);
+  }
+
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   void REY2P_phase(amrex::Real R, amrex::Real E, amrex::Real*,
                    hem::Phase3 phase, amrex::Real& P)

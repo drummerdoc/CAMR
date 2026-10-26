@@ -191,3 +191,59 @@ Readings:
 - Harvested in mode 2 or mode 5 the cell sets are the same within 7 %: the states entering the operator are set by the hydro, not by which operator ran the previous step, so a mode-2 production restart is a valid source of X3 development cells.
 - Read-only: the 20-step restart checkpoint is byte-identical with the cell harvest off and on (every file except `CPUtime`).
 
+## The flattened relaxation operator (X3F) vs the nested X3 — CPU, 2026-10-26 (`hem_relax_x3f.H`, `bench/x3f_ladder.sh`)
+
+The O-28 question: is one Newton solve in (α₁, T₁, T₂, q, dm) with the EOS evaluated forward, (ρ_k, T_k) → P, e, s, c, c_v, and never inverted inside the iteration, a win over the nested operator (a 2×2 Newton whose every path evaluation runs an α Newton whose every point inverts (ρ_k, e_k) → T_k by a bracketed Illinois over [1, 5000] K)? Same rates, same carrier rule, same dm box, same predictor, same sub-step ladder, same band gate; the entry projection is the same system with q = dm = 0. The one modelling difference is the interfacial work across a sub-step: X3 integrates P_I dα along its α walk, X3F books P_mid (α₁' − α₁) with P_mid the mean of the base interface pressure and the new common pressure; the fixed point (P, T, g equal under the conservation laws) is the same.
+
+**The forward EOS itself** (PR, one EPYC core, ns per call): forward full state 307 (liquid) / 506 (vapour), of which the (e, c_v)-only entry is 30 / 31 — the rest is the branch-edge march below T_c that `state_from_T_v` runs on every call; the seeded T inversion (Newton on e, c_v from 0.9 T_c, ~9 iterations) 200; the bracketed (ρ, e) inversion of the contract 1 860 / 2 110. So an inversion costs 6× a forward evaluation, and a forward evaluation costs 10× what its thermodynamics needs: the march is the next lever, for both operators.
+
+**Replay sets.** demo3: the 2-D production restart (3 649 cells, 225 k visits, §above). Sweep: the 14 seed-sweep decks re-run in mode 5 with the cell harvest (`sweep/cells_harvest.py`; 20 462 distinct cells, 3.97 M visits, dt 4e-7 … 2e-5 s, min volume fraction 1e-2 … 0.37; 21 % of the cells are branch-invalid on entry, 18 % stand at the band gate: the hard classes the production restart lacks). The dt ladder multiplies every cell's harvested dt by 1, 3, 10, 30, 100 (`CAMR.ps_x3_replay_dt_scale`). Fixed-N = 4 Newton steps per solve (entry projection and each sub-step), accepted at a residual of 1e-8.
+
+Sweep set, one EPYC core, per cell (`runs/bench/x3f/cpu_sweep_v2_dt1`, `cpu_sweep_dt{3,10,30,100}`; the 1× rung after the entry-admissibility fix, the others before it, which changes only the labelling of 67 refused cells):
+
+| dt × | operator | integrated | stood | refused / failed | Newton its mean / p99 / max | EOS work per cell mean / max | wall µs mean / p99 / max |
+|---|---|---|---|---|---|---|---|
+| 1 | X3 nested | 61.1 % | 17.9 % | 4 298 no root at entry | 1.5 / 3 / 15 | 3.2 / 64 path evals | 264 / 685 / 4 314 |
+| 1 | X3F adaptive | 61.2 % | 17.7 % | 4 298 no root, 34 projection | 3.3 / 7 / 93 | 19.7 / 843 forward pairs | **30.9** / 64 / 925 |
+| 1 | X3F fixed-4 | 60.2 % | 17.4 % | 4 298 no root, 290 not converged | 5.6 / 8 / 8 | 30.6 / 45 | 40.0 / 65 / 73 |
+| 10 | X3 nested | 61.1 % | 17.9 % | 4 298 | 2.0 / 7 / 68 | 5.1 / 322 | 515 / 3 244 / 21 704 |
+| 10 | X3F adaptive | 60.8 % | 17.6 % | 4 406 | 3.8 / 7 / 128 | 23.3 / 1 042 | **35.2** / 71 / 1 213 |
+| 10 | X3F fixed-4 | 60.0 % | 17.4 % | 4 399, 229 not converged | 5.5 / 8 / 8 | 30.6 / 45 | 41.8 / 73 / 87 |
+| 100 | X3 nested | 61.1 % | 17.9 % | 4 298 | 8.1 / 115 / 222 | 35.2 / 1 271 | 4 871 / 75 099 / 199 840 |
+| 100 | X3F adaptive | 60.8 % | 17.6 % | 4 406 | 9.9 / 140 / 199 | 74.3 / 1 769 | **106** / 1 509 / 2 070 |
+| 100 | X3F fixed-4 | 31.2 % | 17.4 % | 4 399, 6 120 not converged | 5.5 / 8 / 8 | 30.3 / 45 | 43.6 / 72 / 113 |
+
+(3× and 30× rungs in the logs: X3 373 and 1 655 µs, X3F 32.8 and 46.7 µs.)  demo3 set: X3 284 µs, X3F 35.9 µs at 1×; 519 / 40.4 at 10×; 5 108 / 76.7 at 100×; fixed-4 converges every demo3 cell at 1×, misses 7 at 10× and 122 at 100×.
+
+**Agreement.** Outcome class: on the sweep set at 1×, 12 473 cells integrated by both, 4 298 refused by both (X3 in its projector's first EOS call, X3F in its entry inversion: the same no-root verdict), 3 615 stood by both; 42 cells X3 stands on and X3F integrates, 34 the reverse or projection failures — 99.6 % the same outcome. Exit states of the cells both integrate: |ΔP₁|/P₁ p50 4e-6, p99 1e-2 (1e-4, X3's own projector tolerance, before the 67 sub-spinodal trace liquids were admitted), |Δα₁| p99 2e-5, |ΔT_k| p99 0.6 K; the tail (69 cells with |ΔP|/P > 1 %) is trace liquid (α₁ ≈ 1 %) at ρ₁ = 320–450 kg/m³, far past its spinodal on the C1 extension where P is nearly flat in α: the two work rules split a large α move differently. On demo3 the exit states agree to X3's tolerance at every rung up to 10× (|ΔP|/P ≤ 1e-4, |ΔT| ≤ 11 mK); at 100× one step they differ at the per-cent level, and 80 successive applications bring the two operators together (|ΔP|/P p99 5.6e-3 → 7.8e-4, |ΔT₂| p99 1.6 → 0.24 K, both still relaxing with the same |T₁−T₂| distribution): the same fixed point, different transients at large steps. On the sweep set, 40 applications at 10× dt (≈ 3 θ of relaxation) leave the two operators with the same |T₁−T₂| distribution (p50 7.5 K, p99 28 K, both still relaxing) and exit states that agree to |ΔP₁|/P₁ p50 5e-4, p99 2e-2, |ΔT_k| p99 1.7–3.4 K; the P tail is X3's own: 1 % of its integrated exit states are not at P₁ = P₂ at all (|P₁−P₂|/P p99 0.68, max 2 644: the projector's single-phase skip at α₁ below `ps_single_phase_threshold` leaves the cell unprojected, which the committed state then carries), where X3F's exit states satisfy P₁ = P₂ to 1e-10 on every integrated cell. Fixed-4 reproduces adaptive X3F to 1e-10 wherever it converges.
+
+**CPU verdict.** X3F is 8.5× cheaper than X3 at the production dt (31 vs 264 µs per cell on the sweep set, 36 vs 284 on demo3) and the ratio grows with the step (15× at 10×, 46× at 100×) because X3's cost is the inversion count, which explodes with the sub-step ladder, while X3F's is the outer Newton count. At the production dt the X3 relaxation stage is 30–60 % of a CPU run (`L0_200` profiles), so the stage shrinks 8× and the run by roughly 1.4–1.8×. The flattened operator is also the first that can take a 100× larger relaxation step at all on these states (every cell integrates, 106 µs), which is what an implicit-rate or sub-cycled coupling would need.
+
+### The same ladder on the development GPU (RTX PRO 6000, FP64 derated), one kernel per operator
+
+The replay bench on a CUDA build runs each operator as one `ParallelFor` over the cell set replicated 64× (demo3) or 16× (sweep), best of 3 launches, in the harvested cell order and in an order sorted by each cell's own cost (iterations, then EOS work: a warp-homogeneous order, so the ratio is the divergence penalty the natural order pays). ns per cell-visit:
+
+| dt × | operator | demo3: harvested / sorted (penalty) | sweep: harvested / sorted (penalty) | not converged (sweep) |
+|---|---|---|---|---|
+| 1 | X3 nested | 843 / 671 (1.26×) | 1 297 / 965 (1.34×) | — |
+| 1 | X3F adaptive | **300** / 279 (1.08×) | **678** / 643 (1.05×) | — |
+| 1 | X3F fixed-4 | 525 / 503 (1.04×) | 597 / 443 (1.35×) | 290 |
+| 10 | X3 nested | 3 598 / 3 395 (1.06×) | 7 002 / 7 682 (0.91×) | — |
+| 10 | X3F adaptive | **988** / 871 (1.13×) | **1 330** / 1 514 (0.88×) | — |
+| 10 | X3F fixed-4 | 524 / 502 (1.04×) | 595 / 444 (1.34×) | 330 |
+| 100 | X3 nested | 95 146 / 58 931 (1.61×) | 107 805 / 102 618 (1.05×) | — |
+| 100 | X3F adaptive | **5 000** / 2 418 (2.07×) | **6 541** / 4 260 (1.54×) | — |
+| 100 | X3F fixed-4 | 503 / 483 (1.04×) | 591 / 439 (1.35×) | 6 221 |
+
+ptxas (sm_120, `-maxrregcount=255`): X3 kernel 255 registers, 1 338 B spill stores; X3F adaptive 255 registers, 960 B spills; X3F fixed-4 202 registers, no spills. The GPU X3 replay reproduces the CPU run's outcomes to |Δα₁| 2e-13 and |ΔE_k|/E 1e-10 on every cell (not bit for bit: the fused arithmetic differs, and 9 % of the cells take a different iteration count to the same answer).
+
+### Verdicts, separately for CPU and GPU
+
+**CPU: a clear win.** 8.5× cheaper per cell at the production step on both sets (31 vs 264 µs sweep, 36 vs 284 µs demo3), 15× at 10× dt, 46× at 100× dt; the same outcome on 99.6 % of the cells and the same fixed point; every cell integrates at 100× dt where X3 needs up to 200 ms per cell. With the relaxation stage at 30–60 % of a CPU run, the run gains 1.4–1.8× from the operator alone, before the EOS-level levers below.
+
+**GPU: a win, but a smaller one, and the fixed count is not where it comes from.** At the production step X3F is 2.8× (demo3) and 1.9× (sweep) faster than X3; 3.6× and 5.3× at 10× dt; 19× and 16× at 100× dt. The smaller ratio than on the CPU has a measured reason: both kernels sit at the 255-register cap with spills, so the flattened operator's advantage in instruction count is partly paid back in local-memory traffic (its 5×5 finite-difference Jacobian keeps two phase states, a Jacobian and a trial state live). On thread divergence the data say three things. (1) The adaptive X3F Newton is already warp-friendly: its iteration count is tight (p99 5, max 6 on demo3 at 1×) and its divergence penalty is 1.05–1.13×, against 1.26–1.34× for the nested operator at the same step. (2) A fixed count is feasible for the integrated class: fixed-4 converges every demo3 cell and 98.5 % of the sweep cells at the production step, bit-compatible with the adaptive solve to 1e-10, with the kernel at 202 registers and no spills; but at N = 4 per solve it executes twice the iterations the adaptive solve needs and runs 1.75× slower on demo3 (525 vs 300 ns); only a count at the adaptive mean (N = 2, which converges 99.1 % of demo3) would break even, and the 1.5–3 % that do not converge need a second, adaptive pass. (3) The divergence that remains is not in the Newton loop: on the sweep set even the fixed-count kernel pays 1.35× for cell order, because 21 % of the cells are refused at entry and 18 % stand at the band gate, and a warp mixing those with integrated cells waits for the longest; the other source is inside the forward EOS, whose branch-edge march below T_c is a data-dependent loop of 40–50 cubic evaluations per call. At 100× dt the fixed count fails on half the cells and the adaptive X3F pays a 2× divergence penalty: the large-step regime needs sub-stepping, which no fixed count covers.
+
+**What decides the GPU case next**, in order of measured leverage: an analytic Jacobian (the residual's P, e, c_v derivatives are closed-form in (ρ, T); it replaces 6 forward pairs per iteration by 1, cutting X3F's EOS work 4–5× on both platforms and its live state on the GPU); a march-free forward evaluation (the (e, c_v) part of the forward state costs 30 ns against 300–500 for the full state with the march: an edge table in T per branch, or the march run once per (branch, T) rather than per call, removes 90 % of the forward cost and the in-EOS divergence); and class-sorted launches (compaction of the integrated cells into their own launch: 1.35× on the sweep set, measured). The fixed count's register saving (202 vs 255, no spills) is worth keeping for the first pass of a two-pass scheme once the Jacobian is analytic.
+
+Bench: `Exec/CO2_PipeBreak/bench/x3f_ladder.sh` (rungs × operators, CPU or CUDA executable), `bench/x3f_table.py` (the tables above), `sweep/cells_harvest.py` (the sweep replay set); logs and per-cell rows under `runs/bench/x3f/` (git-ignored).
+

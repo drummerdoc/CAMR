@@ -101,3 +101,21 @@ The bound-limited coarse–fine fill. A `CellConservativeProtected` analogue tha
 ## 9. Table backends on the device — LANDED 2026-10-21
 
 Was: `Eos_Model := PRTab` did not compile with `USE_CUDA = TRUE` (the generated table arrays are host `extern const double` globals read from device code), GERGTab had the same structure, and every GPU run to date used analytic PR. Now: the lookups read the arrays through `prtab::tables()` / `gergtab::tables()`, a struct of pointers that is the host arrays on the host and a `__constant__` struct of device copies on the device, filled once by `prtab::device_init()` / `gergtab::device_init()` from `CAMR::read_params` (`prtab_device.cpp`, `gergtab_device.cpp`; no managed memory). Gates: host PRTab and host GERGTab byte-identical before and after; PRTab CUDA on 1-D B4 differs from host PRTab by 2.7e-5 normalised (117 Pa), which is exactly analytic PR's own CUDA-vs-host difference (same 106 cells, 0.02 Pa apart; `cmp_plt1d.py`) — the solver's GPU-only branches of DECIDE-25, not the table — while table-vs-analytic is 1.583e-4 on both platforms. Three GERG-side repairs were needed on the way: `EOS::PYT2REc_phase_checked` (the Corridor projection's entry, missing from GERG so neither GERG backend built against the current PS code), a single `__constant__` definition of the GERG coefficient and saturation-spline arrays (`gerg_coeffs.cpp`; header-defined per-TU `__constant__` arrays crashed nvlink with SIGFPE on CUDA 13.4, and a non-`extern` definition had internal linkage), and `gerg_ext_c_init` unguarded from `__CUDA_ARCH__` (nvcc's device pass parses the host call). GERGTab gate: the CUDA GERGTab B4 run differs from host GERGTab by 2.746e-5 normalised (103 Pa), again exactly analytic GERG's own CUDA-vs-host difference, and GERGTab-vs-GERG is 4.4e-11 on both platforms — the seed-plus-polish design agreeing with its analytic parent at round-off on the device as on the host. All four backends now build and run under `USE_CUDA = TRUE`.
+
+## 10. The SINTEF thermotabulation backend — to be added back (noted 2026-10-26)
+
+The interface to SINTEF's thermotabulation software (the external tabulated-EOS
+library used in the earlier CO₂ work; most likely CPU-only) is to be restored
+as a fifth EOS backend, so that its efficiency and robustness can be placed
+in the same four-backend comparison as PR, PRTab, GERG-2008 and GERGTab
+(`Exec/CO2_PipeBreak/bench/backend_bench.sh`, `Exec/EOS_Surrogate/RESULTS.md`):
+the same decks, the same relaxation-stage and hydro-stage timings, the same
+guard/refusal census, the same replay bench on the harvested cell sets.  Open
+questions it has to answer: whether it carries a branch-locked per-phase
+(ρ_k, e_k) contract with a refusal channel (the six-equation model's
+requirement, `docs/MODEL_AND_ALGORITHM.md` §7.2) or only a mixture surface;
+what its forward (ρ, T) entry costs, which decides whether the flattened
+relaxation operator (`hem_relax_x3f.H`, O-28) can use it; and whether the
+library is device-callable at all (if not, it is a CPU-only option and its
+place is on the CPU column of the platform matrix).  Scheduled after the
+flattened-Newton conclusions are in.

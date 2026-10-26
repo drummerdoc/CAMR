@@ -31,5 +31,6 @@
 //  dependency order (every part is self-guarded).
 #include "hem_eos_api.H"        // V6, PsPhase, PsPhaseAPI, folds, dials, ps_state_from_cons
 #include "hem_relax_x3.H"       // mechanical / thermal kernels, the coupled X3 operator
+#include "hem_relax_x3f.H"      // the flattened operator (O-28 prototype)
 #include "hem_mass_transfer.H"  // split Gibbs-equilibrium and finite-rate mass transfer
 #include "hem_flash.H"          // the flash nucleator, co2_sat_state, ps_below_triple_point

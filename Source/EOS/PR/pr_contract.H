@@ -258,6 +258,49 @@
       E = s.e;
   }
 
+  //  Forward branch-locked (rho, T) -> {P, e, s, c, cv}: the closed-form
+  //  PR state on the requested branch (hem::state_from_T_v, with its
+  //  spinodal continuation and pressure floor) plus the real-fluid c_v
+  //  from the same departure functions.  No inversion: the flattened
+  //  relaxation operator (hem_relax_x3f.H) iterates on T_k directly and
+  //  needs exactly this surface.  Validity is the forward domain:
+  //  T in [1, 5000] K, the T bracket of the (rho,e) inversion.
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  bool RTY2PESCv_phase(amrex::Real R, amrex::Real T, hem::Phase3 phase,
+                       amrex::Real& P, amrex::Real& E, amrex::Real& S,
+                       amrex::Real& Cs, amrex::Real& Cv)
+  {
+      if (!(T >= amrex::Real(1.0)) || !(T <= amrex::Real(5000.0)) || !(R > amrex::Real(0.0)))
+          return false;
+      const hem::PRFluid f = co2_fluid();
+      const amrex::Real v_m = hem::v_PR_from_rho(f, R);
+      const hem::State s = hem::state_from_T_v(f, T, v_m, phase);
+      amrex::Real e_dep, s_dep, cv_dep;
+      hem::departureFunctions(f, T, v_m, e_dep, s_dep, cv_dep);
+      P = s.P; E = s.e; S = s.s; Cs = s.c;
+      Cv = (hem::R_gas * hem::cv_ig_over_R(f, T) + cv_dep) / f.M;
+      return std::isfinite(P) && std::isfinite(E) && std::isfinite(Cv);
+  }
+
+  //  Forward branch-locked (rho, T) -> {e, cv} only: the ideal-gas part
+  //  and the fenced departure function, no spinodal march (e and c_v do
+  //  not depend on it).  The seeded T inversion of the flattened operator
+  //  iterates on this.
+  AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+  bool RTY2ECv_phase(amrex::Real R, amrex::Real T, hem::Phase3 /*phase*/,
+                     amrex::Real& E, amrex::Real& Cv)
+  {
+      if (!(T >= amrex::Real(1.0)) || !(T <= amrex::Real(5000.0)) || !(R > amrex::Real(0.0)))
+          return false;
+      const hem::PRFluid f = co2_fluid();
+      const amrex::Real v_m = hem::v_PR_from_rho(f, R);
+      amrex::Real e_dep, s_dep, cv_dep;
+      hem::departureFunctions(f, T, v_m, e_dep, s_dep, cv_dep);
+      E  = (hem::e_ig_per_mole(f, T) + e_dep) / f.M;
+      Cv = (hem::R_gas * hem::cv_ig_over_R(f, T) + cv_dep) / f.M;
+      return std::isfinite(E) && std::isfinite(Cv);
+  }
+
   //  rho, T -> e, branch-locked: a dilute phase set to thermal
   //  equilibrium with its host stays on its own branch.
   AMREX_GPU_HOST_DEVICE
