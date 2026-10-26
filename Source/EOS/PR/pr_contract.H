@@ -265,20 +265,47 @@
   //  relaxation operator (hem_relax_x3f.H) iterates on T_k directly and
   //  needs exactly this surface.  Validity is the forward domain:
   //  T in [1, 5000] K, the T bracket of the (rho,e) inversion.
+  //  The optional partials (dP/drho)_T (after the spinodal extension),
+  //  (dP/dT)_rho and (de/drho)_T = -(T (dP/dT)_rho - P_raw)/rho^2 (the
+  //  raw-cubic identity; e does not see the extension) serve the analytic
+  //  Jacobian of the flattened operator.
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   bool RTY2PESCv_phase(amrex::Real R, amrex::Real T, hem::Phase3 phase,
                        amrex::Real& P, amrex::Real& E, amrex::Real& S,
-                       amrex::Real& Cs, amrex::Real& Cv)
+                       amrex::Real& Cs, amrex::Real& Cv,
+                       amrex::Real* dPdrho_T = nullptr, amrex::Real* dPdT_rho = nullptr,
+                       amrex::Real* dedrho_T = nullptr)
   {
       if (!(T >= amrex::Real(1.0)) || !(T <= amrex::Real(5000.0)) || !(R > amrex::Real(0.0)))
           return false;
       const hem::PRFluid f = co2_fluid();
       const amrex::Real v_m = hem::v_PR_from_rho(f, R);
-      const hem::State s = hem::state_from_T_v(f, T, v_m, phase);
+      amrex::Real dPdv_T = amrex::Real(0), dPdT_v = amrex::Real(0), P_raw = amrex::Real(0);
+      int extended = 0;
+      const hem::State s = hem::state_from_T_v(f, T, v_m, phase, false, &dPdv_T, &dPdT_v, &P_raw, &extended);
       amrex::Real e_dep, s_dep, cv_dep;
       hem::departureFunctions(f, T, v_m, e_dep, s_dep, cv_dep);
       P = s.P; E = s.e; S = s.s; Cs = s.c;
       Cv = (hem::R_gas * hem::cv_ig_over_R(f, T) + cv_dep) / f.M;
+      if (dPdrho_T || dPdT_rho || dedrho_T) {
+          //  v_real = v_m + c_shift; rho = M / v_real; dv_m/drho = -M/rho^2.
+          const amrex::Real v_real = v_m + f.c_shift;
+          if (dPdrho_T) *dPdrho_T = -v_real * v_real / f.M * dPdv_T;
+          if (dPdT_rho) {
+              //  Past the branch edge P is the continuation P(v_edge(T), T)
+              //  + csq_floor (rho - rho_edge(T)); its T derivative carries
+              //  the edge's motion, which the raw cubic's slope does not:
+              //  one forward difference in T (a second march) there.
+              if (extended) {
+                  const amrex::Real hT = amrex::Real(1.0e-6) * T;
+                  const hem::State sp = hem::state_from_T_v(f, T + hT, v_m, phase);
+                  *dPdT_rho = (sp.P - s.P) / hT;
+              } else {
+                  *dPdT_rho = dPdT_v;
+              }
+          }
+          if (dedrho_T) *dedrho_T = -(T * dPdT_v - P_raw) * v_real * v_real / (f.M * f.M);
+      }
       return std::isfinite(P) && std::isfinite(E) && std::isfinite(Cv);
   }
 

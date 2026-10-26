@@ -423,7 +423,7 @@ inline int ps_relax_corner_sweep()
 // ---------------------------------------------------------------------
 namespace ps_replay {
 
-enum Op : int { OP_X3 = 0, OP_X3F = 1, OP_X3F_FIXED = 2, NOPS = 3 };
+enum Op : int { OP_X3 = 0, OP_X3F = 1, OP_X3F_FIXED = 2, OP_X3F_FD = 3, NOPS = 4 };
 //  Integer outputs per cell and operator.
 enum IOut : int { IO_STATUS = 0, IO_NIT, IO_NSUB, IO_NFWD, IO_EXIT, IO_OK, IO_NINV, NIO };
 
@@ -451,7 +451,8 @@ inline void run_cell(const double* U8, double dt, int iters,
             ok = hem::ps_x3_relax_cell(W, eos, dt, xp);
         } else {
             hem::PsX3fParams xf = xf0;
-            if (op == OP_X3F) xf.fixed_newton = 0;
+            if (op == OP_X3F || op == OP_X3F_FD) xf.fixed_newton = 0;
+            xf.jac = (op == OP_X3F_FD) ? 1 : 0;
             xf.exit_code = &io[IO_EXIT]; xf.it_out = &io[IO_NIT]; xf.sub_out = &io[IO_NSUB];
             xf.fwd_out = &io[IO_NFWD]; xf.inv_out = &io[IO_NINV]; xf.status = &io[IO_STATUS];
             ok = hem::ps_x3f_relax_cell(W, eos, dt, xf);
@@ -508,16 +509,17 @@ inline int ps_x3_replay_bench(const std::string& file)
     const int    iters       = std::max(1, ps_dial_int("ps_x3_replay_iter", 1));
     const std::string out    = ps_dial_string("ps_x3_replay_out", (file + ".replay.csv").c_str());
     const std::string opsstr = ps_dial_string("ps_x3_replay_ops", "x3,x3f,x3f_fixed");
-    bool run_op[NOPS] = { opsstr.find("x3,") != std::string::npos || opsstr == "x3" || opsstr.find(",x3") != std::string::npos,
-                          opsstr.find("x3f") != std::string::npos,
-                          opsstr.find("x3f_fixed") != std::string::npos };
-    // "x3f" alone must not switch on x3 by substring: decide x3 by exact token.
+    bool run_op[NOPS] = { false, false, false, false };
     {
-        run_op[OP_X3] = false;
         std::string tok; std::istringstream ss(opsstr);
-        while (std::getline(ss, tok, ',')) if (tok == "x3") run_op[OP_X3] = true;
+        while (std::getline(ss, tok, ',')) {
+            if (tok == "x3") run_op[OP_X3] = true;
+            else if (tok == "x3f") run_op[OP_X3F] = true;
+            else if (tok == "x3f_fixed") run_op[OP_X3F_FIXED] = true;
+            else if (tok == "x3f_fd") run_op[OP_X3F_FD] = true;
+        }
     }
-    const char* OPNM[NOPS] = { "x3 (nested)", "x3f (flattened, adaptive)", "x3f (flattened, fixed-N)" };
+    const char* OPNM[NOPS] = { "x3 (nested)", "x3f (flattened, adaptive, analytic J)", "x3f (flattened, fixed-N, analytic J)", "x3f (flattened, adaptive, FD J)" };
 
     std::vector<double> dts(N);
     for (int i = 0; i < N; ++i) dts[i] = ((dt_override > 0.0) ? dt_override : cells[i].U[6]) * dt_scale;
@@ -607,11 +609,16 @@ inline int ps_x3_replay_bench(const std::string& file)
                             const int c = p_perm[i % nn];
                             run_cell<OP_X3F>(p_in + std::size_t(c) * 8, p_dt[c], iters, eos, xp0, xf0,
                                              p_U + std::size_t(i) * 6, p_io + std::size_t(i) * NIO); });
-                    } else {
+                    } else if (op == OP_X3F_FIXED) {
                         amrex::ParallelFor(M, [=] AMREX_GPU_DEVICE (int i) noexcept {
                             const int c = p_perm[i % nn];
                             run_cell<OP_X3F_FIXED>(p_in + std::size_t(c) * 8, p_dt[c], iters, eos, xp0, xf0,
                                                    p_U + std::size_t(i) * 6, p_io + std::size_t(i) * NIO); });
+                    } else {
+                        amrex::ParallelFor(M, [=] AMREX_GPU_DEVICE (int i) noexcept {
+                            const int c = p_perm[i % nn];
+                            run_cell<OP_X3F_FD>(p_in + std::size_t(c) * 8, p_dt[c], iters, eos, xp0, xf0,
+                                                p_U + std::size_t(i) * 6, p_io + std::size_t(i) * NIO); });
                     }
                     amrex::Gpu::streamSynchronize();
                     best = std::min(best, (amrex::second() - t0) * 1.0e9 / double(M));
@@ -640,7 +647,8 @@ inline int ps_x3_replay_bench(const std::string& file)
                 const auto t0 = std::chrono::steady_clock::now();
                 if (op == OP_X3)       run_cell<OP_X3>(cells[i].U, dts[i], iters, eos, xp0, xf0, &r.Uout[std::size_t(i) * 6], &r.io[std::size_t(i) * NIO]);
                 else if (op == OP_X3F) run_cell<OP_X3F>(cells[i].U, dts[i], iters, eos, xp0, xf0, &r.Uout[std::size_t(i) * 6], &r.io[std::size_t(i) * NIO]);
-                else                   run_cell<OP_X3F_FIXED>(cells[i].U, dts[i], iters, eos, xp0, xf0, &r.Uout[std::size_t(i) * 6], &r.io[std::size_t(i) * NIO]);
+                else if (op == OP_X3F_FIXED) run_cell<OP_X3F_FIXED>(cells[i].U, dts[i], iters, eos, xp0, xf0, &r.Uout[std::size_t(i) * 6], &r.io[std::size_t(i) * NIO]);
+                else                   run_cell<OP_X3F_FD>(cells[i].U, dts[i], iters, eos, xp0, xf0, &r.Uout[std::size_t(i) * 6], &r.io[std::size_t(i) * NIO]);
                 const auto t1 = std::chrono::steady_clock::now();
                 best = std::min(best, std::chrono::duration<double, std::nano>(t1 - t0).count());
             }
@@ -766,6 +774,8 @@ inline int ps_x3_replay_bench(const std::string& file)
     };
     compare(OP_X3, OP_X3F);
     compare(OP_X3F, OP_X3F_FIXED);
+    compare(OP_X3F_FD, OP_X3F);
+    compare(OP_X3, OP_X3F_FD);
 
     // ---- fidelity of X3 against the in-situ outcome
     long n_fid_checked = 0, n_fid_fail = 0, n_cost_diff = 0;
@@ -803,7 +813,7 @@ inline int ps_x3_replay_bench(const std::string& file)
         std::ofstream os(out);
         if (os) {
             os << "idx,count,dt";
-            const char* tag[NOPS] = { "x3", "x3f", "x3fN" };
+            const char* tag[NOPS] = { "x3", "x3f", "x3fN", "x3fFD" };
             for (int op = 0; op < NOPS; ++op) if (res[op].ran)
                 os << ',' << tag[op] << "_status," << tag[op] << "_nit," << tag[op] << "_nsub," << tag[op] << "_nfwd,"
                    << tag[op] << "_ns," << tag[op] << "_a1," << tag[op] << "_T1," << tag[op] << "_T2," << tag[op] << "_P1";

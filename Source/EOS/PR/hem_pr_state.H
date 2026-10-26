@@ -297,8 +297,17 @@ inline void departureFunctions(const PRFluid& f, amrex::Real T, amrex::Real v_m,
 AMREX_GPU_HOST_DEVICE
 inline State state_from_T_v(const PRFluid& f, amrex::Real T, amrex::Real v_m,
                             Phase3 phase = Phase3::Vapor,
-                            bool probe = false)   // true = bracket-end probe
+                            bool probe = false,   // true = bracket-end probe
+                            //  Optional partials for an analytic Jacobian
+                            //  (hem_relax_x3f.H): (dP/dv)_T after the spinodal
+                            //  extension, (dP/dT)_v of the raw cubic, and the
+                            //  raw-cubic P (for (de/dv)_T = T (dP/dT)_v - P_raw).
+                            amrex::Real* dPdv_T_out = nullptr,
+                            amrex::Real* dPdT_v_out = nullptr,
+                            amrex::Real* P_raw_out  = nullptr,
+                            int*         extended_out = nullptr)   // 1 = past the branch edge
 {
+    if (extended_out) *extended_out = 0;
     amrex::Real a, dadT, d2adT2, b;
     pureParams2(f.pr, T, a, dadT, d2adT2, b);
 
@@ -311,6 +320,7 @@ inline State state_from_T_v(const PRFluid& f, amrex::Real T, amrex::Real v_m,
     amrex::Real P    = R_gas*T/(v_m - b) - a/D;
     amrex::Real dPdv_T = -R_gas*T/((v_m-b)*(v_m-b))
                        + amrex::Real(2)*a*(v_m+b)/(D*D);
+    if (P_raw_out) *P_raw_out = P;
 
     // -------- Spinodal extension ---------------------------------------
     //  Inside the dome the PR cubic has a van der Waals loop where
@@ -371,6 +381,7 @@ inline State state_from_T_v(const PRFluid& f, amrex::Real T, amrex::Real v_m,
             const bool past = want_liq ? (v_m > v_edge)        // liquid: lower density
                                        : (v_m < v_edge);       // vapor : higher density
             if (past) {
+                if (extended_out) *extended_out = 1;
                 const amrex::Real rho_q = f.M / (v_m   + f.c_shift);
                 const amrex::Real rho_e = f.M / (v_edge + f.c_shift);
                 P      = p_at(v_edge) + csq_floor * (rho_q - rho_e);   // monotone in rho
@@ -399,6 +410,8 @@ inline State state_from_T_v(const PRFluid& f, amrex::Real T, amrex::Real v_m,
     // single-phase sound speed (uses v_real^2 prefactor with Peneloux shift).
     // dPdv_T is the regularized isothermal slope (capped negative in the loop).
     amrex::Real dPdT_v =  R_gas/(v_m-b) - dadT/D;
+    if (dPdv_T_out) *dPdv_T_out = dPdv_T;
+    if (dPdT_v_out) *dPdT_v_out = dPdT_v;
 
     // c_p - c_v = -T (dP/dT)^2 / (dP/dv)_T
     amrex::Real cp_mol = cv_mol - T*dPdT_v*dPdT_v / dPdv_T;

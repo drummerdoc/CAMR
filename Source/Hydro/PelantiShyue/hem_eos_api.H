@@ -71,6 +71,9 @@ struct PsPhase {
     double s     = 0.0;    // per-phase specific entropy [J/(kg*K)]
     double g     = 0.0;    // per-phase Gibbs free energy = h - T*s [J/kg]
     double cv    = 0.0;    // per-phase c_v [J/(kg K)]; filled by the forward (rho,T) query only
+    double dPdrho = 0.0;   // (dP/drho)_T, (dP/dT)_rho, (de/drho)_T: forward query only
+    double dPdT   = 0.0;
+    double dedrho = 0.0;
     bool   valid = false;  // false if EOS query failed (safe default)
 };
 
@@ -140,10 +143,10 @@ inline void ps_eos_phase_state(int phase, double rho, double e, PsPhase& ph)
 AMREX_GPU_HOST_DEVICE
 inline void ps_eos_phase_state_rT(int phase, double rho, double T, PsPhase& ph)
 {
-    amrex::Real P, E, S, Cs, Cv;
+    amrex::Real P, E, S, Cs, Cv, dPr, dPT, der;
     const Phase3 ph3 = (phase == 1) ? Phase3::Liquid : Phase3::Vapor;
     ph.rho = rho; ph.T = T;
-    if (!EOS::RTY2PESCv_phase(amrex::Real(rho), amrex::Real(T), ph3, P, E, S, Cs, Cv)) {
+    if (!EOS::RTY2PESCv_phase(amrex::Real(rho), amrex::Real(T), ph3, P, E, S, Cs, Cv, &dPr, &dPT, &der)) {
         ph.e = 0.0; ph.P = 0.0; ph.c = 0.0; ph.h = 0.0; ph.s = 0.0; ph.g = 0.0; ph.cv = 0.0;
         ph.valid = false;
         return;
@@ -155,6 +158,7 @@ inline void ps_eos_phase_state_rT(int phase, double rho, double T, PsPhase& ph)
     ph.g  = ph.h - T * ph.s;
     ph.c  = double(Cs);
     ph.cv = double(Cv);
+    ph.dPdrho = double(dPr); ph.dPdT = double(dPT); ph.dedrho = double(der);
     ph.valid = std::isfinite(P) && P > 0.0 && std::isfinite(T) && T > 0.0 && Cv > 0.0;
 }
 

@@ -589,13 +589,18 @@ namespace EOS {
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
   bool RTY2PESCv_phase(amrex::Real R, amrex::Real T, hem::Phase3 phase,
                        amrex::Real& P, amrex::Real& E, amrex::Real& S,
-                       amrex::Real& Cs, amrex::Real& Cv)
+                       amrex::Real& Cs, amrex::Real& Cv,
+                       amrex::Real* dPdrho_T = nullptr, amrex::Real* dPdT_rho = nullptr,
+                       amrex::Real* dedrho_T = nullptr)
   {
       if (!(T >= amrex::Real(1.0)) || !(T <= amrex::Real(5000.0)) || !(R > amrex::Real(0.0)))
           return false;
       const gerg::State s = gerg::state_TR_phase(double(T), double(R), g_phase(phase));
       P = amrex::Real(s.P); E = amrex::Real(s.e); S = amrex::Real(s.s);
       Cs = amrex::Real(s.c); Cv = amrex::Real(s.cv);
+      if (dPdrho_T) *dPdrho_T = amrex::Real(s.dPdrho_T);
+      if (dPdT_rho) *dPdT_rho = amrex::Real(s.dPdT_rho);
+      if (dedrho_T) *dedrho_T = amrex::Real(-(double(T) * s.dPdT_rho - s.P) / (double(R) * double(R)));
       return std::isfinite(s.P) && std::isfinite(s.e) && std::isfinite(s.cv);
   }
   AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE

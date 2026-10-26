@@ -247,3 +247,41 @@ ptxas (sm_120, `-maxrregcount=255`): X3 kernel 255 registers, 1 338 B spill stor
 
 Bench: `Exec/CO2_PipeBreak/bench/x3f_ladder.sh` (rungs × operators, CPU or CUDA executable), `bench/x3f_table.py` (the tables above), `sweep/cells_harvest.py` (the sweep replay set); logs and per-cell rows under `runs/bench/x3f/` (git-ignored).
 
+## X3F with the analytic Jacobian — 2026-10-26, and the production-GPU estimate
+
+The Jacobian of the five residuals is now assembled from the forward entry's partials, (∂P/∂ρ)_T (after the spinodal extension), (∂P/∂T)_ρ (the raw cubic before the branch edge; past it, a forward difference in T, because the continuation's edge moves with T and the cubic's slope does not see it), (∂e/∂ρ)_T = −(T (∂P/∂T)_ρ − P_raw)/ρ² and c_v, with dg = −s dT + v dP for the Gibbs derivatives and c_v frozen in the rate derivatives (a quasi-Newton approximation; the residual stays exact). One forward pair per iteration instead of six. Safeguard: an adaptive solve whose line search fails on an analytic step finishes with the finite-difference Jacobian; it triggers on 0.5 % of the sweep cells and never on demo3. The FD-Jacobian operator stays in the bench as `x3f_fd`.
+
+**Accuracy of the Jacobian.** Same iteration count as FD on demo3 (3.8 per cell) and on the sweep set (3.4 vs 3.3); exit states identical to FD to |Δα₁| 2e-11, |ΔP|/P 2e-10, |ΔT| 3e-8 K; outcome classes identical on demo3 and on 99.9 % of the sweep cells (44 projection failures at entry against FD's 34; X3 integrates 61.1 %, X3F now 61.1 %).
+
+**Cost, one EPYC core, per cell (mean µs; sweep set / demo3):**
+
+| dt × | X3 nested | X3F FD Jacobian | X3F analytic | X3F fixed-4, analytic | analytic / X3 |
+|---|---|---|---|---|---|
+| 1 | 266 / 285 | 31.2 / 35.0 | **16.1 / 17.4** | 17.1 / 20.9 | 16.5× / 16.4× |
+| 3 | 373 / 386 | 34.2 / 36.6 | 17.0 / 18.2 | 17.4 / 21.3 | 22× / 21× |
+| 10 | 517 / 549 | 37.0 / 41.1 | 19.0 / 19.8 | 17.9 / 21.7 | 27× / 28× |
+| 30 | 1 675 / 999 | 48.6 / 47.7 | 26.4 / 24.5 | 18.2 / 22.5 | 63× / 41× |
+| 100 | 4 906 / 5 126 | 109 / 75.9 | 64.1 / 47.1 | 18.0 / 22.6 | 77× / 109× |
+
+EOS work per cell at 1×: 7.5 forward pairs (sweep) and 8.6 (demo3), of which 2 are the entry projection's and 1 the base state's; the seeded entry inversion adds 9 cheap (e, c_v) iterations per phase. Not converged under fixed-4 (sweep set): 248 cells at 1× (1.2 % of the cells, 2 % of the integrated), 289 at 10×, 898 at 30×, 6 294 at 100×; demo3: 0, 7, 30, 125.
+
+**Cost on the development GPU (RTX PRO 6000), ns per cell-visit, harvested order / sorted by cost:**
+
+| dt × | set | X3 nested | X3F FD | X3F analytic | X3F fixed-4 | analytic / X3 |
+|---|---|---|---|---|---|---|
+| 1 | demo3 | 843 / 671 | 300 / 279 | **114** / 106 | 160 / 153 | 7.4× |
+| 1 | sweep | 1 298 / 965 | 678 / 644 | **398** / 426 | 208 / 160 | 3.3× |
+| 10 | demo3 | 3 599 / 3 391 | 989 / 872 | 669 / 595 | 160 / 153 | 5.4× |
+| 10 | sweep | 7 003 / 7 685 | 1 329 / 1 514 | 1 027 / 1 459 | 207 / 159 | 6.8× |
+| 100 | demo3 | 95 194 / 59 180 | 5 001 / 2 418 | 4 348 / 2 568 | 155 / 148 | 22× |
+| 100 | sweep | 107 825 / 102 736 | 6 536 / 4 259 | 5 675 / 4 367 | 194 / 147 | 19× |
+
+ptxas (sm_120): X3 255 registers, 944 B spills; X3F analytic 255 registers, 2 998 B spills; X3F fixed-4 analytic 255 registers, 2 160 B spills; X3F FD 202 registers, no spills. The analytic kernel keeps more live state than the FD one (the Jacobian's partials next to two phase states) and spills more, and still runs 2.6× faster than it because the EOS work is 2.7× smaller: on this GPU the forward evaluation, not the spill traffic, is the cost.
+
+Readings:
+- **GPU: X3F is now 7.4× faster than X3 on the production restart's cells** at the production step (3.3× on the harder sweep set), 5–7× at 10× dt and ~20× at 100× dt. The CPU ratio is 16×: the GPU keeps about half of it, which is the register-bound kernel's spill traffic and the forward evaluator's branch-edge march (a data-dependent loop inside every forward call) — the latter is now the dominant remaining lever on both platforms (the (e, c_v) part of the forward state is 10 % of its cost).
+- **Fixed count, revisited.** On the easy (production) cells the adaptive kernel is the faster one (114 vs 160 ns: fixed-4 does twice the iterations). On the hard sweep set the fixed-count kernel is 1.9× faster than the adaptive one (208 vs 398 ns) because the adaptive tail (up to 87 iterations, 486 forward pairs on one cell) sets the warp time; a two-pass scheme — fixed-4 for every cell, the adaptive solve for the 1.2 % it leaves — would cost ≈ 208 + 0.012 × 398 ≈ 213 ns there. So the fixed count is the right first pass where the cell population is hard, and unnecessary where it is easy; in either case its divergence penalty is 1.05× (demo3) to 1.3× (sweep, the outcome-class mixing), i.e. the Newton loop is uniform and the residual divergence is between classes and inside the EOS.
+- The X3-vs-X3F exit-state agreement and the fixed-point behaviour are unchanged from the FD-Jacobian study above (the solutions are the same to 1e-10).
+
+**Estimate for the production GPU (GH200 / H100).** Measured earlier on this code: the H100 is 4.1–4.7× faster than the RTX for every kernel of the pipe-break run (full-rate FP64 and the same 255-register cap on both), so the X3F kernel should run at ≈ 25–30 ns per entering cell-visit on the H100 (demo3-like cells) against ≈ 190–210 for X3, the same 7× ratio; the ratio of two register-bound kernels is the quantity most likely to transfer between the two architectures, more than either absolute number. At the run level the gain is bounded by the relaxation stage's share: on the GH200 the stage was 1.32 s of 10.1 s at 524 k cells (13 %; hydro 44 %) and about a third of the 5.1 s run at 32 k cells (the RTX profile's 34 %). With the stage 5–7× cheaper the 524 k-cell run goes from 10.1 to ≈ 9.0 s (1.12×) and the 32 k-cell run from 5.1 to ≈ 3.6–3.8 s (1.35–1.4×). The mass-transfer source stage (`ps_apply_sources`, 11–22 % of the GPU runs) has the same EOS-inside-Newton structure and is the natural next target of the same flattening; with both stages flattened the production-GPU run gains an estimated 1.2–1.3× at 524 k cells and 1.6–1.9× at 32 k cells, and the hydro stage (the per-cell (ρ, e) inversions in ctoprim and the Riemann solver) becomes the only EOS cost left, which is where the table seed (PRTab) already acts. The CPU run gains more because the relaxation stage is a larger share there (30–60 %): 1.4–2× from X3F alone. Verification on Olivia: `bench/x3f_ladder.sh` with the GH200 executable on the two cell files (copy `runs/harvest_2d/cells/m5_cells_all.csv` and `runs/sweep/cells/replay_set.csv`); the production-run check needs the `ps_relax_mode=6` hook first.
+

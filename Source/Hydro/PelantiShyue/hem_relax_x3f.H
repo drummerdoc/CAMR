@@ -35,6 +35,12 @@
 //  state.  Sub-stepping, the dm box, the predictor and the band-exit
 //  policy follow X3.
 //
+//  The Jacobian is analytic by default (PsX3fParams::jac = 0): the forward
+//  query returns (dP/drho)_T, (dP/dT)_rho, (de/drho)_T and c_v, the Gibbs
+//  derivatives follow from dg = -s dT + v dP, and the rate derivatives
+//  freeze c_v (a quasi-Newton approximation that costs iterations, never
+//  accuracy: the residual is exact).  One forward pair per iteration.
+//
 //  Two iteration modes:
 //    adaptive (fixed_newton = 0): damped Newton, numerical Jacobian by
 //      forward differences (n extra residual evaluations), line search
@@ -66,6 +72,11 @@ struct PsX3fParams {
     int    fixed_newton = 0;      // > 0: fixed-count mode (see header)
     double tol        = 1.0e-10;  // scaled residual inf-norm, adaptive exit
     double tol_fixed  = 1.0e-8;   // acceptance in fixed-count mode
+    //  Jacobian: 0 analytic (the EOS partials (dP/drho)_T, (dP/dT)_rho,
+    //  (de/drho)_T, c_v and s through dg = -s dT + v dP, with c_v frozen
+    //  in the rate derivatives: one forward pair per iteration);
+    //  1 forward differences (n extra residual evaluations per iteration).
+    int    jac        = 0;
     int    coexist_action = 0;
     //  Entry temperatures: seeds for the seeded inversion (<= 0: 0.9 T_c).
     double T1_seed = 0.0, T2_seed = 0.0;
@@ -216,6 +227,83 @@ inline bool ps_x3f_relax_cell(V6& U, const PsPhaseAPI& eos, double dt,
     auto inf_norm = [](int n, const double F[5]) {
         double m = 0.0; for (int i = 0; i < n; ++i) m = std::max(m, std::abs(F[i])); return m; };
 
+    //  Analytic Jacobian of `residual` at (z, t): rows F0..F4, columns
+    //  (alpha, T1, T2, q, dm).  Mirrors the residual term by term.
+    auto jacobian = [&](const Base& b, double dtl, int n, const double z[5],
+                        const Trial& t, double J[5][5]) {
+        const double a = z[0], T1 = z[1], T2 = z[2];
+        const double a2 = 1.0 - a;
+        const double m1 = t.m1, m2 = t.m2;
+        const double P_s = std::max(std::max(std::abs(b.P1), std::abs(b.P2)), 1.0);
+        const double E_s = std::abs(b.U1) + std::abs(b.U2) + 1.0;
+        //  Densities' partials.
+        const double r1_a = -m1 / (a * a),  r1_dm = -1.0 / a;
+        const double r2_a =  m2 / (a2 * a2), r2_dm = 1.0 / a2;
+        //  Phase partials with respect to the unknowns (zero where absent).
+        const double P1_a = t.p1.dPdrho * r1_a, P1_dm = t.p1.dPdrho * r1_dm, P1_T = t.p1.dPdT;
+        const double P2_a = t.p2.dPdrho * r2_a, P2_dm = t.p2.dPdrho * r2_dm, P2_T = t.p2.dPdT;
+        const double e1_a = t.p1.dedrho * r1_a, e1_dm = t.p1.dedrho * r1_dm;
+        const double e2_a = t.p2.dedrho * r2_a, e2_dm = t.p2.dedrho * r2_dm;
+        //  Work term W = P_mid (a - a_b), P_mid = P_Ib/2 + (P1 + P2)/4.
+        const double P_Ib = 0.5 * (b.P1 + b.P2);
+        const double P_mid = 0.5 * (P_Ib + 0.5 * (t.p1.P + t.p2.P));
+        const double da = a - b.a;
+        const double W_a  = P_mid + 0.25 * (P1_a + P2_a) * da;
+        const double W_T1 = 0.25 * P1_T * da, W_T2 = 0.25 * P2_T * da;
+        const double W_dm = 0.25 * (P1_dm + P2_dm) * da;
+        const double sm  = (b.g1 - b.g2 > 0.0) ? 1.0 : -1.0;
+        const double h_c = (xp.h_w < 0.0) ? ((sm > 0.0) ? b.h1 : b.h2)
+                                          : (1.0 - xp.h_w) * b.h1 + xp.h_w * b.h2;
+        for (int i = 0; i < 5; ++i) for (int j = 0; j < 5; ++j) J[i][j] = 0.0;
+        //  F0 = (P1 - P2)/P_s
+        J[0][0] = (P1_a - P2_a) / P_s; J[0][1] = P1_T / P_s; J[0][2] = -P2_T / P_s; J[0][4] = (P1_dm - P2_dm) / P_s;
+        //  F1 = (m1 e1 - U1b + dm h_c + q + W)/E_s
+        J[1][0] = (m1 * e1_a + W_a) / E_s;
+        J[1][1] = (m1 * t.p1.cv + W_T1) / E_s;
+        J[1][2] = W_T2 / E_s;
+        J[1][3] = 1.0 / E_s;
+        J[1][4] = (-t.p1.e + m1 * e1_dm + h_c + W_dm) / E_s;
+        //  F2 = (m2 e2 - U2b - dm h_c - q - W)/E_s
+        J[2][0] = (m2 * e2_a - W_a) / E_s;
+        J[2][1] = -W_T1 / E_s;
+        J[2][2] = (m2 * t.p2.cv - W_T2) / E_s;
+        J[2][3] = -1.0 / E_s;
+        J[2][4] = (t.p2.e + m2 * e2_dm - h_c - W_dm) / E_s;
+        if (n == 5) {
+            constexpr double two_pi = 6.283185307179586, R_u = 8.314462618;
+            const double T_s = std::max(b.T1, b.T2);
+            if (joint_pt) {
+                J[3][1] = 1.0 / T_s; J[3][2] = -1.0 / T_s; J[3][3] = 0.0;
+            } else {
+                //  rT = (T1 - T2)/(theta inv), inv = 1/(m1 cv1) + 1/(m2 cv2), c_v frozen.
+                const double inv = 1.0 / (m1 * t.p1.cv) + 1.0 / (m2 * t.p2.cv);
+                const double inv_dm = 1.0 / (m1 * m1 * t.p1.cv) - 1.0 / (m2 * m2 * t.p2.cv);
+                const double rT = (T1 - T2) / (xp.theta * inv);
+                const double rT_T1 = 1.0 / (xp.theta * inv), rT_T2 = -rT_T1;
+                const double rT_dm = -rT / inv * inv_dm;
+                J[3][1] = -dtl * rT_T1 / E_s; J[3][2] = -dtl * rT_T2 / E_s;
+                J[3][3] = 1.0 / E_s;          J[3][4] = -dtl * rT_dm / E_s;
+            }
+            //  rM = Sig(a) rho2 K(T2) (g1 - g2); dg = -s dT + v dP.
+            const double rho2 = m2 / a2;
+            const bool up = (t.p1.g > t.p2.g);
+            const double a_geom = up ? (a2 + xp.srt_delta) * a : (a + xp.srt_delta) * a2;
+            const double a_geom_a = up ? (1.0 - 2.0 * a + xp.srt_delta) : (1.0 - 2.0 * a - xp.srt_delta);
+            const double c0 = (32.0 / two_pi) / xp.srt_D;
+            const double Sig = c0 * a_geom, Sig_a = c0 * a_geom_a;
+            const double K = std::sqrt(eos.molar_mass() / (two_pi * R_u * T2)), K_T2 = -0.5 * K / T2;
+            const double dg = t.p1.g - t.p2.g;
+            const double g1_T = -t.p1.s + P1_T / t.p1.rho, g2_T = -t.p2.s + P2_T / t.p2.rho;
+            const double g1_r = t.p1.dPdrho / t.p1.rho,   g2_r = t.p2.dPdrho / t.p2.rho;
+            const double rM_a  = Sig_a * rho2 * K * dg + Sig * r2_a * K * dg + Sig * rho2 * K * (g1_r * r1_a - g2_r * r2_a);
+            const double rM_T1 = Sig * rho2 * K * g1_T;
+            const double rM_T2 = Sig * rho2 * (K_T2 * dg - K * g2_T);
+            const double rM_dm = Sig * r2_dm * K * dg + Sig * rho2 * K * (g1_r * r1_dm - g2_r * r2_dm);
+            J[4][0] = -dtl * rM_a / rho_mix; J[4][1] = -dtl * rM_T1 / rho_mix;
+            J[4][2] = -dtl * rM_T2 / rho_mix; J[4][4] = (1.0 - dtl * rM_dm) / rho_mix;
+        }
+    };
+
     //  One Newton solve.  Returns 0 converged, 1 failed.  z in/out; t = final trial.
     auto newton = [&](const Base& b, double dtl, int n, double z[5], Trial& t, int& nit) -> int {
         //  Box for dm (X3's rule, in the base-rate direction) and q.
@@ -261,10 +349,14 @@ inline bool ps_x3f_relax_cell(V6& U, const PsPhaseAPI& eos, double dt,
         double Nc = inf_norm(n, F);
         const bool fixed = (xp.fixed_newton > 0);
         const int  nmax  = fixed ? xp.fixed_newton : xp.max_newton;
+        //  Safeguard (adaptive mode): when a line search on an analytic
+        //  step fails, the rest of this solve uses the finite-difference
+        //  Jacobian (the frozen-c_v approximation can misdirect a step on
+        //  a near-critical or far-extended phase); paid only where needed.
+        bool use_fd = (xp.jac != 0);
         for (int it = 0; it < nmax; ++it) {
             if (!fixed && Nc < xp.tol) return 0;
             ++nit; count(xp.it_out);
-            //  Forward-difference Jacobian.
             double J[5][5], rhs[5], dz[5];
             double hh[5];
             hh[0] = 1.0e-6 * std::min(z[0], 1.0 - z[0]);
@@ -273,7 +365,9 @@ inline bool ps_x3f_relax_cell(V6& U, const PsPhaseAPI& eos, double dt,
             hh[3] = 1.0e-6 * std::abs(z[3]) + 1.0e-10 * E_s;
             hh[4] = 1.0e-6 * std::abs(z[4]) + 1.0e-13 * rho_mix;
             bool jac_ok = true;
-            for (int j = 0; j < n; ++j) {
+            if (!use_fd) jacobian(b, dtl, n, z, t, J);
+            else
+            for (int j = 0; j < n; ++j) {   // forward-difference Jacobian
                 double zp[5] = {z[0], z[1], z[2], z[3], z[4]};
                 zp[j] += hh[j];
                 double Fp[5] = {0, 0, 0, 0, 0}; Trial tp;
@@ -320,7 +414,10 @@ inline bool ps_x3f_relax_cell(V6& U, const PsPhaseAPI& eos, double dt,
                     if (h++ >= 10) break;
                     for (int i = 0; i < n; ++i) zn[i] = 0.5 * (zn[i] + z[i]);
                 }
-                if (h > 10) return 1;
+                if (h > 10) {
+                    if (!use_fd) { use_fd = true; continue; }   // retry this iterate with the FD Jacobian
+                    return 1;
+                }
                 for (int i = 0; i < n; ++i) { z[i] = zn[i]; F[i] = Fn[i]; }
                 t = tn; Nc = inf_norm(n, F);
             }

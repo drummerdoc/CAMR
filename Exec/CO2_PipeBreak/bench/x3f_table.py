@@ -15,7 +15,7 @@ def parse(path):
         if ' vs ' in head:
             mm = re.match(r'(.*?) vs (.*?): (\d+) cells both integrated \((\d+) differ', head)
             rows = re.findall(r'\|(d alpha1|dP1\|/P1|dT1\| \[K\]|dT2\| \[K\])\|?\s+([0-9.e+-]+)\s+([0-9.e+-]+)\s+([0-9.e+-]+)', blk)
-            r['spread'][mm.group(1)] = {'both': int(mm.group(3)), 'diff': int(mm.group(4)),
+            r['spread'][mm.group(1) + ' vs ' + mm.group(2)] = {'both': int(mm.group(3)), 'diff': int(mm.group(4)),
                                         **{k: (float(a), float(b), float(c)) for k, a, b, c in rows}}
         elif 'exit states' in head:
             continue
