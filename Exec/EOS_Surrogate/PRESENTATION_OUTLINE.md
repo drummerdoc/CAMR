@@ -1,3 +1,33 @@
+# Short version (≈ 18 min, 11 slides) — technical but broad audience
+
+The long outline below is the reference; this is the cut to give. One message: **deep knowledge of the system beats blind use of ML — and the platform decides how much a wrong structure costs.** Figures are in `figures/` (`make_figures.py`).
+
+1. **Title and the one-line claim.** Real-fluid two-phase CO₂ (pipe break, blowdown); the EOS is called a billion times per run; we tried tables, machine learning and the analytic forms on CPUs, a workstation GPU and a datacenter GPU.
+
+2. **The EOS the solver needs is not the textbook one.** One picture of the branch-locked contract: $(ho, e)$ → T on a named branch, metastable continuation, "no root" as an answer. Two numbers: the reaction operator makes 9 % of the calls and takes up to 60 % of GPU time. *No table.*
+
+3. **Where the solver actually goes.** `fig1_deployment_cloud.png`. A third of the visited states are below the triple point, 1 778 inputs have no root on their branch; the "hard" states of a naive harvest turned out to be noise from phases that are not EOS inputs at all. Point: system knowledge starts before the first training sample.
+
+4. **Convergence of the training cloud is measurable.** `fig2_novelty_ledgers.png`. Each new run's novelty against the union; six runs to zero; resolution adds rare states, physics adds common ones. Point: an active-learning loop you can stop with a number.
+
+5. **Blind ML: what you get.** Half of `fig3_regime_errors.png` (the "one net, no knowledge" bars) and the headline: a net trained on a textbook grid is 4× worse on deployment than one trained on the harvested cloud, and 40–90 K off where it has never been. Sampling is worth 4×.
+
+6. **Each layer of system knowledge, one bar at a time.** Full `fig3_regime_errors.png`: traced loci as inputs (2× overall, 6–10× in the metastable region), the saturation temperature as the target, one net per traced region (10× in pressure; buys a seam). Point: knowledge pays exactly where the surface is non-smooth, and the more *structural* the knowledge, the more it pays.
+
+7. **The fully structured surrogate is a table.** `fig4_accuracy_cost.png`. Table one smooth quantity + analytic reconstruction: 0.0015 K and 0.17 ns/state; the best net 0.12 K and 80 ns. The net's place: a seed for two Newton polishes. Point: the table is what you get when all the knowledge is structure.
+
+8. **Now the platform: the same four backends on four machines.** `fig5_cost_matrix.png`. The ranking never changes (table-seeded ≥ analytic PR ≫ analytic Helmholtz); the spread does: 13× on CPU, 78× on either GPU; the datacenter GPU gives every backend the same 4×, not a rescue for the FP64-heavy ones.
+
+9. **Why: the cost belongs to the kernel, not the EOS.** `fig6_stage_split.png`. The same table makes the hydro stage 2–4× faster and the relaxation stage 1.7× slower on both GPUs, nothing on CPUs — the lookup inlined into a register-capped Newton kernel; 0 guard fallbacks in 177 M calls (the divergence story we expected was wrong). Point: on a GPU, *where* the EOS is called decides more than what it computes.
+
+10. **Outlook: mixtures.** The phase-envelope figure from `PHASE_ENVELOPE_PLAN.md` if ready, else one slide of text: everything shown is fluid-agnostic except the backend; composition is one more coordinate for the loci.
+
+11. **Takeaways.** (i) Harvest the deployment distribution before training anything. (ii) Put knowledge in as structure — branches, loci, regions — not as features; the limit of that is a table with analytic reconstruction. (iii) On GPUs, hoist the EOS out of the Newton loop; the device punishes structure, not arithmetic. (iv) Three predictions we wrote down were refuted by the measurements; the instrumentation that refuted them is the part worth keeping.
+
+Cut from the long version to fit: the microbenchmark kernel table, the weighted-loss and seam details, the refusal test (fold one sentence into slide 6), the Olivia build lessons, and the design-rules slide (now takeaway iii).
+
+---
+
 # EOS strategies for real-fluid two-phase CO₂ on CPUs and GPUs — presentation outline
 
 Drafted 2026-10-26 from `RESULTS.md` (this directory), `docs/DESIGN_DECISIONS.md` (E-3, E-4, F-6, O-28) and `Exec/CO2_PipeBreak/bench/`. Every number below is in those files; the slide titles are written as the claim each slide has to carry. Suggested length: 22 slides + backup, ~35 min.
