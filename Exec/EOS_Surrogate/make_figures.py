@@ -185,7 +185,21 @@ def parse_profile(log, kernels=('PS::ps_apply_relaxation()',)):
         if m: react += float(m.group(2))     # Excl. Avg across processes
     return tot, react
 
-def fig6_stage_split():
+def parse_profile_incl(log, kernels):
+    """Run time w/o init and the inclusive Avg time of the named regions (TinyProfiler's second table)."""
+    txt = open(log).read()
+    tot = float(re.findall(r'Run time w/o init = ([\d.eE+-]+)', txt)[-1])
+    sec = txt.split('Incl. Min')[1] if 'Incl. Min' in txt else ''
+    t = 0.0
+    for name in kernels:
+        m = re.search(re.escape(name) + r'\s+\d+\s+([\d.eE+-]+)\s+([\d.eE+-]+)\s+([\d.eE+-]+)', sec)
+        if m: t += float(m.group(2))
+    return tot, t
+
+def fig6_stage_split(style='log'):
+    """Three-way split of each run: the hydro stage (advance_hydro_umdrv, inclusive), the relaxation kernel (inclusive),
+    and everything else (clean_state, floors, dt estimate, boundary fills, mass transfer). PR against PRTab on two CPUs
+    and two GPUs, 524 288 cells, 200 steps. style: 'log' (one axis), 'linear' (one axis), 'panels' (CPU and GPU panels, linear)."""
     logs = {('development CPU\n8 EPYC ranks', 'PR'): os.path.join(PB, 'runs/bench/L0big_200/PR_cpu/run.log'),
             ('development CPU\n8 EPYC ranks', 'PRTab'): os.path.join(PB, 'runs/bench/L0big_200/PRTab_cpu/run.log'),
             ('production CPU\n8 EPYC ranks', 'PR'): os.path.join(PB, 'runs/bench/olivia_cpu/Exec/CO2_PipeBreak/runs/bench/L0big_200/PR_cpu/run.log'),
@@ -195,20 +209,32 @@ def fig6_stage_split():
             ('production GPU\nGH200 (H100)', 'PR'): os.path.join(PB, 'runs/bench/olivia_gpu/Exec/CO2_PipeBreak/runs/bench/L0big_200/PR_gpu/run.log'),
             ('production GPU\nGH200 (H100)', 'PRTab'): os.path.join(PB, 'runs/bench/olivia_gpu/Exec/CO2_PipeBreak/runs/bench/L0big_200/PRTab_gpu/run.log')}
     plats = ['development CPU\n8 EPYC ranks', 'production CPU\n8 EPYC ranks', 'development GPU\nRTX PRO 6000', 'production GPU\nGH200 (H100)']
-    fig, ax = plt.subplots(figsize=(11, 4.6)); w = 0.19; x = np.arange(len(plats))
-    series = [('PR', 'rest', 'PR: hydro and everything else', 0.45), ('PR', 'react', 'PR: relaxation kernel', 1.0),
-              ('PRTab', 'rest', 'PRTab: hydro and everything else', 0.45), ('PRTab', 'react', 'PRTab: relaxation kernel', 1.0)]
-    for i, (b, part, label, alpha) in enumerate(series):
-        xs = x + (i - 1.5) * w; vals = []
-        for p in plats:
-            tot, react = parse_profile(logs[(p, b)]); vals.append(react if part == 'react' else max(tot - react, 0))
-        ax.bar(xs, vals, width=w - 0.02, color=BACKEND[b], alpha=alpha, edgecolor=SURF, linewidth=1, label=label)
-        for xi, v in zip(xs, vals):
-            ax.text(xi, v * 1.12, f'{v:.0f}' if v >= 10 else f'{v:.1f}', ha='center', va='bottom', fontsize=7.5, color=INK, rotation=90)
-    ax.set_yscale('log'); ax.set_ylim(0.5, 2000); ax.set_xticks(x); ax.set_xticklabels(plats)
-    ax.set_ylabel('wall time in the stage, 524 288 cells × 200 steps  [s]'); ax.legend(loc='upper right', fontsize=8.5, ncol=2)
-    ax.set_title('On both GPUs the table speeds up the hydro stage and slows the relaxation kernel 1.7×; on the CPUs it changes neither much', fontsize=10)
-    save(fig, 'fig6_stage_split.png')
+    def split(log):
+        tot, hydro = parse_profile_incl(log, ('CAMR::advance_hydro_umdrv()',))
+        _, relax = parse_profile_incl(log, ('PS::ps_apply_relaxation()',))
+        return {'hydro': hydro, 'relax': relax, 'rest': max(tot - hydro - relax, 0)}
+    series = [('PR', 'hydro', 'PR: hydro stage', 1.0), ('PR', 'relax', 'PR: relaxation kernel', 0.65), ('PR', 'rest', 'PR: everything else', 0.3),
+              ('PRTab', 'hydro', 'PRTab: hydro stage', 1.0), ('PRTab', 'relax', 'PRTab: relaxation kernel', 0.65), ('PRTab', 'rest', 'PRTab: everything else', 0.3)]
+    if style == 'panels':
+        fig, axes = plt.subplots(1, 2, figsize=(11, 4.6), gridspec_kw={'width_ratios': [1, 1]})
+        groups = [(axes[0], plats[:2], 260), (axes[1], plats[2:], 30)]
+    else:
+        fig, ax = plt.subplots(figsize=(11, 4.6)); groups = [(ax, plats, 260 if style == 'linear' else None)]
+    w = 0.13
+    for ax, pl, top in groups:
+        x = np.arange(len(pl))
+        for i, (b, part, label, alpha) in enumerate(series):
+            xs = x + (i - 2.5) * w; vals = [split(logs[(p, b)])[part] for p in pl]
+            ax.bar(xs, vals, width=w - 0.015, color=BACKEND[b], alpha=alpha, edgecolor=SURF, linewidth=1, label=label)
+            for xi, v in zip(xs, vals):
+                ax.text(xi, v * 1.12 if style == 'log' else v + 0.015 * top, f'{v:.0f}' if v >= 10 else f'{v:.1f}', ha='center', va='bottom', fontsize=7, color=INK, rotation=90)
+        if style == 'log': ax.set_yscale('log'); ax.set_ylim(0.5, 2000)
+        else: ax.set_ylim(0, top)
+        ax.set_xticks(x); ax.set_xticklabels(pl)
+    groups[0][0].set_ylabel('wall time in the stage, 524 288 cells × 200 steps  [s]'); groups[-1][0].legend(loc='upper right', fontsize=8, ncol=2)
+    fig.suptitle('On both GPUs the table speeds up the hydro stage 2–4× and slows the relaxation kernel 1.7×; on the CPUs it changes neither much', fontsize=10, fontweight='bold', y=0.98)
+    if style == 'panels': fig.tight_layout(rect=(0, 0, 1, 0.95))
+    save(fig, {'log': 'fig6_stage_split.png', 'linear': 'fig6_stage_split_linear.png', 'panels': 'fig6_stage_split_panels.png'}[style])
 
 def fig8_flattened():
     """X3F and the branch-edge table: the relaxation operator's cost per entering cell, and the production run."""
