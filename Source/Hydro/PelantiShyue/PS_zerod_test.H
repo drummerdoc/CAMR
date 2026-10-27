@@ -166,12 +166,17 @@ inline int ps_ptg_zerod_selftest()
 //  1e-3 rel.  The harness rate constants set the approach speed only;
 //  the endpoint may not depend on them.  Returns the failing-state count.
 // ---------------------------------------------------------------------
-inline int ps_x3_fixedpoint_test()
+//  op = 0: the nested X3 operator (CAMR.ps_x3_test=1); op = 1: the
+//  flattened X3F operator with the production dials (CAMR.ps_x3_test=2):
+//  the same six states, routes and acceptance, so the two operators are
+//  held to one fixed point.
+inline int ps_x3_fixedpoint_test(int op = 0)
 {
     const hem::PsPhaseAPI eos = ps_make_camr_eos_api();
     if (!eos.valid()) { amrex::Print() << "[ps-X3] EOS API invalid\n"; return 1; }
 
-    amrex::Print() << "\n===== PS X3: coupled-source fixed point vs route (and basin) =====\n";
+    amrex::Print() << "\n===== PS " << (op == 1 ? "X3F (flattened)" : "X3")
+                   << ": coupled-source fixed point vs route (and basin) =====\n";
 
     struct Case { double T, a1, r1, r2; };
     const Case cases[] = {                       //  the self-test states
@@ -184,6 +189,8 @@ inline int ps_x3_fixedpoint_test()
     };
     hem::PsX3Params xp;
     xp.theta = 1.0e-5; xp.srt_D = 1.0e-4; xp.dome_gate = false;
+    hem::PsX3fParams xf = ps_x3f_params_from_dials();
+    xf.theta = xp.theta; xf.srt_D = xp.srt_D; xf.dome_gate = false;
 
     //  Iterate one route to a fixed point: stop on three consecutive
     //  steps with rel state change < 1e-13, or 400 steps.
@@ -192,7 +199,9 @@ inline int ps_x3_fixedpoint_test()
         int quiet = 0; its = 0; nfail = 0;
         for (; its < 400; ++its) {
             const hem::V6 Up = U;
-            if (!hem::ps_x3_relax_cell(U, eos, dt, xp)) ++nfail;
+            const bool okc = (op == 1) ? hem::ps_x3f_relax_cell(U, eos, dt, xf)
+                                       : hem::ps_x3_relax_cell(U, eos, dt, xp);
+            if (!okc) ++nfail;
             double dmax = 0.0;
             for (int q = 0; q < 6; ++q) {
                 const double sc = std::max(std::abs(Up[q]), 1.0);
@@ -285,7 +294,7 @@ inline int ps_x3_fixedpoint_test()
             sp_a, sp_P, sp_T, fail ? "FAIL" : "one point, on the flash");
         amrex::Print() << line;
     }
-    amrex::Print() << "===== X3 fixed point: " << n_state_fail
+    amrex::Print() << "===== " << (op == 1 ? "X3F" : "X3") << " fixed point: " << n_state_fail
                    << " failing states -> "
                    << (n_state_fail == 0 ? "PASS" : "FAIL") << " =====\n\n";
     return n_state_fail;
@@ -497,9 +506,7 @@ inline int ps_x3_replay_bench(const std::string& file)
 
     // ---- dials
     const hem::PsX3Params xp0 = ps_x3_params_from_dials();
-    hem::PsX3fParams xf0;
-    xf0.theta = xp0.theta; xf0.h_w = xp0.h_w; xf0.srt_D = xp0.srt_D; xf0.srt_delta = xp0.srt_delta;
-    xf0.coexist_action = xp0.coexist_action;
+    hem::PsX3fParams xf0 = ps_x3f_params_from_dials();     // the production dials (mode 6)
     xf0.fixed_newton = std::max(1, ps_dial_int("ps_x3_replay_fixed_n", 6));
     xf0.tol          = double(ps_dial_real("ps_x3_replay_tol", amrex::Real(1.0e-10)));
     const double dt_override = double(ps_dial_real("ps_x3_replay_dt", amrex::Real(0.0)));

@@ -25,6 +25,7 @@ ROOT=runs/bench/$TAG; mkdir -p "$ROOT"
 COMMON="$DECK amr.max_level=$MAX_LEVEL max_step=$STEPS stop_time=1.0 amr.checkpoint_files_output=0 amr.plot_int=-1 amr.plot_per=-1 amr.v=1 CAMR.v=0"
 [ -n "$NCELL" ] && COMMON="$COMMON amr.n_cell=$NCELL"
 [ -n "$MAXGRID" ] && COMMON="$COMMON amr.max_grid_size=$MAXGRID"
+[ -n "${EXTRA:-}" ] && COMMON="$COMMON $EXTRA"     # extra deck keys, e.g. EXTRA="CAMR.ps_relax_mode=6"
 echo "# $(date -u +%FT%TZ) commit $(git -C ../.. rev-parse --short HEAD) deck $DECK max_level $MAX_LEVEL steps $STEPS ranks $RANKS ncell ${NCELL:-deck} max_grid ${MAXGRID:-deck} host $(hostname) gpu $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)" | tee "$ROOT/README.txt"
 for plat in $PLATFORMS; do
   for eos in $EOS; do

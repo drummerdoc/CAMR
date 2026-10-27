@@ -317,7 +317,10 @@ ps_x3_grid_relax_cell(int i, int j, int k,
 
 
 // CAMR.ps_relax_mode (5): 5 = the coupled X3 operator
-// (ps_x3_grid_relax_cell); 0 = mechanical only, for frozen-limit tests;
+// (ps_x3_grid_relax_cell); 6 = the same operator flattened, X3F
+// (ps_x3f_grid_relax_cell: one Newton in (alpha, T1, T2, q, dm) on the
+// forward EOS, docs/DESIGN_DECISIONS.md O-28; the same fixed point and
+// band-exit policy, the same mass-transfer ownership); 0 = mechanical only, for frozen-limit tests;
 // 2 = isochoric P + finite-rate thermal with the split Gibbs-driven
 // transfer source (the finite-rate alternative, retained as the control
 // closure while the X3 rate closure is under study, docs §5.7).  The
@@ -336,14 +339,19 @@ inline int ps_relax_mode()
                          " is retired: use 5 (coupled X3), 2 (finite-rate "
                          "thermal + split transfer) or 0 (mechanical only)");
         }
-        if (v != 0 && v != 2 && v != 5) {
+        if (v != 0 && v != 2 && v != 5 && v != 6) {
             amrex::Abort("CAMR.ps_relax_mode = " + std::to_string(v) +
-                         " is not a mode (valid: 0,2,5)");
+                         " is not a mode (valid: 0,2,5,6)");
         }
         return v;
     }();
     return m;
 }
+
+//  True when the relaxation operator owns mass transfer (modes 5 and 6:
+//  the coupled operator integrates the SRT rate inside the relaxation
+//  stage, so the split transfer source in PS_sources.H is gated out).
+inline bool ps_relax_owns_mt() { const int m = ps_relax_mode(); return m == 5 || m == 6; }
 
 // -----------------------------------------------------------------
 //  CAMR.ps_coexist_action (0): the thermal leg's response when a phase
@@ -417,6 +425,96 @@ ps_x3_params_from_dials()
 }
 
 // -----------------------------------------------------------------
+//  ps_x3f_params_from_dials — the mode-6 operator settings: the X3 rate
+//  and carrier dials, plus the flattened solve's own:
+//    CAMR.ps_x3f_jac (0): 0 analytic Jacobian, 1 forward differences
+//    CAMR.ps_x3f_fixed_newton (0): > 0 = fixed Newton count per solve
+//    CAMR.ps_x3f_max_newton (25), CAMR.ps_x3f_tol (1e-10)
+//  Shared with the replay bench (PS_zerod_test.H).
+// -----------------------------------------------------------------
+inline hem::PsX3fParams
+ps_x3f_params_from_dials()
+{
+    const hem::PsX3Params xp = ps_x3_params_from_dials();
+    hem::PsX3fParams xf;
+    xf.theta = xp.theta; xf.h_w = xp.h_w; xf.srt_D = xp.srt_D; xf.srt_delta = xp.srt_delta;
+    xf.coexist_action = xp.coexist_action;
+    static const int    jac   = ps_dial_int("ps_x3f_jac", 0);
+    static const int    fixed = ps_dial_int("ps_x3f_fixed_newton", 0);
+    static const int    maxn  = ps_dial_int("ps_x3f_max_newton", 25);
+    static const double tol   = double(ps_dial_real("ps_x3f_tol", amrex::Real(1.0e-10)));
+    xf.jac = jac; xf.fixed_newton = fixed; xf.max_newton = maxn; xf.tol = tol;
+    return xf;
+}
+
+// -----------------------------------------------------------------
+//  ps_x3f_grid_relax_cell (ps_relax_mode=6): the flattened operator on
+//  one cell, the same entry gates, pack/unpack and [PS-DT] census as the
+//  X3 wrapper.  On host builds the per-cell outcome and cost feed the
+//  same PsX3Stats the [PS-X3] report prints for mode 5, so the two modes
+//  are read with one report; the band-exit abort (ps_coexist_action=1)
+//  is applied here from the operator's exit code.
+// -----------------------------------------------------------------
+AMREX_GPU_HOST_DEVICE
+inline void
+ps_x3f_grid_relax_cell(int i, int j, int k,
+                       amrex::Array4<amrex::Real> const& U,
+                       hem::PsPhaseAPI const& eos, const PsPres& pr,
+                       const hem::PsX3fParams& xf0, int pres_diag,
+                       amrex::Real dt)
+{
+    using amrex::Real;
+    Real alpha1_in, m1, m2;
+    if (!ps_relax_entry_gate(i, j, k, U, pr, alpha1_in, m1, m2)) return;
+    hem::V6 Uv = ps_pack_v6(U, i, j, k, alpha1_in, m1, m2);
+
+    hem::PsX3fParams xf = xf0;
+    double dt_pre = -1.0, dt_post = -1.0;
+    int status = 0, exit_code = 0, nit = 0, nsub = 0;
+    xf.status = &status; xf.exit_code = &exit_code; xf.it_out = &nit; xf.sub_out = &nsub;
+    if (pres_diag != 0) { xf.dT_pre = &dt_pre; xf.dT_post = &dt_post; }
+
+    hem::ps_x3f_relax_cell(Uv, eos, double(dt), xf);
+
+#if !defined(AMREX_USE_GPU)
+    {
+        hem::PsX3Stats& xs = hem::ps_x3_stats();
+        ++xs.n_calls;
+        switch (status) {
+            case hem::X3_OK:            ++xs.n_ok; break;
+            case hem::X3_ENTRY_REFUSED: ++xs.n_entry_refused; break;
+            case hem::X3_STOOD:         ++xs.n_gate_stood; break;
+            case hem::X3_PROJ_ENTRY:    ++xs.n_proj_entry; break;
+            case hem::X3_NEWTON:        ++xs.n_newton; break;
+            case hem::X3_DEAD:          ++xs.n_dead; break;
+            case hem::X3_SUBCAP:        ++xs.n_subcap; break;
+            default:                    ++xs.n_newton; break;   // fixed-count non-convergence
+        }
+        xs.n_sub += nsub; xs.n_nit += nit;
+        if (xf0.coexist_action == 1 && (exit_code & 3) != 0 && (exit_code & 4) == 0) {
+            amrex::AllPrint()
+                << "\n[PS-X3F] COEXISTENCE BAND EXIT (ps_coexist_action=1 -> abort)"
+                << "  cell (" << i << "," << j << "," << k << ")  exit bits " << exit_code << "\n";
+            amrex::Abort("PS-X3F: phase left the coexistence band (CAMR.ps_coexist_action=1)");
+        }
+    }
+    if (pres_diag != 0 && dt_pre >= 0.0 && dt_post >= 0.0) {
+        PsPresDiag& pdt = ps_pres_diag_data();
+        ++pdt.n_dt;
+        pdt.dtpre_sum  += dt_pre;
+        pdt.dtpost_sum += dt_post;
+        if (dt_pre  > pdt.dtpre_max)  pdt.dtpre_max  = dt_pre;
+        if (dt_post > pdt.dtpost_max) pdt.dtpost_max = dt_post;
+    }
+#else
+    amrex::ignore_unused(status, exit_code, nit, nsub);
+#endif
+    //  As the X3 wrapper: the operator writes Uv only past its entry gates,
+    //  and what it writes is admissible and conservative.  Copy back.
+    ps_unpack_v6(U, i, j, k, Uv);
+}
+
+// -----------------------------------------------------------------
 //  ps_apply_relaxation — the relaxation sweep.  Builds the EOS callback
 //  once, resets the per-sweep counters, dispatches every cell to the
 //  kernel for ps_relax_mode, then prints the gated reports ([PS-PRES],
@@ -446,8 +544,9 @@ ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
     const amrex::Real theta = ps_theta_tau();
     const int pres_diag = ps_pres_diag();
 
-    //  Mode-5 operator settings, resolved once from the dials.
-    const hem::PsX3Params xp = ps_x3_params_from_dials();
+    //  Mode-5 and mode-6 operator settings, resolved once from the dials.
+    const hem::PsX3Params  xp = ps_x3_params_from_dials();
+    const hem::PsX3fParams xf = ps_x3f_params_from_dials();
 
     for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
         const amrex::Box bx = mfi.growntilebox(nghost);
@@ -457,6 +556,8 @@ ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
             ps_corridor_project(i, j, k, U, l_pres);
             if (relax_mode == 5) {
                 ps_x3_grid_relax_cell(i, j, k, U, eos, l_pres, xp, pres_diag, dt);
+            } else if (relax_mode == 6) {
+                ps_x3f_grid_relax_cell(i, j, k, U, eos, l_pres, xf, pres_diag, dt);
             } else if (relax_mode == 2) {
                 ps_ptg_relax_cell(i, j, k, U, eos, l_pres, dt, theta);
             } else {
@@ -513,13 +614,16 @@ ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
         }
     }
     //  [PS-X3]: the coupled operator's outcome and the P1 = P2 constraint's
-    //  failures, by cause.  Mode 5 only; 'dead' counts structural refusals,
-    //  and a sweep in which every cell is dead is banner-flagged.
-    if (ps_relax_mode() == 5) {
+    //  failures, by cause.  Modes 5 and 6 (mode 6 fills the outcome and
+    //  cost fields from the flattened operator's per-cell codes; its
+    //  constraint-cause and path fields stay zero); 'dead' counts
+    //  structural refusals, and a sweep in which every cell is dead is
+    //  banner-flagged.
+    if (ps_relax_owns_mt()) {
         hem::PsX3Stats& xs = hem::ps_x3_stats();
         if (ps_pres_diag() != 0 && xs.n_calls > 0) {
             amrex::AllPrint()
-                << "[PS-X3] calls=" << xs.n_calls
+                << (ps_relax_mode() == 6 ? "[PS-X3F] calls=" : "[PS-X3] calls=") << xs.n_calls
                 << " ok=" << xs.n_ok
                 << " gate_stood=" << xs.n_gate_stood
                 << " entry_refused=" << xs.n_entry_refused

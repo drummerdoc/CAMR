@@ -209,6 +209,35 @@ def fig6_stage_split():
     ax.set_title('On both GPUs the table speeds up the hydro stage and slows the reaction operator; on the CPUs it changes neither much', fontsize=10)
     save(fig, 'fig6_stage_split.png')
 
+def fig8_flattened():
+    """X3F and the branch-edge table: the relaxation operator's cost per entering cell, and the production run."""
+    fig, (ax, bx) = plt.subplots(1, 2, figsize=(11.5, 4.2), gridspec_kw={'width_ratios': [1.35, 1]})
+    # (a) per-cell cost of the relaxation operator on the production restart's cells (RESULTS.md)
+    steps = ['nested X3\n(start of study)', 'X3 + edge table', 'X3F, FD Jacobian', 'X3F, analytic J', 'X3F + edge table']
+    cpu = [285.0, 212.0, 35.0, 17.4, 3.5]          # us per cell, one EPYC core
+    gpu = [843.0, 515.0, 300.0, 114.0, 19.0]       # ns per cell-visit, RTX PRO 6000
+    y = np.arange(len(steps))[::-1]; h = 0.36
+    ax.barh(y + h/2, cpu, h, color=C['blue'], label='CPU, one core (µs per cell)')
+    ax.barh(y - h/2, gpu, h, color=C['orange'], label='development GPU (ns per cell-visit)')
+    for yy, c, g in zip(y, cpu, gpu):
+        ax.text(c * 1.12, yy + h/2, f'{c:g}', va='center', fontsize=9, color=INK)
+        ax.text(g * 1.12, yy - h/2, f'{g:g}', va='center', fontsize=9, color=INK)
+    ax.set_xscale('log'); ax.set_xlim(1.5, 3000); ax.set_yticks(y); ax.set_yticklabels(steps)
+    ax.set_xlabel('cost per entering cell (log scale)'); ax.grid(axis='x'); ax.grid(False, axis='y')
+    ax.set_title('The relaxation operator, same cells, same fixed point')
+    ax.legend(loc='lower right', fontsize=9)
+    # (b) the production run (256 x 128, 200 steps) before and after the edge table and the flattened mode
+    labels = ['deck mode,\nmarch', 'deck mode,\nedge table', 'mode 6 (X3F),\nedge table']
+    tcpu = [26.2, 20.8, 12.9]; tgpu = [21.2, 12.1, 9.2]
+    x = np.arange(3); w = 0.36
+    bx.bar(x - w/2, tcpu, w, color=C['blue'], label='8 CPU ranks')
+    bx.bar(x + w/2, tgpu, w, color=C['orange'], label='development GPU')
+    for xi, t in zip(x - w/2, tcpu): bx.text(xi, t + 0.4, f'{t:.1f} s', ha='center', fontsize=9, color=INK)
+    for xi, t in zip(x + w/2, tgpu): bx.text(xi, t + 0.4, f'{t:.1f} s', ha='center', fontsize=9, color=INK)
+    bx.set_xticks(x); bx.set_xticklabels(labels); bx.set_ylim(0, 30); bx.set_ylabel('wall time, 200 steps [s]')
+    bx.set_title('The production run, 32 k cells'); bx.legend(loc='upper right', fontsize=9)
+    fig.tight_layout(); save(fig, 'fig8_flattened.png')
+
 if __name__ == '__main__':
-    for f in (fig1_cloud, fig2_ledgers, fig3_regime_errors, fig4_accuracy_cost, fig5_cost_matrix, fig6_stage_split):
+    for f in (fig1_cloud, fig2_ledgers, fig3_regime_errors, fig4_accuracy_cost, fig5_cost_matrix, fig6_stage_split, fig8_flattened):
         f()

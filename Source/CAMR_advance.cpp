@@ -132,9 +132,9 @@ CAMR::CAMR_advance (Real time,
         //  transfer and the split MT source in ps_apply_sources is gated
         //  out, so ps_do_relax=0 with ps_mt_tau>0 would leave no operator
         //  running it.  Refuse the contradictory configuration.
-        if (v == 0 && ps_relax_mode() == 5 &&
+        if (v == 0 && ps_relax_owns_mt() &&
             ps_source_dials().mt_tau > amrex::Real(0.0)) {
-            amrex::Abort("CAMR.ps_do_relax=0 with ps_relax_mode=5 and "
+            amrex::Abort("CAMR.ps_do_relax=0 with ps_relax_mode=5/6 and "
                          "ps_mt_tau>0: mode 5's X3 kernel owns mass transfer "
                          "and is disabled, so no operator would run it. "
                          "Set ps_mt_tau=0 (A/C-style no-phase-change run) or "

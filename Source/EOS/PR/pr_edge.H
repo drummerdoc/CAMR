@@ -25,7 +25,7 @@
 
 namespace pr_edge {
 
-  constexpr int    N    = 8192;      // grid points in T
+  constexpr int    N    = 16384;     // grid points in T
   constexpr double T_LO = 1.0;       // [K], the forward window's floor
 
   struct Table {
@@ -65,8 +65,19 @@ namespace pr_edge {
     int i = int(x); if (i >= t->n - 1) i = t->n - 2;
     const double w = x - double(i);
     const double* a = want_liq ? t->lnv_liq : t->lnv_vap;
-    const double lv = (1.0 - w) * a[i] + w * a[i + 1];
-    if (!(lv > -1.0e300)) return false;   // no edge stored at this T (marked -inf)
+    //  Catmull-Rom cubic on ln v (four points; the ends fall back to the
+    //  linear interpolant); an unstored edge (-inf) at any stencil point
+    //  means no edge here.
+    const double a1 = a[i], a2 = a[i + 1];
+    if (!(a1 > -1.0e300) || !(a2 > -1.0e300)) return false;
+    double lv;
+    if (i >= 1 && i + 2 <= t->n - 1 && a[i - 1] > -1.0e300 && a[i + 2] > -1.0e300) {
+        const double a0 = a[i - 1], a3 = a[i + 2];
+        lv = 0.5 * ((2.0 * a1) + (-a0 + a2) * w + (2.0 * a0 - 5.0 * a1 + 4.0 * a2 - a3) * w * w
+                    + (-a0 + 3.0 * a1 - 3.0 * a2 + a3) * w * w * w);
+    } else {
+        lv = (1.0 - w) * a1 + w * a2;
+    }
     v_edge = std::exp(lv);
     return true;
   }

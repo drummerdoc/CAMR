@@ -151,17 +151,23 @@ for label, extra, pref in (('alpha_trace=1e-6', {}, 'vc_'),
     mean = np.mean(allv)
     check(f'A/C battery mean ~ 0.0350 ({label})', abs(mean - 0.0350) < 2e-3, f'mean={mean:.4f}')
 
+#  PS_COUPLED_MODE (5): the coupled operator the mode-5 checks run (2: B4
+#  theta-independence, 5b: B2 front stability).  6 re-pins them on the
+#  flattened operator X3F (DESIGN_DECISIONS.md O-28); the frozen and
+#  mode-2 checks are unaffected.
+COUPLED = int(os.environ.get('PS_COUPLED_MODE', 5))
+
 # ---------------------------------------------------------------- check 2
-print('== 2. B4 theta-independence (mode 5) ==')
+print(f'== 2. B4 theta-independence (mode {COUPLED}) ==')
 #  X3 at theta = 1e-4 and 1e-7 s (flash tau swept with it); the fixed point
 #  is theta-independent, so the u error must not move.  Measured at the
 #  code default CAMR.ps_flash_metastable_margin = 0.10.
 u_errs = {}
 for tau in (1e-4, 1e-7):
     m = run_case('B4-Cross-critical',
-                 {'CAMR.ps_relax_mode': 5, 'CAMR.ps_theta_tau': tau,
+                 {'CAMR.ps_relax_mode': COUPLED, 'CAMR.ps_theta_tau': tau,
                   'CAMR.ps_flash_tau': tau},
-                 f'vc5_B4_{tau:.0e}_')
+                 f'vc{COUPLED}_B4_{tau:.0e}_')
     u_errs[tau] = l2(m, load_hem_analytic('B4'))['u'] if m else float('nan')
 check('B4 u-err ~0.126 at theta=1e-4', abs(u_errs[1e-4] - 0.126) < 0.02,
       f'got {u_errs[1e-4]:.3f}')
@@ -213,8 +219,8 @@ else:
     check('frozen B5 u-err ~0.39 (guard retired)',
           abs(e['u'] - 0.388) < 0.03, f"got {e['u']:.3f}")
 m = run_case('B2-Evap-wave',
-             {'CAMR.ps_relax_mode': 5, 'prob.alpha_trace': 0.0},
-             'v5_B2_')
+             {'CAMR.ps_relax_mode': COUPLED, 'prob.alpha_trace': 0.0},
+             f'v{COUPLED}_B2_')
 if m is None:
     check('B2 front stability', False, 'run failed')
 else:

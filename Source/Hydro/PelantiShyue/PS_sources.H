@@ -190,12 +190,13 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
     //  (2) Split finite-rate mass transfer: hem::ps_mass_transfer_finite_cell,
     //      dm = (1 - exp(-dt/tau)) dm_eq toward Gibbs equilibrium g1 = g2,
     //      with the interface enthalpy carried alongside the mass.  Skipped
-    //      at ps_relax_mode = 5, where the X3 coupled operator owns mass
-    //      transfer inside the relaxation stage; running both would apply
-    //      the operator twice per step.  The relaxation mode is read through
-    //      its single accessor, never a local copy, for the same reason.
+    //      at ps_relax_mode = 5 and 6, where the coupled operator (X3, or
+    //      its flattened form X3F) owns mass transfer inside the relaxation
+    //      stage; running both would apply the operator twice per step.
+    //      The ownership is read through its single accessor
+    //      (ps_relax_owns_mt), never a local copy, for the same reason.
     // -------------------------------------------------------------
-    if (dials.mt_tau > amrex::Real(0.0) && ps_relax_mode() != 5) {
+    if (dials.mt_tau > amrex::Real(0.0) && !ps_relax_owns_mt()) {
         BL_PROFILE_VAR("PS::ps_source_masstransfer()", ps_src_mt);
         const amrex::Real tau  = dials.mt_tau;
         const amrex::Real gref = dials.mt_gref;

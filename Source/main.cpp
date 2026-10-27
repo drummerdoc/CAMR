@@ -151,7 +151,7 @@ main(int argc, char* argv[])
       if (amrex::ParallelDescriptor::IOProcessor()) {
         if (ps_ptg_selftest) fail += ps_ptg_zerod_selftest();
         if (ps_relax_sweep)  fail += ps_relax_corner_sweep();
-        if (ps_x3_test)      fail += ps_x3_fixedpoint_test();
+        if (ps_x3_test)      fail += ps_x3_fixedpoint_test(ps_x3_test == 2 ? 1 : 0);
         if (!ps_x3_replay.empty()) fail += ps_x3_replay_bench(ps_x3_replay);
       }
       amrex::ParallelDescriptor::Bcast(&fail, 1,

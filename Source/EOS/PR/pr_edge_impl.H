@@ -8,6 +8,7 @@
 #include <AMReX_Gpu.H>
 #include <AMReX_Arena.H>
 #include <AMReX_Print.H>
+#include <AMReX_ParmParse.H>
 #include <vector>
 #include <cmath>
 #include <limits>
@@ -27,6 +28,14 @@ namespace pr_edge {
     static bool done = false;
     if (done) return;
     done = true;
+    //  CAMR.pr_edge_table (1): 0 keeps the per-call march (A/B checks of the table).
+    {
+        int use = 1;
+        amrex::ParmParse pp("CAMR");
+        pp.query("pr_edge_table", use);
+        pp.add("pr_edge_table", use);
+        if (use == 0) { amrex::Print() << "PR: branch-edge table disabled (CAMR.pr_edge_table=0): marching\n"; return; }
+    }
     const hem::PRFluid f = EOS::co2_fluid();
     const double Tc = double(f.pr.Tc);
     //  Grid up to just below T_c (no loop at or above T_c).
