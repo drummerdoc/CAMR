@@ -216,9 +216,18 @@ First pass (code before those four changes) is recorded for attribution: demo2 m
 
 The 2-D references (`regen_refs.sh 2d BASE`, `regen_refs.sh windows BASE`) are re-recorded at the retirement commit, since the physical seed and the Corridor projection change every trace phase in the pipe-break; the PRE windows were never recorded (no MPI in the workspace where phase 0 ran), so BASE is the first 2-D fingerprint set. It is recorded in mode 2 as the decks ship.
 
-### 7.7 Mode 6 (the flattened operator) against the gates — 2026-10-27
+### 7.7 Mode 6, the flattened operator: the default since 2026-10-27
 
-`CAMR.ps_relax_mode=6` runs the flattened coupled operator X3F (`hem_relax_x3f.H`, `DESIGN_DECISIONS.md` O-28). It is held to the same instruments as mode 5: `PS_COUPLED_MODE=6 python3 verify_canonical.py` runs checks 2 and 5b on mode 6 (all checks pass, same numbers as mode 5); `PROBE_OV=CAMR.ps_relax_mode=6 python3 exact_suite.py wp` gives the acceptance table (18 of 20 rows identical to four digits, B2 and B7 in the fourth digit); `characterize.py record … --defaults` with the same override gives the fingerprint (13 of 21 cases bitwise identical, the single-phase and mechanical ones; the two-phase cases at 1e-9–1e-3; B12 at 0.17 in α₁); `HEM_MODE=6 python3 hem_limit.py` reproduces the mode-5 approach to the HEM limit to four digits; `CAMR.ps_x3_test=2` holds the operator to the 0-D fixed-point acceptance (route spreads 1e-13). The open item before mode 6 can replace mode 5 as the default is B12, where the band gate's decision on marginal near-critical cells differs between the two projections (`Exec/EOS_Surrogate/RESULTS.md`, "The production hook"). On the production deck the two modes agree to 3e-4 at step 200 on both platforms, and mode 6 reproduces between GPU and CPU to 4e-10 where the bracketed operators reproduce to 1e-4.
+`CAMR.ps_relax_mode=6` runs the flattened coupled operator X3F (`hem_relax_x3f.H`, `DESIGN_DECISIONS.md` O-28, O-29); mode 5, the nested X3, is retained as the control closure of the same fixed point. Both operators apply the coexistence gate along the sub-step path (O-29), and X3F's ladder carries step-doubling error control. The instruments and their state at the switch, on the non-MPI 1-D PR build (`make DIM=1 TINY_PROFILE=TRUE USE_MPI=FALSE Eos_Model=PR`; the suite runs the executable directly, an MPI singleton hangs):
+
+- `verify_canonical.py`: ALL CHECKS PASS at the default and with `PS_COUPLED_MODE=5`, with the same frozen numbers (B4 u-err 0.126 at θ = 1e-4 and 1e-7, flat; B9 mode-2 0.752; B2 front u_max 31.7; the frozen B4, B5 and B12 checks).
+- `exact_suite.py wp` (20 cases, exact references), default (mode 6) against `PROBE_OV=CAMR.ps_relax_mode=5`: identical to four digits except B2 (u-err 0.0790 vs 0.0788), B5 (0.1764 vs 0.1765) and B7 (0.7464 vs 0.7478).
+- `characterize.py` (`BASE_mode6` = the default, `X3_mode5` = the control, both `--defaults`): 13 of 21 cases bitwise identical (every single-phase and mechanical case), the two-phase cases at 1e-9–1e-3 in the fields, and B12 at 0.34 in α₁, the known-divergent case of O-21/O-29 (its gate check is the frozen limit, unchanged in both).
+- `hem_limit.py` (`HEM_MODE=6`): B9's approach to the HEM limit over θ = 3e-5 … 1e-7 reproduces mode 5 to four digits.
+- `CAMR.ps_x3_test=2`: the 0-D fixed-point acceptance on X3F, PASS with route spreads of 1e-13 (X3: 1e-6–1e-5, the projector tolerance).
+- B12 itself (`runs_mode6/b12h`, 691 harvested cells): X3F integrates or stands on every cell (33 % integrated, 67 % stood on the path, no failures) where X3 still caps on 32; one controlled X3F call agrees with ten calls at a tenth of the step to 1.3e-2 in α₁ (p99), the same level at which ten agree with a hundred: the residual is the case's ill-conditioning, not the operator's.
+
+On the production deck the two modes agree to 3e-4 at step 200 on both platforms, and mode 6 reproduces between GPU and CPU to 4e-10 (`Exec/EOS_Surrogate/RESULTS.md`, "The production hook").
 
 ## 8. Regenerating references
 

@@ -887,8 +887,25 @@ inline bool ps_x3_relax_cell(V6& U, const PsPhaseAPI& eos, double dt,
     int  nsub = 0;
     bool ok   = true;
     set_status(X3_OK);
+    bool stood_on_path = false;
     while (t_done < dt * (1.0 - 1.0e-12)) {
         if (++nsub > 64) { ok = false; PS_COUNT(++x3s.n_subcap); set_status(X3_SUBCAP); break; }
+        //  The coexistence gate along the path (B12 decision, 2026-10-27;
+        //  the same rule as the entry gate, on the current projected base):
+        //  a phase that leaves the band during the step ends the step there.
+        if (xp.dome_gate && nsub > 1) {
+            const double Ttr = eos.t_triple(), Tcr = eos.t_crit();
+            const bool lo = (scur.p1.T <= Ttr) || (scur.p2.T <= Ttr);
+            const bool hi = (scur.p1.T >= Tcr) || (scur.p2.T >= Tcr);
+            if (lo || hi) {
+                const bool runaway = hi && !lo && (std::max(scur.p1.T, scur.p2.T) > 2.0 * Tcr);
+                if (!runaway) {
+                    if (xp.exit_code) *xp.exit_code |= (lo ? 1 : 0) | (hi ? 2 : 0) | 16;
+                    stood_on_path = true;
+                    break;
+                }
+            }
+        }
         PS_COUNT(++x3s.n_sub);
         if (xp.sub_out) ++*xp.sub_out;
         const int rc = be_once(dt_try);
@@ -910,6 +927,7 @@ inline bool ps_x3_relax_cell(V6& U, const PsPhaseAPI& eos, double dt,
     // on-manifold even on a bail-out).
     for (int n = 0; n < 6; ++n) U[n] = Wc[n];
     if (xp.dT_post) *xp.dT_post = std::abs(scur.p1.T - scur.p2.T);  // [PS-DT]
+    if (stood_on_path) { PS_COUNT(++x3s.n_gate_stood); set_status(X3_STOOD); return true; }
     if (ok) PS_COUNT(++x3s.n_ok);
     return ok;
 }

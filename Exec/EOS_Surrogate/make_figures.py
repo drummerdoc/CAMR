@@ -214,8 +214,8 @@ def fig8_flattened():
     fig, (ax, bx) = plt.subplots(1, 2, figsize=(11.5, 4.2), gridspec_kw={'width_ratios': [1.35, 1]})
     # (a) per-cell cost of the relaxation operator on the production restart's cells (RESULTS.md)
     steps = ['nested X3\n(start of study)', 'X3 + edge table', 'X3F, FD Jacobian', 'X3F, analytic J', 'X3F + edge table']
-    cpu = [285.0, 212.0, 35.0, 17.4, 3.5]          # us per cell, one EPYC core
-    gpu = [843.0, 515.0, 300.0, 114.0, 19.0]       # ns per cell-visit, RTX PRO 6000
+    cpu = [285.0, 212.0, 35.0, 17.4, 4.4]          # us per cell, one EPYC core (final: with step control)
+    gpu = [843.0, 515.0, 300.0, 114.0, 35.0]       # ns per cell-visit, RTX PRO 6000 (final: with step control)
     y = np.arange(len(steps))[::-1]; h = 0.36
     ax.barh(y + h/2, cpu, h, color=C['blue'], label='CPU, one core (µs per cell)')
     ax.barh(y - h/2, gpu, h, color=C['orange'], label='development GPU (ns per cell-visit)')
@@ -228,7 +228,7 @@ def fig8_flattened():
     ax.legend(loc='lower right', fontsize=9)
     # (b) the production run (256 x 128, 200 steps) before and after the edge table and the flattened mode
     labels = ['deck mode,\nmarch', 'deck mode,\nedge table', 'mode 6 (X3F),\nedge table']
-    tcpu = [26.2, 20.8, 12.9]; tgpu = [21.2, 12.1, 9.2]
+    tcpu = [26.2, 20.8, 13.4]; tgpu = [21.2, 12.1, 9.6]
     x = np.arange(3); w = 0.36
     bx.bar(x - w/2, tcpu, w, color=C['blue'], label='8 CPU ranks')
     bx.bar(x + w/2, tgpu, w, color=C['orange'], label='development GPU')
@@ -238,6 +238,69 @@ def fig8_flattened():
     bx.set_title('The production run, 32 k cells'); bx.legend(loc='upper right', fontsize=9)
     fig.tight_layout(); save(fig, 'fig8_flattened.png')
 
+def fig9_state_space():
+    """Where each table acts: one PR branch pair in the forward coordinates (rho, T) and in the
+    solver's inversion coordinates (rho, e): the saturation curve, the two branch edges (the
+    branch-edge table), the five regions a forward call distinguishes, and the bicubic tables'
+    domain."""
+    data = os.path.join(HERE, 'data')
+    sat = rows(os.path.join(data, 'sat.csv')); e1 = rows(os.path.join(data, 'edge_1.csv')); e2 = rows(os.path.join(data, 'edge_2.csv'))
+    T  = np.array([float(r['T']) for r in sat]); rL = np.array([float(r['rhoL']) for r in sat]); rV = np.array([float(r['rhoV']) for r in sat])
+    eL = np.array([float(r['eL']) for r in sat]); eV = np.array([float(r['eV']) for r in sat])
+    T1 = np.array([float(r['T']) for r in e1]); re1 = np.array([float(r['rho_edge']) for r in e1]); ee1 = np.array([float(r['e_edge']) for r in e1])
+    T2 = np.array([float(r['T']) for r in e2]); re2 = np.array([float(r['rho_edge']) for r in e2]); ee2 = np.array([float(r['e_edge']) for r in e2])
+    Tc, Ttr = 304.13, 216.592
+    lb, lo = C['blue'], C['orange']
+    lr = np.log10
+    Tg = np.linspace(Ttr, Tc * 0.9995, 400)
+    xL, xV = np.interp(Tg, T, lr(rL)), np.interp(Tg, T, lr(rV))
+    x1, x2 = np.interp(Tg, T1, lr(re1)), np.interp(Tg, T2, lr(re2))
+    fig, (ax, bx) = plt.subplots(1, 2, figsize=(12.5, 5.0))
+    # ---- (a) forward coordinates: five bands at each T
+    XL, XR = -0.3, 3.25
+    ax.fill_betweenx(Tg, XL, xV, color=lo, alpha=0.10, lw=0)         # stable vapour
+    ax.fill_betweenx(Tg, xV, x2, color=lo, alpha=0.30, lw=0)         # metastable vapour (raw branch)
+    ax.fill_betweenx(Tg, x2, x1, color='#9a9a9a', alpha=0.22, lw=0)  # both branches continued
+    ax.fill_betweenx(Tg, x1, xL, color=lb, alpha=0.30, lw=0)         # metastable liquid (raw branch)
+    ax.fill_betweenx(Tg, xL, XR, color=lb, alpha=0.10, lw=0)         # stable liquid
+    ax.fill_between([XL, XR], Tc, 312, color='#e9e9e4', lw=0)        # above Tc: one real branch
+    ax.plot(xL, Tg, color=INK, lw=1.6); ax.plot(xV, Tg, color=INK, lw=1.6)
+    ax.plot(x1, Tg, color=lb, lw=2.4, ls='--'); ax.plot(x2, Tg, color=lo, lw=2.4, ls='--')
+    ax.axhline(Tc, color=INK2, lw=0.8, ls=':'); ax.axhline(Ttr, color=INK2, lw=0.8, ls=':')
+    ax.text(0.0, 307.5, 'above T_c: one real branch, no edge', fontsize=8.5, color=INK2, va='center')
+    ax.text(XR - 0.05, Ttr - 2.0, 'T_triple: GERG clamps, PR brackets on to 1 K', ha='right', va='top', fontsize=8.5, color=INK2)
+    ax.text(0.45, 250, 'stable vapour', ha='center', fontsize=9, color=INK)
+    ax.text(3.0, 240, 'stable\nliquid', ha='center', fontsize=9, color=INK)
+    ax.annotate('metastable vapour:\nraw branch, inside the dome', xy=(np.interp(285, Tg, 0.5 * (xV + x2)), 285), xytext=(0.3, 290),
+                fontsize=8.5, color=INK, arrowprops=dict(arrowstyle='-', color=INK2, lw=0.8))
+    ax.annotate('metastable liquid:\nraw branch, inside the dome', xy=(np.interp(270, Tg, 0.5 * (x1 + xL)), 270), xytext=(3.2, 275),
+                fontsize=8.5, color=INK, ha='right', arrowprops=dict(arrowstyle='-', color=INK2, lw=0.8))
+    ax.annotate('both branches past their edge:\nC1 continuation, P linear in ρ', xy=(np.interp(235, Tg, 0.5 * (x1 + x2)), 235), xytext=(0.3, 226),
+                fontsize=8.5, color=INK, arrowprops=dict(arrowstyle='-', color=INK2, lw=0.8))
+    ax.annotate('the branch-edge table: v_edge(T),\none array per branch (16 384 T points, cubic);\nevery forward call reads it to decide\n"past the edge" and to anchor the continuation',
+                xy=(np.interp(255, Tg, x1), 255), xytext=(0.0, 263), fontsize=8.5, color=INK,
+                arrowprops=dict(arrowstyle='-', color=lb, lw=1.2))
+    ax.annotate('', xy=(np.interp(262, Tg, x2), 262), xytext=(1.25, 266), arrowprops=dict(arrowstyle='-', color=lo, lw=1.2))
+    ax.set_xlim(XL, XR); ax.set_ylim(212, 312); ax.set_xlabel('log₁₀ ρ [kg/m³]'); ax.set_ylabel('T [K]')
+    ax.set_title('Forward (ρ, T): the flattened operator iterates here'); ax.grid(False)
+    # ---- (b) solver coordinates: the same loci and the tables' domain
+    bx.plot(lr(rL), eL / 1e5, color=INK, lw=1.6); bx.plot(lr(rV), eV / 1e5, color=INK, lw=1.6)
+    bx.plot(lr(re1), ee1 / 1e5, color=lb, lw=2.4, ls='--'); bx.plot(lr(re2), ee2 / 1e5, color=lo, lw=2.4, ls='--')
+    # the bicubic tables' domain: log10 rho in [-2, 3.42], e in [-1.41e6, 1.91e6] (the 4-sigma whitened box); drawn clipped
+    LR0, LR1 = -2.0, 3.4157
+    bx.add_patch(plt.Rectangle((LR0, -4.0), LR1 - LR0, 7.0, fill=False, ec=C['aqua'], lw=1.8))
+    bx.text(LR0 + 0.08, 2.75, 'PRTab / GERGTab domain: bicubic T(ρ, e) sheets, one per branch,\non log₁₀ρ ∈ [−2, 3.4] × e ∈ [−14, 19]·10⁵ J/kg (the 4σ whitened box; shown clipped);\noutside it, and where the sheet has no root: the analytic solve, refusal kept',
+            fontsize=8.5, color=INK, va='top')
+    bx.annotate('liquid sheet: saturation → edge\n(dashed) → continuation', xy=(lr(re1[len(re1)//2]), ee1[len(ee1)//2] / 1e5), xytext=(0.3, -2.3),
+                fontsize=8.5, color=INK, arrowprops=dict(arrowstyle='-', color=lb, lw=1.0))
+    bx.annotate('vapour sheet: saturation → edge\n(dashed) → continuation', xy=(lr(re2[len(re2)//2]), ee2[len(ee2)//2] / 1e5), xytext=(-1.6, 1.0),
+                fontsize=8.5, color=INK, arrowprops=dict(arrowstyle='-', color=lo, lw=1.0))
+    bx.text(2.35, -2.9, 'stable liquid', ha='center', fontsize=9, color=INK); bx.text(-1.6, 0.0, 'stable vapour', fontsize=9, color=INK)
+    bx.text(-1.9, -3.95, '(ρ, e) → T is the hydro stage\'s inversion: bracketed over T ∈ [1, 5000] K\nby the analytic backends, seeded by the sheet in the table backends', fontsize=8.5, color=INK2, va='bottom')
+    bx.set_xlim(-2.2, 3.6); bx.set_ylim(-4.1, 3.2); bx.set_xlabel('log₁₀ ρ [kg/m³]'); bx.set_ylabel('e [10⁵ J/kg]')
+    bx.set_title("Solver (ρ, e): where the lookup tables act"); bx.grid(False)
+    fig.tight_layout(); save(fig, 'fig9_state_space.png')
+
 if __name__ == '__main__':
-    for f in (fig1_cloud, fig2_ledgers, fig3_regime_errors, fig4_accuracy_cost, fig5_cost_matrix, fig6_stage_split, fig8_flattened):
+    for f in (fig1_cloud, fig2_ledgers, fig3_regime_errors, fig4_accuracy_cost, fig5_cost_matrix, fig6_stage_split, fig8_flattened, fig9_state_space):
         f()

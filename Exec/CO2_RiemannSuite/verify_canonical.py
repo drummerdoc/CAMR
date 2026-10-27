@@ -151,11 +151,11 @@ for label, extra, pref in (('alpha_trace=1e-6', {}, 'vc_'),
     mean = np.mean(allv)
     check(f'A/C battery mean ~ 0.0350 ({label})', abs(mean - 0.0350) < 2e-3, f'mean={mean:.4f}')
 
-#  PS_COUPLED_MODE (5): the coupled operator the mode-5 checks run (2: B4
-#  theta-independence, 5b: B2 front stability).  6 re-pins them on the
-#  flattened operator X3F (DESIGN_DECISIONS.md O-28); the frozen and
-#  mode-2 checks are unaffected.
-COUPLED = int(os.environ.get('PS_COUPLED_MODE', 5))
+#  PS_COUPLED_MODE (6): the coupled operator the coupled checks run (2: B4
+#  theta-independence, 5b: B2 front stability): 6 = X3F, the default since
+#  2026-10-27 (DESIGN_DECISIONS.md O-28/O-29); 5 = the nested X3, the control
+#  closure.  The frozen and mode-2 checks are unaffected.
+COUPLED = int(os.environ.get('PS_COUPLED_MODE', 6))
 
 # ---------------------------------------------------------------- check 2
 print(f'== 2. B4 theta-independence (mode {COUPLED}) ==')

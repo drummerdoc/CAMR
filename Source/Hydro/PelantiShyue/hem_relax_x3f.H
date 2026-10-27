@@ -78,6 +78,20 @@ struct PsX3fParams {
     //  1 forward differences (n extra residual evaluations per iteration).
     int    jac        = 0;
     int    coexist_action = 0;
+    //  Temporal accuracy of a sub-step (B12 decision, 2026-10-27): a step
+    //  that moves alpha_1 by more than step_tol_a or a phase energy by more
+    //  than step_tol_e (relative to the energy scale) is re-taken as two
+    //  half steps; the two results must agree within tol + step_rtol times
+    //  the step's own change (step doubling, the backward-Euler local
+    //  error), else the step is halved.  The half-step result is the one
+    //  committed.  step_tol_a <= 0 disables the control (one backward-Euler
+    //  step per sub-step, the nested operator's behaviour minus its
+    //  failure-driven halving).
+    double step_tol_a = 1.0e-3;   // absolute, alpha_1 (also the trigger: smaller steps are not doubled)
+    double step_tol_e = 1.0e-4;   // relative to the energy scale
+    double step_rtol  = 0.1;      // plus this fraction of the step's own change
+    int    max_sub    = 256;      // sub-step cap with the control on (64 without)
+    int    verbose    = 0;        // host builds: print every sub-step decision (the replay bench on a few cells)
     //  Entry temperatures: seeds for the seeded inversion (<= 0: 0.9 T_c).
     double T1_seed = 0.0, T2_seed = 0.0;
     //  Out-params (one cell each, device-safe).
@@ -464,52 +478,113 @@ inline bool ps_x3f_relax_cell(V6& U, const PsPhaseAPI& eos, double dt,
         }
     }
 
-    // ---- sub-stepped backward Euler, X3's ladder
+    // ---- sub-stepped backward Euler, X3's ladder, with step-doubling
+    //      error control on the committed state (B12 decision, 2026-10-27).
     const double E_scale = std::abs(b.U1) + std::abs(b.U2) + 1.0;
     const double tol_q = 1.0e-12 * E_scale, tol_m = 1.0e-13 * rho_mix;
-    double t_done = 0.0, dt_try = dt;
-    int nsub = 0; bool ok = true;
-    set_status(X3_OK);
-    while (t_done < dt * (1.0 - 1.0e-12)) {
-        if (++nsub > 64) { ok = false; set_status(X3_SUBCAP); break; }
-        count(xp.sub_out);
-        //  Base rates for the predictor and the box direction.
+    //  One backward-Euler step from base bb over dtl into out.
+    //  rc: 0 advanced; 1 Newton failed (halve); 2 fixed-count non-convergence;
+    //  3 structurally dead; 4 at the equilibrium already (out = bb).
+    auto step_once = [&](const Base& bb, double dtl, Base& out) -> int {
         double rT0 = 0.0, rM0 = 0.0;
         {
             constexpr double two_pi = 6.283185307179586, R_u = 8.314462618;
-            if (!(b.cv1 > 0.0) || !(b.cv2 > 0.0) || !(b.T2 > 0.0)) { ok = false; set_status(X3_DEAD); break; }
-            const double inv = 1.0 / (b.m1 * b.cv1) + 1.0 / (b.m2 * b.cv2);
-            rT0 = joint_pt ? 0.0 : (b.T1 - b.T2) / (xp.theta * inv);
-            const double a2 = 1.0 - b.a;
-            const double a_geom = (b.g1 > b.g2) ? (a2 + xp.srt_delta) * b.a : (b.a + xp.srt_delta) * a2;
+            if (!(bb.cv1 > 0.0) || !(bb.cv2 > 0.0) || !(bb.T2 > 0.0)) return 3;
+            const double inv = 1.0 / (bb.m1 * bb.cv1) + 1.0 / (bb.m2 * bb.cv2);
+            rT0 = joint_pt ? 0.0 : (bb.T1 - bb.T2) / (xp.theta * inv);
+            const double a2 = 1.0 - bb.a;
+            const double a_geom = (bb.g1 > bb.g2) ? (a2 + xp.srt_delta) * bb.a : (bb.a + xp.srt_delta) * a2;
             const double Sig = (32.0 / two_pi) * a_geom / xp.srt_D;
-            rM0 = Sig * (b.m2 / a2) * std::sqrt(eos.molar_mass() / (two_pi * R_u * b.T2)) * (b.g1 - b.g2);
-            if (!std::isfinite(rT0) || !std::isfinite(rM0)) { ok = false; set_status(X3_DEAD); break; }
+            rM0 = Sig * (bb.m2 / a2) * std::sqrt(eos.molar_mass() / (two_pi * R_u * bb.T2)) * (bb.g1 - bb.g2);
+            if (!std::isfinite(rT0) || !std::isfinite(rM0)) return 3;
         }
-        if (std::abs(dt_try * rT0) < tol_q && std::abs(dt_try * rM0) < tol_m) {
-            t_done += dt_try;            // at the equilibrium already
-            const double rem = dt - t_done;
-            if (!(rem > 0.0)) break;
-            dt_try = std::min(2.0 * dt_try, rem);
-            continue;
-        }
-        double z[5] = { b.a, b.T1, b.T2,
-                        joint_pt ? 0.0 : dt_try * rT0 / (1.0 + dt_try / xp.theta),
-                        dt_try * rM0 };
+        if (std::abs(dtl * rT0) < tol_q && std::abs(dtl * rM0) < tol_m) { out = bb; return 4; }
+        double z[5] = { bb.a, bb.T1, bb.T2,
+                        joint_pt ? 0.0 : dtl * rT0 / (1.0 + dtl / xp.theta),
+                        dtl * rM0 };
         int nit = 0; Trial t{};
-        const int rc = newton(b, dt_try, 5, z, t, nit);
-        if (rc == 0) {
-            {
-                const Base bn = base_from(z[0], t.m1, t.m2, t.m1 * t.p1.e, t.m2 * t.p2.e, z[1], z[2]);
-                if (!bn.adm) { dt_try *= 0.5; if (dt_try < 1.0e-10 * dt) { ok = false; set_status(X3_NEWTON); break; } continue; }
-                b = bn;
+        const int rc = newton(bb, dtl, 5, z, t, nit);
+        if (rc != 0) return rc;
+        out = base_from(z[0], t.m1, t.m2, t.m1 * t.p1.e, t.m2 * t.p2.e, z[1], z[2]);
+        return out.adm ? 0 : 1;
+    };
+    const bool control = (xp.step_tol_a > 0.0);
+    double t_done = 0.0, dt_try = dt;
+    int nsub = 0; bool ok = true;
+    set_status(X3_OK);
+    bool stood_on_path = false;
+    while (t_done < dt * (1.0 - 1.0e-12)) {
+        if (++nsub > (control ? xp.max_sub : 64)) { ok = false; set_status(X3_SUBCAP); break; }
+        //  The coexistence gate along the path (B12 decision, 2026-10-27):
+        //  the rates are defined only inside the band, so a phase that
+        //  leaves it during the step ends the step on the admissible state
+        //  reached; the runaway clause continues as at entry.
+        if (xp.dome_gate && nsub > 1) {
+            const double Ttr = eos.t_triple(), Tcr = eos.t_crit();
+            const bool lo = (b.T1 <= Ttr) || (b.T2 <= Ttr);
+            const bool hi = (b.T1 >= Tcr) || (b.T2 >= Tcr);
+            if (lo || hi) {
+                const bool runaway = hi && !lo && (std::max(b.T1, b.T2) > 2.0 * Tcr);
+                if (!runaway) {
+                    if (xp.exit_code) *xp.exit_code |= (lo ? 1 : 0) | (hi ? 2 : 0) | 16;   // bit 16: exit on the path
+                    stood_on_path = true;
+                    break;
+                }
             }
+        }
+        count(xp.sub_out);
+        Base b1{};
+        int rc = step_once(b, dt_try, b1);
+        if (rc == 0 && control) {
+            //  Did the step move the state appreciably?  Then re-take it as
+            //  two half steps and compare (the backward-Euler local error).
+            const double da = std::abs(b1.a - b.a);
+            const double dE = std::max(std::abs(b1.U1 - b.U1), std::abs(b1.U2 - b.U2)) / E_scale;
+            if (da > xp.step_tol_a || dE > xp.step_tol_e) {
+                Base bh{}, b2{};
+                int rch = step_once(b, 0.5 * dt_try, bh);
+                if (rch == 4) bh = b;
+                if (rch == 0 || rch == 4) {
+                    rch = step_once(bh, 0.5 * dt_try, b2);
+                    if (rch == 4) b2 = bh;
+                }
+                if (rch == 0 || rch == 4) {
+                    const double ea = std::abs(b1.a - b2.a);
+                    const double ee = std::max(std::abs(b1.U1 - b2.U1), std::abs(b1.U2 - b2.U2)) / E_scale;
+                    if (ea <= xp.step_tol_a + xp.step_rtol * da && ee <= xp.step_tol_e + xp.step_rtol * dE) {
+                        b1 = b2;                     // the more accurate of the two
+                    } else {
+                        rc = 1;                      // reject: halve the step
+                    }
+#if !defined(AMREX_USE_GPU)
+                    if (xp.verbose) amrex::AllPrint() << "  [x3f]   doubling: da=" << da << " dE=" << dE << " ea=" << ea << " ee=" << ee
+                                                      << (rc == 0 ? " accept\n" : " REJECT\n");
+#endif
+                } else {
+                    rc = (rch == 3) ? 3 : 1;
+#if !defined(AMREX_USE_GPU)
+                    if (xp.verbose) amrex::AllPrint() << "  [x3f]   doubling: half step failed rc=" << rch << "\n";
+#endif
+                }
+            }
+        }
+#if !defined(AMREX_USE_GPU)
+        if (xp.verbose) {
+            amrex::AllPrint() << "  [x3f] sub " << nsub << " dt_try/dt=" << dt_try / dt << " rc=" << rc
+                              << " a=" << b.a << "->" << (rc == 0 ? b1.a : b.a) << " T1=" << b.T1 << " T2=" << b.T2
+                              << " g1-g2=" << (b.g1 - b.g2) << " m1=" << b.m1 << "\n";
+        }
+#endif
+        if (rc == 0 || rc == 4) {
+            if (rc == 0) b = b1;
             t_done += dt_try;
             const double rem = dt - t_done;
             if (!(rem > 0.0)) break;
             dt_try = std::min(2.0 * dt_try, rem);
         } else if (rc == 2) {
             ok = false; set_status(X3_FIXED_NONCONV); break;
+        } else if (rc == 3) {
+            ok = false; set_status(X3_DEAD); break;
         } else {
             dt_try *= 0.5;
             if (dt_try < 1.0e-10 * dt) { ok = false; set_status(X3_NEWTON); break; }
@@ -517,6 +592,7 @@ inline bool ps_x3f_relax_cell(V6& U, const PsPhaseAPI& eos, double dt,
     }
     commit(b);   // the last admissible base: conservative and on the manifold
     if (xp.dT_post) *xp.dT_post = std::abs(b.T1 - b.T2);
+    if (stood_on_path) { set_status(X3_STOOD); return true; }   // a stand is not a failure
     return ok;
 }
 

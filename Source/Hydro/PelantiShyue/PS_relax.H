@@ -316,15 +316,16 @@ ps_x3_grid_relax_cell(int i, int j, int k,
 
 
 
-// CAMR.ps_relax_mode (5): 5 = the coupled X3 operator
-// (ps_x3_grid_relax_cell); 6 = the same operator flattened, X3F
+// CAMR.ps_relax_mode (6): 6 = the coupled operator flattened, X3F
 // (ps_x3f_grid_relax_cell: one Newton in (alpha, T1, T2, q, dm) on the
-// forward EOS, docs/DESIGN_DECISIONS.md O-28; the same fixed point and
-// band-exit policy, the same mass-transfer ownership); 0 = mechanical only, for frozen-limit tests;
+// forward EOS with step-doubling control, docs/DESIGN_DECISIONS.md O-28
+// and O-29; the default since 2026-10-27); 5 = the nested X3 operator
+// (ps_x3_grid_relax_cell), retained as the control closure of the same
+// fixed point; 0 = mechanical only, for frozen-limit tests;
 // 2 = isochoric P + finite-rate thermal with the split Gibbs-driven
 // transfer source (the finite-rate alternative, retained as the control
 // closure while the X3 rate closure is under study, docs §5.7).  The
-// default is 5 because the code defaults are the acceptance
+// default is 6 because the code defaults are the acceptance
 // configuration.  This is the single read site, and an unrecognised value
 // aborts here rather than falling through to mode-0 physics while the
 // split transfer source (gated on != 5) silently re-opens.  The former
@@ -333,10 +334,10 @@ ps_x3_grid_relax_cell(int i, int j, int k,
 inline int ps_relax_mode()
 {
     static const int m = []() -> int {
-        const int v = ps_dial_int("ps_relax_mode", 5);
+        const int v = ps_dial_int("ps_relax_mode", 6);
         if (v == 1 || v == 3 || v == 4) {
             amrex::Abort("CAMR.ps_relax_mode = " + std::to_string(v) +
-                         " is retired: use 5 (coupled X3), 2 (finite-rate "
+                         " is retired: use 6 (flattened X3F), 5 (coupled X3), 2 (finite-rate "
                          "thermal + split transfer) or 0 (mechanical only)");
         }
         if (v != 0 && v != 2 && v != 5 && v != 6) {
@@ -430,6 +431,8 @@ ps_x3_params_from_dials()
 //    CAMR.ps_x3f_jac (0): 0 analytic Jacobian, 1 forward differences
 //    CAMR.ps_x3f_fixed_newton (0): > 0 = fixed Newton count per solve
 //    CAMR.ps_x3f_max_newton (25), CAMR.ps_x3f_tol (1e-10)
+//    CAMR.ps_x3f_step_tol_a (1e-3), CAMR.ps_x3f_step_tol_e (1e-4), CAMR.ps_x3f_step_rtol (0.1):
+//      the step-doubling error control of the sub-step ladder (tol_a <= 0 disables)
 //  Shared with the replay bench (PS_zerod_test.H).
 // -----------------------------------------------------------------
 inline hem::PsX3fParams
@@ -443,7 +446,11 @@ ps_x3f_params_from_dials()
     static const int    fixed = ps_dial_int("ps_x3f_fixed_newton", 0);
     static const int    maxn  = ps_dial_int("ps_x3f_max_newton", 25);
     static const double tol   = double(ps_dial_real("ps_x3f_tol", amrex::Real(1.0e-10)));
+    static const double tola  = double(ps_dial_real("ps_x3f_step_tol_a", amrex::Real(1.0e-3)));   // <= 0: no step control
+    static const double tole  = double(ps_dial_real("ps_x3f_step_tol_e", amrex::Real(1.0e-4)));
+    static const double rtol  = double(ps_dial_real("ps_x3f_step_rtol",  amrex::Real(0.1)));
     xf.jac = jac; xf.fixed_newton = fixed; xf.max_newton = maxn; xf.tol = tol;
+    xf.step_tol_a = tola; xf.step_tol_e = tole; xf.step_rtol = rtol;
     return xf;
 }
 

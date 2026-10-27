@@ -508,6 +508,7 @@ inline int ps_x3_replay_bench(const std::string& file)
     const hem::PsX3Params xp0 = ps_x3_params_from_dials();
     hem::PsX3fParams xf0 = ps_x3f_params_from_dials();     // the production dials (mode 6)
     xf0.fixed_newton = std::max(1, ps_dial_int("ps_x3_replay_fixed_n", 6));
+    xf0.verbose      = ps_dial_int("ps_x3_replay_verbose", 0);
     xf0.tol          = double(ps_dial_real("ps_x3_replay_tol", amrex::Real(1.0e-10)));
     const double dt_override = double(ps_dial_real("ps_x3_replay_dt", amrex::Real(0.0)));
     const double dt_scale    = double(ps_dial_real("ps_x3_replay_dt_scale", amrex::Real(1.0)));
