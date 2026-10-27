@@ -173,13 +173,14 @@ def fig5_cost_matrix():
     save(fig, 'fig5_cost_matrix.png')
 
 # =============================================================================
-def parse_profile(log):
-    """Run time w/o init and the exclusive Avg time of the reaction-operator kernels."""
+def parse_profile(log, kernels=('PS::ps_apply_relaxation()',)):
+    """Run time w/o init and the exclusive Avg time of the named kernels (default: the relaxation kernel alone;
+    the mass-transfer kernel is left in the remainder, since the register-pressure argument is about the relaxation Newton)."""
     txt = open(log).read()
     tot = float(re.findall(r'Run time w/o init = ([\d.eE+-]+)', txt)[-1])
     sec = txt.split('Excl. Min')[1] if 'Excl. Min' in txt else ''
     react = 0.0
-    for name in ('PS::ps_apply_relaxation()', 'PS::ps_source_masstransfer()'):
+    for name in kernels:
         m = re.search(re.escape(name) + r'\s+\d+\s+([\d.eE+-]+)\s+([\d.eE+-]+)\s+([\d.eE+-]+)', sec)
         if m: react += float(m.group(2))     # Excl. Avg across processes
     return tot, react
@@ -195,8 +196,8 @@ def fig6_stage_split():
             ('production GPU\nGH200 (H100)', 'PRTab'): os.path.join(PB, 'runs/bench/olivia_gpu/Exec/CO2_PipeBreak/runs/bench/L0big_200/PRTab_gpu/run.log')}
     plats = ['development CPU\n8 EPYC ranks', 'production CPU\n8 EPYC ranks', 'development GPU\nRTX PRO 6000', 'production GPU\nGH200 (H100)']
     fig, ax = plt.subplots(figsize=(11, 4.6)); w = 0.19; x = np.arange(len(plats))
-    series = [('PR', 'rest', 'PR: hydro and everything else', 0.45), ('PR', 'react', 'PR: multiphase source terms', 1.0),
-              ('PRTab', 'rest', 'PRTab: hydro and everything else', 0.45), ('PRTab', 'react', 'PRTab: multiphase source terms', 1.0)]
+    series = [('PR', 'rest', 'PR: hydro and everything else', 0.45), ('PR', 'react', 'PR: relaxation kernel', 1.0),
+              ('PRTab', 'rest', 'PRTab: hydro and everything else', 0.45), ('PRTab', 'react', 'PRTab: relaxation kernel', 1.0)]
     for i, (b, part, label, alpha) in enumerate(series):
         xs = x + (i - 1.5) * w; vals = []
         for p in plats:
@@ -206,7 +207,7 @@ def fig6_stage_split():
             ax.text(xi, v * 1.12, f'{v:.0f}' if v >= 10 else f'{v:.1f}', ha='center', va='bottom', fontsize=7.5, color=INK, rotation=90)
     ax.set_yscale('log'); ax.set_ylim(0.5, 2000); ax.set_xticks(x); ax.set_xticklabels(plats)
     ax.set_ylabel('wall time in the stage, 524 288 cells × 200 steps  [s]'); ax.legend(loc='upper right', fontsize=8.5, ncol=2)
-    ax.set_title('On both GPUs the table speeds up the hydro stage and slows the multiphase source terms; on the CPUs it changes neither much', fontsize=10)
+    ax.set_title('On both GPUs the table speeds up the hydro stage and slows the relaxation kernel 1.7×; on the CPUs it changes neither much', fontsize=10)
     save(fig, 'fig6_stage_split.png')
 
 def fig8_flattened():
