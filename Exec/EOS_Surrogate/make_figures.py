@@ -388,3 +388,52 @@ def fig11_edge_table():
 if __name__ == '__main__':
     for f in (fig1_cloud, fig2_ledgers, fig3_regime_errors, fig4_accuracy_cost, fig5_cost_matrix, fig6_stage_split, fig8_flattened, fig9_state_space, fig11_edge_table):
         f()
+
+# =============================================================================
+def fig12_dome():
+    """One Peng-Robinson isotherm below T_c, P against density: the stable and metastable parts of each branch,
+    the branch edges where (dP/drho)_T falls to the c^2 floor, the loop between them that is no state on either
+    branch, and the monotone continuation the solver uses as a guard past each edge."""
+    import sys; sys.path.insert(0, os.path.join(HERE, 'mix'))
+    import pr_mix
+    T = 280.0
+    sat = rows(os.path.join(HERE, 'data', 'sat.csv')); e1 = rows(os.path.join(HERE, 'data', 'edge_1.csv')); e2 = rows(os.path.join(HERE, 'data', 'edge_2.csv'))
+    Ts = np.array([float(r['T']) for r in sat]); Psat = np.interp(T, Ts, [float(r['Psat']) for r in sat])
+    rhoL = np.interp(T, Ts, [float(r['rhoL']) for r in sat]); rhoV = np.interp(T, Ts, [float(r['rhoV']) for r in sat])
+    rEL = np.interp(T, [float(r['T']) for r in e1], [float(r['rho_edge']) for r in e1])
+    rEV = np.interp(T, [float(r['T']) for r in e2], [float(r['rho_edge']) for r in e2])
+    mix = pr_mix.Mixture(); x = np.array([1.0, 0.0]); M = mix.molar_mass(x)
+    def P_of_rho(rho): return mix.pressure(x, T, M / rho)
+    rho = np.linspace(1.0, 1000.0, 2000); P = np.array([P_of_rho(r) for r in rho]) / 1e5
+    csq = 2500.0
+    def ext(rE, sign):   # the solver's continuation past the edge: P = P(edge) + c^2_floor (rho - rho_edge)
+        rr = np.linspace(rE, rE + sign * 200.0, 60); return rr, (P_of_rho(rE) + csq * (rr - rE)) / 1e5
+    fig, ax = plt.subplots(figsize=(8.6, 5.2))
+    lb, lo = C['blue'], C['orange']
+    m = {'sv': rho <= rhoV, 'mv': (rho >= rhoV) & (rho <= rEV), 'loop': (rho >= rEV) & (rho <= rEL), 'ml': (rho >= rEL) & (rho <= rhoL), 'sl': rho >= rhoL}
+    ax.axvspan(rhoV, rEV, color=lo, alpha=0.18, lw=0); ax.axvspan(rEL, rhoL, color=lb, alpha=0.18, lw=0)
+    ax.axvspan(rEV, rEL, color='#9a9a9a', alpha=0.20, lw=0)
+    ax.plot(rho[m['sv']], P[m['sv']], color=lo, lw=2.4, label='vapour branch, stable'); ax.plot(rho[m['mv']], P[m['mv']], color=lo, lw=2.4, ls='--', label='vapour branch, metastable')
+    ax.plot(rho[m['loop']], P[m['loop']], color='#9a9a9a', lw=1.4, ls=':', label="the cubic's loop: no state")
+    ax.plot(rho[m['ml']], P[m['ml']], color=lb, lw=2.4, ls='--', label='liquid branch, metastable'); ax.plot(rho[m['sl']], P[m['sl']], color=lb, lw=2.4, label='liquid branch, stable')
+    for k, (rE, sign, col) in enumerate(((rEV, +1, lo), (rEL, -1, lb))):
+        rr, pp = ext(rE, sign); ax.plot(rr, pp, color=col, lw=1.6, ls='-.', alpha=0.9, label='continued past the edge as a guard' if k == 0 else None)
+        ax.plot(rE, P_of_rho(rE) / 1e5, marker='o', ms=7, color=col, mec=SURF, mew=1, zorder=5)
+    ax.axhline(Psat / 1e5, color=INK2, lw=0.9, ls=':'); ax.text(430, Psat / 1e5 - 9, f'P_sat({T:.0f} K) = {Psat/1e5:.1f} bar', fontsize=9, color=INK2)
+    for r in (rhoV, rhoL): ax.plot(r, Psat / 1e5, marker='s', ms=6, color=INK, mec=SURF, mew=1, zorder=5)
+    yl = 124
+    ax.text(0.5 * rhoV, yl, 'vapour, stable', ha='center', fontsize=9.5, color=INK)
+    ax.text(0.5 * (rhoV + rEV), yl - 12, 'vapour,\nmetastable', ha='center', va='top', fontsize=9.5, color=INK)
+    ax.text(0.5 * (rEV + rEL), yl, 'no state on either branch', ha='center', fontsize=9.5, color=INK)
+    ax.text(0.5 * (rEL + rhoL), yl - 12, 'liquid,\nmetastable', ha='center', va='top', fontsize=9.5, color=INK)
+    ax.text(0.5 * (rhoL + 1000), yl, 'liquid, stable', ha='center', fontsize=9.5, color=INK)
+    ax.annotate('branch edge: (∂P/∂ρ)_T has fallen to the floor c² = 2500 m²/s².\nPast it the branch is continued with that slope (dash-dot),\nonly as a guard, and the state is flagged',
+                xy=(rEL, P_of_rho(rEL) / 1e5), xytext=(15, -62), fontsize=9, color=INK, arrowprops=dict(arrowstyle='-', color=lb, lw=1.0))
+    ax.annotate('', xy=(rEV, P_of_rho(rEV) / 1e5), xytext=(200, -40), arrowprops=dict(arrowstyle='-', color=lo, lw=1.0))
+    ax.annotate('saturation: the two\nroots in equilibrium', xy=(rhoL, Psat / 1e5), xytext=(520, 80), fontsize=9, color=INK, arrowprops=dict(arrowstyle='-', color=INK2, lw=0.8))
+    ax.annotate('', xy=(rhoV, Psat / 1e5), xytext=(520, 84), arrowprops=dict(arrowstyle='-', color=INK2, lw=0.8))
+    ax.set_xlim(0, 1000); ax.set_ylim(-90, 135)
+    ax.set_xlabel('ρ [kg/m³]'); ax.set_ylabel('P [bar]')
+    ax.set_title(f'One Peng-Robinson isotherm of CO₂ below T_c (T = {T:.0f} K): what a branch-locked request can be given', fontsize=10)
+    ax.grid(True, axis='y'); ax.legend(loc='lower right', fontsize=8, frameon=True, facecolor=SURF, edgecolor='none')
+    save(fig, 'fig12_dome.png')
