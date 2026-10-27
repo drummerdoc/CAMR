@@ -301,6 +301,61 @@ def fig9_state_space():
     bx.set_title("Solver (ρ, e): where the lookup tables act"); bx.grid(False)
     fig.tight_layout(); save(fig, 'fig9_state_space.png')
 
+def fig11_edge_table():
+    """The branch-edge table: the (rho, T) map of one branch pair with the stable, metastable and
+    continuation regions (left) and what the table buys (right)."""
+    data = os.path.join(HERE, 'data')
+    sat = rows(os.path.join(data, 'sat.csv')); e1 = rows(os.path.join(data, 'edge_1.csv')); e2 = rows(os.path.join(data, 'edge_2.csv'))
+    T  = np.array([float(r['T']) for r in sat]); rL = np.array([float(r['rhoL']) for r in sat]); rV = np.array([float(r['rhoV']) for r in sat])
+    T1 = np.array([float(r['T']) for r in e1]); re1 = np.array([float(r['rho_edge']) for r in e1])
+    T2 = np.array([float(r['T']) for r in e2]); re2 = np.array([float(r['rho_edge']) for r in e2])
+    Tc, Ttr = 304.13, 216.592
+    lb, lo = C['blue'], C['orange']; lr = np.log10
+    Tg = np.linspace(Ttr, Tc * 0.9995, 400)
+    xL, xV = np.interp(Tg, T, lr(rL)), np.interp(Tg, T, lr(rV)); x1, x2 = np.interp(Tg, T1, lr(re1)), np.interp(Tg, T2, lr(re2))
+    fig, (ax, bx) = plt.subplots(1, 2, figsize=(12.5, 5.0), gridspec_kw={'width_ratios': [1.25, 1]})
+    XL, XR = -0.3, 3.25
+    ax.fill_betweenx(Tg, XL, xV, color=lo, alpha=0.10, lw=0); ax.fill_betweenx(Tg, xV, x2, color=lo, alpha=0.30, lw=0)
+    ax.fill_betweenx(Tg, x2, x1, color='#9a9a9a', alpha=0.22, lw=0)
+    ax.fill_betweenx(Tg, x1, xL, color=lb, alpha=0.30, lw=0); ax.fill_betweenx(Tg, xL, XR, color=lb, alpha=0.10, lw=0)
+    ax.fill_between([XL, XR], Tc, 312, color='#e9e9e4', lw=0)
+    ax.plot(xL, Tg, color=INK, lw=1.6); ax.plot(xV, Tg, color=INK, lw=1.6)
+    ax.plot(x1, Tg, color=lb, lw=2.4, ls='--'); ax.plot(x2, Tg, color=lo, lw=2.4, ls='--')
+    ax.axhline(Tc, color=INK2, lw=0.8, ls=':'); ax.axhline(Ttr, color=INK2, lw=0.8, ls=':')
+    ax.text(0.0, 307.5, 'above T_c: one branch, no edge', fontsize=9, color=INK2, va='center')
+    ax.text(XR - 0.05, Ttr - 2.0, 'T_triple', ha='right', va='top', fontsize=9, color=INK2)
+    ax.text(0.4, 244, 'vapour, stable', ha='center', fontsize=10, color=INK)
+    ax.text(3.0, 240, 'liquid,\nstable', ha='center', fontsize=10, color=INK)
+    ax.annotate('vapour, metastable:\nanswered on the vapour branch', xy=(np.interp(285, Tg, 0.5 * (xV + x2)), 285), xytext=(0.2, 292),
+                fontsize=9, color=INK, arrowprops=dict(arrowstyle='-', color=INK2, lw=0.8))
+    ax.annotate('liquid, metastable:\nanswered on the liquid branch', xy=(np.interp(270, Tg, 0.5 * (x1 + xL)), 270), xytext=(3.2, 277),
+                fontsize=9, color=INK, ha='right', arrowprops=dict(arrowstyle='-', color=INK2, lw=0.8))
+    ax.annotate('past the edge: no state on either branch;\nthe branch is continued as a guard\nand a request with no root is refused',
+                xy=(np.interp(236, Tg, 0.5 * (x1 + x2)), 236), xytext=(0.1, 222), fontsize=9, color=INK,
+                arrowprops=dict(arrowstyle='-', color=INK2, lw=0.8))
+    ax.annotate('the branch edges (dashed) are precomputed:\nfor each T, the density at which the isotherm\'s\nstiffness (∂P/∂ρ)_T on that branch falls to the\nfloor c² = 2500 m²/s², stored per branch',
+                xy=(np.interp(262, Tg, x1), 262), xytext=(0.0, 260), fontsize=9, color=INK,
+                arrowprops=dict(arrowstyle='-', color=lb, lw=1.2))
+    ax.annotate('', xy=(np.interp(268, Tg, x2), 268), xytext=(1.4, 269), arrowprops=dict(arrowstyle='-', color=lo, lw=1.2))
+    ax.set_xlim(XL, XR); ax.set_ylim(212, 312); ax.set_xlabel('log₁₀ ρ [kg/m³]'); ax.set_ylabel('T [K]')
+    ax.set_title('A branch-locked request, in (ρ, T)'); ax.grid(False)
+    # ---- (b) what the table buys: before (march on every call) vs after (table)
+    labels = ['forward call,\nliquid [ns]', 'forward call,\nvapour [ns]', '(ρ, e) inversion\n[ns]', 'production run,\n8 CPU ranks [s]', 'production run,\ndev. GPU [s]']
+    before = [312, 514, 1860, 26.2, 21.2]; after = [124, 126, 1690, 20.8, 12.1]
+    x = np.arange(len(labels)); w = 0.38
+    norm = [max(b, a) for b, a in zip(before, after)]
+    bx.bar(x - w/2, [b / n for b, n in zip(before, norm)], w, color=INK2, label='edge found by a march on every call')
+    bx.bar(x + w/2, [a / n for a, n in zip(after, norm)], w, color=C['aqua'], label='edge read from the table')
+    for xi, b, a in zip(x, before, after):
+        bx.text(xi - w/2, b / max(b, a) + 0.02, f'{b:g}', ha='center', fontsize=9, color=INK)
+        bx.text(xi + w/2, a / max(b, a) + 0.02, f'{a:g}', ha='center', fontsize=9, color=INK)
+        bx.text(xi, -0.14, f'{b / a:.1f}×', ha='center', fontsize=10, color=C['aqua'], fontweight='bold')
+    bx.set_xticks(x); bx.set_xticklabels(labels, fontsize=9); bx.set_ylim(-0.2, 1.5); bx.set_yticks([])
+    bx.set_title('What the table buys (same states before the edge, bit for bit)'); bx.legend(loc='upper left', fontsize=9, frameon=False)
+    bx.grid(False)
+    for sp in ('left',): bx.spines[sp].set_visible(False)
+    fig.tight_layout(); save(fig, 'fig11_edge_table.png')
+
 if __name__ == '__main__':
-    for f in (fig1_cloud, fig2_ledgers, fig3_regime_errors, fig4_accuracy_cost, fig5_cost_matrix, fig6_stage_split, fig8_flattened, fig9_state_space):
+    for f in (fig1_cloud, fig2_ledgers, fig3_regime_errors, fig4_accuracy_cost, fig5_cost_matrix, fig6_stage_split, fig8_flattened, fig9_state_space, fig11_edge_table):
         f()
