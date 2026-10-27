@@ -227,7 +227,7 @@ The 2-D references (`regen_refs.sh 2d BASE`, `regen_refs.sh windows BASE`) are r
 - `CAMR.ps_x3_test=2`: the 0-D fixed-point acceptance on X3F, PASS with route spreads of 1e-13 (X3: 1e-6–1e-5, the projector tolerance).
 - B12 itself (`runs_mode6/b12h`, 691 harvested cells): X3F integrates or stands on every cell (33 % integrated, 67 % stood on the path, no failures) where X3 still caps on 32; one controlled X3F call agrees with ten calls at a tenth of the step to 1.3e-2 in α₁ (p99), the same level at which ten agree with a hundred: the residual is the case's ill-conditioning, not the operator's.
 
-On the production deck the two modes agree to 3e-4 at step 200 on both platforms, and mode 6 reproduces between GPU and CPU to 4e-10 (`Exec/EOS_Surrogate/RESULTS.md`, "The production hook").
+On the production deck the two modes agree to 3e-4 at step 200 on both platforms, and mode 6 reproduces between GPU and CPU to 4e-10 (`Exec/EOS_Surrogate/RESULTS.md`, "The production hook"). The pipe-break decks (`inputs.satjet_demo2`, `_demo3`, `_demo3_3d`) run this default since 2026-10-27 (they pinned mode 2 before): demo3 at level 0 completes its 2.5 ms in 564 steps, 58 s on 8 EPYC ranks, with no abort, floor or NaN report (`runs/mode6/full_L0`); the three-level production run in mode 6 is the next evidence pass (O-12).
 
 ## 8. Regenerating references
 

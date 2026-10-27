@@ -5,7 +5,7 @@
 #  the x-lo face, choked characteristic two-phase inlet from a saturated
 #  280 K reservoir through a 0.1 m gap into a 2 x 1 m plane at 20 bar,
 #  256 x 128 base with two AMR levels, wp second order, ps_bl_reflux = 2,
-#  ps_relax_mode = 2 with theta = tau_MT = 1e-3 s, flash off, ps_mu = 2)
+#  the default relaxation mode (6 since 2026-10-27; 2 before) with theta = 1e-3 s, flash off, ps_mu = 2)
 #  with three differences:
 #   (1) per-face characteristic (NSCBC) outflow on x-hi, y-lo and y-hi
 #       (ps_bc_nscbc_{xhi,ylo,yhi} = 1); the x-lo inlet face stays on
@@ -52,13 +52,14 @@ CAMR.ps_bl_reflux     = 2   # consistent two-phase C-F reflux (alpha co-moves); 
 CAMR.ps_mu            = 2.0 # effective Newtonian viscosity [Pa s]: resolves the orifice shear layer
 
 CAMR.ps_do_relax  = 1
-CAMR.ps_relax_mode = 2        # pressure relaxation plus finite-rate thermal relaxation:
-                              # the phases keep T_liq != T_vap instead of being pinned on
-                              # the saturation dome, so the finite-rate mass transfer keeps
-                              # a Gibbs driving force.  theta -> 0 is mode 1 (instantaneous
-                              # P + T equilibrium); theta -> inf is mode 0.
-CAMR.ps_theta_tau = 1.0e-3    # thermal relaxation time [s] (mode 2 only)
-CAMR.ps_mt_tau    = 1.0e-3    # finite mass-transfer time [s]: flashing is spread over
+# Relaxation: the code default, ps_relax_mode = 6 (the flattened coupled
+# P-T-g operator X3F, DESIGN_DECISIONS.md O-28/O-29; the decks pinned the
+# mode-2 control closure until 2026-10-27).  ps_relax_mode = 2 restores the
+# control closure (isochoric P plus finite-rate thermal relaxation with the
+# split Gibbs-driven transfer source).
+CAMR.ps_theta_tau = 1.0e-3    # thermal relaxation time [s] of the coupled operator (and of mode 2)
+CAMR.ps_mt_tau    = 1.0e-3    # mode-2 split source only (inert in modes 5/6, whose operator owns
+                              # mass transfer through the SRT rate): flashing is spread over
                               # ~tau/dt steps and is continuous in flash_rate; tau << dt
                               # makes it near-instantaneous and bursty.
 CAMR.ps_mt_gref   = 5.0e4
