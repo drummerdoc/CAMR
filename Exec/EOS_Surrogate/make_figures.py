@@ -197,8 +197,7 @@ def parse_profile_incl(log, kernels):
     return tot, t
 
 def fig6_stage_split(style='log'):
-    """Three-way split of each run: the hydro stage (advance_hydro_umdrv, inclusive), the relaxation kernel (inclusive),
-    and everything else (clean_state, floors, dt estimate, boundary fills, mass transfer). PR against PRTab on two CPUs
+    """The hydro stage (advance_hydro_umdrv, inclusive) and the relaxation kernel (inclusive) of each run, PR against PRTab on two CPUs
     and two GPUs, 524 288 cells, 200 steps. style: 'log' (one axis), 'linear' (one axis), 'panels' (CPU and GPU panels, linear)."""
     logs = {('development CPU\n8 EPYC ranks', 'PR'): os.path.join(PB, 'runs/bench/L0big_200/PR_cpu/run.log'),
             ('development CPU\n8 EPYC ranks', 'PRTab'): os.path.join(PB, 'runs/bench/L0big_200/PRTab_cpu/run.log'),
@@ -213,25 +212,28 @@ def fig6_stage_split(style='log'):
         tot, hydro = parse_profile_incl(log, ('CAMR::advance_hydro_umdrv()',))
         _, relax = parse_profile_incl(log, ('PS::ps_apply_relaxation()',))
         return {'hydro': hydro, 'relax': relax, 'rest': max(tot - hydro - relax, 0)}
-    series = [('PR', 'hydro', 'PR: hydro stage', 1.0), ('PR', 'relax', 'PR: relaxation kernel', 0.65), ('PR', 'rest', 'PR: everything else', 0.3),
-              ('PRTab', 'hydro', 'PRTab: hydro stage', 1.0), ('PRTab', 'relax', 'PRTab: relaxation kernel', 0.65), ('PRTab', 'rest', 'PRTab: everything else', 0.3)]
+    # Only the two kernels the argument is about.  The remainder of each run (state hygiene, floors, dt estimate,
+    # boundary fills, and on the CPU the ranks' wait on the relaxation imbalance) is deliberately not plotted:
+    # see FUTURE_WORK.md §11 for what it is and why it is a separate item.
+    series = [('PR', 'hydro', 'PR: hydro stage', 1.0), ('PR', 'relax', 'PR: relaxation kernel', 0.55),
+              ('PRTab', 'hydro', 'PRTab: hydro stage', 1.0), ('PRTab', 'relax', 'PRTab: relaxation kernel', 0.55)]
     if style == 'panels':
         fig, axes = plt.subplots(1, 2, figsize=(11, 4.6), gridspec_kw={'width_ratios': [1, 1]})
-        groups = [(axes[0], plats[:2], 260), (axes[1], plats[2:], 30)]
+        groups = [(axes[0], plats[:2], 36), (axes[1], plats[2:], 32)]
     else:
-        fig, ax = plt.subplots(figsize=(11, 4.6)); groups = [(ax, plats, 260 if style == 'linear' else None)]
-    w = 0.13
+        fig, ax = plt.subplots(figsize=(11, 4.6)); groups = [(ax, plats, 36 if style == 'linear' else None)]
+    w = 0.19
     for ax, pl, top in groups:
         x = np.arange(len(pl))
         for i, (b, part, label, alpha) in enumerate(series):
-            xs = x + (i - 2.5) * w; vals = [split(logs[(p, b)])[part] for p in pl]
+            xs = x + (i - 1.5) * w; vals = [split(logs[(p, b)])[part] for p in pl]
             ax.bar(xs, vals, width=w - 0.015, color=BACKEND[b], alpha=alpha, edgecolor=SURF, linewidth=1, label=label)
             for xi, v in zip(xs, vals):
                 ax.text(xi, v * 1.12 if style == 'log' else v + 0.015 * top, f'{v:.0f}' if v >= 10 else f'{v:.1f}', ha='center', va='bottom', fontsize=7, color=INK, rotation=90)
-        if style == 'log': ax.set_yscale('log'); ax.set_ylim(0.5, 2000)
+        if style == 'log': ax.set_yscale('log'); ax.set_ylim(0.5, 100)
         else: ax.set_ylim(0, top)
         ax.set_xticks(x); ax.set_xticklabels(pl)
-    groups[0][0].set_ylabel('wall time in the stage, 524 288 cells × 200 steps  [s]'); groups[-1][0].legend(loc='upper right', fontsize=8, ncol=2)
+    groups[0][0].set_ylabel('wall time in the stage, 524 288 cells × 200 steps  [s]'); groups[-1][0].legend(loc='upper right', fontsize=8.5, ncol=2)
     fig.suptitle('On both GPUs the table speeds up the hydro stage 2–4× and slows the relaxation kernel 1.7×; on the CPUs it changes neither much', fontsize=10, fontweight='bold', y=0.98)
     if style == 'panels': fig.tight_layout(rect=(0, 0, 1, 0.95))
     save(fig, {'log': 'fig6_stage_split.png', 'linear': 'fig6_stage_split_linear.png', 'panels': 'fig6_stage_split_panels.png'}[style])
