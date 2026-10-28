@@ -437,3 +437,86 @@ def fig12_dome():
     ax.set_title(f'One Peng-Robinson isotherm of CO₂ below T_c (T = {T:.0f} K): what a branch-locked request can be given', fontsize=10)
     ax.grid(True, axis='y'); ax.legend(loc='lower right', fontsize=8, frameon=True, facecolor=SURF, edgecolor='none')
     save(fig, 'fig12_dome.png')
+
+# =============================================================================
+def _regime_table():
+    r2 = rows(os.path.join(HERE, 'results', 'deploy_w128d4_e8000.csv'))
+    rx = rows(os.path.join(HERE, 'results', 'deploy_w128d4_e8000_experts_wp0.csv'))
+    def get(rs, model, reg, col='rmsT_K'):
+        for r in rs:
+            if r['model'] == model and r['evalset'] == 'deploy-holdout' and r['regime'] == reg: return float(r[col])
+        return float('nan')
+    models = ['mono', 'dome', 'domeres', 'experts']
+    stages = ['no structure', '+ traced loci\nas inputs', '+ T − T$_{sat}$\nas target', '+ one net\nper region']
+    regs = ['far', 'near', 'ext', 'sub']
+    names = {'far': 'single phase, far from the dome', 'near': 'near the saturation curve', 'ext': 'metastable continuation', 'sub': 'sub-triple'}
+    T = {g: [get(rx if m == 'experts' else r2, m, g) for m in models] for g in regs}
+    P = [get(rx if m == 'experts' else r2, m, 'all', 'relP_rms') for m in models]
+    return models, stages, regs, names, T, P
+
+def fig3b_slope():
+    """Alternative A: a slope chart. One line per regime, the four stages of structure along x, temperature error on a
+    log axis, so each segment's slope is the factor that layer bought in that regime; the cumulative factor is labelled
+    at the right. Second panel: the pressure error overall, the quantity that compounds most."""
+    models, stages, regs, names, T, P = _regime_table()
+    col = {'far': C['blue'], 'near': C['aqua'], 'ext': C['magenta'], 'sub': C['yellow']}
+    fig, (ax, bx) = plt.subplots(1, 2, figsize=(12.5, 4.8), gridspec_kw={'width_ratios': [2.3, 1]})
+    x = np.arange(4)
+    for g in regs:
+        y = np.array(T[g]); ax.plot(x, y, '-o', color=col[g], lw=2.4, ms=7, mec=SURF, mew=1, label=names[g])
+        nudge = {'far': 0.72, 'ext': 1.4}.get(g, 1.0)   # the far and metastable lines end together
+        ax.text(3.08, y[-1] * nudge, f'{y[0]/y[-1]:.0f}× better' if y[0]/y[-1] >= 3 else f'{y[0]/y[-1]:.1f}× better', va='center', fontsize=9.5, color=col[g], fontweight='bold')
+    ax.axhline(0.0015, color=INK, lw=1.2, ls=':'); ax.text(3.85, 0.0017, 'bicubic table, 0.0015 K (80× below the best net)', fontsize=9, color=INK, va='bottom', ha='right')
+    ax.set_yscale('log'); ax.set_ylim(1e-3, 2.0); ax.set_xlim(-0.2, 3.9); ax.set_xticks(x); ax.set_xticklabels(stages, fontsize=9.5)
+    ax.set_ylabel('temperature error, rms  [K]'); ax.legend(loc='lower left', bbox_to_anchor=(0.0, 0.1), fontsize=9, frameon=False)
+    ax.set_title('Temperature error per regime: each segment is what that layer bought there', fontsize=10, loc='left')
+    ax.grid(True, axis='y')
+    bx.plot(x, P, '-o', color=INK, lw=2.4, ms=7, mec=SURF, mew=1)
+    for xi, p in zip(x, P): bx.text(xi, p * 1.25, f'{p:.1e}', ha='center', fontsize=8.5, color=INK)
+    bx.text(3.0, P[-1] * 2.4, f'{P[0]/P[-1]:.0f}× better', ha='center', va='bottom', fontsize=9.5, color=INK, fontweight='bold')
+    bx.set_yscale('log'); bx.set_ylim(5e-4, 2e-1); bx.set_xlim(-0.3, 4.2); bx.set_xticks(x); bx.set_xticklabels(['none', '+ loci', '+ T − T$_{sat}$', '+ experts'], fontsize=9.5)
+    bx.set_ylabel('pressure error, relative rms'); bx.set_title('Pressure error, all states', fontsize=10, loc='left'); bx.grid(True, axis='y')
+    fig.tight_layout(); save(fig, 'fig3b_slope.png')
+
+def fig3c_factors():
+    """Alternative B: the gain over the unstructured net as factors on a linear axis, per regime and per layer, so the
+    bars are the benefits themselves rather than the errors."""
+    models, stages, regs, names, T, P = _regime_table()
+    MODELC = [C['blue'], C['aqua'], C['yellow'], C['magenta']]
+    fig, ax = plt.subplots(figsize=(11, 4.6)); w = 0.19; x = np.arange(len(regs) + 1)
+    labels = [names[g].replace(', ', ',\n') for g in regs] + ['pressure error,\nall states']
+    for i in range(1, 4):
+        vals = [T[g][0] / T[g][i] for g in regs] + [P[0] / P[i]]
+        xs = x + (i - 2) * w
+        ax.bar(xs, vals, width=w - 0.02, color=MODELC[i], edgecolor=SURF, linewidth=1, label=stages[i].replace('\n', ' '))
+        for xi, v in zip(xs, vals): ax.text(xi, v + 0.4, f'{v:.1f}×', ha='center', va='bottom', fontsize=8.5, color=INK, rotation=90)
+    ax.axhline(1.0, color=INK2, lw=1.0, ls=':'); ax.text(-0.45, 1.3, 'no structure = 1×', fontsize=9, color=INK2)
+    ax.set_xticks(x); ax.set_xticklabels(labels, fontsize=9.5); ax.set_ylim(0, 40); ax.set_ylabel('improvement over the unstructured net  [×]')
+    ax.legend(loc='upper left', fontsize=9, frameon=False)
+    ax.set_title('What each layer of system knowledge buys, as a factor over the same net with no structure', fontsize=10)
+    ax.grid(True, axis='y'); save(fig, 'fig3c_factors.png')
+
+def fig3d_combo():
+    """Slide 5: the gains as factors per regime (no pressure group) with the pressure-error panel of the slope chart
+    beside it."""
+    models, stages, regs, names, T, P = _regime_table()
+    MODELC = [C['blue'], C['aqua'], C['yellow'], C['magenta']]
+    fig, (ax, bx) = plt.subplots(1, 2, figsize=(12.5, 4.8), gridspec_kw={'width_ratios': [2.6, 1]})
+    w = 0.22; x = np.arange(len(regs))
+    labels = [names[g].replace(', ', ',\n') for g in regs]
+    for i in range(1, 4):
+        vals = [T[g][0] / T[g][i] for g in regs]; xs = x + (i - 2) * w
+        ax.bar(xs, vals, width=w - 0.02, color=MODELC[i], edgecolor=SURF, linewidth=1, label=stages[i].replace('\n', ' '))
+        for xi, v in zip(xs, vals): ax.text(xi, v + 0.15, f'{v:.1f}×', ha='center', va='bottom', fontsize=9, color=INK)
+    ax.axhline(1.0, color=INK2, lw=1.0, ls=':'); ax.text(3.45, 1.2, 'no structure = 1×', fontsize=9, color=INK2, ha='right')
+    ax.set_xticks(x); ax.set_xticklabels(labels, fontsize=9.5); ax.set_ylim(0, 12.5); ax.set_ylabel('improvement in temperature error  [×]')
+    ax.legend(loc='upper left', fontsize=9, frameon=False)
+    ax.set_title('Temperature error per regime, as a factor over the same net with no structure', fontsize=10, loc='left')
+    ax.grid(True, axis='y')
+    xx = np.arange(4)
+    bx.plot(xx, P, '-o', color=INK, lw=2.4, ms=7, mec=SURF, mew=1)
+    for xi, p in zip(xx, P): bx.text(xi, p * 1.3, f'{p:.1e}', ha='center', fontsize=8.5, color=INK)
+    bx.text(1.3, 3.2e-3, f'{P[0]/P[-1]:.0f}× better', ha='center', va='center', fontsize=10, color=INK, fontweight='bold')
+    bx.set_yscale('log'); bx.set_ylim(5e-4, 2e-1); bx.set_xlim(-0.3, 3.5); bx.set_xticks(xx); bx.set_xticklabels(['none', '+ loci', '+ T − T$_{sat}$', '+ experts'], fontsize=9)
+    bx.set_ylabel('pressure error, all states  [relative rms]'); bx.set_title('Pressure error, all states', fontsize=10, loc='left'); bx.grid(True, axis='y')
+    fig.tight_layout(); save(fig, 'fig3d_combo.png')
