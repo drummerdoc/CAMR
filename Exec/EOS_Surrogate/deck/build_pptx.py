@@ -130,10 +130,10 @@ X0, W = 0.8, 11.8
 
 def slide_cover(prs, s, author_line):
     sl = prs.slides.add_slide(layout(prs, '1_title slide_v1'))
-    tb = add_text(sl, 0.2, 5.9, 12.9, 1.2, [(title_of(s), {'size': 28, 'bold': True, 'color': INK}), (author_line, {'size': 16, 'color': INK2})], space_after=2)
+    tb = add_text(sl, 0.2, 5.9, 12.9, 1.2, [(title_of(s), {'size': 28, 'bold': True, 'color': INK}), (author_line, {'size': 18, 'color': INK2})], space_after=2)
     set_notes(sl, notes_of(s)); return sl
 
-def slide_figure(prs, s, fig_h=3.4, cap_size=12):
+def slide_figure(prs, s, fig_h=2.9, cap_size=16):
     sl = prs.slides.add_slide(layout(prs, 'Tittel og innhold')); set_title(sl, title_of(s)); drop_body_placeholders(sl)
     fig = fig_of(s)
     if fig: add_figure(sl, fig, X0, 1.7, W, fig_h)
@@ -144,27 +144,29 @@ def slide_cloud(prs, s):
     sl = prs.slides.add_slide(layout(prs, 'Tittel og innhold')); set_title(sl, title_of(s)); drop_body_placeholders(sl)
     paras = body_paragraphs(s)                       # [callout, third, no-root, corridor]
     callout, rest = paras[0], paras[1:]
-    add_text(sl, X0, 1.75, 3.0, 3.4, [('<b>“Harvest”</b>', {'size': 13, 'color': INK}), (callout, {'size': 11})])
-    add_figure(sl, fig_of(s), X0 + 3.1, 1.7, W - 3.1, 3.4)
-    add_text(sl, X0, 5.2, W, 1.55, rest, size=11)
+    add_text(sl, X0, 1.7, 3.3, 3.3, [('<b>“Harvest”</b>', {'size': 16, 'color': INK}), (callout, {'size': 14})])
+    add_figure(sl, fig_of(s), X0 + 3.4, 1.7, W - 3.4, 3.3)
+    cw = (W - 0.4) / 3
+    for i, para in enumerate(rest[:3]):
+        add_text(sl, X0 + i * (cw + 0.2), 5.1, cw, 1.7, [para], size=14)
     set_notes(sl, notes_of(s)); return sl
 
 def slide_dome(prs, s):
     sl = prs.slides.add_slide(layout(prs, 'Tittel og innhold')); set_title(sl, title_of(s)); drop_body_placeholders(sl)
-    add_figure(sl, fig_of(s), X0, 1.7, 7.3, 4.9)
+    add_figure(sl, fig_of(s), X0, 1.7, 6.9, 4.9)
     items = []
     for h, p in re.findall(r'<h3\b[^>]*>(.*?)</h3>\s*<p\b[^>]*>(.*?)</p>', s, re.S):
-        items.append((strip(h), {'size': 13, 'bold': True, 'color': INK, 'space_after': 1})); items.append((p, {'size': 11, 'space_after': 7}))
-    add_text(sl, X0 + 7.5, 1.7, W - 7.5, 5.0, items)
+        items.append((strip(h), {'size': 16, 'bold': True, 'color': INK, 'space_after': 1})); items.append((p, {'size': 14, 'space_after': 8}))
+    add_text(sl, X0 + 7.1, 1.6, W - 7.1, 5.2, items)
     set_notes(sl, notes_of(s)); return sl
 
 def slide_whyml(prs, s):
     sl = prs.slides.add_slide(layout(prs, 'Tittel og innhold')); set_title(sl, title_of(s)); drop_body_placeholders(sl)
     paras = body_paragraphs(s)
-    add_text(sl, X0, 1.7, W, 1.0, [paras[0]], size=13)
+    add_text(sl, X0, 1.65, W, 1.1, [paras[0]], size=16)
     rows = [[c for c in re.findall(r'<t[hd]\b[^>]*>(.*?)</t[hd]>', r, re.S)] for r in re.findall(r'<tr\b[^>]*>(.*?)</tr>', s, re.S)]
     nr, nc = len(rows), len(rows[0])
-    tbl = sl.shapes.add_table(nr, nc, Inches(X0), Inches(2.75), Inches(W), Inches(0.4 * nr)).table
+    tbl = sl.shapes.add_table(nr, nc, Inches(X0), Inches(2.8), Inches(W), Inches(0.48 * nr)).table
     for ci, wf in enumerate((0.40, 0.30, 0.30)): tbl.columns[ci].width = Inches(W * wf)
     for ri, row in enumerate(rows):
         for ci, cell in enumerate(row):
@@ -172,9 +174,9 @@ def slide_whyml(prs, s):
             p = c.text_frame.paragraphs[0]
             if ci > 0: p.alignment = PP_ALIGN.RIGHT
             for text, bold in runs_from_html(cell):
-                r = p.add_run(); r.text = text; r.font.size = Pt(12); r.font.bold = bold or ri == 0
+                r = p.add_run(); r.text = text; r.font.size = Pt(15); r.font.bold = bold or ri == 0
                 if 'eb6834' in cell: r.font.color.rgb = ORANGE
-    add_text(sl, X0, 2.85 + 0.42 * nr, W, 6.75 - (2.85 + 0.42 * nr), paras[1:], size=12)
+    add_text(sl, X0, 2.95 + 0.5 * nr, W, 6.75 - (2.95 + 0.5 * nr), paras[1:], size=15)
     set_notes(sl, notes_of(s)); return sl
 
 def slide_takeaways(prs, s):
@@ -185,7 +187,7 @@ def slide_takeaways(prs, s):
     for i, it in enumerate(items):
         p = tf.paragraphs[0] if i == 0 else tf.add_paragraph(); p.space_after = Pt(6)
         for text, bold in runs_from_html(f'{i + 1}.  ' + it):
-            r = p.add_run(); r.text = text; r.font.size = Pt(14); r.font.bold = bold
+            r = p.add_run(); r.text = text; r.font.size = Pt(18); r.font.bold = bold
     set_notes(sl, notes_of(s)); return sl
 
 def slide_model(prs, s):
@@ -196,7 +198,7 @@ def slide_model(prs, s):
              for a, x, y, t in [(m.group(1), m.group(2), m.group(3), m.group(4)) for m in re.finditer(r'<text\b([^>]*x="([\d.]+)"[^>]*y="([\d.]+)"[^>]*)>(.*?)</text>', svg, re.S)]]
     rects = [(float(x), float(w), col) for x, w, col in re.findall(r'<rect x="([\d.]+)" y="60" width="([\d.]+)"[^>]*stroke="(#[0-9a-f]{6})"', svg)]
     sx = W / 1664.0                                         # svg px -> inches
-    top, box_h = 1.7, 3.1
+    top, box_h = 1.75, 2.85
     for x, w, col in rects:
         shp = sl.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Inches(X0 + x * sx), Inches(top), Inches(w * sx), Inches(box_h))
         shp.fill.solid(); shp.fill.fore_color.rgb = RGBColor(0xff, 0xf4, 0xee) if col == '#eb6834' else RGBColor(0xff, 0xff, 0xff)
@@ -206,7 +208,7 @@ def slide_model(prs, s):
         inside.sort(key=lambda t: t[1])
         paras = []
         for tx, ty, txt, bold, fill in inside:
-            paras.append((htmlmod.escape(txt), {'size': 13 if bold else 10.5, 'bold': bold, 'color': RGBColor.from_string(fill[1:]), 'space_after': 1}))
+            paras.append((htmlmod.escape(txt), {'size': 16 if bold else 13, 'bold': bold, 'color': RGBColor.from_string(fill[1:]), 'space_after': 2}))
         add_text(sl, X0 + x * sx + 0.08, top + 0.08, w * sx - 0.16, box_h - 0.16, paras)
     for i in range(len(rects) - 1):
         x_end = (rects[i][0] + rects[i][1]) * sx
@@ -215,9 +217,9 @@ def slide_model(prs, s):
         c.line._get_or_add_ln().append(c.line._get_or_add_ln().makeelement('{http://schemas.openxmlformats.org/drawingml/2006/main}tailEnd', {'type': 'triangle'}))
     below = [t for t in texts if t[1] > 400]; below.sort(key=lambda t: t[1])
     head = [t for t in texts if t[1] < 60]
-    add_text(sl, X0, 1.45, W, 0.3, [(htmlmod.escape(t[2]), {'size': 12, 'bold': True, 'color': INK}) for t in head])
+    add_text(sl, X0, 1.4, W, 0.35, [(htmlmod.escape(t[2]), {'size': 15, 'bold': True, 'color': INK}) for t in head])
     add_text(sl, X0, top + box_h + 0.15, W, 6.75 - (top + box_h + 0.15),
-             [(htmlmod.escape(t[2]), {'size': 12 if t[3] else 11, 'bold': t[3], 'color': RGBColor.from_string(t[4][1:]), 'space_after': 2}) for t in below])
+             [(htmlmod.escape(t[2]), {'size': 15 if t[3] else 14, 'bold': t[3], 'color': RGBColor.from_string(t[4][1:]), 'space_after': 3}) for t in below])
     set_notes(sl, notes_of(s)); return sl
 
 RECIPES = {'cover': slide_cover, 'model': slide_model, 'dome': slide_dome, 'cloud': slide_cloud, 'whyml': slide_whyml, 'takeaways': slide_takeaways}
