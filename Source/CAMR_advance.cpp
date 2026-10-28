@@ -125,8 +125,15 @@ CAMR::CAMR_advance (Real time,
     //     order in time); 1 = Strang (half steps before and after hydro,
     //     second order; needed to keep do_mol=1 second order with
     //     relaxation/sources on).
+    //   CAMR.ps_class_compact (1): the launch form of the reaction step's
+    //     per-cell operators (PS_classes.H): 1 = one class pass and one
+    //     compact launch per operator over the admitted cells only; 0 = the
+    //     whole-box launches (the A/B arm); 2 = the class pass with the
+    //     whole-box launch (the measurement arm).  Bitwise identical by
+    //     construction; resolved here so job_info records it.
     static const int ps_do_relax_cached = []() -> int {
         const int v = ps_dial_int("ps_do_relax", 1);   // resolved value -> job_info
+        (void) ps_class_compact();                      // resolved value -> job_info
 #ifdef USE_PS_HYDRO
         //  At mode 5 the X3 kernel inside ps_apply_relaxation owns mass
         //  transfer and the split MT source in ps_apply_sources is gated

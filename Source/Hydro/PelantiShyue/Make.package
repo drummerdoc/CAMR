@@ -12,6 +12,7 @@ CEXE_headers += PS_state.H
 CEXE_headers += PS_nscbc.H
 CEXE_headers += PS_relaxation.H
 CEXE_headers += PS_relax.H
+CEXE_headers += PS_classes.H
 CEXE_headers += PS_floors.H
 CEXE_headers += PS_folds.H
 CEXE_headers += PS_diag.H

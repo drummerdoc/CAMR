@@ -107,49 +107,117 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
         const PsPres l_pr = ps_presence_params();
         // The seed level is the presence design's alpha_birth (single-sourced).
         const amrex::Real l_seed = ps_presence_params().alpha_birth;
-        for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
-            const amrex::Box bx = mfi.growntilebox(nghost);
-            amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
-            amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
-            {
-                const amrex::Real a1 = U(i,j,k, UALPHA1);
-                const amrex::Real m1 = U(i,j,k, UM1RHO1);
-                const amrex::Real m2 = U(i,j,k, UM2RHO2);
-                if (!std::isfinite(a1)) { return; }
-                // A cell with exactly one present phase is routed into the
-                // kernel, which constructs the newborn by saturation projection;
-                // both-absent stays excluded.  Genuinely single-phase cells are
-                // the population the nucleator exists for.
-                const bool one_absent =
-                    ((m1 > amrex::Real(0.0)) != (m2 > amrex::Real(0.0)));
-                if (!one_absent && (m1 <= amrex::Real(0.0)
-                                    || m2 <= amrex::Real(0.0))) { return; }
-                hem::V6 Uv = ps_pack_v6(U, i, j, k, a1, m1, m2);   // V6[3] = |ρu|
-                // The flash is the single-phase nucleator only: a both-
-                // Independent cell is mass-transfer territory (docs §4.7).
-                if (ps_regime(a1, m1, l_pr) == PsRegime::Independent &&
-                    ps_regime(amrex::Real(1.0) - a1, m2, l_pr) == PsRegime::Independent) {
-                    return;
-                }
-                const hem::V6 Uv_pre = Uv;
-                if (hem::ps_flash_source_cell(Uv, eos, double(dt), double(tau),
-                                              double(l_seed), ps_const::ALPHA_ROUNDOFF)) {
-                    // Reproject: the flash moved mass; restore P1 = P2
-                    // (alpha-adjusting; preserves m_k and mixture rho, E).
-                    // The model closure is instantaneous mechanical
-                    // relaxation, so an operator that disturbs P1 = P2 must
-                    // restore it or the alpha degree of freedom is blocked
-                    // and the evaporation wave never forms.  Applied only
-                    // where the state bitwise changed (an exact test, not a
-                    // tolerance), so un-nucleated metastable cells keep
-                    // their metastable state.  docs/DESIGN_DECISIONS.md R-12.
-                    if (Uv[0] != Uv_pre[0] || Uv[1] != Uv_pre[1] ||
-                        Uv[4] != Uv_pre[4]) {
-                        hem::ps_pressure_relax_cell(Uv, eos);
+        const int form = ps_class_compact();
+        amrex::Long n_flash = -1, n_cells = 0;
+        if (form == 0) {
+            for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
+                const amrex::Box bx = mfi.growntilebox(nghost);
+                amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
+                amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
+                {
+                    const amrex::Real a1 = U(i,j,k, UALPHA1);
+                    const amrex::Real m1 = U(i,j,k, UM1RHO1);
+                    const amrex::Real m2 = U(i,j,k, UM2RHO2);
+                    if (!std::isfinite(a1)) { return; }
+                    // A cell with exactly one present phase is routed into the
+                    // kernel, which constructs the newborn by saturation projection;
+                    // both-absent stays excluded.  Genuinely single-phase cells are
+                    // the population the nucleator exists for.
+                    const bool one_absent =
+                        ((m1 > amrex::Real(0.0)) != (m2 > amrex::Real(0.0)));
+                    if (!one_absent && (m1 <= amrex::Real(0.0)
+                                        || m2 <= amrex::Real(0.0))) { return; }
+                    hem::V6 Uv = ps_pack_v6(U, i, j, k, a1, m1, m2);   // V6[3] = |ρu|
+                    // The flash is the single-phase nucleator only: a both-
+                    // Independent cell is mass-transfer territory (docs §4.7).
+                    if (ps_regime(a1, m1, l_pr) == PsRegime::Independent &&
+                        ps_regime(amrex::Real(1.0) - a1, m2, l_pr) == PsRegime::Independent) {
+                        return;
                     }
-                    ps_unpack_v6(U, i, j, k, Uv);
+                    const hem::V6 Uv_pre = Uv;
+                    if (hem::ps_flash_source_cell(Uv, eos, double(dt), double(tau),
+                                                  double(l_seed), ps_const::ALPHA_ROUNDOFF)) {
+                        // Reproject: the flash moved mass; restore P1 = P2
+                        // (alpha-adjusting; preserves m_k and mixture rho, E).
+                        // The model closure is instantaneous mechanical
+                        // relaxation, so an operator that disturbs P1 = P2 must
+                        // restore it or the alpha degree of freedom is blocked
+                        // and the evaporation wave never forms.  Applied only
+                        // where the state bitwise changed (an exact test, not a
+                        // tolerance), so un-nucleated metastable cells keep
+                        // their metastable state.  docs/DESIGN_DECISIONS.md R-12.
+                        if (Uv[0] != Uv_pre[0] || Uv[1] != Uv_pre[1] ||
+                            Uv[4] != Uv_pre[4]) {
+                            hem::ps_pressure_relax_cell(Uv, eos);
+                        }
+                        ps_unpack_v6(U, i, j, k, Uv);
+                    }
+                });
+            }
+        } else {
+            //  Class-compacted form (PS_classes.H): the admission test above
+            //  as the class pass (one evaluation per cell, on the state after
+            //  the post-relaxation clean_state, which is what this launch
+            //  sees), the compact FLASH list, and the nucleator with its R-12
+            //  reprojection over the list only.
+            const bool want_census = (hem::ps_diag_pres() != 0);
+            PsClassLists ws(S_new, nghost);
+            n_cells = ws.ncells_total();
+            for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
+                const amrex::Box bx = mfi.growntilebox(nghost);
+                amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
+                unsigned char* AMREX_RESTRICT cls   = ws.cls_ptr(mfi);
+                int*           AMREX_RESTRICT list  = ws.list_ptr(mfi);
+                int*           AMREX_RESTRICT count = ws.count_ptr(mfi);
+                const int ncell = ws.ncell(mfi);
+                ps_classify_box(bx, cls, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept -> unsigned char
+                {
+                    const amrex::Real a1 = U(i,j,k, UALPHA1);
+                    const amrex::Real m1 = U(i,j,k, UM1RHO1);
+                    const amrex::Real m2 = U(i,j,k, UM2RHO2);
+                    if (!std::isfinite(a1)) { return ps_class::NONE; }
+                    const bool one_absent =
+                        ((m1 > amrex::Real(0.0)) != (m2 > amrex::Real(0.0)));
+                    if (!one_absent && (m1 <= amrex::Real(0.0)
+                                        || m2 <= amrex::Real(0.0))) { return ps_class::NONE; }
+                    if (ps_regime(a1, m1, l_pr) == PsRegime::Independent &&
+                        ps_regime(amrex::Real(1.0) - a1, m2, l_pr) == PsRegime::Independent) {
+                        return ps_class::NONE;
+                    }
+                    return ps_class::FLASH;
+                });
+                auto flash_admitted = [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
+                {
+                    const amrex::Real a1 = U(i,j,k, UALPHA1);
+                    const amrex::Real m1 = U(i,j,k, UM1RHO1);
+                    const amrex::Real m2 = U(i,j,k, UM2RHO2);
+                    hem::V6 Uv = ps_pack_v6(U, i, j, k, a1, m1, m2);   // V6[3] = |ρu|
+                    const hem::V6 Uv_pre = Uv;
+                    if (hem::ps_flash_source_cell(Uv, eos, double(dt), double(tau),
+                                                  double(l_seed), ps_const::ALPHA_ROUNDOFF)) {
+                        // R-12: reproject only where the state bitwise changed.
+                        if (Uv[0] != Uv_pre[0] || Uv[1] != Uv_pre[1] ||
+                            Uv[4] != Uv_pre[4]) {
+                            hem::ps_pressure_relax_cell(Uv, eos);
+                        }
+                        ps_unpack_v6(U, i, j, k, Uv);
+                    }
+                };
+                if (form == 2) {
+                    ps_class_launch_box(bx, cls, ps_class::FLASH, flash_admitted);
+                    if (want_census) ps_class_list_box(ncell, cls, ps_class::FLASH, list, count);
+                } else {
+                    ps_class_list_box(ncell, cls, ps_class::FLASH, list, count);
+                    ps_class_launch_list(bx, list, count, flash_admitted);
                 }
-            });
+            }
+            if (want_census) n_flash = ws.total();
+        }
+        if (n_flash >= 0) {
+            amrex::AllPrint()
+                << "[PS-CLASS] flash: admitted=" << n_flash << " of " << n_cells
+                << " cells (" << (n_cells > 0 ? 100.0 * double(n_flash) / double(n_cells) : 0.0)
+                << " %), launch form " << form << "\n";
         }
         // Cumulative flash count, printed only when it changes.
         static long s_prev_flash = 0;
@@ -224,39 +292,93 @@ ps_apply_sources(amrex::MultiFab& S_new, amrex::Real dt, int nghost = 0)
             }
             return v; }();
         const int l_mt_tau_model = mt_tau_model;
-        for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
-            const amrex::Box bx = mfi.growntilebox(nghost);
-            amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
-            amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
-            {
-                const amrex::Real a1 = U(i,j,k, UALPHA1);
-                const amrex::Real m1 = U(i,j,k, UM1RHO1);
-                const amrex::Real m2 = U(i,j,k, UM2RHO2);
-                if (!std::isfinite(a1) || m1 <= amrex::Real(0.0)
-                                       || m2 <= amrex::Real(0.0)) { return; }
-                hem::V6 Uv = ps_pack_v6(U, i, j, k, a1, m1, m2);   // V6[3] = |ρu|
-                // Mass transfer acts only where both phases are Independent:
-                // corridor phases are transport-only, pure cells have nothing
-                // to transfer.  The kernel's own smallness cuts (5e-3) are then
-                // inert since alpha_cond = 2e-2 exceeds them.
-                if (!(ps_regime(a1, m1, l_pr) == PsRegime::Independent &&
-                      ps_regime(amrex::Real(1.0) - a1, m2, l_pr) == PsRegime::Independent)) {
-                    return;
-                }
-                const hem::V6 Uv_pre = Uv;
-                if (hem::ps_mass_transfer_finite_cell(Uv, eos, double(dt), double(tau),
-                                                      ps_const::ALPHA_ROUNDOFF, double(gref), l_mt_upd,
-                                                      l_mt_cr, l_mt_h_w,
-                                                      l_mt_tau_model)) {
-                    // Reproject only when mass actually moved: the kernel also
-                    // returns true from its internal gates with Uv untouched,
-                    // and gated metastable cells must not be relaxed here.
-                    if (Uv[1] != Uv_pre[1] || Uv[4] != Uv_pre[4]) {
-                        hem::ps_pressure_relax_cell(Uv, eos);
+        //  The per-cell operator past the admission test (both phases
+        //  Independent, masses positive): the transfer with its R-12
+        //  reprojection, which runs only when mass actually moved (the kernel
+        //  also returns true from its internal gates with Uv untouched, and
+        //  gated metastable cells must not be relaxed here).
+        const int form = ps_class_compact();
+        if (form == 0) {
+            for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
+                const amrex::Box bx = mfi.growntilebox(nghost);
+                amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
+                amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
+                {
+                    const amrex::Real a1 = U(i,j,k, UALPHA1);
+                    const amrex::Real m1 = U(i,j,k, UM1RHO1);
+                    const amrex::Real m2 = U(i,j,k, UM2RHO2);
+                    if (!std::isfinite(a1) || m1 <= amrex::Real(0.0)
+                                           || m2 <= amrex::Real(0.0)) { return; }
+                    hem::V6 Uv = ps_pack_v6(U, i, j, k, a1, m1, m2);   // V6[3] = |ρu|
+                    // Mass transfer acts only where both phases are Independent:
+                    // corridor phases are transport-only, pure cells have nothing
+                    // to transfer.  The kernel's own smallness cuts (5e-3) are then
+                    // inert since alpha_cond = 2e-2 exceeds them.
+                    if (!(ps_regime(a1, m1, l_pr) == PsRegime::Independent &&
+                          ps_regime(amrex::Real(1.0) - a1, m2, l_pr) == PsRegime::Independent)) {
+                        return;
                     }
-                    ps_unpack_v6(U, i, j, k, Uv);
+                    const hem::V6 Uv_pre = Uv;
+                    if (hem::ps_mass_transfer_finite_cell(Uv, eos, double(dt), double(tau),
+                                                          ps_const::ALPHA_ROUNDOFF, double(gref), l_mt_upd,
+                                                          l_mt_cr, l_mt_h_w,
+                                                          l_mt_tau_model)) {
+                        if (Uv[1] != Uv_pre[1] || Uv[4] != Uv_pre[4]) {
+                            hem::ps_pressure_relax_cell(Uv, eos);
+                        }
+                        ps_unpack_v6(U, i, j, k, Uv);
+                    }
+                });
+            }
+        } else {
+            //  Class-compacted form: the admission test as the class pass (on
+            //  the state the flash launch above has left), the compact MT
+            //  list, the transfer over the list only.
+            PsClassLists ws(S_new, nghost);
+            for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
+                const amrex::Box bx = mfi.growntilebox(nghost);
+                amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
+                unsigned char* AMREX_RESTRICT cls   = ws.cls_ptr(mfi);
+                int*           AMREX_RESTRICT list  = ws.list_ptr(mfi);
+                int*           AMREX_RESTRICT count = ws.count_ptr(mfi);
+                const int ncell = ws.ncell(mfi);
+                ps_classify_box(bx, cls, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept -> unsigned char
+                {
+                    const amrex::Real a1 = U(i,j,k, UALPHA1);
+                    const amrex::Real m1 = U(i,j,k, UM1RHO1);
+                    const amrex::Real m2 = U(i,j,k, UM2RHO2);
+                    if (!std::isfinite(a1) || m1 <= amrex::Real(0.0)
+                                           || m2 <= amrex::Real(0.0)) { return ps_class::NONE; }
+                    if (!(ps_regime(a1, m1, l_pr) == PsRegime::Independent &&
+                          ps_regime(amrex::Real(1.0) - a1, m2, l_pr) == PsRegime::Independent)) {
+                        return ps_class::NONE;
+                    }
+                    return ps_class::MT;
+                });
+                auto mt_admitted = [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
+                {
+                    const amrex::Real a1 = U(i,j,k, UALPHA1);
+                    const amrex::Real m1 = U(i,j,k, UM1RHO1);
+                    const amrex::Real m2 = U(i,j,k, UM2RHO2);
+                    hem::V6 Uv = ps_pack_v6(U, i, j, k, a1, m1, m2);   // V6[3] = |ρu|
+                    const hem::V6 Uv_pre = Uv;
+                    if (hem::ps_mass_transfer_finite_cell(Uv, eos, double(dt), double(tau),
+                                                          ps_const::ALPHA_ROUNDOFF, double(gref), l_mt_upd,
+                                                          l_mt_cr, l_mt_h_w,
+                                                          l_mt_tau_model)) {
+                        if (Uv[1] != Uv_pre[1] || Uv[4] != Uv_pre[4]) {
+                            hem::ps_pressure_relax_cell(Uv, eos);
+                        }
+                        ps_unpack_v6(U, i, j, k, Uv);
+                    }
+                };
+                if (form == 2) {
+                    ps_class_launch_box(bx, cls, ps_class::MT, mt_admitted);
+                } else {
+                    ps_class_list_box(ncell, cls, ps_class::MT, list, count);
+                    ps_class_launch_list(bx, list, count, mt_admitted);
                 }
-            });
+            }
         }
         // ps_coexist_action = 1 (see ps_coexist_action()): a band exit is a
         // state this liquid-vapour model cannot describe, so stop.  Must run

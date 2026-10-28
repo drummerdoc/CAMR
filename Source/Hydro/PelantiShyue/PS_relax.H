@@ -22,6 +22,7 @@
 #include "PS_util.H"       // ps_kinetic_energy, ps_pack_v6 / ps_unpack_v6
 #include "PS_counters.H"   // PsCounters (fold audit, floor and sweep counters)
 #include "PS_dials.H"      // ps_dial_int / ps_dial_real (CAMR.* reads)
+#include "PS_classes.H"    // cell classes, compact per-box launches (ps_class_compact)
 #include <AMReX_Array4.H>
 #include <AMReX_GpuQualifiers.H>
 #include <AMReX_Print.H>
@@ -126,8 +127,11 @@ bool ps_presence_relax_gate(amrex::Real a1, amrex::Real m1, amrex::Real m2,
 //  ALPHA_ROUNDOFF], both partial masses positive, and the presence gate
 //  (docs §4.7), whose refusal is counted.  Returns true when the cell may
 //  be relaxed, with alpha1_in, m1, m2 read out; false leaves the cell
-//  untouched.  Mode 0 keeps its own copy: it counts every early return.
-//  pr is ps_presence_params(), resolved by the host sweep.
+//  untouched.  This is the RELAX class predicate of the class pass
+//  (PS_classes.H), evaluated once per cell on every launch form; every
+//  mode's gated wrapper below is this gate followed by the mode's
+//  _admitted operator.  pr is ps_presence_params(), resolved by the host
+//  sweep.
 // -----------------------------------------------------------------
 AMREX_GPU_HOST_DEVICE
 inline bool
@@ -160,41 +164,21 @@ ps_relax_entry_gate(int i, int j, int k,
 //  momentum, UEDEN, UEINT and the phase masses are invariants of the
 //  kernel.  Every early return leaves the cell unchanged, as does a
 //  kernel failure.
+//
+//  Every mode's wrapper comes in two forms: the _admitted form is the
+//  operator past the entry gate, with alpha1_in, m1, m2 already read and
+//  gated by the caller (the class pass of PS_classes.H, or the gated
+//  wrapper); the gated wrapper is ps_relax_entry_gate followed by it, the
+//  per-cell body of the whole-box launch.  Both forms touch the cell
+//  identically, so the launch forms are bitwise interchangeable.
 // -----------------------------------------------------------------
 AMREX_GPU_HOST_DEVICE
 inline void
-ps_mechanical_relax_cell(int i, int j, int k,
-                          amrex::Array4<amrex::Real> const& U,
-                          hem::PsPhaseAPI const& eos, const PsPres& prS4)
+ps_mechanical_relax_admitted(int i, int j, int k,
+                             amrex::Array4<amrex::Real> const& U,
+                             hem::PsPhaseAPI const& eos,
+                             amrex::Real alpha1_in, amrex::Real m1, amrex::Real m2)
 {
-    using amrex::Real;
-
-    // Entry classification: non-finite, near-pure (either side), and a
-    // non-positive phase mass all return without touching the cell.
-    constexpr Real alpha_floor = ps_const::ALPHA_ROUNDOFF;
-    const Real alpha1_in = U(i,j,k, UALPHA1);
-
-    if (!std::isfinite(alpha1_in)) {
-        return;
-    }
-    if (alpha1_in < alpha_floor) {
-        return;
-    }
-    if (alpha1_in > Real(1.0) - alpha_floor) {
-        return;
-    }
-
-    const Real m1 = U(i,j,k, UM1RHO1);
-    const Real m2 = U(i,j,k, UM2RHO2);
-    if (m1 <= Real(0.0) || m2 <= Real(0.0)) {
-        return;
-    }
-    // Presence gate (docs §4.7); refusal counted.
-    if (!ps_presence_relax_gate(alpha1_in, m1, m2, prS4)) {
-        PS_COUNT(++ps_counters().n_gate_presence);
-        return;
-    }
-
     // V6[3] = rho_mix |u|: the kernel forms ½(V6[3]/rho_mix)² = ½|u|²,
     // which is direction-free, so the momentum magnitude is exact.
     // Pack V6 in the layout ps_pressure_relax_cell expects.
@@ -219,6 +203,20 @@ ps_mechanical_relax_cell(int i, int j, int k,
     U(i,j,k, UE2    ) = Uv[5];
 }
 
+AMREX_GPU_HOST_DEVICE
+inline void
+ps_mechanical_relax_cell(int i, int j, int k,
+                          amrex::Array4<amrex::Real> const& U,
+                          hem::PsPhaseAPI const& eos, const PsPres& pr)
+{
+    // Entry classification: non-finite, near-pure (either side), a
+    // non-positive phase mass and the presence gate (refusal counted) all
+    // return without touching the cell.
+    amrex::Real alpha1_in, m1, m2;
+    if (!ps_relax_entry_gate(i, j, k, U, pr, alpha1_in, m1, m2)) return;
+    ps_mechanical_relax_admitted(i, j, k, U, eos, alpha1_in, m1, m2);
+}
+
 
 // -----------------------------------------------------------------
 //  ps_ptg_relax_cell (ps_relax_mode=2): isochoric pressure equilibrium
@@ -231,16 +229,14 @@ ps_mechanical_relax_cell(int i, int j, int k,
 // -----------------------------------------------------------------
 AMREX_GPU_HOST_DEVICE
 inline void
-ps_ptg_relax_cell(int i, int j, int k,
-                  amrex::Array4<amrex::Real> const& U,
-                  hem::PsPhaseAPI const& eos, const PsPres& pr,
-                  amrex::Real dt, amrex::Real theta,
-                  int outer_iters = 3)
+ps_ptg_relax_admitted(int i, int j, int k,
+                      amrex::Array4<amrex::Real> const& U,
+                      hem::PsPhaseAPI const& eos,
+                      amrex::Real alpha1_in, amrex::Real m1, amrex::Real m2,
+                      amrex::Real dt, amrex::Real theta,
+                      int outer_iters = 3)
 {
     using amrex::Real;
-    Real alpha1_in, m1, m2;
-    if (!ps_relax_entry_gate(i, j, k, U, pr, alpha1_in, m1, m2)) return;
-
     hem::V6 Uv = ps_pack_v6(U, i, j, k, alpha1_in, m1, m2);
 
     bool ok = true;
@@ -253,6 +249,19 @@ ps_ptg_relax_cell(int i, int j, int k,
 
     U(i,j,k, UE1) = Uv[4];
     U(i,j,k, UE2) = Uv[5];
+}
+
+AMREX_GPU_HOST_DEVICE
+inline void
+ps_ptg_relax_cell(int i, int j, int k,
+                  amrex::Array4<amrex::Real> const& U,
+                  hem::PsPhaseAPI const& eos, const PsPres& pr,
+                  amrex::Real dt, amrex::Real theta,
+                  int outer_iters = 3)
+{
+    amrex::Real alpha1_in, m1, m2;
+    if (!ps_relax_entry_gate(i, j, k, U, pr, alpha1_in, m1, m2)) return;
+    ps_ptg_relax_admitted(i, j, k, U, eos, alpha1_in, m1, m2, dt, theta, outer_iters);
 }
 
 
@@ -275,16 +284,13 @@ inline int ps_coexist_action();
 // -----------------------------------------------------------------
 AMREX_GPU_HOST_DEVICE
 inline void
-ps_x3_grid_relax_cell(int i, int j, int k,
-                      amrex::Array4<amrex::Real> const& U,
-                      hem::PsPhaseAPI const& eos, const PsPres& pr,
-                      const hem::PsX3Params& xp0, int pres_diag,
-                      amrex::Real dt)
+ps_x3_grid_relax_admitted(int i, int j, int k,
+                          amrex::Array4<amrex::Real> const& U,
+                          hem::PsPhaseAPI const& eos,
+                          amrex::Real alpha1_in, amrex::Real m1, amrex::Real m2,
+                          const hem::PsX3Params& xp0, int pres_diag,
+                          amrex::Real dt)
 {
-    using amrex::Real;
-    // Entry gates (presence refusal counted).
-    Real alpha1_in, m1, m2;
-    if (!ps_relax_entry_gate(i, j, k, U, pr, alpha1_in, m1, m2)) return;
     hem::V6 Uv = ps_pack_v6(U, i, j, k, alpha1_in, m1, m2);
 
     hem::PsX3Params xp = xp0;
@@ -315,6 +321,20 @@ ps_x3_grid_relax_cell(int i, int j, int k,
 
 
 
+
+AMREX_GPU_HOST_DEVICE
+inline void
+ps_x3_grid_relax_cell(int i, int j, int k,
+                      amrex::Array4<amrex::Real> const& U,
+                      hem::PsPhaseAPI const& eos, const PsPres& pr,
+                      const hem::PsX3Params& xp0, int pres_diag,
+                      amrex::Real dt)
+{
+    // Entry gates (presence refusal counted).
+    amrex::Real alpha1_in, m1, m2;
+    if (!ps_relax_entry_gate(i, j, k, U, pr, alpha1_in, m1, m2)) return;
+    ps_x3_grid_relax_admitted(i, j, k, U, eos, alpha1_in, m1, m2, xp0, pres_diag, dt);
+}
 
 // CAMR.ps_relax_mode (6): 6 = the coupled operator flattened, X3F
 // (ps_x3f_grid_relax_cell: one Newton in (alpha, T1, T2, q, dm) on the
@@ -464,15 +484,13 @@ ps_x3f_params_from_dials()
 // -----------------------------------------------------------------
 AMREX_GPU_HOST_DEVICE
 inline void
-ps_x3f_grid_relax_cell(int i, int j, int k,
-                       amrex::Array4<amrex::Real> const& U,
-                       hem::PsPhaseAPI const& eos, const PsPres& pr,
-                       const hem::PsX3fParams& xf0, int pres_diag,
-                       amrex::Real dt)
+ps_x3f_grid_relax_admitted(int i, int j, int k,
+                           amrex::Array4<amrex::Real> const& U,
+                           hem::PsPhaseAPI const& eos,
+                           amrex::Real alpha1_in, amrex::Real m1, amrex::Real m2,
+                           const hem::PsX3fParams& xf0, int pres_diag,
+                           amrex::Real dt)
 {
-    using amrex::Real;
-    Real alpha1_in, m1, m2;
-    if (!ps_relax_entry_gate(i, j, k, U, pr, alpha1_in, m1, m2)) return;
     hem::V6 Uv = ps_pack_v6(U, i, j, k, alpha1_in, m1, m2);
 
     hem::PsX3fParams xf = xf0;
@@ -521,14 +539,39 @@ ps_x3f_grid_relax_cell(int i, int j, int k,
     ps_unpack_v6(U, i, j, k, Uv);
 }
 
+AMREX_GPU_HOST_DEVICE
+inline void
+ps_x3f_grid_relax_cell(int i, int j, int k,
+                       amrex::Array4<amrex::Real> const& U,
+                       hem::PsPhaseAPI const& eos, const PsPres& pr,
+                       const hem::PsX3fParams& xf0, int pres_diag,
+                       amrex::Real dt)
+{
+    amrex::Real alpha1_in, m1, m2;
+    if (!ps_relax_entry_gate(i, j, k, U, pr, alpha1_in, m1, m2)) return;
+    ps_x3f_grid_relax_admitted(i, j, k, U, eos, alpha1_in, m1, m2, xf0, pres_diag, dt);
+}
+
 // -----------------------------------------------------------------
 //  ps_apply_relaxation — the relaxation sweep.  Builds the EOS callback
 //  once, resets the per-sweep counters, dispatches every cell to the
 //  kernel for ps_relax_mode, then prints the gated reports ([PS-PRES],
-//  [PS-GATE], [PS-DT], [PS-X3]).  Called from apply_ps_reaction under
-//  CAMR.ps_do_relax; do_print is accepted for the Strang pre-half step,
-//  which prints nothing else.  The cell loop is a ParallelFor; every
-//  dial it needs is resolved here and captured by value.
+//  [PS-GATE], [PS-DT], [PS-X3], and the class census [PS-CLASS]).
+//  Called from apply_ps_reaction under CAMR.ps_do_relax; do_print is
+//  accepted for the Strang pre-half step, which prints nothing else.
+//  Every dial it needs is resolved here and captured by value.
+//
+//  Launch forms (CAMR.ps_class_compact, PS_classes.H):
+//    0  one ParallelFor over every cell of every box: corridor projection,
+//       then the mode's gated wrapper (the whole-box form);
+//    1  per box, the class pass (projection, then ps_relax_entry_gate into
+//       the RELAX bit), the compact list of the admitted cells, and the
+//       mode's _admitted operator launched over the list only;
+//    2  the class pass, then the whole-box launch gated on the class byte
+//       (the measurement arm).
+//  All three evaluate the gate once per cell on the projected state and
+//  run the operator on the same cells in the same order, so they are
+//  bitwise identical and the host counters agree (docs/FUTURE_WORK.md §12).
 // -----------------------------------------------------------------
 inline void
 ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
@@ -555,26 +598,104 @@ ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
     const hem::PsX3Params  xp = ps_x3_params_from_dials();
     const hem::PsX3fParams xf = ps_x3f_params_from_dials();
 
-    for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
-        const amrex::Box bx = mfi.growntilebox(nghost);
-        amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
-        amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
-        {
-            ps_corridor_project(i, j, k, U, l_pres);
-            if (relax_mode == 5) {
-                ps_x3_grid_relax_cell(i, j, k, U, eos, l_pres, xp, pres_diag, dt);
-            } else if (relax_mode == 6) {
-                ps_x3f_grid_relax_cell(i, j, k, U, eos, l_pres, xf, pres_diag, dt);
-            } else if (relax_mode == 2) {
-                ps_ptg_relax_cell(i, j, k, U, eos, l_pres, dt, theta);
-            } else {
-                ps_mechanical_relax_cell(i, j, k, U, eos, l_pres);
+    const int form = ps_class_compact();
+    //  The admitted-cell total of the class pass (forms 1 and 2), -1 when
+    //  not formed: it is the one census that exists on every build, and
+    //  it costs one device sync per sweep, so it is taken under
+    //  ps_pres_diag only.
+    amrex::Long n_relax = -1;
+    amrex::Long n_cells = 0;
+
+    if (form == 0) {
+        for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
+            const amrex::Box bx = mfi.growntilebox(nghost);
+            amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
+            amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
+            {
+                ps_corridor_project(i, j, k, U, l_pres);
+                if (relax_mode == 5) {
+                    ps_x3_grid_relax_cell(i, j, k, U, eos, l_pres, xp, pres_diag, dt);
+                } else if (relax_mode == 6) {
+                    ps_x3f_grid_relax_cell(i, j, k, U, eos, l_pres, xf, pres_diag, dt);
+                } else if (relax_mode == 2) {
+                    ps_ptg_relax_cell(i, j, k, U, eos, l_pres, dt, theta);
+                } else {
+                    ps_mechanical_relax_cell(i, j, k, U, eos, l_pres);
+                }
+            });
+        }
+    } else {
+        const bool want_census = (pres_diag != 0);
+        PsClassLists ws(S_new, nghost);
+        n_cells = ws.ncells_total();
+        for (amrex::MFIter mfi(S_new); mfi.isValid(); ++mfi) {
+            const amrex::Box bx = mfi.growntilebox(nghost);
+            amrex::Array4<amrex::Real> const& U = S_new.array(mfi);
+            unsigned char* AMREX_RESTRICT cls   = ws.cls_ptr(mfi);
+            int*           AMREX_RESTRICT list  = ws.list_ptr(mfi);
+            int*           AMREX_RESTRICT count = ws.count_ptr(mfi);
+            const int ncell = ws.ncell(mfi);
+
+            //  The class pass: the corridor projection first (it can move a
+            //  (Corridor, Independent) cell into the band), then the entry
+            //  gate, counted exactly as the whole-box form counts it.  Its
+            //  own profile region (host-exact; on the device read it with
+            //  tiny_profiler.device_synchronize_around_region=1): the
+            //  projection's EOS probe on every (Corridor, Independent) cell
+            //  is the part of this sweep that compaction cannot remove.
+            {
+                BL_PROFILE("PS::ps_relax_classify()");
+                ps_classify_box(bx, cls, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept -> unsigned char
+                {
+                    ps_corridor_project(i, j, k, U, l_pres);
+                    amrex::Real a1, m1, m2;
+                    return ps_relax_entry_gate(i, j, k, U, l_pres, a1, m1, m2)
+                           ? ps_class::RELAX : ps_class::NONE;
+                });
             }
-        });
+
+            //  The operator on an admitted cell: the gate's reads repeated
+            //  (nothing has written the cell since the class pass), no gate.
+            auto relax_admitted = [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
+            {
+                const amrex::Real alpha1_in = U(i,j,k, UALPHA1);
+                const amrex::Real m1 = U(i,j,k, UM1RHO1);
+                const amrex::Real m2 = U(i,j,k, UM2RHO2);
+                if (relax_mode == 5) {
+                    ps_x3_grid_relax_admitted(i, j, k, U, eos, alpha1_in, m1, m2, xp, pres_diag, dt);
+                } else if (relax_mode == 6) {
+                    ps_x3f_grid_relax_admitted(i, j, k, U, eos, alpha1_in, m1, m2, xf, pres_diag, dt);
+                } else if (relax_mode == 2) {
+                    ps_ptg_relax_admitted(i, j, k, U, eos, alpha1_in, m1, m2, dt, theta);
+                } else {
+                    ps_mechanical_relax_admitted(i, j, k, U, eos, alpha1_in, m1, m2);
+                }
+            };
+
+            {
+                BL_PROFILE("PS::ps_relax_launch()");   // the scan and the operator over the admitted cells
+                if (form == 2) {
+                    ps_class_launch_box(bx, cls, ps_class::RELAX, relax_admitted);
+                    if (want_census) ps_class_list_box(ncell, cls, ps_class::RELAX, list, count);
+                } else {
+                    ps_class_list_box(ncell, cls, ps_class::RELAX, list, count);
+                    ps_class_launch_list(bx, list, count, relax_admitted);
+                }
+            }
+        }
+        if (want_census) n_relax = ws.total();
     }
 
     // [PS-PRES] (ps_pres_diag): the post-thermal P1 != P2 residual by cause.
     if (ps_pres_diag() != 0) {
+        //  [PS-CLASS]: the relaxation population from the class pass, on
+        //  every build (the device has no other census).
+        if (n_relax >= 0) {
+            amrex::AllPrint()
+                << "[PS-CLASS] relax: admitted=" << n_relax << " of " << n_cells
+                << " cells (" << (n_cells > 0 ? 100.0 * double(n_relax) / double(n_cells) : 0.0)
+                << " %), launch form " << form << "\n";
+        }
         const PsPresDiag& pd = ps_pres_diag_data();
         auto mean = [](double s, long n) { return n > 0 ? s/double(n) : 0.0; };
         amrex::AllPrint()
@@ -656,9 +777,17 @@ ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
             }
             amrex::AllPrint() << "\n";
         }
+#if !defined(AMREX_USE_GPU)
+        //  The class pass admits exactly the cells the kernel counts as
+        //  calls; a difference would mean the two forms gate differently.
+        if (n_relax >= 0 && ps_pres_diag() != 0 && n_relax != amrex::Long(xs.n_calls)) {
+            amrex::AllPrint() << "[PS-CLASS] *** MISMATCH: class pass admitted " << n_relax
+                              << " cells, the kernel counted " << xs.n_calls << " calls\n";
+        }
+#endif
         xs.reset();
     }
-    amrex::ignore_unused(do_print);
+    amrex::ignore_unused(do_print, n_cells);
 }
 
 #endif // USE_PS_HYDRO
