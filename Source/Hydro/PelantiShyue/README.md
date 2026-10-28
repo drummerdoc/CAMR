@@ -12,6 +12,7 @@ Compiled only when the Exec `GNUmakefile` sets `USE_PS_HYDRO = TRUE` (adds `-DUS
 | `PS_presence.H` / `PS_promote.H` | Presence parameters ($\alpha_{\mathrm{van}}, \alpha_{\mathrm{cond}}, \alpha_{\mathrm{birth}}, \rho_{\mathrm{deg}}$), the regime classifier, checked promotion to INDEPENDENT. |
 | `PS_relaxation.H` | Umbrella over the four reaction-operator headers below (include this one). |
 | `PS_relax.H` | Relaxation dispatch (`CAMR.ps_relax_mode`, default 5 = coupled X3), the EOS callback `ps_make_camr_eos_api`, relax-gate hysteresis, sweep reports. |
+| `PS_classes.H` | The reaction step's cell classes (RELAX, FLASH, MT), the per-box class pass, the order-preserving scan into compact cell lists and the launches over them (`CAMR.ps_class_compact`; FUTURE_WORK §12). |
 | `PS_floors.H` | `ps_apply_floor` (`ps_pres_floor` / `ps_temp_floor`), the URHO and UE1+UE2 identity resyncs. |
 | `PS_folds.H` | Grid drivers of the phase folds (vanish, vacuum, corridor and energy reaps, T-floor) with the `[PS-FOLD]` audit. |
 | `PS_diag.H` | Shared diagnostic dial (`CAMR.ps_diag_alpha`). |
