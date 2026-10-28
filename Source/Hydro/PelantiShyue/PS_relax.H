@@ -586,6 +586,7 @@ ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
     // Reset the per-sweep counters.
     ps_counters().n_gate_presence = 0;
     ps_counters().corridor_projected = ps_counters().corridor_host_fail = ps_counters().corridor_noroot = 0;
+    ps_counters().corridor_probed = 0;
     const PsPres l_pres = ps_presence_params();
     ps_pres_diag_data().reset();
 
@@ -713,10 +714,14 @@ ps_apply_relaxation(amrex::MultiFab& S_new, amrex::Real dt = amrex::Real(0),
         //  [PS-GATE]: presence-gate refusals this sweep, all modes (cells
         //  [PS-X3] never sees).  Not an anomaly — the gate doing its job —
         //  but a stall routed through it must be visible.
-        if (ps_counters().corridor_projected + ps_counters().corridor_host_fail
-            + ps_counters().corridor_noroot > 0) {
+        //  [PS-CORRIDOR]: the saturation projection's census, with the count
+        //  of own-branch probes (one EOS inversion per (Corridor, Independent)
+        //  cell per sweep, the whole-grid EOS cost of this stage).
+        if (ps_counters().corridor_probed + ps_counters().corridor_projected
+            + ps_counters().corridor_host_fail + ps_counters().corridor_noroot > 0) {
             amrex::AllPrint()
-                << "[PS-CORRIDOR] projected=" << ps_counters().corridor_projected
+                << "[PS-CORRIDOR] probed=" << ps_counters().corridor_probed
+                << " projected=" << ps_counters().corridor_projected
                 << " host_fail=" << ps_counters().corridor_host_fail
                 << " noroot=" << ps_counters().corridor_noroot << "\n";
         }

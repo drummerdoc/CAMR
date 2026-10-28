@@ -73,6 +73,9 @@ void ps_corridor_project(int i, int j, int k,
         const Real rk = mk0 / ak, ek = U(i,j,k, (kc == 1) ? UE1 : UE2) / mk0 - ke;
         Real Pk, Tk, Sk;
         const hem::Phase3 own_br = (kc == 1) ? hem::Phase3::Liquid : hem::Phase3::Vapor;
+#if !defined(AMREX_USE_GPU)
+        ++ps_counters().corridor_probed;   // one own-branch inversion per (Corridor, Independent) cell
+#endif
         if (std::isfinite(rk) && std::isfinite(ek)
             && EOS::REY2PTS_phase_try(rk, ek, Yq, own_br, Pk, Tk, Sk)) return;
     }

@@ -238,7 +238,12 @@ struct PsCounters {
     //  per-mode split would only re-encode ps_relax_mode.
     long        n_gate_presence = 0;
     //  Corridor saturation projection (PS_corridor.H), per sweep.
+    //  corridor_probed counts the (Corridor, Independent) cells whose
+    //  corridor phase was probed for a root on its own branch (one EOS
+    //  inversion each, whatever the answer): the sweep's per-cell EOS cost
+    //  that no compaction of the relaxation kernel removes.
     long        corridor_projected = 0, corridor_host_fail = 0, corridor_noroot = 0;
+    long        corridor_probed = 0;
     PsPresDiag  pres;
     PsFoldAudit fold;
 
