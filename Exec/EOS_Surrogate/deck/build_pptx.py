@@ -29,6 +29,13 @@ FIGS = {
     '7fc0edb71dc48303101213f6c9a663de': 'fig6_stage_split_linear.png',
     'd43a70aa08391a7178257380a047d988': 'fig11_edge_table.png',
     '15b23bb65efeedcdc9b91b9ebeb66530': 'fig12_dome.png',
+    # 2026-10-28: the same figures re-rendered with doubled text (FONT_SCALE=2 FIG_SCALE=1.5)
+    '08f9acdafec865899f4c9e5fdf698f67': 'fig1_deployment_cloud.png',
+    '5ff5f3afc0349994809a8c6540227f60': 'fig3d_combo.png',
+    '029c2bfd946b2e526e48c86d195f2f48': 'fig4_accuracy_cost.png',
+    'd117bb9fd4879616e4ff6232948fe1d8': 'fig6_stage_split_linear.png',
+    '40ab9c90e8b0bf24e5a23cae82ec892c': 'fig11_edge_table.png',
+    '15893f80c2d8672f744fd9c512946a9e': 'fig12_dome.png',
 }
 
 INK = RGBColor(0x14, 0x21, 0x3d); INK2 = RGBColor(0x3d, 0x46, 0x54); MUTED = RGBColor(0x6a, 0x71, 0x79)
@@ -186,7 +193,7 @@ def slide_takeaways(prs, s):
     items = re.findall(r'<li\b[^>]*>(.*?)</li>', s, re.S)
     for i, it in enumerate(items):
         p = tf.paragraphs[0] if i == 0 else tf.add_paragraph(); p.space_after = Pt(6)
-        for text, bold in runs_from_html(f'{i + 1}.  ' + it):
+        for text, bold in runs_from_html(it):          # the template's body placeholder supplies the bullets
             r = p.add_run(); r.text = text; r.font.size = Pt(18); r.font.bold = bold
     set_notes(sl, notes_of(s)); return sl
 

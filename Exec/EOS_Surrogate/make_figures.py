@@ -12,8 +12,28 @@ labels where they fit, a legend otherwise.
 import csv, math, os, re, sys
 import numpy as np
 import matplotlib
+# FONT_SCALE (env, default 1): multiply every text size, explicit or default, for the slide renders.
+_FS = float(__import__('os').environ.get('FONT_SCALE', '1'))
+if _FS != 1.0:
+    import matplotlib.font_manager as _fm
+    _orig_set_size = _fm.FontProperties.set_size
+    def _scaled_set_size(self, size):
+        if isinstance(size, (int, float)): size = size * _FS
+        return _orig_set_size(self, size)
+    _fm.FontProperties.set_size = _scaled_set_size     # every explicit numeric size, in text, legends, titles
+    import matplotlib.axes as _ma, matplotlib.figure as _mf
+    _ma.Axes.set_title = lambda self, *a, **k: None    # the slide carries the title; the figure's would collide
+    _mf.Figure.suptitle = lambda self, *a, **k: None
+_FIGS = float(__import__('os').environ.get('FIG_SCALE', '1'))
+
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+if _FIGS != 1.0:
+    _orig_subplots = plt.subplots
+    def _scaled_subplots(*a, **k):
+        if 'figsize' in k: k['figsize'] = tuple(v * _FIGS for v in k['figsize'])
+        return _orig_subplots(*a, **k)
+    plt.subplots = _scaled_subplots
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PB = os.path.join(HERE, '..', 'CO2_PipeBreak')
@@ -28,7 +48,7 @@ MODEL = {'mono': C['blue'], 'dome': C['aqua'], 'domeres': C['yellow'], 'experts'
 REGIME = {'far': C['blue'], 'near': C['orange'], 'ext': C['aqua'], 'sub': C['yellow']}
 REGIME_NAME = {'far': 'single-phase, far from the dome', 'near': 'near the saturation curve',
                'ext': 'metastable continuation', 'sub': 'sub-triple'}
-plt.rcParams.update({'font.size': 10, 'axes.edgecolor': INK2, 'axes.labelcolor': INK, 'xtick.color': INK2,
+plt.rcParams.update({'font.size': 10 * _FS, 'axes.edgecolor': INK2, 'axes.labelcolor': INK, 'xtick.color': INK2,
                      'ytick.color': INK2, 'text.color': INK, 'axes.titlecolor': INK, 'axes.titleweight': 'bold',
                      'axes.spines.top': False, 'axes.spines.right': False, 'figure.facecolor': SURF,
                      'axes.facecolor': SURF, 'savefig.facecolor': SURF, 'grid.color': GRID, 'grid.linewidth': 0.6,
@@ -73,18 +93,19 @@ def fig1_cloud():
             sel = [(lr, e) for lr, e, T, ok in pts if ok == 1 and loci.regime(b, lr, e * 1e5, T) == reg]
             if sel:
                 ax.scatter([p[0] for p in sel], [p[1] for p in sel], s=5, c=REGIME[reg], alpha=0.55, linewidths=0,
-                           label=f'{REGIME_NAME[reg]} ({len(sel)})')
+                           label=REGIME_NAME[reg])
         ref = [(lr, e) for lr, e, T, ok in pts if ok == 0]
         if ref:
             ax.scatter([p[0] for p in ref], [p[1] for p in ref], s=12, marker='x', c=INK2, linewidths=0.7,
-                       label=f'no root on this branch ({len(ref)})')
+                       label='no root on this branch')
         rk, ek = ('rhoL', 'eL') if b == 1 else ('rhoV', 'eV')
         ax.plot([math.log10(float(r[rk])) for r in sat], [float(r[ek]) / 1e5 for r in sat], color=INK, lw=1.6, label='saturation curve')
         ed = rows(os.path.join(data, f'edge_{b}.csv'))
         ax.plot([math.log10(float(r['rho_edge'])) for r in ed], [float(r['e_edge']) / 1e5 for r in ed], color=INK, lw=1.2, ls='--', label='branch edge')
         ax.set_title(title); ax.set_xlabel('log$_{10}$ density  [kg m$^{-3}$]')
-        ax.legend(loc='upper right', fontsize=8, markerscale=2)
     axes[0].set_ylabel('internal energy  [10$^5$ J kg$^{-1}$]')
+    h, l = axes[0].get_legend_handles_labels()
+    fig.legend(h, l, loc='upper center', bbox_to_anchor=(0.5, 0.0), ncol=4, fontsize=8, markerscale=2.5, frameon=False)
     fig.suptitle('Where the solver actually calls the EOS: 27 774 harvested deployment states, by regime', x=0.01, ha='left', fontweight='bold', y=1.02)
     save(fig, 'fig1_deployment_cloud.png')
 
@@ -135,20 +156,20 @@ def fig4_accuracy_cost():
     # (ns per state on the RTX PRO 6000, K rms on the deployment states); 'exact' plotted at the floor
     # (label, ns/state, K rms, colour, marker, label offset in points, ha, va)
     pts = [('analytic PR', 1.75, 1e-4, C['blue'], 'o', (0, 14), 'center', 'bottom'),
-           ('64-step bisection', 7.52, 1e-4, C['aqua'], 'o', (0, -14), 'center', 'top'),
+           ('64-step bisection', 7.52, 1e-4, C['aqua'], 'o', (-10, -6), 'right', 'top'),
            ('bicubic table', 0.17, 0.0015, C['orange'], 's', (10, 0), 'left', 'center'),
            ('table seed\n+ 2 Newton', 0.74, 1e-4, C['orange'], 'D', (-10, 14), 'right', 'bottom'),
-           ('net 128×4 FP64\n(best net: routed experts)', 80.5, 0.123, C['magenta'], '^', (0, 14), 'center', 'bottom'),
+           ('net 128×4 FP64\n(routed experts)', 80.5, 0.123, C['magenta'], '^', (0, 14), 'center', 'bottom'),
            ('net 128×4 FP32', 8.4, 0.15, C['magenta'], 'v', (-10, 0), 'right', 'center'),
            ('net 64×3 FP32', 1.54, 0.7, C['magenta'], '<', (10, 0), 'left', 'center'),
            ('FP32 net seed\n+ 2 Newton', 9.6, 1e-4, C['magenta'], 'D', (12, 14), 'left', 'bottom')]
     fig, ax = plt.subplots(figsize=(8.5, 5))
     for name, ns, err, col, mk, off, ha, va in pts:
         ax.scatter(ns, err, s=80, c=col, marker=mk, edgecolors=SURF, linewidths=1, zorder=3)
-        ax.annotate(name, (ns, err), xytext=off, textcoords='offset points', fontsize=8.5, ha=ha, va=va, color=INK)
+        ax.annotate(name, (ns, err), xytext=(off[0] * _FS, off[1] * _FS), textcoords='offset points', fontsize=8.5, ha=ha, va=va, color=INK)
     ax.axhspan(5e-5, 2e-4, color=GRID, zorder=0); ax.text(0.11, 6.5e-5, 'analytic accuracy (exact)', fontsize=8.5, color=INK2, va='center')
     ax.set_xscale('log'); ax.set_yscale('log'); ax.set_xlim(0.1, 400); ax.set_ylim(5e-5, 6)
-    ax.set_xlabel('cost per EOS call on the development GPU  [ns / state, RTX PRO 6000, one thread per state]'); ax.set_ylabel('temperature error on deployment states  [K rms]')
+    ax.set_xlabel('cost per EOS call on GPU  [ns / state]'); ax.set_ylabel('temperature error  [K rms]')
     ax.set_title('Accuracy against cost, one point per strategy: the structured table beats every net on both axes')
     ax.grid(True, axis='x')
     save(fig, 'fig4_accuracy_cost.png')
@@ -232,8 +253,9 @@ def fig6_stage_split(style='log'):
                 ax.text(xi, v * 1.12 if style == 'log' else v + 0.015 * top, f'{v:.0f}' if v >= 10 else f'{v:.1f}', ha='center', va='bottom', fontsize=7, color=INK, rotation=90)
         if style == 'log': ax.set_yscale('log'); ax.set_ylim(0.5, 100)
         else: ax.set_ylim(0, top)
-        ax.set_xticks(x); ax.set_xticklabels(pl)
-    groups[0][0].set_ylabel('wall time in the stage, 524 288 cells × 200 steps  [s]'); groups[-1][0].legend(loc='upper right', fontsize=8.5, ncol=2)
+        short = {plats[0]: 'dev. CPU\n8 EPYC', plats[1]: 'prod. CPU\n8 EPYC', plats[2]: 'dev. GPU\nRTX PRO 6000', plats[3]: 'prod. GPU\nGH200'}
+        ax.set_xticks(x); ax.set_xticklabels([short[p] for p in pl])
+    groups[0][0].set_ylabel('wall time in the stage  [s]'); groups[-1][0].legend(loc='upper right', fontsize=8.5, ncol=2)
     fig.suptitle('On both GPUs the table speeds up the hydro stage 2–4× and slows the relaxation kernel 1.7×; on the CPUs it changes neither much', fontsize=10, fontweight='bold', y=0.98)
     if style == 'panels': fig.tight_layout(rect=(0, 0, 1, 0.95))
     save(fig, {'log': 'fig6_stage_split.png', 'linear': 'fig6_stage_split_linear.png', 'panels': 'fig6_stage_split_panels.png'}[style])
@@ -354,33 +376,27 @@ def fig11_edge_table():
     ax.text(0.0, 307.5, 'above T_c: one branch, no edge', fontsize=9, color=INK2, va='center')
     ax.text(XR - 0.05, Ttr - 2.0, 'T_triple', ha='right', va='top', fontsize=9, color=INK2)
     ax.text(0.4, 244, 'vapour, stable', ha='center', fontsize=10, color=INK)
-    ax.text(3.0, 240, 'liquid,\nstable', ha='center', fontsize=10, color=INK)
-    ax.annotate('vapour, metastable:\nanswered on the vapour branch', xy=(np.interp(285, Tg, 0.5 * (xV + x2)), 285), xytext=(0.2, 292),
+    ax.text(3.22, 262, 'liquid,\nstable', ha='right', fontsize=10, color=INK)
+    ax.annotate('vapour,\nmetastable', xy=(np.interp(285, Tg, 0.5 * (xV + x2)), 285), xytext=(0.2, 290),
                 fontsize=9, color=INK, arrowprops=dict(arrowstyle='-', color=INK2, lw=0.8))
-    ax.annotate('liquid, metastable:\nanswered on the liquid branch', xy=(np.interp(270, Tg, 0.5 * (x1 + xL)), 270), xytext=(3.2, 277),
+    ax.annotate('liquid,\nmetastable', xy=(np.interp(270, Tg, 0.5 * (x1 + xL)), 270), xytext=(3.2, 280),
                 fontsize=9, color=INK, ha='right', arrowprops=dict(arrowstyle='-', color=INK2, lw=0.8))
-    ax.annotate('past the edge: no state on either branch;\nthe branch is continued as a guard\nand a request with no root is refused',
-                xy=(np.interp(236, Tg, 0.5 * (x1 + x2)), 236), xytext=(0.1, 222), fontsize=9, color=INK,
-                arrowprops=dict(arrowstyle='-', color=INK2, lw=0.8))
-    ax.annotate('the branch edges (dashed) are precomputed:\nfor each T, the density at which the isotherm\'s\nstiffness (∂P/∂ρ)_T on that branch falls to the\nfloor c² = 2500 m²/s², stored per branch',
-                xy=(np.interp(262, Tg, x1), 262), xytext=(0.0, 260), fontsize=9, color=INK,
-                arrowprops=dict(arrowstyle='-', color=lb, lw=1.2))
-    ax.annotate('', xy=(np.interp(268, Tg, x2), 268), xytext=(1.4, 269), arrowprops=dict(arrowstyle='-', color=lo, lw=1.2))
+    ax.text(np.interp(236, Tg, 0.5 * (x1 + x2)) - 0.1, 232, 'no state on\neither branch', ha='center', fontsize=9, color=INK)
     ax.set_xlim(XL, XR); ax.set_ylim(212, 312); ax.set_xlabel('log₁₀ ρ [kg/m³]'); ax.set_ylabel('T [K]')
     ax.set_title('A branch-locked request, in (ρ, T)'); ax.grid(False)
     # ---- (b) what the table buys: before (march on every call) vs after (table)
-    labels = ['forward call,\nliquid [ns]', 'forward call,\nvapour [ns]', '(ρ, e) inversion\n[ns]', 'production run,\n8 CPU ranks [s]', 'production run,\ndev. GPU [s]']
+    labels = ['forward,\nliquid [ns]', 'forward,\nvapour [ns]', 'inversion\n[ns]', 'run, 8 CPU\nranks [s]', 'run, dev.\nGPU [s]']
     before = [312, 514, 1860, 26.2, 21.2]; after = [124, 126, 1690, 20.8, 12.1]
     x = np.arange(len(labels)); w = 0.38
     norm = [max(b, a) for b, a in zip(before, after)]
     bx.bar(x - w/2, [b / n for b, n in zip(before, norm)], w, color=INK2, label='edge found by a march on every call')
     bx.bar(x + w/2, [a / n for a, n in zip(after, norm)], w, color=C['aqua'], label='edge read from the table')
     for xi, b, a in zip(x, before, after):
-        bx.text(xi - w/2, b / max(b, a) + 0.02, f'{b:g}', ha='center', fontsize=9, color=INK)
-        bx.text(xi + w/2, a / max(b, a) + 0.02, f'{a:g}', ha='center', fontsize=9, color=INK)
+        bx.text(xi - w/2, b / max(b, a) + 0.02, f'{b:g}', ha='center', fontsize=7, color=INK)
+        bx.text(xi + w/2, a / max(b, a) + 0.02, f'{a:g}', ha='center', fontsize=7, color=INK)
         bx.text(xi, -0.14, f'{b / a:.1f}×', ha='center', fontsize=10, color=C['aqua'], fontweight='bold')
-    bx.set_xticks(x); bx.set_xticklabels(labels, fontsize=9); bx.set_ylim(-0.2, 1.5); bx.set_yticks([])
-    bx.set_title('What the table buys (same states before the edge, bit for bit)'); bx.legend(loc='upper left', fontsize=9, frameon=False)
+    bx.set_xticks(x); bx.set_xticklabels(labels, fontsize=8); bx.set_ylim(-0.2, 1.6); bx.set_yticks([])
+    bx.set_title('What the table buys (same states before the edge, bit for bit)'); bx.legend(loc='upper left', fontsize=8, frameon=False)
     bx.grid(False)
     for sp in ('left',): bx.spines[sp].set_visible(False)
     fig.tight_layout(); save(fig, 'fig11_edge_table.png')
@@ -422,20 +438,20 @@ def fig12_dome():
     ax.axhline(Psat / 1e5, color=INK2, lw=0.9, ls=':'); ax.text(430, Psat / 1e5 - 9, f'P_sat({T:.0f} K) = {Psat/1e5:.1f} bar', fontsize=9, color=INK2)
     for r in (rhoV, rhoL): ax.plot(r, Psat / 1e5, marker='s', ms=6, color=INK, mec=SURF, mew=1, zorder=5)
     yl = 124
-    ax.text(0.5 * rhoV, yl, 'vapour, stable', ha='center', fontsize=9.5, color=INK)
-    ax.text(0.5 * (rhoV + rEV), yl - 12, 'vapour,\nmetastable', ha='center', va='top', fontsize=9.5, color=INK)
-    ax.text(0.5 * (rEV + rEL), yl, 'no state on either branch', ha='center', fontsize=9.5, color=INK)
-    ax.text(0.5 * (rEL + rhoL), yl - 12, 'liquid,\nmetastable', ha='center', va='top', fontsize=9.5, color=INK)
-    ax.text(0.5 * (rhoL + 1000), yl, 'liquid, stable', ha='center', fontsize=9.5, color=INK)
-    ax.annotate('branch edge: (∂P/∂ρ)_T has fallen to the floor c² = 2500 m²/s².\nPast it the branch is continued with that slope (dash-dot),\nonly as a guard, and the state is flagged',
-                xy=(rEL, P_of_rho(rEL) / 1e5), xytext=(15, -62), fontsize=9, color=INK, arrowprops=dict(arrowstyle='-', color=lb, lw=1.0))
-    ax.annotate('', xy=(rEV, P_of_rho(rEV) / 1e5), xytext=(200, -40), arrowprops=dict(arrowstyle='-', color=lo, lw=1.0))
-    ax.annotate('saturation: the two\nroots in equilibrium', xy=(rhoL, Psat / 1e5), xytext=(520, 80), fontsize=9, color=INK, arrowprops=dict(arrowstyle='-', color=INK2, lw=0.8))
-    ax.annotate('', xy=(rhoV, Psat / 1e5), xytext=(520, 84), arrowprops=dict(arrowstyle='-', color=INK2, lw=0.8))
+    ax.text(8, yl, 'vapour,\nstable', ha='left', va='top', fontsize=9.5, color=INK)
+    ax.text(0.5 * (rhoV + rEV), yl - 34, 'vapour,\nmetastable', ha='center', va='top', fontsize=9.5, color=INK)
+    ax.text(0.5 * (rEV + rEL), yl, 'no state on\neither branch', ha='center', va='top', fontsize=9.5, color=INK)
+    ax.text(0.5 * (rEL + rhoL), yl - 34, 'liquid,\nmetastable', ha='center', va='top', fontsize=9.5, color=INK)
+    ax.text(992, yl, 'liquid,\nstable', ha='right', va='top', fontsize=9.5, color=INK)
+    ax.annotate('branch edge: (∂P/∂ρ)_T at the floor\nc² = 2500 m²/s²; past it the branch is\ncontinued with that slope, as a guard',
+                xy=(rEL, P_of_rho(rEL) / 1e5), xytext=(515, -52), fontsize=9, color=INK, arrowprops=dict(arrowstyle='-', color=lb, lw=1.0))
+    ax.annotate('', xy=(rEV, P_of_rho(rEV) / 1e5), xytext=(515, -34), arrowprops=dict(arrowstyle='-', color=lo, lw=1.0))
+    ax.annotate('saturation', xy=(rhoL, Psat / 1e5), xytext=(470, 72), fontsize=9, color=INK, ha='center', arrowprops=dict(arrowstyle='-', color=INK2, lw=0.8))
+    ax.annotate('', xy=(rhoV, Psat / 1e5), xytext=(470, 72), arrowprops=dict(arrowstyle='-', color=INK2, lw=0.8))
     ax.set_xlim(0, 1000); ax.set_ylim(-90, 135)
     ax.set_xlabel('ρ [kg/m³]'); ax.set_ylabel('P [bar]')
     ax.set_title(f'One Peng-Robinson isotherm of CO₂ below T_c (T = {T:.0f} K): what a branch-locked request can be given', fontsize=10)
-    ax.grid(True, axis='y'); ax.legend(loc='lower right', fontsize=8, frameon=True, facecolor=SURF, edgecolor='none')
+    ax.grid(True, axis='y'); ax.legend(loc='lower left', fontsize=7, frameon=True, facecolor=SURF, edgecolor='none')
     save(fig, 'fig12_dome.png')
 
 # =============================================================================
@@ -503,20 +519,20 @@ def fig3d_combo():
     MODELC = [C['blue'], C['aqua'], C['yellow'], C['magenta']]
     fig, (ax, bx) = plt.subplots(1, 2, figsize=(12.5, 4.8), gridspec_kw={'width_ratios': [2.6, 1]})
     w = 0.22; x = np.arange(len(regs))
-    labels = [names[g].replace(', ', ',\n') for g in regs]
+    labels = ['single phase,\nfar from the dome', 'near the\nsaturation curve', 'metastable\ncontinuation', 'sub-triple']
     for i in range(1, 4):
         vals = [T[g][0] / T[g][i] for g in regs]; xs = x + (i - 2) * w
         ax.bar(xs, vals, width=w - 0.02, color=MODELC[i], edgecolor=SURF, linewidth=1, label=stages[i].replace('\n', ' '))
         for xi, v in zip(xs, vals): ax.text(xi, v + 0.15, f'{v:.1f}×', ha='center', va='bottom', fontsize=9, color=INK)
-    ax.axhline(1.0, color=INK2, lw=1.0, ls=':'); ax.text(3.45, 1.2, 'no structure = 1×', fontsize=9, color=INK2, ha='right')
+    ax.axhline(1.0, color=INK2, lw=1.0, ls=':'); ax.text(2.5, 1.25, 'no structure = 1×', fontsize=9, color=INK2, ha='center')
     ax.set_xticks(x); ax.set_xticklabels(labels, fontsize=9.5); ax.set_ylim(0, 12.5); ax.set_ylabel('improvement in temperature error  [×]')
-    ax.legend(loc='upper left', fontsize=9, frameon=False)
+    ax.legend(loc='lower center', bbox_to_anchor=(0.5, 1.0), ncol=3, fontsize=9, frameon=False)
     ax.set_title('Temperature error per regime, as a factor over the same net with no structure', fontsize=10, loc='left')
     ax.grid(True, axis='y')
     xx = np.arange(4)
     bx.plot(xx, P, '-o', color=INK, lw=2.4, ms=7, mec=SURF, mew=1)
-    for xi, p in zip(xx, P): bx.text(xi, p * 1.3, f'{p:.1e}', ha='center', fontsize=8.5, color=INK)
+    for xi, p in ((xx[0], P[0]), (xx[-1], P[-1])): bx.text(xi, p * 1.3, f'{p:.1e}', ha='center', fontsize=8.5, color=INK)
     bx.text(1.3, 3.2e-3, f'{P[0]/P[-1]:.0f}× better', ha='center', va='center', fontsize=10, color=INK, fontweight='bold')
-    bx.set_yscale('log'); bx.set_ylim(5e-4, 2e-1); bx.set_xlim(-0.3, 3.5); bx.set_xticks(xx); bx.set_xticklabels(['none', '+ loci', '+ T − T$_{sat}$', '+ experts'], fontsize=9)
-    bx.set_ylabel('pressure error, all states  [relative rms]'); bx.set_title('Pressure error, all states', fontsize=10, loc='left'); bx.grid(True, axis='y')
+    bx.set_yscale('log'); bx.set_ylim(5e-4, 2e-1); bx.set_xlim(-0.3, 3.5); bx.set_xticks(xx); bx.set_xticklabels(['none', '+ loci', '+ T − T$_{sat}$', '+ experts'], fontsize=9, rotation=25, ha='right')
+    bx.set_ylabel('pressure error  [relative rms]'); bx.set_title('Pressure error, all states', fontsize=10, loc='left'); bx.grid(True, axis='y')
     fig.tight_layout(); save(fig, 'fig3d_combo.png')
