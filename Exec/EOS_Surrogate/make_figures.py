@@ -443,9 +443,9 @@ def fig12_dome():
     ax.text(0.5 * (rEV + rEL), yl, 'no state on\neither branch', ha='center', va='top', fontsize=9.5, color=INK)
     ax.text(0.5 * (rEL + rhoL), yl - 34, 'liquid,\nmetastable', ha='center', va='top', fontsize=9.5, color=INK)
     ax.text(992, yl, 'liquid,\nstable', ha='right', va='top', fontsize=9.5, color=INK)
-    ax.annotate('branch edge: (∂P/∂ρ)_T at the floor\nc² = 2500 m²/s²; past it the branch is\ncontinued with that slope, as a guard',
+    ax.annotate('branch edge, where slopes vanish',
                 xy=(rEL, P_of_rho(rEL) / 1e5), xytext=(515, -52), fontsize=9, color=INK, arrowprops=dict(arrowstyle='-', color=lb, lw=1.0))
-    ax.annotate('', xy=(rEV, P_of_rho(rEV) / 1e5), xytext=(515, -34), arrowprops=dict(arrowstyle='-', color=lo, lw=1.0))
+    ax.annotate('', xy=(rEV, P_of_rho(rEV) / 1e5), xytext=(560, -46), arrowprops=dict(arrowstyle='-', color=lo, lw=1.0))
     ax.annotate('saturation', xy=(rhoL, Psat / 1e5), xytext=(470, 72), fontsize=9, color=INK, ha='center', arrowprops=dict(arrowstyle='-', color=INK2, lw=0.8))
     ax.annotate('', xy=(rhoV, Psat / 1e5), xytext=(470, 72), arrowprops=dict(arrowstyle='-', color=INK2, lw=0.8))
     ax.set_xlim(0, 1000); ax.set_ylim(-90, 135)

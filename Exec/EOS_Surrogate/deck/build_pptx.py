@@ -36,6 +36,7 @@ FIGS = {
     'd117bb9fd4879616e4ff6232948fe1d8': 'fig6_stage_split_linear.png',
     '40ab9c90e8b0bf24e5a23cae82ec892c': 'fig11_edge_table.png',
     '15893f80c2d8672f744fd9c512946a9e': 'fig12_dome.png',
+    'ed8d23a9d52717b288c587633c0a6e64': 'fig12_dome.png',
 }
 
 INK = RGBColor(0x14, 0x21, 0x3d); INK2 = RGBColor(0x3d, 0x46, 0x54); MUTED = RGBColor(0x6a, 0x71, 0x79)
