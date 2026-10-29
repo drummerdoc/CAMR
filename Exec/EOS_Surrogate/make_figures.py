@@ -536,3 +536,67 @@ def fig3d_combo():
     bx.set_yscale('log'); bx.set_ylim(5e-4, 2e-1); bx.set_xlim(-0.3, 3.5); bx.set_xticks(xx); bx.set_xticklabels(['none', '+ loci', '+ T − T$_{sat}$', '+ experts'], fontsize=9, rotation=25, ha='right')
     bx.set_ylabel('pressure error  [relative rms]'); bx.set_title('Pressure error, all states', fontsize=10, loc='left'); bx.grid(True, axis='y')
     fig.tight_layout(); save(fig, 'fig3d_combo.png')
+
+# =============================================================================
+# Figures requested 2026-10-29 for the PowerPoint version of the talk (large text, few elements).
+def fig13_accuracy_cost_five():
+    """Accuracy against cost, five labelled points, with a 'better' arrow toward the bottom left."""
+    pts = [('analytic,\n64-step bisection', 7.52, 1e-4, C['aqua'], 'o', (-16, 0), 'right', 'center'),
+           ('plain net (128×4, no structure)', 80.5, 0.314, C['magenta'], 'v', (-14, 0), 'right', 'center'),
+           ('structured net (routed experts)', 80.5, 0.123, C['magenta'], '^', (-14, 0), 'right', 'center'),
+           ('tables', 0.17, 0.0015, C['orange'], 's', (14, 0), 'left', 'center'),
+           ('net as starting guess\n+ 2 Newton steps', 9.6, 1e-4, C['magenta'], 'D', (16, 0), 'left', 'center')]
+    fig, ax = plt.subplots(figsize=(9, 6))
+    for name, ns, err, col, mk, off, ha, va in pts:
+        ax.scatter(ns, err, s=140, c=col, marker=mk, edgecolors=SURF, linewidths=1, zorder=3)
+        ax.annotate(name, (ns, err), xytext=(off[0] * _FS, off[1] * _FS), textcoords='offset points', fontsize=11, ha=ha, va=va, color=INK)
+    ax.axhspan(5e-5, 2e-4, color=GRID, zorder=0); ax.text(330, 2.4e-4, 'exact (analytic accuracy)', fontsize=10, color=INK2, va='bottom', ha='right')
+    ax.annotate('', xy=(0.13, 2.5e-4), xytext=(1.4, 2.2e-2), arrowprops=dict(arrowstyle='-|>', color=INK, lw=2.5, mutation_scale=22))
+    ax.text(0.5, 3e-3, 'better', fontsize=13, fontweight='bold', color=INK, ha='center', rotation=42)
+    ax.set_xscale('log'); ax.set_yscale('log'); ax.set_xlim(0.07, 400); ax.set_ylim(5e-5, 3)
+    ax.set_xlabel('time per EOS call  [ns]'); ax.set_ylabel('temperature error  [K rms]')
+    ax.grid(True, axis='both'); save(fig, 'fig13_accuracy_cost_five.png')
+
+def fig14_memory_growth(gpu_gb=96):
+    """Table size against number of impurities on a log axis, the net flat at 400 KB, the GPU's memory as a line."""
+    n = [0, 1, 2]; table = [3e6, 200e6, 12e9]; net = 400e3
+    fig, ax = plt.subplots(figsize=(8, 5.5))
+    ax.plot(n, table, '-o', color=C['orange'], lw=3, ms=10, mec=SURF, label='bicubic tables')
+    ax.plot(n, [net] * 3, '-s', color=C['magenta'], lw=3, ms=10, mec=SURF, label='50 000-parameter net')
+    ax.axhline(gpu_gb * 1e9, color=INK2, lw=1.5, ls='--'); ax.text(1.98, gpu_gb * 1e9 * 1.35, f'GPU memory, {gpu_gb} GB', ha='right', fontsize=10, color=INK2)
+    for xi, v, lab in zip(n, table, ['3 MB', '200 MB', '12 GB']): ax.text(xi, v * 1.6, lab, ha='center', fontsize=11, color=INK)
+    ax.text(1.0, net * 1.6, '400 KB', ha='center', fontsize=11, color=INK)
+    ax.set_yscale('log'); ax.set_ylim(1e5, 5e11); ax.set_xticks(n); ax.set_xticklabels(['pure CO₂', 'one impurity', 'two impurities'])
+    ax.set_yticks([1e6, 1e9]); ax.set_yticklabels(['1 MB', '1 GB']); ax.set_xlim(-0.3, 2.3)
+    ax.set_ylabel('size'); ax.set_xlabel('composition axes (64 points each)'); ax.legend(loc='center left', bbox_to_anchor=(0.0, 0.62), fontsize=10, frameon=False)
+    ax.grid(True, axis='y'); save(fig, 'fig14_memory_growth.png')
+
+def fig15_layers_three(quantity='T'):
+    """Three bars: the improvement over the plain net after each layer of structure, all deployment states."""
+    models, stages, regs, names, T, P = _regime_table()
+    r2 = rows(os.path.join(HERE, 'results', 'deploy_w128d4_e8000.csv')); rx = rows(os.path.join(HERE, 'results', 'deploy_w128d4_e8000_experts_wp0.csv'))
+    def get(rs, m, col):
+        for r in rs:
+            if r['model'] == m and r['evalset'] == 'deploy-holdout' and r['regime'] == 'all': return float(r[col])
+    col = 'rmsT_K' if quantity == 'T' else 'relP_rms'
+    vals = [get(r2, 'mono', col) / get(rx if m == 'experts' else r2, m, col) for m in ['dome', 'domeres', 'experts']]
+    labels = ['traced loci\nas inputs', '+ T − T$_{sat}$\nas target', '+ one net\nper region']
+    fig, ax = plt.subplots(figsize=(7.5, 5.5))
+    bars = ax.bar(range(3), vals, color=[C['aqua'], C['yellow'], C['magenta']], edgecolor=SURF, linewidth=1, width=0.6)
+    for xi, v in enumerate(vals): ax.text(xi, v + max(vals) * 0.02, f'{v:.1f}×', ha='center', va='bottom', fontsize=13, color=INK, fontweight='bold')
+    ax.axhline(1.0, color=INK2, lw=1.0, ls=':'); ax.text(2.35, 1.0, 'plain net = 1×', ha='right', va='bottom', fontsize=10, color=INK2)
+    ax.set_xticks(range(3)); ax.set_xticklabels(labels); ax.set_ylim(0, max(vals) * 1.18); ax.set_xlim(-0.6, 2.6)
+    ax.set_ylabel('improvement in %s error over the plain net  [×]' % ('temperature' if quantity == 'T' else 'pressure'))
+    ax.grid(True, axis='y'); save(fig, f'fig15_layers_three_{quantity}.png')
+
+def fig16_gpu_two_bars():
+    """The two GPU gains on two axes, so they are not read as the same quantity."""
+    fig, (ax, bx) = plt.subplots(1, 2, figsize=(8, 5))
+    for a, v, lab, col, ylab in ((ax, 50, 'multiphase\nsource terms', C['orange'], 'speed-up of the per-cell cost  [×]'),
+                                 (bx, 1.75, 'whole\nproduction run', C['blue'], 'speed-up of the wall time  [×]')):
+        a.bar([0], [v], color=col, edgecolor=SURF, width=0.5)
+        a.text(0, v * 1.03, f'{v:g}×', ha='center', va='bottom', fontsize=15, fontweight='bold', color=INK)
+        a.set_xticks([0]); a.set_xticklabels([lab]); a.set_xlim(-0.6, 0.6); a.set_ylim(0, v * 1.25); a.set_ylabel(ylab); a.grid(True, axis='y')
+    ax.set_title('source terms rewritten on the\nforward surface + branch-edge table', fontsize=10, loc='left')
+    bx.set_title('same run, all stages', fontsize=10, loc='left')
+    fig.tight_layout(); save(fig, 'fig16_gpu_two_bars.png')
