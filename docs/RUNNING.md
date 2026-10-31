@@ -101,6 +101,7 @@ The table below is built from the read sites in `Source/` (`pp.query`, `pp.conta
 | `ps_bc_nscbc_form` | `pin` | NSCBC incoming-invariant model: `pin` (far-field pin) or `rate` (Poinsot–Lele rate, σ as in the literature; not validated on the jet). `value` is retired and aborts. Force-added. | production (`pin`); `rate` alternative |
 | `ps_bc_nscbc_sigma` | 0.25 | The rate form's coefficient; ignored by `pin`. | alternative |
 | `ps_bc_nscbc_order` | 2 | Extrapolation order of the outgoing invariant (1 or 2). | production |
+| `ps_bc_nscbc_backflow` | 0 | 1 bounds the incoming invariant below by the pin (a far field may follow a through-flow out but never drives fluid in), dispatches the fan on the selected ghost's own jump, and starts the fan at max(P_eq, P_N); inert under `pin`, meant for `rate` on a through-flow face. Force-added. | experimental (`FUTURE_WORK.md` §7, [DECIDE-34]) |
 | `ps_bc_nscbc_{x,y,z}{lo,hi}` | −1 | Per-face NSCBC enable: 0, 1, or unset (inherits `ps_bc_use_nscbc`). Resolved values force-added. | production |
 | `ps_bc_p_amb_{x,y,z}{lo,hi}` | −1 | Per-face far-field pressure [Pa]; unset inherits `prob.p_amb`. Force-added. | production |
 | `ps_validate` | 0 | Reference-free invariant sweep V1–V7 at every diagnostic point: 1 count and report, 2 abort on the first bulk violation. | diagnostic (kept) |
@@ -266,7 +267,7 @@ together with `[PS-GATE]` (presence-gate refusals, all modes) and `[PS-FLASH-REF
 
 `CAMR.ps_strict_eos=<bitmask>` turns silent EOS repairs into an abort that prints the offending input (bit 1 no root, bit 2 pressure-floor substitution, bit 4 the 1 K iterate clamp), the instrument for the floor/no-root census of the acceptance basis. A `USE_PS_DIAG=TRUE` build additionally accepts `ps_dt_diag=1` (which cell sets Δt), `ps_cell_diag=<i>` (one cell's state per stage), `ps_llf_diag=1`, and `ps_floor_diag=1` (`[PS-FLOOR] step .. eos_calls=.. T_clamp_1K=.. nonconv_LOCKED=.. nonconv_detect=..`).
 
-Every plotfile and checkpoint carries a `job_info` file with the full ParmParse table (`Utils/CAMR_io.cpp`). Dials whose resolved value matters even when the deck is silent are force-added to that table at their read site: `ps_flux`, `ps_do_relax`, `ps_strang`, `ps_bc_use_nscbc`, `ps_bc_nscbc_sigma`, `ps_bc_nscbc_order`, the six per-face NSCBC enables and six per-face ambient targets after inheritance, `gerg_ext_c`, `lazy_temp`, `ppm_trace_sources`. `job_info` is therefore the record of what a plotfile was made with; a key that does not appear there was not read. An exact 1.000 rel-L2 in a comparison means an absent field, not bad physics.
+Every plotfile and checkpoint carries a `job_info` file with the full ParmParse table (`Utils/CAMR_io.cpp`). Dials whose resolved value matters even when the deck is silent are force-added to that table at their read site: `ps_flux`, `ps_do_relax`, `ps_strang`, `ps_bc_use_nscbc`, `ps_bc_nscbc_sigma`, `ps_bc_nscbc_order`, `ps_bc_nscbc_backflow`, the six per-face NSCBC enables and six per-face ambient targets after inheritance, `gerg_ext_c`, `lazy_temp`, `ppm_trace_sources`. `job_info` is therefore the record of what a plotfile was made with; a key that does not appear there was not read. An exact 1.000 rel-L2 in a comparison means an absent field, not bad physics.
 
 ## 7. Plotfile tools
 

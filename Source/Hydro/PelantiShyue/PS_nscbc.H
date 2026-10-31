@@ -17,6 +17,9 @@
 //               K = σ(1 − M²)c/L_ref       (Poinsot–Lele; σ as in the
 //               literature, a relaxation rate, mesh-independent; an
 //               alternative for through-flow faces, not yet validated)
+//      backflow: R- = max(R-_form, R-_pin): the far field may move out
+//               with a through-flow but never drives fluid in, so inflow
+//               keeps the pin's restoring (docs/FUTURE_WORK.md §7)
 //      u_g = ½(R+ + R-),  P_g = ½ρc(R+ − R-).
 //  Ghost thermodynamics never inverts (ρ, P): each present phase moves
 //  along its own isentrope by the common dP, in one linearised step or
@@ -31,8 +34,8 @@
 //  Supersonic outflow copies; supersonic inflow, a non-finite impedance,
 //  inconsistent six-equation slots and an unresolvable fan refuse to a
 //  counted zero-gradient copy ([PS-GUARD] nscbc_zg *).  No state is
-//  manufactured.  Dials (ps_bc_nscbc_form, _sigma, _order, p_amb) are
-//  read in Utils/BCfill.cpp and arrive through Params.
+//  manufactured.  Dials (ps_bc_nscbc_form, _sigma, _order, _backflow,
+//  p_amb) are read in Utils/BCfill.cpp and arrive through Params.
 // =====================================================================
 
 #ifdef USE_PS_HYDRO
@@ -52,11 +55,15 @@ namespace PS_NSCBC {
 // Incoming-invariant model (file header): pin, rate.
 enum Form : int { FORM_PIN = 1, FORM_RATE = 2 };
 
+// Ghost construction taken by outflow_face, reported to diagnostics only.
+enum Branch : int { BR_ZG = 0, BR_SUPERSONIC = 1, BR_SMALL = 2, BR_FAN = 3 };
+
 // Runtime tunables, resolved in BCfill.cpp (dials documented there).
 struct Params {
     amrex::Real P_amb   = amrex::Real(1.01325e5);   // Pa, far-field pressure of this face
     amrex::Real sigma   = amrex::Real(0.25);        // rate form: Poinsot-Lele coefficient (pin ignores it)
     int         form    = FORM_PIN;                 // incoming-invariant model
+    int         backflow = 0;                       // 1: R- bounded below by the pin (inert under pin)
     amrex::Real L_ref   = amrex::Real(1.0);         // m, domain extent along the face normal (rate form)
     PsPres      pres{};                              // presence params (by value)
     // R+ extrapolation: 1 = copy R+_N (reproduces the standalone driver's
@@ -208,7 +215,8 @@ _hem_reclose(amrex::Real P,
 //  de_k = (P_k/rho_k²) drho_k, from the same host-slaved decomposition
 //  the wave speed uses, so ghost phase states are perturbations of
 //  admissible interior states; the mixture is assembled from the phases.
-//  UTEMP is zero-gradient (diagnostic slot).
+//  UTEMP is zero-gradient (diagnostic slot).  A non-null branch receives
+//  the Branch taken (the plotfile probe's report; the fill passes none).
 // ---------------------------------------------------------------------
 AMREX_GPU_HOST_DEVICE
 AMREX_FORCE_INLINE
@@ -221,9 +229,11 @@ outflow_face(const amrex::Real s_N  [NVAR],
              int               sgn,
              int               layer_offset,
              Params const&     p,
-             amrex::Real       s_ghost[NVAR]) noexcept
+             amrex::Real       s_ghost[NVAR],
+             int*              branch = nullptr) noexcept
 {
     using amrex::Real;
+    if (branch != nullptr) { *branch = BR_ZG; }
 
     // ---- 1. Mixture primitives at N, N-1, N-2 ---------------------
     Real rho_N,   ux_N,   uy_N,   uz_N,   e_N,   P_N;
@@ -277,6 +287,7 @@ outflow_face(const amrex::Real s_N  [NVAR],
     // ---- 3. Mach dispatch -----------------------------------------
     if (Mach_N >= Real(1.0)) {
         // Supersonic outflow: no characteristic enters; the copy is exact.
+        if (branch != nullptr) { *branch = BR_SUPERSONIC; }
         _zero_gradient_ghost(s_N, s_ghost);
         return;
     }
@@ -328,13 +339,27 @@ outflow_face(const amrex::Real s_N  [NVAR],
     } else {
         Rm_target = Rm_pin;
     }
+    // Backflow bound: R-_pin is the incoming invariant of a far field at
+    // rest; a larger R- is a far field moving outward with the flow, a
+    // smaller one a far field driving fluid in, which a quiescent ambient
+    // cannot do.  So the form's R- is used only above the pin: outflow on
+    // or above the pin's simple wave u_out = (P_N - P_amb)/rho c keeps the
+    // form (with its low-frequency reflection), while a face at rest under
+    // an overpressure and every inflow at or above P_amb take the pin
+    // (under pin the bound is the identity).  max() is continuous.
+    if (p.backflow != 0) {
+        Rm_target = amrex::max(Rm_target, Rm_pin);
+    }
 
     Real un_out_g = Real(0.5) * (Rp_ghost + Rm_target);
     Real P_g      = Real(0.5) * rho_c * (Rp_ghost - Rm_target);
     // Far-field jump for the fan dispatch: the form's own ghost pressure
-    // except under the rate form, whose per-fill increment is O(dx/L_ref)
-    // of the jump and would never reach the fan on a blowdown.
-    const Real P_disp = (p.form == FORM_RATE)
+    // except under the bare rate form, whose per-fill increment is
+    // O(dx/L_ref) of the jump and would never reach the fan on a blowdown.
+    // With the backflow bound a face at rest under a blowdown takes the pin
+    // through max(), so the selected ghost's own pressure dispatches, and
+    // a through-flow at P_amb stays off the fan.
+    const Real P_disp = (p.form == FORM_RATE && p.backflow == 0)
                       ? Real(0.5) * rho_c * (Rp_ghost - Rm_pin) : P_g;
 
     // Ghost pressure floor max(1e-3 P_amb, 1 Pa).
@@ -444,8 +469,12 @@ outflow_face(const amrex::Real s_N  [NVAR],
         Real u_out = un_out_N;
         //  The fan is an equilibrium path, so it starts from P_eq: a
         //  metastable cell first equilibrates isochorically (no velocity
-        //  change), then expands.
-        Real P_cur = P_eq;
+        //  change), then expands.  With the backflow bound only a flash
+        //  potential (P_eq > P_N) moves the start: P_eq < P_N is a vapour
+        //  carrying superheated droplets, not a flash (B-5), and a start
+        //  below P_N compresses toward P_amb, adding inflow velocity to the
+        //  ghost of an inflow cell (the reversed-flow pump).
+        Real P_cur = (p.backflow != 0) ? amrex::max(P_eq, P_N) : P_eq;
         //  Full choked fan toward the face ambient.
         const Real P_t =
             amrex::max(p.P_amb, amrex::max(Real(1.0e-3) * p.P_amb, Real(ps_guard::P_FLOOR_PA)));
@@ -565,6 +594,7 @@ outflow_face(const amrex::Real s_N  [NVAR],
         _zero_gradient_ghost(s_N, s_ghost);
         return;
     }
+    if (branch != nullptr) { *branch = small_signal ? BR_SMALL : BR_FAN; }
     const Real un_int_g = n_sgn * un_out_g;
 
     Real ux_g = ph.ux, uy_g = ph.uy, uz_g = ph.uz;

@@ -17,7 +17,10 @@
 //  pressure, its gap to the equilibrium EOS::REY2P(rho, e), the share of
 //  cells the flash-potential trigger sends to the fan (B-5), the ghost
 //  pressure and velocity against the order-1 Hedstrom target, and the
-//  zero-gradient fallbacks.  In 1-D each face cell is also printed.
+//  zero-gradient fallbacks.  A second table splits the cells by flow sign
+//  and by the ghost branch taken, with the ghost velocity against the
+//  interior one (a ghost inflow faster than the interior's is the
+//  reversed-flow pump).  In 1-D each face cell is also printed.
 //  CPU builds, any dimension.
 // ---------------------------------------------------------------------
 #include <string>
@@ -61,6 +64,7 @@ inline int ps_nscbc_probe(const std::string& plt, amrex::Real p_amb_global)
         amrex::ParmParse pp("CAMR");
         pp.query("ps_bc_nscbc_sigma", prm.sigma);
         pp.query("ps_bc_nscbc_order", prm.nscbc_order);
+        pp.query("ps_bc_nscbc_backflow", prm.backflow);
         std::string fm = "pin";
         pp.query("ps_bc_nscbc_form", fm);
         if (fm != "pin" && fm != "rate") {
@@ -78,12 +82,16 @@ inline int ps_nscbc_probe(const std::string& plt, amrex::Real p_amb_global)
     amrex::Print() << "[nscbc-probe] " << plt << "  t = " << pf.time()
                    << "  P_amb = " << Pinf << "  form = " << prm.form
                    << "  sigma = " << prm.sigma
-                   << "  order = " << prm.nscbc_order << "\n";
+                   << "  order = " << prm.nscbc_order
+                   << "  backflow = " << prm.backflow << "\n";
 
     // Accumulators per class (0 single-phase / trace, 1 two-phase).
     struct Acc { double n=0, Pmix=0, Prey=0, u=0, rc=0, Phed=0, uhed=0,
                  Pg=0, ug=0, flash=0, zg=0; };
     Acc acc[2];
+    // Per flow sign (0 outflow, 1 inflow) x branch (PS_NSCBC::Branch).
+    struct Br { double n=0, u=0, ug=0, dP=0, peq=0, pump=0; };
+    Br br[2][4];
 
     const int fl = pf.finestLevel();
     for (int lev = 0; lev <= fl; ++lev) {
@@ -142,12 +150,16 @@ inline int ps_nscbc_probe(const std::string& plt, amrex::Real p_amb_global)
                 if (ph.m2 > ps_const::M_TINY) cap0 = amrex::min(cap0, Real(0.05) * ph.rho2 * ph.c2 * ph.c2);
                 const bool flashing = (Prey - cs.P_mix > cap0);
                 Real g[NVAR];
-                PS_NSCBC::outflow_face(s[0], s[1], s[2], dx0, 0, -1, 1, prm, g);
+                int b = PS_NSCBC::BR_ZG;
+                PS_NSCBC::outflow_face(s[0], s[1], s[2], dx0, 0, -1, 1, prm, g, &b);
                 bool zg = true;
                 for (int n = 0; n < NVAR; ++n) if (g[n] != s[0][n]) { zg = false; break; }
                 const Real Pg = ps_cell_state(g, prm.pres).P_mix;
                 const Real ug = g[UMX] / g[URHO];
                 A.Pg += Pg; A.ug += ug; A.flash += flashing; A.zg += zg;
+                Br& B = br[(ux < Real(0.0)) ? 1 : 0][b];
+                B.n += 1; B.u += ux; B.ug += ug; B.dP += cs.P_mix - Pinf;
+                B.peq += Prey - cs.P_mix; B.pump += (ug < ux && ux < Real(0.0));
                 if (verbose) {
                     std::printf("[nscbc-probe] cell: alpha1 %.4f rho %.2f u %.2f  P_mix %.3f  REY2P %.3f bar%s | ghost P %.3f bar u %.2f%s\n",
                                 cs.alpha1, rho, ux, cs.P_mix/1e5, Prey/1e5, flashing ? " (flashing: fan)" : "",
@@ -166,6 +178,15 @@ inline int ps_nscbc_probe(const std::string& plt, amrex::Real p_amb_global)
                     "", bar(A.Pg/n - Pinf), A.ug/n, 100*A.flash/n, 100*A.zg/n);
         std::printf("[nscbc-probe] %-26s Hedstrom (o1): P-Pinf %7.3f bar  u %6.2f m/s\n",
                     "", bar(A.Phed/n - Pinf), A.uhed/n);
+    }
+    const char* blab[4] = {"zero-grad", "supersonic", "small-signal", "fan"};
+    const char* slab[2] = {"outflow", "inflow"};
+    for (int f = 0; f < 2; ++f) {
+        for (int b = 0; b < 4; ++b) {
+            const Br& B = br[f][b]; if (B.n == 0) continue; const double n = B.n;
+            std::printf("[nscbc-probe] %-7s %-12s cells %7.0f | u %8.2f -> ghost u %8.2f m/s | P_mix-Pinf %7.3f bar  REY2P-P_mix %+7.3f bar | ghost inflow faster than interior %5.1f%%\n",
+                        slab[f], blab[b], n, B.u/n, B.ug/n, bar(B.dP/n), bar(B.peq/n), 100*B.pump/n);
+        }
     }
     return 0;
 #endif

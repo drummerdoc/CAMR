@@ -86,9 +86,45 @@ Both modes seed a round-off mirror asymmetry at step 2 at the inlet jet edge (y-
 
 R-13 took the deck from 100–700 s to 18 s per coarse step, parity with mode 2, so none of these blocks production. Recorded so they are done in the right order and each through the contraction-free fingerprints: the double branch-locked inversion per EOS call (bit-identical, halves both modes); a cost-weighted distribution map (the slowest rank spent 4.4× the fastest in relaxation, two thirds of wall time waiting); the spinodal-edge memo, the warm start and the analytic $c_v$ (each re-baselined through the 1-D gate). The one structural GPU blocker, the `std::function` callback in `LoopOnCpu`, is removed (2026-09-25; the sweeps are `ParallelFor` over a device-callable `PsPhaseAPI`). The ~15 % of X3 sub-steps that still end non-converged at demo3 step 50 (unchanged by the Newton fix, so a different population from B9's two-cycle) is a derivation alongside §6.1, not a tolerance.
 
-## 7. NSCBC: the outlet plane and the σ term
+## 7. NSCBC: through-flow faces and the backflow bound
 
-Measured (`DESIGN_DECISIONS.md` B-4). The σ term in `PS_nscbc.H` is a partial reflection, never a restoring term, and σ = 0 puts the face exactly on the outgoing simple wave of a far field at rest ($u = (P - P_\infty)/\rho c$ to 1 %). The `pin` form of `CAMR.ps_bc_nscbc_form` (σ = 0 of the retired `value` form) is the default; the `rate` form carries Poinsot–Lele's σ with its literature meaning and at σ = 0.25 let the 3-D jet's outlet reverse (B-4). It is kept as an alternative; the open question is whether a stronger σ (1/K well inside the run time) holds a through-flow face, to be tested when a through-flow case needs it. What remains is not a boundary question: the demo3 jet reaches xhi overexpanded (12.7 bar, M 1.55) and recompresses at the outlet plane with 60–70 % of the face in reversed flow, because the domain ends before the shock-cell structure can form. Either extend the domain in x (the physical answer; cost scales with the extension at level 0 only if the tagging does not follow the jet) or state that the outlet plane is where the jet is forced to recompress. A supersonic-outflow branch is not needed: the face never exceeds $u_n/c_N = 0.9$.
+Measured (`DESIGN_DECISIONS.md` B-4). The σ term in `PS_nscbc.H` is a partial reflection, never a restoring term, and σ = 0 puts the face exactly on the outgoing simple wave of a far field at rest ($u = (P - P_\infty)/\rho c$ to 1 %). The `pin` form of `CAMR.ps_bc_nscbc_form` (σ = 0 of the retired `value` form) is the default and is the right face onto a quiescent far field. On the 2 m demo3 deck the jet reaches xhi overexpanded (12.7 bar, M 1.55) and recompresses at the outlet plane; a supersonic-outflow branch is not needed (the face never exceeds $u_n/c_N = 0.9$).
+
+**The pin on a through-flow face.** The same relation makes the pin a near-wall for a slow plume: steady flow out at $u$ needs $P - P_\infty = \rho c\,u$, and the plume can supply only its dynamic pressure $\tfrac12\rho u^2$, a factor $2/M$ less (≈ 12 at the 4 m deck's outlet, M ≈ 0.16). Measured on `demo3_3d_L4_rerun` (B-4): the plume decelerates from 32 to 6 m/s in the last 0.25 m, spreads over the whole face, and about two thirds of the arriving liquid volume flux accumulates in the last 0.5 m. The two `rate` settings measured fail the other way. σ = 0.25 (1/K ≈ 73 ms) and σ = 4 (1/K ≈ 5 ms on x-hi) both let reversed flow grow until x-hi is a net inlet. σ = 4 first held: at 40–45 ms the plume left at 24–31 m/s and three times the pin's liquid flux. By 49.5 ms inflow patches near −250 m/s covered four of the five faces, and the box was filling up. So no setting of the existing dials serves a through-flow face.
+
+**Mechanism of the reversal** (plotfile probe, `CAMR.ps_nscbc_probe`, branch table, on the σ = 4 x-hi face at 43.3 and 44.8 ms):
+- *No restoring on inflow.* Under `rate` the incoming invariant is the interior's to $O(\Delta x/L_{\mathrm{ref}})$, so an inflow cell's ghost copies its velocity (−7.5 → −7.3 m/s mean). The pin halves it (−7.5 → −2.6).
+- *The fan pumps.* Once the pinned jump $\tfrac12|\rho c\,u + P_\infty - P_N|$ exceeds one pack substep, the cell takes the choked fan, |u| ≳ 24 m/s here. The fan starts at $P_{\mathrm{eq}}$, which in droplet-laden vapour is about 0.6 bar below $P_N$. It then compresses up to $P_\infty$, which subtracts outward velocity. Inflow fan cells get a ghost faster inward than the interior (−46.0 → −47.6 m/s; two thirds of them).
+- *The fan holds back the plume.* Plume cells above ~24 m/s are also on the fan, where the ghost is pinned to $P_\infty$ and slowed by the same compression (53.4 → 48.9 m/s).
+
+**Proposed construction** (`[DECIDE-34]`, drafted behind `CAMR.ps_bc_nscbc_backflow`, default 0):
+1. $R^-_g = \max(R^-_{\mathrm{form}}, R^-_{\mathrm{pin}})$. $R^-_{\mathrm{pin}} = -P_\infty/\rho c$ is the incoming invariant of a far field at rest. A larger $R^-$ is a far field moving out with the flow; a smaller one is a far field driving fluid in, which a quiescent ambient cannot do. So:
+   - outflow on or above the pin's outgoing simple wave ($u_N \ge (P_N - P_\infty)/\rho c$) keeps the form's own invariant. That includes the outgoing wave of a blowdown, where the rate form's relaxation term tips max() to the form.
+   - a face at rest under an overpressure, and every inflow at or above $P_\infty$, take the pin;
+   - under `pin` the bound is the identity.
+
+   max() is continuous. The switch lies where the interior sits on the pin's outgoing simple wave, where the two agree. No new scale enters.
+2. The fan dispatch reads the selected ghost's own jump. A face at rest under a blowdown takes the pin through max() and reaches the fan, so the bare-rate special case (dispatch on the pinned jump) is not needed, and a through-flow at $P_\infty$ stays off the fan.
+3. The fan starts at $\max(P_{\mathrm{eq}}, P_N)$. Only a flash potential moves the start; $P_{\mathrm{eq}} < P_N$ is not a flash (B-5's own sign argument), and a start below $P_N$ is the compression that pumps.
+
+Probe on the same faces with `rate`, σ = 4, `backflow = 1`:
+- every outflow cell takes the small-signal rate ghost (36.2 → 35.6 m/s);
+- inflow small-signal cells are damped as under the pin (−7.5 → −2.6);
+- inflow fan cells are damped too (−46.0 → −42.3), with 0 % of inflow cells pumped;
+- on the pin run's 49.5 ms face the bound is inert under `pin`.
+
+Not addressed:
+- Inflow cells still take the interior's composition and entropy, not the ambient's. Under the pin that recycled 0.2–0.5 L/s of liquid against 17 L/s out. An ambient inflow state needs a per-problem far-field hook (the problem owns the ambient).
+- Supersonic inflow ($M \le -1$) remains the counted zero-gradient copy.
+- The rate form's $L_{\mathrm{ref}}$ is per face but σ is global.
+
+Measured against the pre-edit binary (T-Blowdown, 2-D, 2 ranks):
+- Inert at the default: the four orientation decks (pin) and the small-signal vent under `rate` σ = 4 are bit-identical at `backflow = 0`.
+- Inert under `pin`: the four orientation decks and the small-signal vent are bit-identical at `backflow = 1` too.
+- 100 → 1 bar blowdown under `rate` σ = 4: the vented mass is the pin's with and without the bound (5.81 % at 0.865 ms); the fan carries it.
+- Small-signal vent (105 → 100 bar) under `rate` σ = 4: the bound does not make rate vent like the pin. Mean $P - P_\infty$ is +0.02 bar at 7.5 ms under the pin, but −2.6 bar under bare rate and −3.6 bar with the bound. The tube rings as at a pressure-release end. That is the rate form's low-frequency reflection at $K = 4c/L$, which the bound inherits on outflow.
+
+So `rate` + `backflow` belongs on a through-flow face only, and the pin stays on faces onto a quiescent far field. On the demo3 deck that is x-hi against the four side faces, and needs the form (and σ) selectable per face, the `ps_bc_nscbc_{x,y,z}{lo,hi}` idiom of B-2. Next: a 2-D demo3 level-0 trio (pin, rate σ = 4, rate σ = 4 + backflow; x-hi reverses on 47–56 % of the face under the pin there), then the 3-D restart from `chk_sj3d_04500`.
 
 ## 8. The Corridor state: the two items downstream of the projection
 
