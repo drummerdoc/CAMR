@@ -116,7 +116,6 @@ Probe on the same faces with `rate`, σ = 4, `backflow = 1`:
 Not addressed:
 - Inflow cells still take the interior's composition and entropy, not the ambient's. Under the pin that recycled 0.2–0.5 L/s of liquid against 17 L/s out. An ambient inflow state needs a per-problem far-field hook (the problem owns the ambient).
 - Supersonic inflow ($M \le -1$) remains the counted zero-gradient copy.
-- The rate form's $L_{\mathrm{ref}}$ is per face but σ is global.
 
 Measured against the pre-edit binary (T-Blowdown, 2-D, 2 ranks):
 - Inert at the default: the four orientation decks (pin) and the small-signal vent under `rate` σ = 4 are bit-identical at `backflow = 0`.
@@ -124,7 +123,7 @@ Measured against the pre-edit binary (T-Blowdown, 2-D, 2 ranks):
 - 100 → 1 bar blowdown under `rate` σ = 4: the vented mass is the pin's with and without the bound (5.81 % at 0.865 ms); the fan carries it.
 - Small-signal vent (105 → 100 bar) under `rate` σ = 4: the bound does not make rate vent like the pin. Mean $P - P_\infty$ is +0.02 bar at 7.5 ms under the pin, but −2.6 bar under bare rate and −3.6 bar with the bound. The tube rings as at a pressure-release end. That is the rate form's low-frequency reflection at $K = 4c/L$, which the bound inherits on outflow.
 
-So `rate` + `backflow` belongs on a through-flow face only, and the pin stays on faces onto a quiescent far field. On the demo3 deck that is x-hi against the four side faces, and needs the form (and σ) selectable per face, the `ps_bc_nscbc_{x,y,z}{lo,hi}` idiom of B-2. Next: a 2-D demo3 level-0 trio (pin, rate σ = 4, rate σ = 4 + backflow; x-hi reverses on 47–56 % of the face under the pin there), then the 3-D restart from `chk_sj3d_04500`.
+So `rate` + `backflow` belongs on a through-flow face only, and the pin stays on faces onto a quiescent far field. On the demo3 deck that is x-hi against the four side faces. The form and σ are therefore selectable per face, the B-2 idiom: `CAMR.ps_bc_nscbc_form_{x,y,z}{lo,hi}` and `ps_bc_nscbc_sigma_{x,y,z}{lo,hi}`, where an unset face inherits the global key. Checked on T-Blowdown: a silent deck is bit-identical to the pre-edit binary; a per-face `rate` on the vent face is bit-identical to the global `rate`; and `rate` on a face without NSCBC is inert. Next: a 2-D demo3 level-0 trio (pin, rate σ = 4, rate σ = 4 + backflow; x-hi reverses on 47–56 % of the face under the pin there), then the 3-D restart from `chk_sj3d_04500`.
 
 ## 8. The Corridor state: the two items downstream of the projection
 

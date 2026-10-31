@@ -21,8 +21,11 @@ struct PCHypFillExtDir
   // owns problem-specific faces (the pipe-break rupture plane) that a
   // global switch would replace wholesale.
   amrex::GpuArray<int, 2*AMREX_SPACEDIM> use_nscbc_face;
-  amrex::Real nscbc_sigma;
-  int         nscbc_form;     // PS_NSCBC::Form: incoming-invariant model.
+  // Per-face rate coefficient and incoming-invariant model
+  // (PS_NSCBC::Form), indexed as use_nscbc_face, resolved in
+  // CAMR_bcfill_hyp (an unset face inherits the global key).
+  amrex::GpuArray<amrex::Real, 2*AMREX_SPACEDIM> sigma_face;
+  amrex::GpuArray<int, 2*AMREX_SPACEDIM>         form_face;
   int         nscbc_order;    // 1 or 2: R+ extrapolation order.
   int         nscbc_backflow; // 1: R- bounded below by the pin (PS_nscbc.H).
   // Per-face ambient pressure targets, indexed [2*idir + (0=lo,1=hi)];
@@ -35,8 +38,8 @@ struct PCHypFillExtDir
   AMREX_GPU_HOST
   explicit PCHypFillExtDir(const ProbParmDevice* d_prob_parm,
                            const amrex::GpuArray<int, 2*AMREX_SPACEDIM>& use_nscbc_face_,
-                           amrex::Real nscbc_sigma_,
-                           int         nscbc_form_,
+                           const amrex::GpuArray<amrex::Real, 2*AMREX_SPACEDIM>& sigma_face_,
+                           const amrex::GpuArray<int, 2*AMREX_SPACEDIM>& form_face_,
                            int         nscbc_order_,
                            int         nscbc_backflow_,
                            const amrex::GpuArray<amrex::Real, 2*AMREX_SPACEDIM>& p_amb_face_
@@ -46,8 +49,8 @@ struct PCHypFillExtDir
                            )
     : lprobparm(d_prob_parm)
     , use_nscbc_face(use_nscbc_face_)
-    , nscbc_sigma(nscbc_sigma_)
-    , nscbc_form(nscbc_form_)
+    , sigma_face(sigma_face_)
+    , form_face(form_face_)
     , nscbc_order(nscbc_order_)
     , nscbc_backflow(nscbc_backflow_)
     , p_amb_face(p_amb_face_)
@@ -150,8 +153,8 @@ struct PCHypFillExtDir
           const amrex::Real pf = p_amb_face[2*idir + ((sgn > 0) ? 0 : 1)];
           params.P_amb = (pf > amrex::Real(0.0)) ? pf : lprobparm->p_amb;
         }
-        params.sigma        = nscbc_sigma;
-        params.form         = nscbc_form;
+        params.sigma        = sigma_face[2*idir + ((sgn > 0) ? 0 : 1)];
+        params.form         = form_face[2*idir + ((sgn > 0) ? 0 : 1)];
         params.backflow     = nscbc_backflow;
         // Rate form: the relaxation rate is referenced to the domain
         // extent along the face normal, so sigma keeps its literature
@@ -228,6 +231,10 @@ CAMR_bcfill_hyp(
   //     through-flow faces).  The retired value form (sigma as a reflected
   //     fraction) aborts: DESIGN_DECISIONS.md B-4.
   //   CAMR.ps_bc_nscbc_sigma (0.25): the rate form's coefficient.
+  //   CAMR.ps_bc_nscbc_form_{x,y,z}{lo,hi}, ps_bc_nscbc_sigma_{x,y,z}{lo,hi}
+  //     (unset / negative sigma = inherit the global key): per-face form
+  //     and coefficient, so a through-flow face can run rate while faces
+  //     onto a quiescent far field keep the pin (FUTURE_WORK.md §7).
   //   CAMR.ps_bc_nscbc_order (2): R+ extrapolation order, 1 or 2.
   //   CAMR.ps_bc_nscbc_backflow (0): 1 bounds the incoming invariant
   //     below by the pin, so a far field may follow a through-flow out
@@ -241,8 +248,9 @@ CAMR_bcfill_hyp(
   // The resolved values (after the no-USE_PS_HYDRO force-off and the
   // order forcing) are added back to the table so job_info records the BC
   // path that actually ran even when the deck was silent.
-  struct NscbcCfg { int use; amrex::Real sigma; int form; int order; int backflow;
-                    std::string form_name;
+  struct NscbcCfg { int order; int backflow;
+                    amrex::GpuArray<amrex::Real, 2*AMREX_SPACEDIM> sface;
+                    amrex::GpuArray<int, 2*AMREX_SPACEDIM> fface;
                     amrex::GpuArray<amrex::Real, 2*AMREX_SPACEDIM> pamb;
                     amrex::GpuArray<int, 2*AMREX_SPACEDIM> uface; };
   static const NscbcCfg nscbc_cfg = []() -> NscbcCfg {
@@ -251,23 +259,40 @@ CAMR_bcfill_hyp(
     int od = 2;
     int bf = 0;
     std::string fm = "pin";
-    int fi = 1;
     amrex::ParmParse pp("CAMR");
     pp.query("ps_bc_use_nscbc",   u);
     pp.query("ps_bc_nscbc_sigma", sg);
     pp.query("ps_bc_nscbc_form",  fm);
     pp.query("ps_bc_nscbc_order", od);
     pp.query("ps_bc_nscbc_backflow", bf);
+    static const char* fnm[6] = {"xlo","xhi","ylo","yhi","zlo","zhi"};
+    // Per-face form and sigma; unset inherits the global key.
+    std::string ffs[2*AMREX_SPACEDIM];
+    amrex::GpuArray<amrex::Real, 2*AMREX_SPACEDIM> sf;
+    amrex::GpuArray<int, 2*AMREX_SPACEDIM> ff;
+    for (int f = 0; f < 2*AMREX_SPACEDIM; ++f) {
+      ffs[f] = fm;
+      sf[f] = amrex::Real(-1.0);
+      pp.query((std::string("ps_bc_nscbc_form_") + fnm[f]).c_str(), ffs[f]);
+      pp.query((std::string("ps_bc_nscbc_sigma_") + fnm[f]).c_str(), sf[f]);
+      if (sf[f] < amrex::Real(0.0)) { sf[f] = sg; }
+      ff[f] = 1;
+    }
 #ifdef USE_PS_HYDRO
-    if      (fm == "pin")   { fi = PS_NSCBC::FORM_PIN; }
-    else if (fm == "rate")  { fi = PS_NSCBC::FORM_RATE; }
-    else if (fm == "value") {
-      amrex::Abort("CAMR.ps_bc_nscbc_form=value is retired: sigma as a "
-                   "reflected fraction is a partial reflection (B-4).  Use "
-                   "pin (its sigma=0 limit, the production form) or rate.");
-    } else {
-      amrex::Abort("CAMR.ps_bc_nscbc_form: accepts pin or rate "
-                   "(got '" + fm + "').");
+    auto form_of = [] (const std::string& key, const std::string& v) -> int {
+      if (v == "pin")  { return PS_NSCBC::FORM_PIN; }
+      if (v == "rate") { return PS_NSCBC::FORM_RATE; }
+      if (v == "value") {
+        amrex::Abort("CAMR." + key + "=value is retired: sigma as a "
+                     "reflected fraction is a partial reflection (B-4).  Use "
+                     "pin (its sigma=0 limit, the production form) or rate.");
+      }
+      amrex::Abort("CAMR." + key + ": accepts pin or rate (got '" + v + "').");
+      return 0;
+    };
+    form_of("ps_bc_nscbc_form", fm);
+    for (int f = 0; f < 2*AMREX_SPACEDIM; ++f) {
+      ff[f] = form_of(std::string("ps_bc_nscbc_form_") + fnm[f], ffs[f]);
     }
     if (sg < amrex::Real(0.0)) {
       amrex::Abort("CAMR.ps_bc_nscbc_sigma must be >= 0.");
@@ -328,6 +353,11 @@ CAMR_bcfill_hyp(
     pp.add("ps_bc_nscbc_form",  fm);
     pp.add("ps_bc_nscbc_order", od);
     pp.add("ps_bc_nscbc_backflow", bf);
+    // Resolved per-face form and sigma -> job_info.
+    for (int f = 0; f < 2*AMREX_SPACEDIM; ++f) {
+      pp.add((std::string("ps_bc_nscbc_form_") + fnm[f]).c_str(), ffs[f]);
+      pp.add((std::string("ps_bc_nscbc_sigma_") + fnm[f]).c_str(), sf[f]);
+    }
     // Resolved per-face NSCBC enables -> job_info (0/1, after inheritance).
     pp.add("ps_bc_nscbc_xlo", uf[0]);
     pp.add("ps_bc_nscbc_xhi", uf[1]);
@@ -350,11 +380,9 @@ CAMR_bcfill_hyp(
     pp.add("ps_bc_p_amb_zlo", pa[4]);
     pp.add("ps_bc_p_amb_zhi", pa[5]);
 #endif
-    return NscbcCfg{u, sg, fi, od, bf, fm, pa, uf};
+    return NscbcCfg{od, bf, sf, ff, pa, uf};
   }();
-  const amrex::Real nscbc_sigma = nscbc_cfg.sigma;
-  const int         nscbc_form  = nscbc_cfg.form;
-  const int         nscbc_order = nscbc_cfg.order;
+  const int nscbc_order = nscbc_cfg.order;
 
   // One-time banner so run logs record which outflow BC path is in play.
   {
@@ -368,9 +396,19 @@ CAMR_bcfill_hyp(
       for (int f = 0; f < 2*AMREX_SPACEDIM; ++f) {
         amrex::Print() << ' ' << fnm[f] << '=' << nscbc_cfg.uface[f];
       }
+#ifdef USE_PS_HYDRO
+      amrex::Print() << ",  R- form per face:";
+      for (int f = 0; f < 2*AMREX_SPACEDIM; ++f) {
+        if (nscbc_cfg.uface[f] == 0) { continue; }
+        amrex::Print() << ' ' << fnm[f] << '=';
+        if (nscbc_cfg.fface[f] == PS_NSCBC::FORM_RATE) {
+          amrex::Print() << "rate(σ=" << nscbc_cfg.sface[f] << ')';
+        } else {
+          amrex::Print() << "pin";
+        }
+      }
+#endif
       amrex::Print()
-          << ",  R- form = " << nscbc_cfg.form_name
-          << ",  σ = " << nscbc_sigma
           << ",  R+ order = " << nscbc_order
           << ",  backflow = " << nscbc_cfg.backflow << "\n";
       banner_shown = true;
@@ -378,7 +416,7 @@ CAMR_bcfill_hyp(
   }
 
   amrex::GpuBndryFuncFab<PCHypFillExtDir> hyp_bndry_func(
-    PCHypFillExtDir{lprobparm, nscbc_cfg.uface, nscbc_sigma, nscbc_form,
+    PCHypFillExtDir{lprobparm, nscbc_cfg.uface, nscbc_cfg.sface, nscbc_cfg.fface,
                     nscbc_order, nscbc_cfg.backflow, nscbc_cfg.pamb
 #ifdef USE_PS_HYDRO
                     , ps_presence_params()   // host-side read

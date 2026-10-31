@@ -67,6 +67,10 @@ inline int ps_nscbc_probe(const std::string& plt, amrex::Real p_amb_global)
         pp.query("ps_bc_nscbc_backflow", prm.backflow);
         std::string fm = "pin";
         pp.query("ps_bc_nscbc_form", fm);
+        pp.query("ps_bc_nscbc_form_xhi", fm);          // the x-hi face's own, if set
+        Real sx = Real(-1.0);
+        pp.query("ps_bc_nscbc_sigma_xhi", sx);
+        if (sx >= Real(0.0)) { prm.sigma = sx; }
         if (fm != "pin" && fm != "rate") {
             amrex::Abort("CAMR.ps_bc_nscbc_form: accepts pin or rate (got '" + fm + "').");
         }
