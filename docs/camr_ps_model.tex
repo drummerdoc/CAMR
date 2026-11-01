@@ -174,10 +174,14 @@ nearest reachable state.
 \label{sec:sources}
 % =====================================================================
 
-The default relaxation is the \textbf{coupled X3 operator}
-(\code{ps\_relax\_mode}$=5$, the default and the acceptance configuration;
-an unrecognised or retired mode \emph{aborts} rather than falling
-through \src{PS\_relax.H}).  Per reaction substep
+The default relaxation is the \textbf{coupled X3 operator} in its
+flattened form X3F (\code{ps\_relax\_mode}$=6$, the default since
+2026-10-27: one Newton in $(\alpha_1, T_1, T_2, q, \mathrm{d}m)$ on the
+forward EOS, the same fixed point; \src{hem\_relax\_x3f.H},
+\code{DESIGN\_DECISIONS.md} O-29).  The nested X3
+(\code{ps\_relax\_mode}$=5$) stays as the control closure and passes the
+same acceptance gate; an unrecognised or retired mode \emph{aborts} rather
+than falling through \src{PS\_relax.H}).  Per reaction substep
 \src{CAMR\_advance.cpp}:
 \begin{equation}
   \text{hydro}\ \longrightarrow\
@@ -777,7 +781,7 @@ parameter & default & selects \\
 \code{ps\_wp\_order}         & 2 & limited second-order correction, \S\ref{sec:limiter}; 1 = first order \\
 \code{ps\_lw\_skip\_contact} & 2 & contact-wave correction: 0 full, 1 blanket drop, 2 the taper \eqref{eq:wckeep} \\
 \code{ps\_bl\_reflux}        & on & AMR reflux handling of the wp fluctuations ($\alpha$ co-move at the coarse-fine layer) \\
-\code{ps\_relax\_mode}       & 5 & X3 coupled relaxation \eqref{eq:chain}; 0 = mechanical only; 2 = finite-rate control closure; 1, 3, 4 abort \\
+\code{ps\_relax\_mode}       & 6 & X3 coupled relaxation \eqref{eq:chain}, flattened (X3F); 5 = nested X3 (control closure); 0 = mechanical only; 2 = finite-rate control closure; 1, 3, 4 abort \\
 \code{ps\_theta\_tau}        & $10^{-7}$~s & $\theta$ in \eqref{eq:thermal}; $\le0$ = joint $T$ constraint \\
 \code{ps\_mt\_srt\_d}        & 0.1~m & morphology length $D$ in \eqref{eq:srt} \\
 \code{ps\_mt\_srt\_delta}    & 0.01 & receiving-phase seed $\delta$ in \eqref{eq:srt} \\
