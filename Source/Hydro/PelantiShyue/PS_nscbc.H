@@ -64,7 +64,7 @@ struct Params {
     amrex::Real P_amb   = amrex::Real(1.01325e5);   // Pa, far-field pressure of this face
     amrex::Real sigma   = amrex::Real(0.25);        // rate form: Poinsot-Lele coefficient (pin ignores it)
     int         form    = FORM_PIN;                 // incoming-invariant model
-    int         backflow = 0;                       // 1: R- bounded below by the pin (inert under pin)
+    int         backflow = 1;                       // 1: R- bounded below by the pin (identity under pin)
     amrex::Real L_ref   = amrex::Real(1.0);         // m, domain extent along the face normal (rate form)
     PsPres      pres{};                              // presence params (by value)
     // R+ extrapolation: 1 = copy R+_N (reproduces the standalone driver's

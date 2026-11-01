@@ -44,7 +44,12 @@ CAMR.ps_bc_nscbc_ylo = 1    # per-face NSCBC outflow: lower edge of the full pla
 CAMR.ps_bc_nscbc_yhi = 1    # per-face NSCBC outflow: upper edge of the full plane
 CAMR.ps_bc_nscbc_zlo = 1    # z-lo as y-lo
 CAMR.ps_bc_nscbc_zhi = 1    # z-hi as y-hi
-# The incoming invariant is the far-field pin (CAMR.ps_bc_nscbc_form = pin, the default; B-4).
+# Incoming invariant: the far-field pin on the side faces (the default form, B-4).  x-hi carries the
+# plume through, so it runs the Poinsot-Lele rate form under the backflow bound (B-6): the pin would
+# demand P - P_amb = rho c u of the outflow and stall the plume at the face.
+CAMR.ps_bc_nscbc_form_xhi  = rate
+CAMR.ps_bc_nscbc_sigma_xhi = 4.0   # K = sigma (1 - M^2) c / L_x: 1/K ~ 5 ms on the 4 m domain, ~2.5 ms on 2 m
+CAMR.ps_bc_nscbc_backflow  = 1     # the default, pinned: unbounded rate reverses the face (B-4)
 CAMR.ps_lw_skip_contact = 2 # the default, pinned: the deck cannot silently run mode 0 on a stale executable
 CAMR.ps_wp_transverse = 0   # directionally split (no transverse term); the shear
                             # layer is resolved by ps_mu instead.  1 = contact-only

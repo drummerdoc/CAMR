@@ -732,9 +732,19 @@ $R^-_{\mathrm{targ}}=R^-_N+\ell\,\Delta x\,K(P_N-P_{\mathrm{amb}})
 /((c-u_{\mathrm{out}})\rho c)$ with $K=\sigma(1-M^2)c/L_{\mathrm{ref}}$,
 in which $\sigma$ has its literature meaning
 (\code{CAMR.ps\_bc\_nscbc\_sigma}, default 0.25), an alternative for
-through-flow faces that at $\sigma=0.25$ let the 3-D jet's outlet reverse
-(\code{DESIGN\_DECISIONS.md} B-4).  The fan dispatch reads the pinned
-far-field jump under every form.  The ambient pressure is \code{prob.p\_amb}, overridable
+through-flow faces.  Unbounded, it reverses the 3-D jet's outlet at
+$\sigma=0.25$ and at $\sigma=4$ (\code{DESIGN\_DECISIONS.md} B-4).  The
+\textbf{backflow bound} (\code{CAMR.ps\_bc\_nscbc\_backflow}, default 1;
+B-6) takes $R^-_{\mathrm{targ}}\leftarrow\max(R^-_{\mathrm{targ}},
+-P_{\mathrm{amb}}/\rho c)$: a far field may follow a through-flow out but
+never drives fluid in, so inflow keeps the pin's restoring.  The fan
+dispatch reads the selected ghost's jump, the fan starts at
+$\max(P_{\mathrm{eq}},P_N)$, and an inflow cell never takes the fan.
+Under \code{pin} the bound is the identity.  Form and $\sigma$ are
+selectable per face (\code{ps\_bc\_nscbc\_form\_*},
+\code{ps\_bc\_nscbc\_sigma\_*}); the pipe-break decks run their
+through-flow face, x-hi, on \code{rate} with $\sigma=4$ and the side
+faces on \code{pin}.  The ambient pressure is \code{prob.p\_amb}, overridable
 \emph{per face} via \code{CAMR.ps\_bc\_p\_amb\_\{x,y,z\}\{lo,hi\}}
 (sentinel $-1$ inherits).  The per-phase repack integrates the isentrope
 adaptively in pressure sub-steps capped at
@@ -784,7 +794,8 @@ parameter & default & selects \\
 \code{ps\_bc\_use\_nscbc}    & 0 & characteristic outflow on every \code{Inflow}-typed face, \S\ref{sec:nscbc} \\
 \code{ps\_bc\_nscbc\_\{x,y,z\}\{lo,hi\}} & $-1$ & per-face NSCBC enable (0/1; $-1$ inherits the global key) \\
 \code{ps\_bc\_p\_amb\_\{x,y,z\}\{lo,hi\}} & $-1$ & per-face ambient pressure [Pa] ($-1$ inherits \code{prob.p\_amb}) \\
-\code{ps\_bc\_nscbc\_sigma}  & 0.25 & the $\sigma$ term (a partial reflection; decks run 0) \\
+\code{ps\_bc\_nscbc\_sigma}  & 0.25 & the rate form's $\sigma$ (Poinsot--Lele); per face via \code{\_sigma\_\{x,y,z\}\{lo,hi\}} \\
+\code{ps\_bc\_nscbc\_backflow} & 1 & the backflow bound, \S\ref{sec:nscbc} (identity under \code{pin}) \\
 \bottomrule
 \end{tabular}
 \end{center}

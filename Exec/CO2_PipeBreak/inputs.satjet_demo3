@@ -8,8 +8,9 @@
 #  the default relaxation mode (6 since 2026-10-27; 2 before) with theta = 1e-3 s, flash off, ps_mu = 2)
 #  with three differences:
 #   (1) per-face characteristic (NSCBC) outflow on x-hi, y-lo and y-hi
-#       (ps_bc_nscbc_{xhi,ylo,yhi} = 1); the x-lo inlet face stays on
-#       bcnormal (global ps_bc_use_nscbc = 0);
+#       (ps_bc_nscbc_{xhi,ylo,yhi} = 1), x-hi on the rate form sigma = 4
+#       under the backflow bound; the x-lo inlet face stays on bcnormal
+#       (global ps_bc_use_nscbc = 0);
 #   (2) alpha-gradient refinement tag 0.01 instead of 0.1;
 #   (3) amr.n_error_buf 4 instead of 2, keeping coarse-fine faces off the
 #       tagged features.
@@ -43,7 +44,12 @@ CAMR.ps_bc_use_nscbc = 0    # global switch off: the x-lo reservoir inlet stays 
 CAMR.ps_bc_nscbc_xhi = 1    # per-face NSCBC outflow: downstream far field
 CAMR.ps_bc_nscbc_ylo = 1    # per-face NSCBC outflow: lower edge of the full plane
 CAMR.ps_bc_nscbc_yhi = 1    # per-face NSCBC outflow: upper edge of the full plane
-# The incoming invariant is the far-field pin (CAMR.ps_bc_nscbc_form = pin, the default; B-4).
+# Incoming invariant: the far-field pin on the side faces (the default form, B-4).  x-hi carries the
+# plume through, so it runs the Poinsot-Lele rate form under the backflow bound (B-6): the pin would
+# demand P - P_amb = rho c u of the outflow and stall the plume at the face.
+CAMR.ps_bc_nscbc_form_xhi  = rate
+CAMR.ps_bc_nscbc_sigma_xhi = 4.0   # K = sigma (1 - M^2) c / L_x: 1/K ~ 5 ms on the 4 m domain, ~2.5 ms on 2 m
+CAMR.ps_bc_nscbc_backflow  = 1     # the default, pinned: unbounded rate reverses the face (B-4)
 CAMR.ps_lw_skip_contact = 2 # the default, pinned: the deck cannot silently run mode 0 on a stale executable
 CAMR.ps_wp_transverse = 0   # directionally split (no transverse term); the shear
                             # layer is resolved by ps_mu instead.  1 = contact-only

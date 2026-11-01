@@ -86,7 +86,7 @@ Both modes seed a round-off mirror asymmetry at step 2 at the inlet jet edge (y-
 
 R-13 took the deck from 100–700 s to 18 s per coarse step, parity with mode 2, so none of these blocks production. Recorded so they are done in the right order and each through the contraction-free fingerprints: the double branch-locked inversion per EOS call (bit-identical, halves both modes); a cost-weighted distribution map (the slowest rank spent 4.4× the fastest in relaxation, two thirds of wall time waiting); the spinodal-edge memo, the warm start and the analytic $c_v$ (each re-baselined through the 1-D gate). The one structural GPU blocker, the `std::function` callback in `LoopOnCpu`, is removed (2026-09-25; the sweeps are `ParallelFor` over a device-callable `PsPhaseAPI`). The ~15 % of X3 sub-steps that still end non-converged at demo3 step 50 (unchanged by the Newton fix, so a different population from B9's two-cycle) is a derivation alongside §6.1, not a tolerance.
 
-## 7. NSCBC: through-flow faces and the backflow bound
+## 7. NSCBC: through-flow faces and the backflow bound — LANDED 2026-11-01 (B-6)
 
 Measured (`DESIGN_DECISIONS.md` B-4). The σ term in `PS_nscbc.H` is a partial reflection, never a restoring term, and σ = 0 puts the face exactly on the outgoing simple wave of a far field at rest ($u = (P - P_\infty)/\rho c$ to 1 %). The `pin` form of `CAMR.ps_bc_nscbc_form` (σ = 0 of the retired `value` form) is the default and is the right face onto a quiescent far field. On the 2 m demo3 deck the jet reaches xhi overexpanded (12.7 bar, M 1.55) and recompresses at the outlet plane; a supersonic-outflow branch is not needed (the face never exceeds $u_n/c_N = 0.9$).
 
@@ -97,7 +97,7 @@ Measured (`DESIGN_DECISIONS.md` B-4). The σ term in `PS_nscbc.H` is a partial r
 - *The fan pumps.* Once the pinned jump $\tfrac12|\rho c\,u + P_\infty - P_N|$ exceeds one pack substep, the cell takes the choked fan, |u| ≳ 24 m/s here. The fan starts at $P_{\mathrm{eq}}$, which in droplet-laden vapour is about 0.6 bar below $P_N$. It then compresses up to $P_\infty$, which subtracts outward velocity. Inflow fan cells get a ghost faster inward than the interior (−46.0 → −47.6 m/s; two thirds of them).
 - *The fan holds back the plume.* Plume cells above ~24 m/s are also on the fan, where the ghost is pinned to $P_\infty$ and slowed by the same compression (53.4 → 48.9 m/s).
 
-**Proposed construction** (`[DECIDE-34]`, drafted behind `CAMR.ps_bc_nscbc_backflow`, default 0):
+**The construction** (B-6; `CAMR.ps_bc_nscbc_backflow`, default 1 since 2026-11-01; landed behind a default-0 selector first):
 1. $R^-_g = \max(R^-_{\mathrm{form}}, R^-_{\mathrm{pin}})$. $R^-_{\mathrm{pin}} = -P_\infty/\rho c$ is the incoming invariant of a far field at rest. A larger $R^-$ is a far field moving out with the flow; a smaller one is a far field driving fluid in, which a quiescent ambient cannot do. So:
    - outflow on or above the pin's outgoing simple wave ($u_N \ge (P_N - P_\infty)/\rho c$) keeps the form's own invariant. That includes the outgoing wave of a blowdown, where the rate form's relaxation term tips max() to the form.
    - a face at rest under an overpressure, and every inflow at or above $P_\infty$, take the pin;
@@ -155,7 +155,12 @@ The plume crosses x-hi at its own speed and the liquid in the last half metre st
 - The face pressure dipped to −0.9 bar below P∞ at 45 ms as the denser plume arrived. It relaxed to −0.07 bar by 49.5 ms, the rate form's 1/K ≈ 5 ms.
 - The side faces draw more ambient in (net ~700 kg/s against ~0 under the pin) at pin-like speeds (≤ 7 m/s). That is the entrainment the larger x-hi outflow feeds.
 
-Open for the decision: flip the demo3 decks to x-hi `rate` + `backflow` (selector stage 2) or keep it opt-in; whether a larger x-hi σ is wanted to hold the arrival dip closer to P∞ (at the cost of more low-frequency reflection); the ambient-composition hook and the supersonic-inflow copy listed above.
+Decided 2026-11-01 (B-6): the default is 1, the demo3 decks run x-hi on `rate` σ = 4 under the bound with the side faces on the pin, σ stays at 4, and the flow-sign switch of item 4 is accepted. What remains here:
+- retire `backflow = 0` after one full production run on the new decks (selector stage 3);
+- revisit the x-hi σ if the arrival dip matters;
+- the ambient-composition hook and the supersonic-inflow construction, both parked as negligible under the bound.
+
+The 3-D run is continued to 100 ms (`run2.log` in the run folder) for a longer movie.
 
 ## 8. The Corridor state: the two items downstream of the projection
 

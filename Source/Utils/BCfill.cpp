@@ -236,10 +236,11 @@ CAMR_bcfill_hyp(
   //     and coefficient, so a through-flow face can run rate while faces
   //     onto a quiescent far field keep the pin (FUTURE_WORK.md §7).
   //   CAMR.ps_bc_nscbc_order (2): R+ extrapolation order, 1 or 2.
-  //   CAMR.ps_bc_nscbc_backflow (0): 1 bounds the incoming invariant
-  //     below by the pin, so a far field may follow a through-flow out
-  //     but never drives fluid in, and keeps inflow cells off the fan;
-  //     meant for rate on a through-flow face (FUTURE_WORK.md §7).
+  //   CAMR.ps_bc_nscbc_backflow (1): bounds the incoming invariant below
+  //     by the pin, so a far field may follow a through-flow out but never
+  //     drives fluid in, and keeps inflow cells off the fan; the identity
+  //     under pin.  0 is the unbounded rate form, refuted on the jet and
+  //     kept only until the stage-3 retirement (DESIGN_DECISIONS.md B-6).
   //   CAMR.ps_bc_p_amb_{x,y,z}{lo,hi} (-1 = inherit prob.p_amb): per-face
   //     ambient pressure, for problems whose two ends see different far
   //     fields.
@@ -257,7 +258,7 @@ CAMR_bcfill_hyp(
     int u = 0;
     amrex::Real sg = amrex::Real(0.25);
     int od = 2;
-    int bf = 0;
+    int bf = 1;
     std::string fm = "pin";
     amrex::ParmParse pp("CAMR");
     pp.query("ps_bc_use_nscbc",   u);
