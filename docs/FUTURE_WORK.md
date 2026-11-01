@@ -138,7 +138,24 @@ So `rate` + `backflow` belongs on a through-flow face only, and the pin stays on
 
 The pin is not bounded in 2-D either. The 2 m jet reaches x-hi overexpanded, and the probe puts its 47–59 % reversal in inflow fan cells whose ghost is faster inward than the interior in 93–100 % of them, under every variant before item 4. With item 4 the probe damps those cells on the P and RB faces at 24 ms (−113 → −54, −117 → −61 m/s; 0 and 5 % pumped). In the RB2 run the inflow stays below 55 m/s, the face has inflow-free spells (23–24 ms), the plume leaves at the speed it has at x = 1.75 m (95–147 m/s), and the domain mass falls instead of rising. The liquid drawn back in is 17 L/s/m against P's 112. The predictions written before launch were half right. P bounded: refuted. RB bounded: refuted. RB's net outflow at or above P's: confirmed. RB2's inflow below 100 m/s and mass below P's: confirmed.
 
-Item 4 is inert where it should be: on T-Blowdown the default and `pin` + `backflow = 1` stay bit-identical to the pre-edit binary on the four orientations and the small-signal vent. Next: the 3-D restart from `chk_sj3d_04500` with x-hi on `rate` σ = 4 + `backflow` and the side faces on the pin.
+Item 4 is inert where it should be: on T-Blowdown the default and `pin` + `backflow = 1` stay bit-identical to the pre-edit binary on the four orientations and the small-signal vent. **3-D, 4 m deck** (`demo3_3d_L4_rerun/rate_sig4_backflow_xhi`): restarted from `chk_sj3d_04500` (34.8 ms) to 55 ms, x-hi on `rate` σ = 4 + `backflow` (items 1–4, co2-eos 5972405), the four side faces on the pin; predictions in its `overrides.txt`. At the restart this binary agrees with the pin run's 16ead75 binary to ~1e-6 relative after 5 steps on the pin (the solver commits since), so the comparison is by face statistics. Level-0 face-section values on x-hi:
+
+| | pin 49.5 ms | backflow 49.5 ms | pin 55 ms | backflow 55 ms |
+|---|---|---|---|---|
+| plume u at x = 3.0 m → face [m/s] | 34.8 → 5.6 | 42.7 → 41.3 | 34.8 → 5.7 | 38.5 → 37.7 |
+| plume P − P∞ at the face [bar] | +0.59 | −0.07 | +0.62 | −0.26 |
+| plume area at the face [m²] | 0.97 | 0.39 | 1.00 | 0.49 |
+| mass out [kg/s] | 283 | 952 | 288 | 1025 |
+| liquid volume out / in [L/s] | 17.6 / 0.53 | 35.9 / 0.12 | 17.0 / 0.27 | 51.3 / 0.05 |
+| liquid in the last 0.5 m [cm³] | 766 | 450 | 895 | 512 |
+| fastest inflow on the face [m/s] | −6.4 | −2.6 | −3.6 | −3.8 |
+| domain mass [kg] | 182.2 | 181.2 | 182.6 | 181.4 |
+
+The plume crosses x-hi at its own speed and the liquid in the last half metre stays level (444–512 cm³ from 40 to 55 ms) instead of piling up. No inflow patch forms: rate σ = 4 without the bound reached −278 m/s by 49.5 ms. All five predictions held. The "domain mass within 1 kg of the pin's" note held at 49.5 ms (−1.0 kg) and narrowly missed at 55 ms (−1.2 kg, lower). Two transients:
+- The face pressure dipped to −0.9 bar below P∞ at 45 ms as the denser plume arrived. It relaxed to −0.07 bar by 49.5 ms, the rate form's 1/K ≈ 5 ms.
+- The side faces draw more ambient in (net ~700 kg/s against ~0 under the pin) at pin-like speeds (≤ 7 m/s). That is the entrainment the larger x-hi outflow feeds.
+
+Open for the decision: flip the demo3 decks to x-hi `rate` + `backflow` (selector stage 2) or keep it opt-in; whether a larger x-hi σ is wanted to hold the arrival dip closer to P∞ (at the cost of more low-frequency reflection); the ambient-composition hook and the supersonic-inflow copy listed above.
 
 ## 8. The Corridor state: the two items downstream of the projection
 
