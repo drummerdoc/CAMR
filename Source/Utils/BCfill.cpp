@@ -238,8 +238,8 @@ CAMR_bcfill_hyp(
   //   CAMR.ps_bc_nscbc_order (2): R+ extrapolation order, 1 or 2.
   //   CAMR.ps_bc_nscbc_backflow (0): 1 bounds the incoming invariant
   //     below by the pin, so a far field may follow a through-flow out
-  //     but never drives fluid in; inert under pin, meant for rate on a
-  //     through-flow face (FUTURE_WORK.md §7).
+  //     but never drives fluid in, and keeps inflow cells off the fan;
+  //     meant for rate on a through-flow face (FUTURE_WORK.md §7).
   //   CAMR.ps_bc_p_amb_{x,y,z}{lo,hi} (-1 = inherit prob.p_amb): per-face
   //     ambient pressure, for problems whose two ends see different far
   //     fields.

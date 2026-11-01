@@ -19,7 +19,8 @@
 //               alternative for through-flow faces, not yet validated)
 //      backflow: R- = max(R-_form, R-_pin): the far field may move out
 //               with a through-flow but never drives fluid in, so inflow
-//               keeps the pin's restoring (docs/FUTURE_WORK.md §7)
+//               keeps the pin's restoring; inflow cells never take the
+//               fan (docs/FUTURE_WORK.md §7)
 //      u_g = ½(R+ + R-),  P_g = ½ρc(R+ − R-).
 //  Ghost thermodynamics never inverts (ρ, P): each present phase moves
 //  along its own isentrope by the common dP, in one linearised step or
@@ -436,8 +437,16 @@ outflow_face(const amrex::Real s_N  [NVAR],
             ps_guard::count_nscbc_pmix_fail();
         }
     }
-    const bool small_signal = (std::abs(P_disp - P_N) <= cap0)
-                           && (P_eq - P_N <= cap0);
+    //  With the backflow bound an inflow cell never takes the fan: the fan
+    //  imposes P_amb along the outgoing characteristic and keeps the
+    //  interior's inflow velocity (plus the compression from P_N < P_amb),
+    //  which is the reversed-flow pump; the far field's own invariant, the
+    //  pin selected by the bound, is the inflow ghost.  A face at rest
+    //  (un_out_N = 0, a blowdown) keeps the fan.
+    const bool inflow_bound = (p.backflow != 0) && (un_out_N < Real(0.0));
+    const bool small_signal = inflow_bound
+                           || ((std::abs(P_disp - P_N) <= cap0)
+                               && (P_eq - P_N <= cap0));
 
     if (small_signal) {
         // ---- Small-signal branch: one linearised isentropic step. ----

@@ -106,12 +106,15 @@ Measured (`DESIGN_DECISIONS.md` B-4). The σ term in `PS_nscbc.H` is a partial r
    max() is continuous. The switch lies where the interior sits on the pin's outgoing simple wave, where the two agree. No new scale enters.
 2. The fan dispatch reads the selected ghost's own jump. A face at rest under a blowdown takes the pin through max() and reaches the fan, so the bare-rate special case (dispatch on the pinned jump) is not needed, and a through-flow at $P_\infty$ stays off the fan.
 3. The fan starts at $\max(P_{\mathrm{eq}}, P_N)$. Only a flash potential moves the start; $P_{\mathrm{eq}} < P_N$ is not a flash (B-5's own sign argument), and a start below $P_N$ is the compression that pumps.
+4. An inflow cell ($u_{\mathrm{out},N} < 0$) never takes the fan. The fan imposes $P_\infty$ along the outgoing characteristic and keeps the interior's inflow velocity, so it never resists inflow. Where $P_N < P_\infty$ it adds a compression toward $P_\infty$ that item 3 does not cover; the 2-D faces below sit there. The inflow ghost is the selected small-signal one, the pin by item 1. A face at rest ($u_{\mathrm{out},N} = 0$, a blowdown) keeps the fan. The switch is on the flow sign. The ghost state jumps there only for a face cell more than two pack substeps from $P_\infty$, and the flux of the advected quantities stays continuous, since their wave speed passes through zero. That trade against rule 12 is part of this decision.
 
 Probe on the same faces with `rate`, σ = 4, `backflow = 1`:
 - every outflow cell takes the small-signal rate ghost (36.2 → 35.6 m/s);
 - inflow small-signal cells are damped as under the pin (−7.5 → −2.6);
 - inflow fan cells are damped too (−46.0 → −42.3), with 0 % of inflow cells pumped;
 - on the pin run's 49.5 ms face the bound is inert under `pin`.
+
+With item 4, on the σ = 4 faces at 43.3 and 44.8 ms every inflow cell takes the pin's small-signal ghost (−8.0 → −2.9 and −14.1 → −6.2 m/s mean), with 0 % pumped. The 8 cells already past $M = -1$ in the 44.8 ms state stay on the zero-gradient copy.
 
 Not addressed:
 - Inflow cells still take the interior's composition and entropy, not the ambient's. Under the pin that recycled 0.2–0.5 L/s of liquid against 17 L/s out. An ambient inflow state needs a per-problem far-field hook (the problem owns the ambient).
@@ -123,7 +126,19 @@ Measured against the pre-edit binary (T-Blowdown, 2-D, 2 ranks):
 - 100 → 1 bar blowdown under `rate` σ = 4: the vented mass is the pin's with and without the bound (5.81 % at 0.865 ms); the fan carries it.
 - Small-signal vent (105 → 100 bar) under `rate` σ = 4: the bound does not make rate vent like the pin. Mean $P - P_\infty$ is +0.02 bar at 7.5 ms under the pin, but −2.6 bar under bare rate and −3.6 bar with the bound. The tube rings as at a pressure-release end. That is the rate form's low-frequency reflection at $K = 4c/L$, which the bound inherits on outflow.
 
-So `rate` + `backflow` belongs on a through-flow face only, and the pin stays on faces onto a quiescent far field. On the demo3 deck that is x-hi against the four side faces. The form and σ are therefore selectable per face, the B-2 idiom: `CAMR.ps_bc_nscbc_form_{x,y,z}{lo,hi}` and `ps_bc_nscbc_sigma_{x,y,z}{lo,hi}`, where an unset face inherits the global key. Checked on T-Blowdown: a silent deck is bit-identical to the pre-edit binary; a per-face `rate` on the vent face is bit-identical to the global `rate`; and `rate` on a face without NSCBC is inert. Next: a 2-D demo3 level-0 trio (pin, rate σ = 4, rate σ = 4 + backflow; x-hi reverses on 47–56 % of the face under the pin there), then the 3-D restart from `chk_sj3d_04500`.
+So `rate` + `backflow` belongs on a through-flow face only, and the pin stays on faces onto a quiescent far field. On the demo3 deck that is x-hi against the four side faces. The form and σ are therefore selectable per face, the B-2 idiom: `CAMR.ps_bc_nscbc_form_{x,y,z}{lo,hi}` and `ps_bc_nscbc_sigma_{x,y,z}{lo,hi}`, where an unset face inherits the global key. Checked on T-Blowdown: a silent deck is bit-identical to the pre-edit binary; a per-face `rate` on the vent face is bit-identical to the global `rate`; and `rate` on a face without NSCBC is inert. 
+**2-D demo3 at level 0** (`Exec/CO2_PipeBreak/runs/nscbc_backflow`, 2 × 1 m, 256 × 128, mode 2, to 35 ms; ylo/yhi on the pin throughout; `PREDICTIONS.md` and `face2d*.py` there). Liquid reaches x-hi at 16 ms. The table is the x-hi face averaged over 20–35 ms; RB2 is through 27 ms.
+
+| x-hi | reversed share | fastest inflow, mean / worst | net mass out [kg/s/m] | domain mass at 20 ms → end [kg/m] | liquid in the last 0.25 m [L/m] |
+|---|---|---|---|---|---|
+| P: pin | 49.5 % | −161 / −227 m/s | 1488 | 114.5 → 120.2 | 2.73 |
+| R: rate σ = 4 | 60.8 % | −165 / −228 | 902 | 116.9 → 118.8 | 2.24 |
+| RB: R + backflow (items 1–3) | 38.7 % | −234 / −300 | 1715 | 115.1 → 118.3 | 2.02 |
+| RB2: RB + item 4 (to 27 ms) | 0–61 % | worst −58 | — | 109.7 → 107.1 | 2.3–2.8 |
+
+The pin is not bounded in 2-D either. The 2 m jet reaches x-hi overexpanded, and the probe puts its 47–59 % reversal in inflow fan cells whose ghost is faster inward than the interior in 93–100 % of them, under every variant before item 4. With item 4 the probe damps those cells on the P and RB faces at 24 ms (−113 → −54, −117 → −61 m/s; 0 and 5 % pumped). In the RB2 run the inflow stays below 60 m/s, the face has inflow-free spells (23–24 ms), the plume leaves at the speed it has at x = 1.75 m (95–147 m/s), and the domain mass stays near 106–110 kg/m. The predictions written before launch were half right. P bounded: refuted. RB bounded: refuted. RB's net outflow at or above P's: confirmed. RB2's inflow below 100 m/s and mass below P's: confirmed through 27 ms.
+
+Item 4 is inert where it should be: on T-Blowdown the default and `pin` + `backflow = 1` stay bit-identical to the pre-edit binary on the four orientations and the small-signal vent. Next: the 3-D restart from `chk_sj3d_04500` with x-hi on `rate` σ = 4 + `backflow` and the side faces on the pin.
 
 ## 8. The Corridor state: the two items downstream of the projection
 
