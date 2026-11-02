@@ -160,7 +160,7 @@ Decided 2026-11-01 (B-6): the default is 1, the demo3 decks run x-hi on `rate` �
 - revisit the x-hi σ if the arrival dip matters;
 - the ambient-composition hook and the supersonic-inflow construction, both parked as negligible under the bound.
 
-The 3-D run is continued to 100 ms (`run2.log` in the run folder) for a longer movie.
+The 3-D run was continued from 55 to 100 ms on the same binary and settings (`run2.log`, `launch2.sh` in the run folder). At 100 ms, x-hi still passes the plume at its own speed: 31.0 m/s at the face against 31.9 m/s at x = 3 m, at 0.04 bar below P∞. It carries 1356 kg/s and 71.6 L/s of liquid out and 0.04 L/s back in, and inflow covers 4.5 % of the face at ≤ 1.6 m/s. The plume has widened to fill 91 % of the face. The liquid in the last 0.5 m (982 cm³, 512 at 55 ms) is that wider plume passing through, not a pile-up: liquid per metre of length is flat from x = 3 m to the face (2304 → 2168 cm³/m). Domain mass 182.9 kg; box-mean P − P∞ −0.22 bar, the side faces entraining.
 
 ## 8. The Corridor state: the two items downstream of the projection
 
