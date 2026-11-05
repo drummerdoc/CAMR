@@ -106,7 +106,7 @@ CAMR::CAMR_advance (Real time,
     // trusted to respect the consistency between certain state variables
     // (e.g. UEINT and UEDEN) that we demand in every zone.
 
-    clean_state(get_old_data(State_Type), false);   // UTEMP refreshed at the end of the step
+    clean_state(get_old_data(State_Type), 0, false);   // UTEMP refreshed at the end of the step
 
     MultiFab& S_old = get_old_data(State_Type);
     amrex::ignore_unused(S_old);
@@ -424,14 +424,14 @@ CAMR::CAMR_advance (Real time,
         PS_CELL_PROBE(S, "A6 post TFLOOR fold    ");
         ps_apply_floor(S, ng);
         PS_CELL_PROBE(S, "A7 post FLOOR          ");          // positivity floor
-        clean_state(S, false);   // intermediate: skip the UTEMP diagnostic sweep
+        clean_state(S, ng, false);   // intermediate: skip the UTEMP diagnostic sweep
         diag_mass(S, "B post floor/fold/clean");
         PS_CELL_PROBE(S, "B  post clean_state    ");
         diag_a1(S, "reaction pre-relax");   // entering: reflects hydro/advection/C-F
         if (ps_do_relax_cached != 0) {
             ps_apply_relaxation(S, dt_r, ng, do_print,    // dt_r for the finite-rate legs
                                 &work_est);
-            clean_state(S, false); // intermediate: skip the UTEMP diagnostic sweep
+            clean_state(S, ng, false); // intermediate: skip the UTEMP diagnostic sweep
         }
         diag_mass(S, "C post relaxation (P/T/MT)");
         PS_CELL_PROBE(S, "C  post relaxation     ");
@@ -491,13 +491,18 @@ CAMR::CAMR_advance (Real time,
     // Initialize the new-time data.
     MultiFab::Copy(S_new, Sborder, 0, 0, NVAR, S_new.nGrow());
 
-    // Build sources at t_old, then add them to S_new
+    // Build sources at t_old, then add them to S_new.
+    //
+    // The Godunov hydro reads these sources (via sources_for_hydro --> srcQ) in
+    // the ghost cells as well, so we must build them over the full numGrow()
+    // footprint, using Sborder since the state itself carries no ghost cells.
+    // The MOL hydro never builds srcQ, so there we only need the valid region.
+    int ng_src = (do_mol) ? 0 : numGrow();
     for (int n = 0; n < src_list.size(); ++n) {
-        construct_old_source(src_list[n], time, dt);
+        construct_old_source(src_list[n], Sborder, time, dt, ng_src);
         MultiFab::Saxpy(S_new, dt, *old_sources[src_list[n]], 0, 0, NVAR, 0);
     }
 
-    sources_for_hydro.setVal(0.0);
     //
     // Now build and add the hydro source term(s) to S_new
     //
@@ -521,6 +526,16 @@ CAMR::CAMR_advance (Real time,
         MultiFab::LinComb(S_new, 0.5, Sborder, 0, 0.5, S_old, 0, 0, NVAR, 0);
         MultiFab::Saxpy  (S_new, 0.5*dt, new_hydro_source, 0, 0, NVAR, 0);
 
+        // The LinComb above averaged S^{n+1,*} -- which already held
+        // dt * old_sources -- against S^n, which does not, so only half of the
+        // old-time sources survived.  Put the other half back, so that once the
+        // new-source correction (which is only 0.5*(Src_new - Src_old)) is
+        // added below the state carries the time-centered
+        // 0.5 * dt * (Src_old + Src_new), just as the Godunov branch does.
+        for (int n = 0; n < src_list.size(); ++n) {
+            MultiFab::Saxpy(S_new, 0.5*dt, *old_sources[src_list[n]], 0, 0, NVAR, 0);
+        }
+
     } else {
         construct_hydro_source(Sborder, hydro_source, time, dt);
 
@@ -537,14 +552,14 @@ CAMR::CAMR_advance (Real time,
 #ifdef USE_PS_HYDRO
     diag_mass(S_new, "H post-hydro (pre-floor)", true);
 #endif
-    clean_state(S_new, false);   // intermediate: skip the UTEMP diagnostic sweep
+    clean_state(S_new, 0, false);   // intermediate: skip the UTEMP diagnostic sweep
 
 
     // "new source" is actually the correction to the old source we've already added
     for (int n = 0; n < src_list.size(); ++n) {
         construct_new_source(src_list[n], time, dt);
         MultiFab::Saxpy(S_new, dt, *new_sources[src_list[n]], 0, 0, NVAR, 0);
-        clean_state(S_new);
+        clean_state(S_new, 0);
     }
 
 #ifdef USE_PS_HYDRO
@@ -589,7 +604,7 @@ CAMR::CAMR_advance (Real time,
     // clean_state calls pass refresh_temp=false (the UTEMP sweep is a
     // per-cell EOS inversion the conserved evolution never reads), so one
     // sweep per advance here keeps the plotfile/derive/tagging path current.
-    clean_state(S_new, true);
+    clean_state(S_new, 0);
 
     return dt_new;
 }

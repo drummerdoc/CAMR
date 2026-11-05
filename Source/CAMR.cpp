@@ -241,6 +241,14 @@ CAMR::read_params()
     }
   }
 
+  // Check on PLM slope order -- the slope routines only distinguish
+  // between 1 (piecewise constant), 2 (MC-limited centered slope) and
+  // 4 (fourth-order blend), so any other value would silently be
+  // treated as if it were 2.
+  if (plm_iorder != 1 && plm_iorder != 2 && plm_iorder != 4) {
+    amrex::Error("CAMR::plm_iorder must be 1, 2 or 4");
+  }
+
 #ifdef AMREX_USE_EB
   // We only support PLM (not PPM) with using EB
   if (do_mol == 0 && ppm_type != 0) {
@@ -254,12 +262,13 @@ CAMR::read_params()
   }
 #endif
 
-  // for the moment, ppm_type = 0 does not support ppm_trace_sources --
-  // we need to add the momentum sources to the states (and not
-  // add it in trans_3d
-  if (ppm_type == 0 && ppm_trace_sources == 1) {
+  // Source tracing is not implemented for either reconstruction: the
+  // PPM source block in PPM.cpp is commented out and PLM never had one.
+  // Sources are added in hydro_transd/hydro_transdd instead.
+  if (ppm_trace_sources == 1) {
     amrex::Print()
-      << "WARNING: ppm_trace_sources = 1 not implemented for ppm_type = 0"
+      << "WARNING: ppm_trace_sources = 1 is not implemented (ppm_type = "
+      << ppm_type << "); sources are added in the transverse step instead"
       << std::endl;
     ppm_trace_sources = 0;
     pp.add("ppm_trace_sources", ppm_trace_sources);
@@ -832,7 +841,7 @@ CAMR::post_timestep(int /*iteration*/)
       }
     }
 #endif
-    clean_state(S_new_crse);
+    clean_state(S_new_crse, 0);
 
 #ifdef AMREX_USE_EB
     // If we redistribute then the ML redistribution algorithm may change
@@ -843,7 +852,7 @@ CAMR::post_timestep(int /*iteration*/)
     if ( level < finest_level && (redistribution_type != "NoRedist") ) {
         CAMR& fine_level = getLevel(level + 1);
         amrex::MultiFab& S_new_fine = fine_level.get_new_data(State_Type);
-        clean_state(S_new_fine);
+        clean_state(S_new_fine, 0);
     }
 #endif
 
@@ -1158,15 +1167,14 @@ CAMR::enforce_consistent_e(amrex::MultiFab& S)
 void
 CAMR::enforce_min_density(amrex::MultiFab& S_new)
 {
-  // This routine sets the density in S_new to be larger than the density
-  // floor. Note that it will operate everywhere on S_new, including ghost
-  // zones. S_old is present so that, after the hydro call, we know what the old
-  // density was so that we have a reference for comparison. If you are calling
-  // it elsewhere and there's no meaningful reference state, just pass in the
-  // same amrex::MultiFab twice.
-  //  @return  The return value is the the negative fractional change in the
-  // state that has the largest magnitude. If there is no reference state, this
-  // is meaningless.
+  // This routine resets any zone of S_new whose density is below the density
+  // floor. It operates on the valid region only; the ghost cells of S_new are
+  // left untouched.
+  //
+  // A zone below the floor is overwritten with a copy of whichever of its 27
+  // neighbors within the same tile has the highest (pre-reset) density, or, if
+  // no such neighbor reaches the floor, with a state at (small_dens,
+  // small_temp) and zero velocity.
 
 #ifdef AMREX_USE_EB
     auto const& fact = dynamic_cast<amrex::EBFArrayBoxFactory const&>(S_new.Factory());
@@ -1198,6 +1206,21 @@ CAMR::enforce_min_density(amrex::MultiFab& S_new)
     amrex::GpuArray<int,3> lo = bx.loVect3d();
     amrex::GpuArray<int,3> hi = bx.hiVect3d();
 
+    // Snapshot the density over this tile.  The donor search below must see the
+    //    original densities, never a cell that another thread is concurrently
+    //    resetting -- otherwise a just-floored neighbor could win the search and
+    //    we would copy from a cell that is still being rewritten.
+    // Only the density needs saving: a neighbor wins the search only if its
+    //    original density is at least small_dens, and such a cell is never itself
+    //    reset, so its remaining components are guaranteed not to be changing
+    //    while we copy them out of Sarr below.
+    amrex::FArrayBox rho_orig_fab(bx, 1, amrex::The_Async_Arena());
+    const auto& rho_orig = rho_orig_fab.array();
+    amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept
+    {
+        rho_orig(i,j,k) = Sarr(i,j,k,URHO);
+    });
+
     // This corresponds to (density_reset_method == 1) from CAMR
     amrex::ParallelFor(
       bx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept
@@ -1212,7 +1235,7 @@ CAMR::enforce_min_density(amrex::MultiFab& S_new)
          } else if (Sarr(i,j,k,URHO) < l_small_dens) {
 
              // Reset to the characteristics of the adjacent state with the highest density.
-             amrex::Real max_dens = Sarr(i,j,k,URHO);
+             amrex::Real max_dens = rho_orig(i,j,k);
              int i_set = i;
              int j_set = j;
              int k_set = k;
@@ -1220,12 +1243,16 @@ CAMR::enforce_min_density(amrex::MultiFab& S_new)
              for (int jj = -1; jj <= 1; jj++) {
              for (int ii = -1; ii <= 1; ii++) {
                  if ( (i+ii>=lo[0]) && (j+jj>=lo[1]) && (k+kk>=lo[2]) &&
-                      (i+ii<=hi[0]) && (j+jj<=hi[1]) && (k+kk<=hi[2]) ) {
-                         if (Sarr(i+ii,j+jj,k+kk,URHO) > max_dens) {
+                      (i+ii<=hi[0]) && (j+jj<=hi[1]) && (k+kk<=hi[2])
+#ifdef AMREX_USE_EB
+                      && !flag_arr(i+ii,j+jj,k+kk).isCovered()
+#endif
+                    ) {
+                         if (rho_orig(i+ii,j+jj,k+kk) > max_dens) {
                             i_set = i+ii;
                             j_set = j+jj;
                             k_set = k+kk;
-                            max_dens = Sarr(i_set,j_set,k_set,URHO);
+                            max_dens = rho_orig(i_set,j_set,k_set);
                          }
                      }
              }
@@ -1316,8 +1343,11 @@ CAMR::derive(const std::string& name, amrex::Real time, int ngrow)
 {
 #ifdef AMREX_USE_EB
   if (name == "vfrac" || name == "volfrac") {
-    std::unique_ptr<amrex::MultiFab> derive_dat(new amrex::MultiFab(grids, dmap, 1, 0));
-    amrex::MultiFab::Copy(*derive_dat, *volfrac, 0, 0, 1, 0);
+    std::unique_ptr<amrex::MultiFab> derive_dat(
+      new amrex::MultiFab(grids, dmap, 1, ngrow, amrex::MFInfo(), Factory()));
+    derive_dat->setVal(0.0);
+    amrex::MultiFab::Copy(*derive_dat, *volfrac, 0, 0, 1,
+                          std::min(ngrow, volfrac->nGrow()));
     return derive_dat;
   }
 #endif
@@ -1361,7 +1391,7 @@ CAMR::derive(
 #endif
 #ifdef AMREX_USE_EB
   if (name == "vfrac" || name == "volfrac") {
-    amrex::MultiFab::Copy(mf_to_fill, *volfrac, 0, 0, 1, 0);
+    amrex::MultiFab::Copy(mf_to_fill, *volfrac, 0, dcomp, 1, 0);
   } else
 #endif
   {
@@ -1647,13 +1677,14 @@ CAMR::expand_state(amrex::MultiFab& S, const amrex::Real time, const int ng)
     // refresh_temp = false: Sborder is the widest MultiFab in the step and
     // the hydro never reads UTEMP (PS ctoprim recomputes T from the
     // conserved state; flx[UTEMP] is 0).
-    clean_state(S, false);
+    clean_state(S, ng, false);
 }
 
 void
-CAMR::clean_state(amrex::MultiFab& S, bool refresh_temp)
+CAMR::clean_state(amrex::MultiFab& S, int ng, bool refresh_temp)
 {
   BL_PROFILE("CAMR::clean_state()");
+  AMREX_ALWAYS_ASSERT(S.nGrow() >= ng);
 
   // Enforce a minimum density.
   enforce_min_density(S);
@@ -1669,7 +1700,7 @@ CAMR::clean_state(amrex::MultiFab& S, bool refresh_temp)
   // fictitious trace phase into every cell and undo the vanish fold.
   amrex::ignore_unused(0);
   for (amrex::MFIter mfi(S, amrex::TilingIfNotGPU()); mfi.isValid(); ++mfi) {
-      const amrex::Box& bx = mfi.growntilebox();
+      const amrex::Box& bx = mfi.growntilebox(ng);
       auto const& Sa = S.array(mfi);
       amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
           amrex::Real a1 = Sa(i,j,k, UALPHA1);
@@ -1728,8 +1759,8 @@ CAMR::clean_state(amrex::MultiFab& S, bool refresh_temp)
   }
 #endif
 
-  int ng = S.nGrow();
-
+  // Only ghost cells the caller has actually filled are touched: the state
+  // data itself carries state_nghost unfilled ghost cells.
   // computeTemp = reset_internal_energy (state hygiene, always needed) plus
   // the per-cell EOS inversion that fills the UTEMP diagnostic slot.
   // CAMR.lazy_temp (1): skip the UTEMP part on the intermediate calls of an
@@ -1769,13 +1800,17 @@ CAMR::ZeroingOutForPlotting(amrex::MultiFab& S)
     amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
         if (vfrac_arr(i,j,k) == 0.0)
         {
-               for (int n = 0; n < ncomp; ++n) {
-                 Sarr(i, j, k, n) = 0.0;
-            }
-       }
-       {
             for (int n = 0; n < ncomp; ++n) {
-                if(Sarr(i, j, k, n) < 1e-12){
+                Sarr(i, j, k, n) = 0.0;
+            }
+        }
+        else
+        {
+            // Clean up denormal-scale noise only.  Note that we must test the
+            // magnitude here -- a signed test would zero every legitimately
+            // negative value, e.g. all negative momenta and velocities.
+            for (int n = 0; n < ncomp; ++n) {
+                if (amrex::Math::abs(Sarr(i, j, k, n)) < 1.e-12) {
                     Sarr(i, j, k, n) = 0.0;
                 }
             }

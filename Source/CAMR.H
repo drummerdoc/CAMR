@@ -85,6 +85,20 @@ public:
     const std::string& dir, std::ostream& os, amrex::VisMF::How how) override;
   void writeSmallPlotFile(
     const std::string& dir, std::ostream& os, amrex::VisMF::How how) override;
+
+  // Shared tail of writePlotFile / writeSmallPlotFile: build the combined
+  //    plotfile MultiFab, mask out EB-covered cells, and write it.  Both
+  //    writers must go through this so their covered-cell treatment cannot
+  //    drift apart.  Pass an empty derive_names to write state data only.
+  void buildAndWritePlotMF(
+    const amrex::Vector<std::pair<int, int>>& plot_var_map,
+    const std::list<std::string>& derive_names,
+    int n_data_items,
+    amrex::Real cur_time,
+    const std::string& FullPath,
+    const std::string& BaseName,
+    amrex::VisMF::How how);
+
   void writeJobInfo(const std::string& dir);
   static void writeBuildInfo(std::ostream& os);
 
@@ -148,17 +162,24 @@ public:
                                       amrex::Real time,
                                       amrex::Real dt);
 
+  //
+  // Build the old-time source terms on the valid region plus ng ghost cells.
+  // S must be a state with at least ng ghost cells filled (i.e. Sborder, not
+  // the state data itself) since the sources are evaluated cell-by-cell from it.
+  //
   void construct_old_source (
     int src,
+    const amrex::MultiFab& S,
     amrex::Real time,
-    amrex::Real dt);
+    amrex::Real dt,
+    int ng);
 
   void construct_new_source (
     int src,
     amrex::Real time,
     amrex::Real dt);
 
-  void construct_old_ext_source(amrex::Real time, amrex::Real dt);
+  void construct_old_ext_source(const amrex::MultiFab& S, amrex::Real time, amrex::Real dt, int ng);
   void construct_new_ext_source(amrex::Real time, amrex::Real dt);
 
   static void fill_ext_source (
@@ -169,7 +190,7 @@ public:
     amrex::MultiFab& ext_src,
     int ng);
 
-  void construct_old_grav_source (amrex::Real time, amrex::Real dt);
+  void construct_old_grav_source (const amrex::MultiFab& S, amrex::Real time, amrex::Real dt, int ng);
   void construct_new_grav_source (amrex::Real time, amrex::Real dt);
 
   static void fill_grav_source (const amrex::MultiFab& S, amrex::MultiFab& grav_src, int ng);
@@ -387,6 +408,10 @@ protected:
   static void error_setup ();
 
   void expand_state(amrex::MultiFab& S, const amrex::Real time, const int ng);
+  // Floor the density and renormalize the species on the valid region plus
+  // ng ghost cells, then recompute T there.  ng must not exceed the number
+  // of ghost cells that have actually been filled (0 for state data,
+  // numGrow() for Sborder).
   //  refresh_temp: also recompute the UTEMP diagnostic slot (computeTemp, a
   //  per-cell EOS inversion over the grown box: one mixture (rho,e)->T plus
   //  two branch-locked per-phase inversions in two-phase cells).  UTEMP
@@ -394,7 +419,7 @@ protected:
   //  advance pass false and only the final state is refreshed;
   //  reset_internal_energy runs every time.  CAMR.lazy_temp = 0 makes the
   //  refresh unconditional.
-  void clean_state(amrex::MultiFab& S, bool refresh_temp = true);
+  void clean_state(amrex::MultiFab& S, int ng, bool refresh_temp = true);
 #ifdef USE_PS_HYDRO
   //  The characteristic outflow posed on the relaxed state (NSCBC faces):
   //  a post-processor on hydro_source at the boundary cells of the NSCBC
@@ -489,25 +514,27 @@ CAMR::numGrow()
 {
   int ng = 4;
 #ifdef AMREX_USE_EB
-  // IF MOL     + FRD then 5
-  // IF Godunov + FRD then 6
-  // IF MOL     + SRD then 6
-  // IF Godunov + SRD then 7
+  // IF MOL     + FRD  then 5
+  // IF Godunov + FRD  then 7
+  // IF MOL     + SRD  then 6
+  // IF Godunov + SRD  then 8
+  // IF MOL     + none then 5
+  // IF Godunov + none then 6
+  //
+  // Godunov + redistribution needs one more than the PLM stencil: the traced
+  // states on the outer ring of the EB Godunov box feed the redistributed
+  // update, and flatten_eb() needs q at +-3 around that ring.
   if (redistribution_type == "FluxRedist")
   {
-    if (do_mol) {
-        ng = 5;
-    } else {
-        ng = 6;
-    }
+    ng = (do_mol) ? 5 : 7;
+  }
+  else if (redistribution_type == "NoRedist")
+  {
+    ng = (do_mol) ? 5 : 6;
   }
   else if (redistribution_type == "StateRedist")
   {
-     if (do_mol) {
-        ng = 6;
-     } else {
-        ng = 7;
-     }
+    ng = (do_mol) ? 6 : 8;
   }
 #endif
   return ng;

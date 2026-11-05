@@ -122,19 +122,19 @@ void cell_P_uout(const Real U[NVAR], int idir, Real n_sgn, const PsPres& pr,
 void
 CAMR::ps_reaction_trial(MultiFab& T, Real dt_r, long& relaxed, long& flashed)
 {
-    clean_state(T, false);
+    clean_state(T, 0, false);
     ps_resync_mixture_mass(T, 0);
     ps_resync_phase_energy(T, 0);
     ps_apply_vanish_fold(T, 0);
     ps_apply_tfloor_fold(T, 0);
     ps_apply_floor(T, 0);
-    clean_state(T, false);
+    clean_state(T, 0, false);
     MultiFab pre(T.boxArray(), T.DistributionMap(), 2, 0);
     MultiFab::Copy(pre, T, UALPHA1, 0, 1, 0);
     MultiFab::Copy(pre, T, UE1,     1, 1, 0);
     if (ps_do_relax() != 0) {
         ps_apply_relaxation(T, dt_r, 0, false, nullptr);
-        clean_state(T, false);
+        clean_state(T, 0, false);
     }
     long nrel = 0, nfl = 0;
     for (MFIter mfi(T); mfi.isValid(); ++mfi) {

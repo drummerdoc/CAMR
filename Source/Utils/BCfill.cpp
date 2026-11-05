@@ -44,13 +44,13 @@ struct PCHypFillExtDir
   void operator()(
     const amrex::IntVect& iv,
     amrex::Array4<amrex::Real> const& dest,
-    const int /*dcomp*/,
-    const int /*numcomp*/,
+    const int dcomp,
+    const int numcomp,
     amrex::GeometryData const& geomdata,
     const amrex::Real time,
     const amrex::BCRec* bcr,
     const int /*bcomp*/,
-    const int /*orig_comp*/) const
+    const int orig_comp) const
   {
     const int* domlo = geomdata.Domain().loVect();
     const int* domhi = geomdata.Domain().hiVect();
@@ -62,6 +62,17 @@ struct PCHypFillExtDir
       prob_lo[2] + static_cast<amrex::Real>(iv[2] + 0.5) * dx[2])};
 
     const int* bc = bcr->data();
+
+    // We may be asked to fill only a subset of the state -- FillPatch of a
+    // single derived component, for instance -- so we must write only
+    // components [dcomp, dcomp+numcomp) of dest, which correspond to state
+    // components [orig_comp, orig_comp+numcomp).
+    AMREX_ASSERT(dcomp + numcomp <= dest.nComp());
+    AMREX_ASSERT(orig_comp + numcomp <= NVAR);
+    // The NSCBC ghost is built from the whole conserved state, so it is used
+    // only when the whole state is being filled; a partial fill takes the
+    // problem's bcnormal path below.
+    const bool full_fill = (dcomp == 0 && orig_comp == 0 && numcomp == NVAR);
 
     // ---- Common per-face dispatch --------------------------------
     // Fills ghost iv on a face whose BCRec is ext_dir, through either
@@ -87,7 +98,7 @@ struct PCHypFillExtDir
 #if defined(USE_PS_HYDRO) && !defined(AMREX_USE_GPU)
       // Host builds only: the admissibility test below queries the EOS on
       // the host, and ps_nscbc_cfg() aborts a GPU build with an NSCBC face.
-      if (use_nscbc_face[2*idir + ((sgn > 0) ? 0 : 1)] != 0
+      if (full_fill && use_nscbc_face[2*idir + ((sgn > 0) ? 0 : 1)] != 0
           && (sgn > 0 ? (domlo[idir] + 2 <= domhi[idir])
                       : (domhi[idir] - 2 >= domlo[idir]))) {
         // ---- NSCBC face: the extrapolated ghost ----------------------
@@ -187,12 +198,17 @@ struct PCHypFillExtDir
       }
 #endif
       // ---- Problem-owned single-cell bcnormal path -----------------
-      amrex::Real s_int_local[NVAR], s_ext_local[NVAR];
+      // On a partial fill the entries of s_int_local outside the range being
+      // filled are left at zero, since we have no way to read them here.  That
+      // is exact as long as bcnormal treats the components independently, which
+      // is true of every problem setup in Exec; a state-coupled bcnormal would
+      // need the full state.
+      amrex::Real s_int_local[NVAR] = {0.0}, s_ext_local[NVAR] = {0.0};
       const amrex::IntVect ivN = stencil_iv(0);
-      for (int n = 0; n < NVAR; n++) s_int_local[n] = dest(ivN, n);
+      for (int n = 0; n < numcomp; n++) s_int_local[orig_comp + n] = dest(ivN, dcomp + n);
       bcnormal(x, s_int_local, s_ext_local, idir, sgn, time,
                geomdata, *lprobparm);
-      for (int n = 0; n < NVAR; n++) dest(iv, n) = s_ext_local[n];
+      for (int n = 0; n < numcomp; n++) dest(iv, dcomp + n) = s_ext_local[orig_comp + n];
     };
 
     // ---- Dispatch: check each ext_dir face --------------------

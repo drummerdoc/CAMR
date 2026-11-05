@@ -40,8 +40,17 @@ CAMR::construct_hydro_source (const MultiFab& S,
 
     AMREX_ASSERT(S.nGrow() == numGrow());
 
-    // Fill the source terms to go into the hydro with only the old-time sources
-    int ng = 0;
+    // Fill the source terms to go into the hydro with only the old-time sources.
+    //
+    // The Godunov trace reads srcQ in the ghost cells, so we must include the
+    // ghost cells of the old-time sources here -- the FillBoundary below only
+    // copies valid data from the same level, so it cannot fill the ghost cells
+    // at a coarse-fine boundary.  (The MOL path never builds srcQ.)
+    int ng = (do_mol) ? 0 : numGrow();
+
+    // Note that we must zero this here rather than once per advance because
+    // the Saxpy below accumulates, and the MOL path calls this routine twice.
+    sources_for_hydro.setVal(0.0);
 
     for (int n = 0; n < src_list.size(); ++n) {
         MultiFab::Saxpy(sources_for_hydro, 1.0, *old_sources[src_list[n]], 0, 0, NVAR, ng);
@@ -69,6 +78,16 @@ CAMR::construct_hydro_source (const MultiFab& S,
 
 #ifdef AMREX_USE_EB
     const auto& ebfact = dynamic_cast<amrex::EBFArrayBoxFactory const&>(Factory());
+
+    // The boundary conditions are loop-invariant, so we copy them to the device
+    // once here rather than once per box.  Doing it inside the loop would also
+    // free this memory while the redistribution kernels that read it are still
+    // in flight, and hand the same block to the next iteration.
+    const amrex::StateDescriptor* desc = state[State_Type].descriptor();
+    const auto& bcs = desc->getBCs();
+    amrex::Gpu::DeviceVector<amrex::BCRec> bcs_d(desc->nComp());
+    amrex::Gpu::copy(
+      amrex::Gpu::hostToDevice, bcs.begin(), bcs.end(), bcs_d.begin());
 #endif
 
 #ifdef _OPENMP
@@ -77,9 +96,6 @@ CAMR::construct_hydro_source (const MultiFab& S,
     {
 #ifdef AMREX_USE_EB
       int ncomp = src_to_fill.nComp();
-      FArrayBox dm_as_fine(Box::TheUnitBox(),ncomp);
-      FArrayBox fab_drho_as_crse(Box::TheUnitBox(),ncomp);
-      IArrayBox fab_rrflag_as_crse(Box::TheUnitBox());
 #endif
 
       amrex::MFItInfo tiling = amrex::TilingIfNotGPU() ? amrex::MFItInfo().EnableTiling(hydro_tile_size) : amrex::MFItInfo();
@@ -192,7 +208,14 @@ CAMR::construct_hydro_source (const MultiFab& S,
            ngrow_bx = 2;
         }
         const Box& bxg_i  = grow(bx,ngrow_bx);
-        if (flagfab.getType(bxg_i) != FabType::regular) {
+
+        // The non-EB kernels used in the fallback read q up to 4 cells outside
+        // bx (flatten: +-3 around the bxg1 ring) and flatten_eb() returns 1
+        // within 3 cells of a cut cell, so the two paths give the same fluxes
+        // on the faces of bx only if grow(bx,4) is entirely regular.  numGrow()
+        // is at least 5 in EB builds, so the flag fab covers this box.
+        const Box& bx_reg = grow(bx, amrex::max(ngrow_bx,4));
+        if (flagfab.getType(bx_reg) != FabType::regular) {
 
             EBFluxRegister* fr_as_crse = nullptr;
             if (do_reflux && level < parent->finestLevel()) {
@@ -208,23 +231,29 @@ CAMR::construct_hydro_source (const MultiFab& S,
             int as_crse = (fr_as_crse != nullptr);
             int as_fine = (fr_as_fine != nullptr);
 
+            // These are only placeholders when this box is not itself a
+            // coarse-fine interface; the flux register owns the data otherwise.
+            FArrayBox fab_drho_as_crse(Box::TheUnitBox(),ncomp,The_Async_Arena());
+            IArrayBox fab_rrflag_as_crse(Box::TheUnitBox(),1,The_Async_Arena());
+
             FArrayBox* p_drho_as_crse = (fr_as_crse) ?
                     fr_as_crse->getCrseData(mfi) : &fab_drho_as_crse;
             const IArrayBox* p_rrflag_as_crse = (fr_as_crse) ?
                    fr_as_crse->getCrseFlag(mfi) : &fab_rrflag_as_crse;
 
+            // dm_as_fine is written by the redistribution and then read by the
+            // asynchronous FineAdd below, so it must be a fresh allocation from
+            // the async arena on every box -- reusing one fab across boxes
+            // would zero it while the previous box's FineAdd is still reading.
+            Box bx_for_dm(Box::TheUnitBox());
             if (fr_as_fine) {
                 const Box dbox1 = geom.growPeriodicDomain(1);
-                Box bx_for_dm(amrex::grow(bx,1) & dbox1);
-                dm_as_fine.resize(bx_for_dm,ncomp);
+                bx_for_dm = amrex::grow(bx,1) & dbox1;
+            }
+            FArrayBox dm_as_fine(bx_for_dm,ncomp,The_Async_Arena());
+            if (fr_as_fine) {
                 dm_as_fine.setVal<RunOn::Device>(0.0);
             }
-
-            const amrex::StateDescriptor* desc = state[State_Type].descriptor();
-            const auto& bcs = desc->getBCs();
-            amrex::Gpu::DeviceVector<amrex::BCRec> bcs_d(desc->nComp());
-            amrex::Gpu::copy(
-              amrex::Gpu::hostToDevice, bcs.begin(), bcs.end(), bcs_d.begin());
 
             const auto& dxInv = geom.InvCellSizeArray();
 
